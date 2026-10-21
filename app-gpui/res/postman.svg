@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 64 64">
+  <!-- Значок Postman «Ленты»: список, беседа, задачи. 16/20/24/32 px — отдельная сетка по пикселям (см. docs/DESIGN.md, «Значок приложения»). -->
+  <rect x="6" y="9" width="42" height="12" rx="6" fill="#0067C0"/>
+  <rect x="16" y="26" width="42" height="12" rx="6" fill="#177CAA"/>
+  <rect x="6" y="43" width="28" height="12" rx="6" fill="#E4107F"/>
+</svg>
