@@ -1,0 +1,20 @@
+# Класс B (скилл pets-dev): изменения этих путей мержатся только с approve владельца.
+# Всё остальное (класс A) — merge queue на зелёном CI.
+/Cargo.toml                    @Dicobraz
+/Cargo.lock                    @Dicobraz
+/rust-toolchain.toml           @Dicobraz
+/deny.toml                     @Dicobraz
+/clippy.toml                   @Dicobraz
+/.github/                      @Dicobraz
+/.cargo/                       @Dicobraz
+/.config/                      @Dicobraz
+/lanes.toml                    @Dicobraz
+/CLAUDE.md                     @Dicobraz
+/docs/adr/                     @Dicobraz
+# Контракты: договор плагинов, модель, правила слоёв (ADR 0004).
+/crates/core/src/backend/      @Dicobraz
+/crates/core/src/model.rs      @Dicobraz
+/crates/core/tests/layers.rs   @Dicobraz
+# Песочница: разбор чужих данных.
+/crates/worker/                @Dicobraz
+/crates/smime/                 @Dicobraz

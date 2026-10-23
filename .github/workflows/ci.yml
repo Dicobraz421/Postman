@@ -1,36 +1,40 @@
+# CI Postman по шаблону скилла pets-dev (R-01).
+# PR и merge queue: метки конфликта, полосы, clippy, тесты (nextest) — цель ≤7 мин при тёплом кэше.
+# Docs-PR: сборка пропускается (job `changes`). Release, подпись, архив — только main, `beta-*` и ручной запуск.
+# Required check в защите main — один: `gate`.
 name: CI
 
 on:
-  # PR проверяется один раз (pull_request); push — только main, чтобы ветка PR не гоняла CI дважды.
+  pull_request:
+  merge_group:
   push:
     branches: [main]
-  pull_request:
+    tags: ['beta-*']
+  workflow_dispatch:
 
 concurrency:
   # Новый пуш в PR отменяет устаревший прогон.
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
   # Каталог сборки задан явно (H-01): шаги ниже ссылаются на него, а не на зашитый target/.
   CARGO_TARGET_DIR: target
 
 jobs:
-  test:
-    name: ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # Целевая платформа — только Windows; Linux остаётся для разработки в контейнере.
-        os: [windows-latest]
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.d.outputs.rust }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
+          fetch-depth: 0
 
       - name: Нет меток конфликта слияния
         shell: bash
@@ -39,35 +43,88 @@ jobs:
             echo "Метки конфликта слияния в файлах выше"; exit 1
           fi
 
+      - id: d
+        name: Что изменилось
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ -z "$BASE" ]; then echo rust=true >> "$GITHUB_OUTPUT"; exit 0; fi
+          git diff --name-only "$BASE" HEAD > changed.txt
+          # Полосы: PR правит одну полосу (x/* — межполосный PR класса B).
+          if [ -f lanes.toml ] && [ "$EVENT" = pull_request ]; then
+            python3 .github/lane_check.py lanes.toml changed.txt "$HEAD_REF"
+          fi
+          if grep -qvE '^(docs/|[^/]*\.md$|.*/README\.md$)' changed.txt; then
+            echo rust=true >> "$GITHUB_OUTPUT"
+          else
+            echo rust=false >> "$GITHUB_OUTPUT"
+          fi
+
+  # Формат (`cargo fmt --check`) пока не проверяется: код не приведён к rustfmt — решение владельца.
+  test:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal -c clippy --no-self-update && rustup default stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
       - name: Clippy
         # Не через RUSTFLAGS: он перекрыл бы +crt-static из .cargo/config.toml.
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Сборка тестов
-        run: cargo test --workspace --no-run
+        run: cargo nextest run --workspace --locked --profile ci --no-run
 
       # AppContainer читает exe воркера только при праве для ALL APPLICATION PACKAGES (S-1-15-2-1),
       # как в Program Files. Выдаём его каталогу сборки и требуем полной изоляции в тестах.
       - name: Права AppContainer на каталог сборки
-        if: runner.os == 'Windows'
         shell: pwsh
         run: icacls "${{ env.CARGO_TARGET_DIR }}" /grant "*S-1-15-2-1:(OI)(CI)(RX)" /T /Q
 
-      # Диагностика: какое ограничение песочницы мешает воркеру стартовать (по одному снимаем).
-      - name: Диагностика песочницы
-        if: runner.os == 'Windows'
-        continue-on-error: true
-        run: cargo test -p postman-worker --test windows_probe -- --ignored --nocapture
+      # Doc-тестов в рабочей области нет; появятся — добавить `cargo test --doc --workspace --locked`.
+      - name: Тесты
+        run: cargo nextest run --workspace --locked --profile ci
+        env:
+          POSTMAN_REQUIRE_FULL_SANDBOX: '1'
 
-      # Сборка для тестировщиков — до тестов, чтобы красные тесты не лишали архива.
+      # Диагностика: какое ограничение песочницы мешает воркеру стартовать (по одному снимаем). Только вручную.
+      - name: Диагностика песочницы
+        if: github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        run: cargo test -p postman-worker --test windows_probe --locked -- --ignored --nocapture
+
+  # Только main, бета и ручной запуск: release, подпись, архив. Идёт параллельно с тестами —
+  # красные тесты не лишают архива.
+  release:
+    needs: changes
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
       - name: Release-сборка
-        run: cargo build --release --workspace
+        run: cargo build --release --workspace --locked
 
       # Подпись (S4-01, решение владельца 1): только если заданы секреты с сертификатом, иначе — уведомление.
       # WINDOWS_CERT_PFX_BASE64 — .pfx в base64, WINDOWS_CERT_PASSWORD — пароль; сервер меток времени —
       # переменная WINDOWS_TIMESTAMP_URL (по умолчанию DigiCert).
       - name: Подпись exe
-        if: runner.os == 'Windows'
         shell: pwsh
         env:
           PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
@@ -97,20 +154,25 @@ jobs:
 
       - name: Архив
         id: package
-        if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/windows/package.ps1 -TargetDir "$env:CARGO_TARGET_DIR" -Out dist
 
       # Артефакт скачивается как Postman-<версия>-windows-x64.zip с четырьмя файлами внутри.
       - name: Артефакт Windows
-        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.package.outputs.name }}
           path: ${{ steps.package.outputs.dir }}
           if-no-files-found: error
 
-      - name: Тесты
-        run: cargo test --workspace
-        env:
-          POSTMAN_REQUIRE_FULL_SANDBOX: ${{ runner.os == 'Windows' && '1' || '' }}
+  # Единственный required check: зелёный, если всё нужное прошло или было пропущено.
+  gate:
+    needs: [changes, test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - shell: bash
+        run: |
+          r='${{ join(needs.*.result, ' ') }}'
+          echo "$r"
+          case " $r " in *" failure "*|*" cancelled "*) exit 1;; esac

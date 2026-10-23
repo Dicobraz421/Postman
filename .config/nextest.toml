@@ -1,0 +1,6 @@
+# Профили nextest (R-01, скилл pets-dev). CI: `cargo nextest run --profile ci`.
+[profile.ci]
+# Один повтор упавшего теста; нестабильный тест всё равно виден в отчёте как flaky — чинить причину.
+retries = 1
+fail-fast = false
+failure-output = "immediate-final"

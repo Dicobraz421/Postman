@@ -1,0 +1,55 @@
+# Полосы Postman (скилл pets-dev). Пути — glob (fnmatch, * включает /). Первое совпадение сверху вниз.
+# Полоса = единица параллельной работы одного агента. Правка этого файла — класс B.
+# Слои — CLAUDE.md и crates/core/tests/layers.rs.
+
+[common]
+# Можно в любом PR: свои карточки, ручные проверки, новые решения.
+paths = ["docs/tasks/*", "docs/manual-tests/*", "docs/decisions/*"]
+
+[lane.ir]
+# L0: HTML → безопасный IR.
+paths = ["crates/ir/*"]
+
+[lane.protocols]
+# L1: протоколы.
+paths = ["crates/jmap/*", "crates/imap/*", "crates/dav/*", "crates/ews/*"]
+
+[lane.cache]
+# L1: локальное хранилище и поиск.
+paths = ["crates/cache/*", "crates/search/*"]
+
+[lane.formats]
+# L1: письмо и календарь без I/O.
+paths = ["crates/compose/*", "crates/calendar/*"]
+
+[lane.sandbox]
+# L1: воркер-песочница и S/MIME (CODEOWNERS — класс B).
+paths = ["crates/worker/*", "crates/smime/*"]
+
+[lane.core]
+# L2: модель, договор плагинов, синхронизация.
+paths = ["crates/core/*"]
+
+[lane.backends]
+# L2b: плагины путей к серверам.
+paths = ["crates/backend-*"]
+
+[lane.app-gpui]
+# L3: интерфейс, postman.exe.
+paths = ["app-gpui/*"]
+
+[lane.demo]
+paths = ["crates/demo/*"]
+
+[lane.docs-gen]
+# Генерируемые документы: одна волна в день, от main.
+paths = ["docs/PARITY.md"]
+
+[lane.docs]
+paths = ["docs/*", "*.md", "LICENSE"]
+
+[lane.deps]
+paths = ["Cargo.toml", "Cargo.lock", "deny.toml", "rust-toolchain.toml"]
+
+[lane.ci]
+paths = [".github/*", "scripts/*", ".config/*", ".cargo/*", "lanes.toml", "clippy.toml", ".gitattributes", ".gitignore"]
