@@ -2,7 +2,7 @@
 
 Корпоративный клиент почта + календарь + контакты под **Stalwart** по **JMAP**.
 Чистый Rust, интерфейс на gpui (DirectX 11), раскладка и хоткеи classic Outlook. Только Windows 10/11 x64.
-Правила для Claude Code — [CLAUDE.md](CLAUDE.md). План — [docs/PLAN.md](docs/PLAN.md). Исходное ТЗ и решения — [docs/HANDOFF.md](docs/HANDOFF.md). Учётные записи, файлы и связь с системой учёта — [docs/IDENTITY.md](docs/IDENTITY.md). Сравнение egui и gpui — [docs/UI-SPIKE.md](docs/UI-SPIKE.md).
+Правила для Claude Code — [CLAUDE.md](CLAUDE.md). Устройство — [docs/00-ARCHITECTURE.md](docs/00-ARCHITECTURE.md), разработка на стенде — [docs/DEV.md](docs/DEV.md). План — [docs/PLAN.md](docs/PLAN.md). Исходное ТЗ и решения — [docs/HANDOFF.md](docs/HANDOFF.md). Учётные записи, файлы и связь с системой учёта — [docs/IDENTITY.md](docs/IDENTITY.md). Сравнение egui и gpui — [docs/UI-SPIKE.md](docs/UI-SPIKE.md).
 
 ## Структура
 
