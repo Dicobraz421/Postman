@@ -14,7 +14,7 @@ use pets_ui::theme::Metric;
 
 use postman_core::prefs::KeyScheme;
 
-use crate::commands::{COMMANDS, SINGLE};
+use crate::commands::SINGLE;
 use crate::keymap::{self, Column, KeySet, Place, human};
 use crate::roles::Look;
 use crate::buttons::button;
@@ -84,7 +84,7 @@ impl SettingsView {
         }
         let Some(keys) = keymap::recorded(keystroke) else { return true };
         let set = KeySet::of(&crate::prefs::get(cx));
-        match keymap::taken_by(COMMANDS, &SINGLE, &set, id, &keys) {
+        match keymap::taken_by(crate::commands::all(), &SINGLE, &set, id, &keys) {
             Some(other) => {
                 // Занято: решает пользователь («Заменить» или «Оставить оба»); запись окончена.
                 self.keys.clash = Some((keys, other));
@@ -100,7 +100,7 @@ impl SettingsView {
         let mut result = Ok(());
         crate::prefs::update(cx, |p| {
             let mut set = KeySet::of(p);
-            result = keymap::assign(COMMANDS, &SINGLE, &mut set, id, keys, replace);
+            result = keymap::assign(crate::commands::all(), &SINGLE, &mut set, id, keys, replace);
             set.store(p);
         });
         if let Err(e) = result {
@@ -124,7 +124,7 @@ impl SettingsView {
                 cx.notify();
             }))
         });
-        let conflicts = keymap::conflicts(COMMANDS, &SINGLE, &set);
+        let conflicts = keymap::conflicts(crate::commands::all(), &SINGLE, &set);
         let commands = keymap::search(&self.keys.query, command_name, &SINGLE, &set);
         let single = set.scheme == KeyScheme::Single;
         let column_head = |text: String, on: bool, w: f32| {
@@ -168,7 +168,7 @@ impl SettingsView {
         }
         let mut conflict_list = div().flex().flex_col().gap_1();
         for c in &conflicts {
-            let name = |id: &str| COMMANDS.iter().find(|x| x.id == id).map(command_name).unwrap_or_default();
+            let name = |id: &str| crate::commands::all().iter().find(|x| x.id == id).map(command_name).unwrap_or_default();
             conflict_list = conflict_list.child(
                 div()
                     .text_color(l.warning())
@@ -324,7 +324,7 @@ impl SettingsView {
             .child(actions);
         let mut wrap = div().flex().flex_col().border_b_1().border_color(l.border()).child(line);
         if recording && let Some((keys, other)) = self.keys.clash.clone() {
-            let other_name = COMMANDS.iter().find(|x| x.id == other).map(command_name).unwrap_or_default();
+            let other_name = crate::commands::all().iter().find(|x| x.id == other).map(command_name).unwrap_or_default();
             let (k1, k2) = (keys.clone(), keys.clone());
             wrap = wrap.child(
                 div()

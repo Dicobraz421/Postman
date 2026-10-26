@@ -20,7 +20,6 @@ use postman_core::sync::Command;
 use postman_ir::Document;
 
 use crate::Mailer;
-use crate::commands::mail;
 use crate::list::{MailList, Purge};
 
 /// Ответ ждёт тело письма.
@@ -279,6 +278,86 @@ impl Mailer {
         .detach();
     }
 }
+
+/// Опись части (ADR 0005, `parts.rs`).
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "mail", texts: TEXTS, commands: COMMANDS, ..crate::part::Part::NONE };
+
+/// Тексты части (`i18n/<язык>/<часть>.ftl`).
+const TEXTS: &[pets_i18n::Resource] = &[
+    ("ru", include_str!("../i18n/ru/actions.ftl")),
+    ("ru", include_str!("../i18n/ru/reading.ftl")),
+    ("en", include_str!("../i18n/en/actions.ftl")),
+    ("en", include_str!("../i18n/en/reading.ftl")),
+];
+
+pub(crate) mod mail {
+    gpui_kit::actions!(
+        mail,
+        [
+            Next, Prev, First, Last, PageDown, PageUp, MarkRead, MarkUnread, ToggleFlag, New, Reply, ReplyAll, Forward, Delete,
+            Due, Remind, Wait, Expire, SelectAll, ClearSelection, SelectDown, SelectUp, ContextMenu, Move, Archive,
+            ReportPhishing, Signature, Take
+        ]
+    );
+
+    use gpui_kit::gpui;
+
+    /// Категория на выбранном письме (S5-02): `key` — цифра клавиши, категория — та, у которой эта клавиша в
+    /// таблице. Данные действия — из клавиши (`commands::keyed_action`), не из JSON.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, gpui::Action)]
+    #[action(namespace = mail, no_json)]
+    pub struct Categorize {
+        pub key: u8,
+    }
+}
+
+/// Команды части (`commands.rs`: контексты и `cmd`).
+const COMMANDS: &[pets_commands::Command] = {
+    use crate::commands::{LIST, MAIL, cmd};
+    &[
+        cmd("mail.next", &["down"], LIST),
+        cmd("mail.prev", &["up"], LIST),
+        cmd("mail.first", &["home"], LIST),
+        cmd("mail.last", &["end"], LIST),
+        cmd("mail.page_down", &["pagedown"], LIST),
+        cmd("mail.page_up", &["pageup"], LIST),
+        cmd("mail.mark_read", &["ctrl-q"], MAIL),
+        cmd("mail.mark_unread", &["ctrl-u"], MAIL),
+        // Флаг — кнопкой, меню и панелью выделения; Insert — «Срок» (решение владельца 2026-10-21, S5.md, вопрос 1).
+        cmd("mail.toggle_flag", &[], LIST),
+        // Не Outlook (там Ctrl+F2…F12 по назначению): клавиши 1–9 — категории таблицы (DESIGN.md, «Настройки»).
+        cmd("mail.categorize", &["1", "2", "3", "4", "5", "6", "7", "8", "9"], LIST),
+        // В «Задачах» Ctrl+N — новая задача (`task.new`, S6 решение 6).
+        cmd("mail.new", &["ctrl-n"], Some("Mailer && !TasksView")),
+        cmd("mail.reply", &["ctrl-r"], MAIL),
+        cmd("mail.reply_all", &["ctrl-shift-r"], MAIL),
+        cmd("mail.forward", &["ctrl-f"], MAIL),
+        cmd("mail.delete", &["delete"], LIST),
+        // Жизненный цикл (S5-04): выбор — панелью на месте. «Срок…» — Insert (DESIGN «Хоткеи»: действие над выделенным;
+        // в classic Outlook Insert — флаг, у нас срок вместо флага); у «Напомнить», «Ждать ответа», «Исчезнет» клавиш нет.
+        cmd("mail.due", &["insert"], LIST),
+        cmd("mail.remind", &[], MAIL),
+        cmd("mail.wait", &[], MAIL),
+        cmd("mail.expire", &[], MAIL),
+        // Выделение и массовые действия (S5-08). Outlook: Ctrl+A — выделить все, Shift+↑/↓ — расширить выделение,
+        // Shift+F10 и клавиша «Меню» — контекстное меню, Ctrl+Shift+V — «Переместить в папку», Backspace — «Архив»
+        // (Outlook 2016+). Снять выделение — Esc (`search.clear` по цепочке) или командой; «Сообщить о фишинге» — без
+        // клавиши, как в Outlook (кнопка «Сообщить»).
+        cmd("mail.select_all", &["ctrl-a"], LIST),
+        cmd("mail.clear_selection", &[], LIST),
+        cmd("mail.select_down", &["shift-down"], LIST),
+        cmd("mail.select_up", &["shift-up"], LIST),
+        cmd("mail.context_menu", &["shift-f10", "menu"], LIST),
+        cmd("mail.move", &["ctrl-shift-v"], LIST),
+        cmd("mail.archive", &["backspace"], LIST),
+        cmd("mail.report_phishing", &[], MAIL),
+        // Подпись S/MIME (S5-12): подробности — карточкой под шапкой; в Outlook — кнопка значка подписи, без клавиши.
+        cmd("mail.signature", &[], MAIL),
+        // Общие ящики (S5-28, DESIGN «Хоткеи»): «Взять в работу» — Ctrl+J (держали за ней с S5-16); та же команда
+        // забирает письмо у коллеги и возвращает своё в очередь. В Outlook такой команды нет.
+        cmd("mail.take", &["ctrl-j"], MAIL),
+    ]
+};
 
 #[cfg(test)]
 mod tests {

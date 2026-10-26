@@ -27,7 +27,7 @@ use postman_core::send_later::{self, Choice, Reject};
 use postman_core::sync::{Command, Event, Sender};
 
 use crate::chrome::{glyph, icon};
-use crate::commands::compose;
+use crate::compose::compose;
 use crate::compose::{
     Book, CloseAnswer, CloseStep, Field, Format, Model, Purpose, SentDraft, Status, accept_suggestion, apply_format,
     compose_field, current_token, next_ticket, segments, size_text,

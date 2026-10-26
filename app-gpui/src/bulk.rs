@@ -649,7 +649,7 @@ pub(crate) fn mask(size: f32, l: &Look, behind: Hsla) -> Div {
 /// Клавиша команды для подсказки («Ctrl+Q»; в «Одиночных клавишах» — буква): своя или из реестра, первая.
 pub(crate) fn key_hint(id: &str, cx: &App) -> String {
     let set = crate::keymap::KeySet::of(&crate::prefs::get(cx));
-    pets_commands::find(crate::commands::COMMANDS, id)
+    pets_commands::find(crate::commands::all(), id)
         .and_then(|c| crate::keymap::hint(&crate::commands::SINGLE, &set, c))
         .map(|k| crate::keymap::human(&k))
         .unwrap_or_default()
@@ -1134,13 +1134,22 @@ impl Render for SummaryView {
     }
 }
 
+/// Опись части (ADR 0005, `parts.rs`).
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "bulk", texts: TEXTS, ..crate::part::Part::NONE };
+
+/// Тексты части (`i18n/<язык>/<часть>.ftl`).
+const TEXTS: &[pets_i18n::Resource] = &[
+    ("ru", include_str!("../i18n/ru/bulk.ftl")),
+    ("en", include_str!("../i18n/en/bulk.ftl")),
+];
+
 #[cfg(test)]
 mod tests {
     use super::size_text;
 
     #[test]
     fn sizes_read_like_the_mockup() {
-        let _ = pets_i18n::init(&[crate::TEXTS], "ru");
+        let _ = pets_i18n::init(&crate::parts::texts(), "ru");
         assert_eq!(size_text(84 * 1024), "84 КБ");
         assert_eq!(size_text(1_300_000), "1,2 МБ");
     }

@@ -8,7 +8,6 @@ use std::collections::BTreeMap;
 use pets_commands::{Command, Scheme, SchemeKeys, parse_keys};
 use postman_core::prefs::{KeyScheme, Prefs};
 
-use crate::commands::COMMANDS;
 
 /// Свои клавиши: id команды → сочетания (пустой список — без клавиши).
 pub(crate) type Overrides = BTreeMap<String, Vec<String>>;
@@ -452,7 +451,7 @@ pub(crate) fn recorded(unparsed: &str) -> Option<String> {
 /// Команды для таблицы «Клавиатура» по поиску: название, id или клавиша (`ctrl+r`, `Ctrl+R`).
 pub(crate) fn search(query: &str, name: impl Fn(&Command) -> String, layer: &Scheme, set: &KeySet) -> Vec<&'static Command> {
     let q = query.trim().to_lowercase();
-    COMMANDS
+    crate::commands::all()
         .iter()
         .filter(|c| {
             if q.is_empty() {
@@ -496,9 +495,9 @@ mod tests {
     /// Реестр Postman без своих клавиш — без конфликтов (Esc в окне письма и в главном — разные окна).
     #[test]
     fn registry_has_no_conflicts() {
-        assert_eq!(conflicts(COMMANDS, &SINGLE, &KeySet::default()), vec![]);
+        assert_eq!(conflicts(crate::commands::all(), &SINGLE, &KeySet::default()), vec![]);
         let single = KeySet { scheme: KeyScheme::Single, ..KeySet::default() };
-        assert_eq!(conflicts(COMMANDS, &SINGLE, &single), vec![], "A у приглашения и «Ответить всем» — не вместе");
+        assert_eq!(conflicts(crate::commands::all(), &SINGLE, &single), vec![], "A у приглашения и «Ответить всем» — не вместе");
         assert_eq!(conflicts(TABLE, &NONE, &KeySet::default()), vec![]);
     }
 
@@ -560,7 +559,7 @@ mod tests {
         // Ctrl+T у пересылки — новая «Новая вкладка» без клавиши.
         o.insert("mail.forward".into(), vec!["ctrl-t".into()]);
         o.insert("no.such_command".into(), vec!["f9".into()]);
-        migrate(COMMANDS, &mut o, 0);
+        migrate(crate::commands::all(), &mut o, 0);
         assert_eq!(o.get("mail.next"), Some(&vec![]), "J ушла, ↓ — у другой команды");
         assert_eq!(o.get("mail.toggle_flag"), None, "пусто — уже умолчание");
         assert_eq!(o.get("mail.remind"), Some(&vec!["insert".to_string()]));
@@ -569,41 +568,41 @@ mod tests {
         assert_eq!(o.get("mail.reply"), Some(&vec!["alt-r".to_string()]));
         assert_eq!(o.get("tab.new"), Some(&vec![]));
         assert_eq!(o.get("no.such_command"), None);
-        assert_eq!(conflicts(COMMANDS, &SINGLE, &outlook(&o)), vec![], "перевод не добавил конфликтов");
+        assert_eq!(conflicts(crate::commands::all(), &SINGLE, &outlook(&o)), vec![], "перевод не добавил конфликтов");
         // Только Alt+S было своим — после перевода своего нет.
         let mut o = Overrides::new();
         o.insert("meeting.send".into(), vec!["ctrl-enter".into(), "alt-s".into()]);
-        migrate(COMMANDS, &mut o, 0);
+        migrate(crate::commands::all(), &mut o, 0);
         assert!(o.is_empty());
         // Ревизия текущая: своё J — выбор пользователя после S5-16.
         let mut o = Overrides::new();
         o.insert("mail.next".into(), vec!["j".into()]);
-        migrate(COMMANDS, &mut o, KEYS_REV);
+        migrate(crate::commands::all(), &mut o, KEYS_REV);
         assert_eq!(o.get("mail.next"), Some(&vec!["j".to_string()]));
     }
 
     #[test]
     fn categories_keys_are_fixed() {
-        let c = pets_commands::find(COMMANDS, "mail.categorize").unwrap();
+        let c = pets_commands::find(crate::commands::all(), "mail.categorize").unwrap();
         let mut o = Overrides::new();
         o.insert(c.id.into(), vec![]);
         assert_eq!(effective(c, &o).len(), 9);
         let mut set = outlook(&o);
-        assert!(assign(COMMANDS, &SINGLE, &mut set, c.id, "ctrl-1", false).is_err());
+        assert!(assign(crate::commands::all(), &SINGLE, &mut set, c.id, "ctrl-1", false).is_err());
         set.scheme = KeyScheme::Single;
-        assert!(assign(COMMANDS, &SINGLE, &mut set, c.id, "x", false).is_err());
+        assert!(assign(crate::commands::all(), &SINGLE, &mut set, c.id, "x", false).is_err());
     }
 
     /// S5-17: «Одиночные клавиши» — слой поверх Outlook: буквы вне полей ввода, клавиши Outlook на месте, конфликтов
     /// нет; итог — как у `pets_commands::bindings`.
     #[test]
     fn single_scheme_layers_over_outlook() {
-        let outlook_only = bound(COMMANDS, &SINGLE, &KeySet::default());
+        let outlook_only = bound(crate::commands::all(), &SINGLE, &KeySet::default());
         assert!(outlook_only.iter().all(|b| b.column == Column::Outlook));
         assert!(!outlook_only.iter().any(|b| b.keys == "j"));
         let set = KeySet { scheme: KeyScheme::Single, ..KeySet::default() };
-        let all = bound(COMMANDS, &SINGLE, &set);
-        let outlook_keys: usize = COMMANDS.iter().map(|c| c.keys.len()).sum();
+        let all = bound(crate::commands::all(), &SINGLE, &set);
+        let outlook_keys: usize = crate::commands::all().iter().map(|c| c.keys.len()).sum();
         assert_eq!(all.iter().filter(|b| b.column == Column::Outlook).count(), outlook_keys, "клавиши Outlook не потеряны");
         for b in all.iter().filter(|b| b.column == Column::Single) {
             assert!(b.context.as_deref().is_some_and(|c| c.contains("!Input")), "{} {}: в поле ввода", b.id, b.keys);
@@ -611,7 +610,7 @@ mod tests {
         let keys = |id: &str| all.iter().filter(|b| b.id == id).map(|b| b.keys.as_str()).collect::<Vec<_>>();
         assert_eq!(keys("mail.next"), ["down", "j"]);
         assert_eq!(keys("invite.accept"), ["a"]);
-        let pets: Vec<(&str, String, Option<String>)> = pets_commands::bindings(COMMANDS, Some(&SINGLE), same_place)
+        let pets: Vec<(&str, String, Option<String>)> = pets_commands::bindings(crate::commands::all(), Some(&SINGLE), same_place)
             .into_iter()
             .map(|b| (b.command, b.keys.to_owned(), b.context.map(str::to_owned)))
             .collect();
@@ -631,31 +630,31 @@ mod tests {
     #[test]
     fn scheme_switch_keeps_own_keys_per_column() {
         let mut set = KeySet::default();
-        assign(COMMANDS, &SINGLE, &mut set, "mail.reply", "ctrl-shift-y", false).unwrap();
+        assign(crate::commands::all(), &SINGLE, &mut set, "mail.reply", "ctrl-shift-y", false).unwrap();
         assert_eq!(set.outlook.get("mail.reply"), Some(&vec!["ctrl-shift-y".to_string()]));
         set.scheme = KeyScheme::Single;
         assert!(!changed(&set, "mail.reply"), "в «Одиночных» у «Ответить» своего нет");
-        assign(COMMANDS, &SINGLE, &mut set, "mail.archive", "y", false).unwrap();
+        assign(crate::commands::all(), &SINGLE, &mut set, "mail.archive", "y", false).unwrap();
         assert_eq!(set.single.get("mail.archive"), Some(&vec!["y".to_string()]));
         assert!(changed(&set, "mail.archive"));
-        let has = |set: &KeySet, id: &str, keys: &str| bound(COMMANDS, &SINGLE, set).iter().any(|b| b.id == id && b.keys == keys);
+        let has = |set: &KeySet, id: &str, keys: &str| bound(crate::commands::all(), &SINGLE, set).iter().any(|b| b.id == id && b.keys == keys);
         assert!(has(&set, "mail.reply", "ctrl-shift-y") && has(&set, "mail.reply", "r"));
         assert!(has(&set, "mail.archive", "y") && !has(&set, "mail.archive", "e") && has(&set, "mail.archive", "backspace"));
         // Буква для команды без слоя — вне полей ввода её места.
-        assign(COMMANDS, &SINGLE, &mut set, "calendar.today", "t", false).unwrap();
-        let today = bound(COMMANDS, &SINGLE, &set).into_iter().find(|b| b.id == "calendar.today" && b.keys == "t");
+        assign(crate::commands::all(), &SINGLE, &mut set, "calendar.today", "t", false).unwrap();
+        let today = bound(crate::commands::all(), &SINGLE, &set).into_iter().find(|b| b.id == "calendar.today" && b.keys == "t");
         assert_eq!(today.and_then(|b| b.context).as_deref(), Some("(CalendarView && !Input) && !Input"));
         // Занятая буква: «Заменить» снимает её в столбце, где она была.
-        assert_eq!(taken_by(COMMANDS, &SINGLE, &set, "mail.delete", "r"), Some("mail.reply"));
-        assign(COMMANDS, &SINGLE, &mut set, "mail.delete", "r", true).unwrap();
+        assert_eq!(taken_by(crate::commands::all(), &SINGLE, &set, "mail.delete", "r"), Some("mail.reply"));
+        assign(crate::commands::all(), &SINGLE, &mut set, "mail.delete", "r", true).unwrap();
         assert_eq!(set.single.get("mail.reply"), Some(&vec![]));
-        assert_eq!(conflicts(COMMANDS, &SINGLE, &set), vec![]);
+        assert_eq!(conflicts(crate::commands::all(), &SINGLE, &set), vec![]);
         reset(&mut set, "mail.archive");
         assert!(!set.single.contains_key("mail.archive"));
         // Назад в Outlook: буквы не действуют, своё Outlook на месте.
         set.scheme = KeyScheme::Outlook;
         assert!(!has(&set, "mail.delete", "r") && has(&set, "mail.reply", "ctrl-shift-y"));
-        let forward = pets_commands::find(COMMANDS, "mail.forward").unwrap();
+        let forward = pets_commands::find(crate::commands::all(), "mail.forward").unwrap();
         assert_eq!(hint(&SINGLE, &set, forward).as_deref(), Some("ctrl-f"));
         set.scheme = KeyScheme::Single;
         assert_eq!(hint(&SINGLE, &set, forward).as_deref(), Some("f"));

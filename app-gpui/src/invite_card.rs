@@ -1029,6 +1029,27 @@ fn demo_day(date: jiff::civil::Date, tz: &TimeZone) -> Vec<Event> {
         .collect()
 }
 
+/// Опись части (ADR 0005, `parts.rs`).
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "invite", commands: COMMANDS, ..crate::part::Part::NONE };
+
+/// Ответ на приглашение в письме (S5-11): кнопки карточки; клавиши A / T / N — только в схеме «Одиночные клавиши»
+/// (S5-17).
+pub(crate) mod invite {
+    gpui_kit::actions!(invite, [Accept, Tentative, Decline]);
+}
+
+/// Команды части (`commands.rs`: контексты и `cmd`).
+const COMMANDS: &[pets_commands::Command] = {
+    use crate::commands::{LIST, cmd};
+    &[
+        // Ответ на приглашение — кнопками карточки (схема «Outlook»: буквы без модификатора не допускаются); A / T / N —
+        // в схеме «Одиночные клавиши» (S5-17, решение владельца 2026-10-21, вопрос 3).
+        cmd("invite.accept", &[], LIST),
+        cmd("invite.tentative", &[], LIST),
+        cmd("invite.decline", &[], LIST),
+    ]
+};
+
 #[cfg(test)]
 mod tests {
     // Не `use super::*`: вместе с gpui пришёл бы атрибут `gpui::test`, он перекрывает `#[test]`.

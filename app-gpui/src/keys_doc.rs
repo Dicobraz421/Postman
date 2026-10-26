@@ -4,7 +4,6 @@
 
 // Модуль только для тестов (`#[cfg(test)] mod keys_doc` в `main.rs`); метка ниже — граница для теста сырых строк.
 #[cfg(test)]
-use crate::commands::COMMANDS;
 
 const BEGIN: &str = "<!-- keys:begin -->";
 const END: &str = "<!-- keys:end -->";
@@ -33,7 +32,7 @@ fn single(c: &pets_commands::Command) -> Vec<String> {
 fn table() -> String {
     let names = crate::commands::parity::ftl_names(crate::commands::parity::RU_FTL);
     let mut s = String::from("| Действие | Outlook | Одиночные клавиши | Где |\n|---|---|---|---|\n");
-    for c in COMMANDS.iter().filter(|c| !c.keys.is_empty() || !single(c).is_empty()) {
+    for c in crate::commands::all().iter().filter(|c| !c.keys.is_empty() || !single(c).is_empty()) {
         let key = c.name_key();
         let name = names.iter().find(|(k, _)| *k == key).map_or(key.as_str(), |(_, v)| v);
         let keys: Vec<String> = c.keys.iter().map(|k| human(k)).collect();

@@ -20,7 +20,7 @@ use pets_ui::theme::Metric;
 use postman_cache::{BodyRow, EmailRow};
 use postman_compose::Mode;
 use postman_core::prefs::Conversation as View;
-use postman_core::thread::{self, Conversation, Item};
+use postman_core::thread::{self as feed, Conversation, Item};
 use postman_ir::Document;
 use postman_worker::Request;
 
@@ -314,7 +314,7 @@ impl ReadingPane {
                         m.row.from_name.clone()
                     };
                     let doc = f.docs.get(&m.row.id);
-                    let whole = self.quotes || thread::is_forward(&m.row.subject);
+                    let whole = self.quotes || feed::is_forward(&m.row.subject);
                     let body: AnyElement = match doc {
                         None => div().text_color(l.text2()).child("…").into_any_element(),
                         Some(d) => {
@@ -543,7 +543,7 @@ impl ReadingPane {
     fn stack_card(
         &self,
         n: usize,
-        m: &thread::Message,
+        m: &feed::Message,
         who: &str,
         doc: Option<&Document>,
         images: &Images,
@@ -555,7 +555,7 @@ impl ReadingPane {
         let id = m.row.id.clone();
         let to = f.to.get(&id).cloned().unwrap_or_default();
         let quoted = f.quoted.contains(&id);
-        let whole = thread::is_forward(&m.row.subject);
+        let whole = feed::is_forward(&m.row.subject);
         let action = |key: &'static str, g: char, mode: Mode, row: EmailRow, cx: &mut Context<Self>| {
             div()
                 .id((key, n))
@@ -758,3 +758,37 @@ impl Mailer {
         self.section == crate::Section::Mail && self.list.update(cx, |l, cx| l.fold(how, cx))
     }
 }
+
+/// Опись части (ADR 0005, `parts.rs`).
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "thread", texts: TEXTS, commands: COMMANDS, ..crate::part::Part::NONE };
+
+/// Тексты части (`i18n/<язык>/<часть>.ftl`).
+const TEXTS: &[pets_i18n::Resource] = &[
+    ("ru", include_str!("../i18n/ru/threads.ftl")),
+    ("en", include_str!("../i18n/en/threads.ftl")),
+];
+
+/// Беседа в области чтения (S5-05).
+pub(crate) mod thread {
+    gpui_kit::actions!(thread, [Toggle, Quotes, Next, Prev, Fold, Expand, Collapse]);
+}
+
+/// Команды части (`commands.rs`: контексты и `cmd`).
+const COMMANDS: &[pets_commands::Command] = {
+    use crate::commands::{LIST, MAIL, cmd};
+    &[
+        // Не Outlook (DESIGN, «Беседы»): лента беседы и цитаты — кнопками; по письмам беседы — Ctrl+→ / Ctrl+←
+        // (в поле поиска эти клавиши — по словам).
+        cmd("thread.toggle", &[], MAIL),
+        cmd("thread.quotes", &[], MAIL),
+        cmd("thread.next", &["ctrl-right"], LIST),
+        cmd("thread.prev", &["ctrl-left"], LIST),
+        // Вид беседы (S5-05б): Enter — свернуть или развернуть письмо стопки или беседу в списке «как Outlook»;
+        // «Развернуть» и «Свернуть» — все письма стопки или беседу в списке. В списке «как Outlook» → и ← делают то же
+        // (как стрелки в дереве Outlook): это клавиши `attach.next` / `attach.prev` — без открытого просмотра вложения
+        // они идут беседе (`attachments::handlers`), второй привязки той же клавиши в почте нет (`keymap::conflicts`).
+        cmd("thread.fold", &["enter"], LIST),
+        cmd("thread.expand", &[], MAIL),
+        cmd("thread.collapse", &[], MAIL),
+    ]
+};

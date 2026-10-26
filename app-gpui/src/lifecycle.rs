@@ -24,7 +24,7 @@ use postman_core::sync::Command;
 
 use crate::Mailer;
 use crate::chrome::{glyph, icon};
-use crate::commands::mail;
+use crate::actions::mail;
 use crate::roles::{Look, Pm};
 
 /// Меток сроков в строке письма — не больше (после категорий).
@@ -739,6 +739,15 @@ impl Mailer {
     }
 }
 
+/// Опись части (ADR 0005, `parts.rs`).
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "lifecycle", texts: TEXTS, ..crate::part::Part::NONE };
+
+/// Тексты части (`i18n/<язык>/<часть>.ftl`).
+const TEXTS: &[pets_i18n::Resource] = &[
+    ("ru", include_str!("../i18n/ru/lifecycle.ftl")),
+    ("en", include_str!("../i18n/en/lifecycle.ftl")),
+];
+
 #[cfg(test)]
 mod tests {
     use super::badge_text_in;
@@ -753,7 +762,7 @@ mod tests {
     /// Тексты меток (DESIGN «Строка письма и метки»): с заглавной только первое слово.
     #[test]
     fn badge_texts() {
-        let (ru, problems) = I18n::new(&[crate::TEXTS], "ru");
+        let (ru, problems) = I18n::new(&crate::parts::texts(), "ru");
         assert!(problems.is_empty(), "{problems:?}");
         let badge_text = |b: &Badge| badge_text_in(&ru, b);
         let t = |h, m| Some(Time::new(h, m, 0, 0).unwrap());
@@ -773,7 +782,7 @@ mod tests {
         assert_eq!(badge_text(&Badge::Remind(Ahead { day: Day::Today, time: t(18, 0) })), "Напомнит 18:00");
         assert_eq!(badge_text(&Badge::Expires(Some(Span::Days(3)))), "Исчезнет через 3 д");
         assert_eq!(badge_text(&Badge::Expires(Some(Span::Hours(5)))), "Исчезнет через 5 ч");
-        let (en, _) = I18n::new(&[crate::TEXTS], "en");
+        let (en, _) = I18n::new(&crate::parts::texts(), "en");
         assert_eq!(badge_text_in(&en, &Badge::Overdue(Span::Days(1))), "Overdue 1 d");
         assert_eq!(badge_text_in(&en, &ahead(Day::Weekday(jiff::civil::Weekday::Thursday), None)), "Due Thu");
     }

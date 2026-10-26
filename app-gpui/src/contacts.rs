@@ -1684,7 +1684,7 @@ impl Render for ContactsBar {
                 .when(!on, |d| d.opacity(0.45))
                 .on_click(move |_, window, cx| window.dispatch_action(act(), cx))
         };
-        use crate::commands::contacts as cmd;
+        use crate::contacts::contacts as cmd;
         let new = div()
             .id("contacts-new")
             .h(px(32.))
@@ -1830,6 +1830,34 @@ pub(crate) fn add_demo(book: &mut AddressBook) {
     book.add_contacts(mine.iter().flat_map(|c| c.emails.iter().map(|e| (c.name, *e))));
     book.add_directory(postman_demo::contacts::directory().iter().map(|p| (p.name, p.email)));
 }
+
+/// Опись части (ADR 0005, `parts.rs`).
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "contacts", texts: TEXTS, commands: COMMANDS, ..crate::part::Part::NONE };
+
+/// Тексты части (`i18n/<язык>/<часть>.ftl`).
+const TEXTS: &[pets_i18n::Resource] = &[
+    ("ru", include_str!("../i18n/ru/contacts.ftl")),
+    ("en", include_str!("../i18n/en/contacts.ftl")),
+];
+
+/// Контакты (S5-11): новый, изменить, удалить, написать, встреча, копировать адрес.
+pub(crate) mod contacts {
+    gpui_kit::actions!(contacts, [New, Edit, Delete, Write, Meeting, CopyAddress]);
+}
+
+/// Команды части (`commands.rs`: контексты и `cmd`).
+const COMMANDS: &[pets_commands::Command] = {
+    use crate::commands::{CONTACTS_ANY, CONTACTS, cmd};
+    &[
+        // Контакты (S5-11): Outlook — Ctrl+Shift+C новый контакт; F2 — правка, Delete — удалить (после «Да»).
+        cmd("contacts.new", &["ctrl-shift-c"], CONTACTS_ANY),
+        cmd("contacts.edit", &["f2"], CONTACTS),
+        cmd("contacts.delete", &["delete"], CONTACTS),
+        cmd("contacts.write", &[], CONTACTS_ANY),
+        cmd("contacts.meeting", &[], CONTACTS_ANY),
+        cmd("contacts.copy_address", &[], CONTACTS_ANY),
+    ]
+};
 
 #[cfg(test)]
 mod tests {

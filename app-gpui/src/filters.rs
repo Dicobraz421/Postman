@@ -584,7 +584,7 @@ pub(crate) fn quick(model: &Entity<FilterModel>, m: &FilterModel, tabs: &[Quick]
         .hover(|d| d.text_color(l.text()))
         .child(icon(glyph::CLOSE, 9.))
         .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(tr!("filters-quick-hide")).build(window, cx))
-        .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::commands::view::QuickFilters), cx));
+        .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::filters::view::QuickFilters), cx));
     let strip = {
         let model = model.clone();
         div()
@@ -811,6 +811,40 @@ impl crate::Mailer {
         });
     }
 }
+
+/// Опись части (ADR 0005, `parts.rs`).
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "filters", texts: TEXTS, commands: COMMANDS, ..crate::part::Part::NONE };
+
+/// Тексты части (`i18n/<язык>/<часть>.ftl`).
+const TEXTS: &[pets_i18n::Resource] = &[
+    ("ru", include_str!("../i18n/ru/filters.ftl")),
+    ("en", include_str!("../i18n/en/filters.ftl")),
+];
+
+/// Вид списка (S5-03): панель фильтров, быстрые фильтры, сортировка.
+pub(crate) mod view {
+    gpui_kit::actions!(view, [Filters, QuickFilters, SortByDate, SortBySender, SortBySize]);
+}
+
+/// Фильтры списка (S5-03).
+pub(crate) mod filters {
+    gpui_kit::actions!(filters, [Reset]);
+}
+
+/// Команды части (`commands.rs`: контексты и `cmd`).
+const COMMANDS: &[pets_commands::Command] = {
+    use crate::commands::{MAIL, cmd};
+    &[
+        // Фильтры (S5-03): панель на месте папок — воронкой и из палитры, без клавиши (S5-16, вопрос 2).
+        cmd("view.filters", &[], MAIL),
+        // Вид → Быстрые фильтры: вернуть скрытые закладки; сортировка — меню над списком; без клавиш.
+        cmd("view.quick_filters", &[], MAIL),
+        cmd("view.sort_by_date", &[], MAIL),
+        cmd("view.sort_by_sender", &[], MAIL),
+        cmd("view.sort_by_size", &[], MAIL),
+        cmd("filters.reset", &[], MAIL),
+    ]
+};
 
 #[cfg(test)]
 mod tests {

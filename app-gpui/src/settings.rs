@@ -648,6 +648,35 @@ pub(crate) fn rules_sample(mailboxes: &[(String, String)]) -> RulesState {
     }
 }
 
+/// Опись части (ADR 0005, `parts.rs`).
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "settings", texts: TEXTS, commands: COMMANDS, ..crate::part::Part::NONE };
+
+/// Тексты части (`i18n/<язык>/<часть>.ftl`).
+const TEXTS: &[pets_i18n::Resource] = &[
+    ("ru", include_str!("../i18n/ru/settings.ftl")),
+    ("en", include_str!("../i18n/en/settings.ftl")),
+];
+
+/// Вкладка «Настройки» (S5-09); автоответы и правила (S4-05, S4-07) — её разделы, в Outlook — меню «Файл».
+pub(crate) mod settings {
+    gpui_kit::actions!(settings, [Open, Vacation, Rules, Calendar]);
+}
+
+/// Команды части (`commands.rs`: контексты и `cmd`).
+const COMMANDS: &[pets_commands::Command] = {
+    use crate::commands::{cmd};
+    &[
+        // Не Outlook (там «Файл → Параметры»): Ctrl+, — как в новом Outlook и редакторах (S5-09).
+        cmd("settings.open", &["ctrl-,"], None),
+        // Outlook: «Файл → Автоматические ответы», без клавиши.
+        cmd("settings.vacation", &[], None),
+        // Outlook: «Файл → Правила и оповещения», без клавиши.
+        cmd("settings.rules", &[], None),
+        // Outlook: «Файл → Параметры → Календарь», без клавиши (S5-20).
+        cmd("settings.calendar", &[], None),
+    ]
+};
+
 #[cfg(test)]
 mod tests {
     use super::{Usage, decimal, limit_parts, usage_parts};

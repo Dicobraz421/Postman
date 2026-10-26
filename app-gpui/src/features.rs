@@ -52,15 +52,17 @@ pub(crate) fn available(id: &str, features: Features) -> bool {
     need.is_empty() || need.iter().any(|&f| features.has(f))
 }
 
+/// Опись части (ADR 0005, `parts.rs`).
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "features", ..crate::part::Part::NONE };
+
 #[cfg(test)]
 mod tests {
     use super::{available, needs};
-    use crate::commands::COMMANDS;
-    use postman_core::model::{Feature, Features};
+        use postman_core::model::{Feature, Features};
 
     #[test]
     fn everything_is_available_while_the_server_has_everything() {
-        assert!(COMMANDS.iter().all(|c| available(c.id, Features::ALL)));
+        assert!(crate::commands::all().iter().all(|c| available(c.id, Features::ALL)));
     }
 
     #[test]
@@ -86,7 +88,7 @@ mod tests {
     #[test]
     fn every_feature_rule_names_a_real_command() {
         // Правило по префиксу (`calendar.`, `meeting.`, `task.`) не должно задевать команды других разделов.
-        for c in COMMANDS {
+        for c in crate::commands::all() {
             let need = needs(c.id);
             let section = c.id.split('.').next().unwrap_or_default();
             if ["mail", "thread", "attach", "filters", "tab", "search", "palette", "compose", "invite"].contains(&section) {
