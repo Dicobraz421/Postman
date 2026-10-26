@@ -90,6 +90,11 @@ pub enum Request {
     SmimePrepare {
         now: u64,
     },
+    /// Отзыв ГОСТ без СКЗИ (S5-12.1д): в бинарной части — сертификат, его издатель (из уже доверенной цепочки) и CRL,
+    /// скачанный ядром (`postman_smime::wire::encode_crl`). Ответ — «не отозван / отозван» или почему не проверен.
+    SmimeCrl {
+        now: u64,
+    },
     /// Проверки песочницы для тестов: попытка открыть файл / сокет / зависнуть.
     #[cfg(debug_assertions)]
     #[doc(hidden)]
@@ -235,6 +240,8 @@ enum Response {
     Part,
     /// Подготовленные получатели (Ф4) — по порядку сертификатов запроса.
     Prepared(Vec<Result<postman_smime::prepare::Prepared, String>>),
+    /// Итог проверки по CRL (12.1д).
+    Crl(Result<postman_smime::crl::Checked, postman_smime::crl::CrlError>),
     Err(String),
 }
 
@@ -454,6 +461,10 @@ pub fn serve() -> ! {
                 ),
                 None => Response::Err("запрос подготовки повреждён".into()),
             },
+            Ok(Request::SmimeCrl { now }) => match postman_smime::wire::decode_crl(&bin) {
+                Some((cert, issuer, crl)) => Response::Crl(postman_smime::crl::check(cert, issuer, crl, now)),
+                None => Response::Err("запрос проверки CRL повреждён".into()),
+            },
             #[cfg(debug_assertions)]
             Ok(Request::Probe(p)) => probe(p),
             Err(e) => Response::Err(e.to_string()),
@@ -561,7 +572,8 @@ impl Client {
             | Response::Opened { .. }
             | Response::Part
             | Response::Mime(_)
-            | Response::Prepared(_) => Err("неожиданный ответ".into()),
+            | Response::Prepared(_)
+            | Response::Crl(_) => Err("неожиданный ответ".into()),
             Response::Err(e) => Err(e),
         }
     }
@@ -705,6 +717,31 @@ impl Client {
         let timeout = self.timeout.max(SMIME_TIMEOUT);
         match self.call_for(&Request::SmimePrepare { now }, &bin, timeout).map_err(SmimeFailure::Worker)? {
             (Response::Prepared(list), _) if list.len() == certs.len() => Ok(list),
+            (Response::Err(e), _) => Err(SmimeFailure::Worker(e)),
+            _ => Err(SmimeFailure::Worker("неожиданный ответ".into())),
+        }
+    }
+
+    /// Отзыв ГОСТ без СКЗИ (12.1д): проверить по CRL `crl` (скачан ядром) сертификат `cert`, выпущенный `issuer`
+    /// (оба — из цепочки, которую воркер уже довёл до якоря). Подпись CRL, серийный номер и срок — в песочнице;
+    /// `Ok(Err(_))` — CRL не годится (итог — «не проверен»).
+    pub fn smime_crl(
+        &mut self,
+        cert: &[u8],
+        issuer: &[u8],
+        crl: &[u8],
+        now: u64,
+    ) -> Result<Result<postman_smime::crl::Checked, postman_smime::crl::CrlError>, SmimeFailure> {
+        if crl.len() > postman_smime::crl::MAX_CRL {
+            return Err(SmimeFailure::TooLarge);
+        }
+        let bin = postman_smime::wire::encode_crl(cert, issuer, crl);
+        if bin.len() > MAX_FRAME {
+            return Err(SmimeFailure::TooLarge);
+        }
+        let timeout = self.timeout.max(SMIME_TIMEOUT);
+        match self.call_for(&Request::SmimeCrl { now }, &bin, timeout).map_err(SmimeFailure::Worker)? {
+            (Response::Crl(r), _) => Ok(r),
             (Response::Err(e), _) => Err(SmimeFailure::Worker(e)),
             _ => Err(SmimeFailure::Worker("неожиданный ответ".into())),
         }

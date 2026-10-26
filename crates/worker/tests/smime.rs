@@ -139,3 +139,24 @@ fn prepare_through_the_sandbox() {
     assert!(r[1].is_err());
     assert!(c.render(&Request::Text("ok".into())).is_ok());
 }
+
+/// Отзыв ГОСТ без СКЗИ (12.1д): CRL тестового УЦ ГОСТ проверяется в песочнице.
+#[test]
+fn gost_crl_through_the_sandbox() {
+    use postman_smime::crl::{CrlError, Verdict};
+    let mut c = client();
+    let root_key = Key::gost("crl-root", oid::TC26_256_A);
+    let root = testkit::issue(&Spec::ca("ГОСТ УЦ"), &root_key, None);
+    let user_key = Key::gost("crl-user", oid::TC26_512_C);
+    let user = |serial: u64| testkit::issue(&Spec { serial, ..Spec::user("Сидоров", "user2@itt.test") }, &user_key, Some((&root, &root_key)));
+    let (revoked, good) = (user(0x51), user(0x52));
+    let now = NOW as i64;
+    let crl = testkit::crl(&root, &root_key, &[0x51], now - 3600, now + 86_400);
+    assert_eq!(c.smime_crl(&revoked.der, &root.der, &crl, NOW).unwrap().unwrap().verdict, Verdict::Revoked { at: now - 3600 });
+    assert_eq!(c.smime_crl(&good.der, &root.der, &crl, NOW).unwrap().unwrap().verdict, Verdict::NotRevoked);
+    let forged = testkit::crl(&root, &Key::gost("forger", oid::TC26_256_A), &[], now - 3600, now + 86_400);
+    assert_eq!(c.smime_crl(&revoked.der, &root.der, &forged, NOW).unwrap(), Err(CrlError::BadSignature));
+    assert!(matches!(c.smime_crl(&revoked.der, &root.der, &crl[..crl.len() / 2], NOW).unwrap(), Err(CrlError::Malformed(_))));
+    assert!(matches!(c.smime_crl(&revoked.der, &root.der, &vec![0u8; postman_smime::crl::MAX_CRL + 1], NOW), Err(SmimeFailure::TooLarge)));
+    assert!(c.render(&Request::Text("ok".into())).is_ok(), "воркер жив");
+}

@@ -11,10 +11,12 @@
 //! сертификата ↔ «От»; `SMIMECapabilities`.
 //!
 //! Ф2 — расшифровка ([`envelope`]): получатели и шифр — ядру, содержимое по ключу ядра — здесь же, в воркере.
+//! Отзыв ГОСТ без СКЗИ (12.1д) — [`crl`]: подпись CRL и поиск серийного номера, CRL скачивает ядро.
 
 mod algs;
 mod ber;
 mod chain;
+pub mod crl;
 mod ec;
 pub mod envelope;
 pub mod gost;

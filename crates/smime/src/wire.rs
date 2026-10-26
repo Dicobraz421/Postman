@@ -1,5 +1,6 @@
-//! Бинарная часть запроса и ответа воркера `SmimeVerify` и `SmimeOpen` (Ф2: впереди — ключ содержимого): якоря, промежуточные, запрещённые и письмо; в ответе —
-//! DER цепочки и подписанное содержимое. Без JSON: DER в JSON-массивах чисел — вчетверо больше.
+//! Бинарная часть запроса и ответа воркера `SmimeVerify`, `SmimeOpen` (Ф2: впереди — ключ содержимого) и `SmimeCrl`:
+//! якоря, промежуточные, запрещённые и письмо (у CRL — сертификат, издатель и список); в ответе — DER цепочки и
+//! подписанное содержимое. Без JSON: DER в JSON-массивах чисел — вчетверо больше.
 //!
 //! Формат: `PMS1`, затем списки `u32 LE число` + элементы `u32 LE длина + байты`. Разбор строгий: лишние или
 //! недостающие байты — ошибка.
@@ -122,6 +123,26 @@ pub fn decode_prepare(bin: &[u8]) -> Option<(Trust, Vec<Vec<u8>>)> {
     r.0.is_empty().then_some((trust, certs))
 }
 
+const CRL: &[u8; 4] = b"PMC1";
+
+/// Запрос проверки CRL (S5-12.1д): сертификат, его издатель (оба — из цепочки, которую воркер уже довёл до якоря)
+/// и CRL, скачанный ядром.
+pub fn encode_crl(cert: &[u8], issuer: &[u8], crl: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(cert.len() + issuer.len() + crl.len() + 16);
+    out.extend_from_slice(CRL);
+    for part in [cert, issuer, crl] {
+        put(&mut out, part);
+    }
+    out
+}
+
+/// Разбор запроса проверки CRL (в воркере): сертификат, издатель, CRL.
+pub fn decode_crl(bin: &[u8]) -> Option<(&[u8], &[u8], &[u8])> {
+    let mut r = Reader(bin.strip_prefix(CRL)?);
+    let (cert, issuer, crl) = (r.bytes()?, r.bytes()?, r.bytes()?);
+    r.0.is_empty().then_some((cert, issuer, crl))
+}
+
 /// Ответ: DER цепочки и содержимое `signed-data` (пусто — нет).
 pub fn encode_response(chain: &[Vec<u8>], content: Option<&[u8]>) -> Vec<u8> {
     let mut out = Vec::new();
@@ -182,5 +203,12 @@ mod tests {
         for cut in 0..open.len() {
             assert!(decode_open(&open[..cut]).is_none(), "обрезан на {cut}");
         }
+
+        let crl = encode_crl(b"cert", b"ca", b"list");
+        assert_eq!(decode_crl(&crl), Some((&b"cert"[..], &b"ca"[..], &b"list"[..])));
+        for cut in 0..crl.len() {
+            assert!(decode_crl(&crl[..cut]).is_none(), "обрезан на {cut}");
+        }
+        assert!(decode_crl(&[crl.as_slice(), &[0]].concat()).is_none());
     }
 }
