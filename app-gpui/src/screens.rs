@@ -94,28 +94,28 @@ impl Scene {
 /// Все сцены по порядку съёмки: части — по `PARTS`, сцены части — подряд; сцена с `after` (и следующие за ней
 /// сцены той же части) встаёт за названной сценой.
 fn order(parts: &'static [Part]) -> Result<Vec<&'static Scene>, String> {
-    let mut runs: Vec<(Option<&str>, Vec<&'static Scene>)> = Vec::new();
+    let mut runs: Vec<(&str, Option<&str>, Vec<&'static Scene>)> = Vec::new();
     for p in parts {
         for (i, s) in p.scenes.iter().enumerate() {
             if i == 0 || s.after.is_some() {
-                runs.push((s.after, Vec::new()));
+                runs.push((p.name, s.after, Vec::new()));
             }
-            if let Some((_, run)) = runs.last_mut() {
+            if let Some((_, _, run)) = runs.last_mut() {
                 run.push(s);
             }
         }
     }
     let mut all: Vec<&'static Scene> = Vec::new();
     let mut waiting = Vec::new();
-    for (after, run) in runs {
+    for (part, after, run) in runs {
         match after {
             None => all.extend(run),
-            Some(_) => waiting.push((after, run)),
+            Some(_) => waiting.push((part, after, run)),
         }
     }
     while !waiting.is_empty() {
         let before = waiting.len();
-        waiting.retain(|(after, run)| match all.iter().position(|s| Some(s.name) == *after) {
+        waiting.retain(|(_, after, run)| match all.iter().position(|s| Some(s.name) == *after) {
             Some(i) => {
                 all.splice(i + 1..i + 1, run.iter().copied());
                 false
@@ -123,7 +123,7 @@ fn order(parts: &'static [Part]) -> Result<Vec<&'static Scene>, String> {
             None => true,
         });
         if waiting.len() == before {
-            let names: Vec<&str> = waiting.iter().filter_map(|(a, _)| *a).collect();
+            let names: Vec<String> = waiting.iter().map(|(p, a, _)| format!("{p}: {}", a.unwrap_or_default())).collect();
             return Err(format!("scenes after unknown scenes: {}", names.join(", ")));
         }
     }
@@ -498,5 +498,20 @@ mod tests {
         let mut img = [250, 250, 250, 255].repeat(16);
         img[20] = 0;
         assert!(!uniform(&img));
+    }
+
+    /// Порядок сцен (ADR 0005): все сцены описей — по разу; продолжение прошлой сцены стоит сразу за сценой своей
+    /// части — `after` чужой части не вклинился между ними.
+    #[test]
+    fn scene_order_keeps_continuations() {
+        let all = super::order(crate::parts::PARTS).unwrap();
+        let total: usize = crate::parts::PARTS.iter().map(|p| p.scenes.len()).sum();
+        assert_eq!(all.len(), total);
+        let part = |name: &str| crate::parts::PARTS.iter().find(|p| p.scenes.iter().any(|s| s.name == name)).map(|p| p.name);
+        for w in all.windows(2) {
+            if w[1].continues {
+                assert_eq!(part(w[0].name), part(w[1].name), "{} продолжает {}", w[1].name, w[0].name);
+            }
+        }
     }
 }

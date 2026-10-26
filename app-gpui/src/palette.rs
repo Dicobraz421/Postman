@@ -787,6 +787,8 @@ const TEXTS: &[pets_i18n::Resource] = &[
 ];
 
 /// Палитра команд (S5-10): открыть, по строкам, выполнить, закрыть.
+// Имя — область действий (`palette::…`), как в id команд: так обработчики читаются и их находит `docs/PARITY.md`.
+#[allow(clippy::module_inception)]
 pub(crate) mod palette {
     gpui_kit::actions!(palette, [Open, Next, Prev, Run, Close]);
 }

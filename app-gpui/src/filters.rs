@@ -837,6 +837,8 @@ pub(crate) mod view {
 }
 
 /// Фильтры списка (S5-03).
+// Имя — область действий (`filters::…`), как в id команд: так обработчики читаются и их находит `docs/PARITY.md`.
+#[allow(clippy::module_inception)]
 pub(crate) mod filters {
     gpui_kit::actions!(filters, [Reset]);
 }

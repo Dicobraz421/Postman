@@ -782,6 +782,8 @@ const TEXTS: &[pets_i18n::Resource] = &[
 ];
 
 /// Беседа в области чтения (S5-05).
+// Имя — область действий (`thread::…`), как в id команд: так обработчики читаются и их находит `docs/PARITY.md`.
+#[allow(clippy::module_inception)]
 pub(crate) mod thread {
     gpui_kit::actions!(thread, [Toggle, Quotes, Next, Prev, Fold, Expand, Collapse]);
 }
