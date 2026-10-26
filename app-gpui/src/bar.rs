@@ -9,8 +9,8 @@ use gpui_kit::*;
 use pets_i18n::tr;
 use pets_ui::theme::Metric;
 
-use crate::chrome::{self, glyph};
 use crate::actions::mail;
+use crate::chrome::{self, glyph};
 use crate::keytips;
 use crate::roles::{Look, look};
 

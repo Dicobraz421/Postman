@@ -54,15 +54,7 @@ pub(crate) struct Card {
 
 impl Card {
     pub(crate) fn loading(blob_id: String) -> Self {
-        Self {
-            state: State::Loading { blob_id },
-            answer: None,
-            sending: None,
-            day: None,
-            day_pending: None,
-            changing: false,
-            clock: None,
-        }
+        Self { state: State::Loading { blob_id }, answer: None, sending: None, day: None, day_pending: None, changing: false, clock: None }
     }
 
     pub(crate) fn invitation(&self) -> Option<&Invitation> {
@@ -186,7 +178,6 @@ pub(crate) fn attendees(inv: &Invitation) -> Vec<(String, Partstat)> {
     list.sort_by_key(|(name, _)| name.to_lowercase());
     list
 }
-
 
 /// «Чт, 23 октября · 11:00–12:00».
 fn when_line(span: Span, all_day: bool, tz: &TimeZone) -> String {
@@ -317,10 +308,7 @@ pub(crate) fn day_blocks(e: &Event, day: &[Event], me: Option<&str>, window: Spa
 /// отмена и устаревшее — строкой над письмом, как без опции.
 pub(crate) fn side_wanted(card: &Card, me: Option<&str>, cx: &App) -> bool {
     crate::prefs::get(cx).reading.invite_side
-        && matches!(
-            card.state_for(me),
-            Some(InviteState::New | InviteState::Updated(_) | InviteState::Answered(_) | InviteState::NotInvited)
-        )
+        && matches!(card.state_for(me), Some(InviteState::New | InviteState::Updated(_) | InviteState::Answered(_) | InviteState::NotInvited))
 }
 
 /// Подписи и цвета карточки для одного приглашения: общее у карточки и боковой панели.
@@ -400,7 +388,11 @@ fn answer_buttons(card: &Card, side: bool, l: &Look, cx: &mut Context<ReadingPan
     .into_iter()
     .map(|(id, key, command, s)| {
         let primary = s == Partstat::Accepted;
-        let b = if primary { crate::buttons::primary(id, l).justify_center().font_weight(FontWeight::SEMIBOLD) } else { crate::buttons::secondary(id, l) };
+        let b = if primary {
+            crate::buttons::primary(id, l).justify_center().font_weight(FontWeight::SEMIBOLD)
+        } else {
+            crate::buttons::secondary(id, l)
+        };
         let ink = crate::buttons::ink(primary, l);
         let b = b
             .when(!side, |d| d.w(px(160.)).min_w(px(88.)).px(px(8.)))
@@ -482,13 +474,11 @@ pub(crate) fn render(card: &Card, me: Option<&str>, cx: &mut Context<ReadingPane
                     .flex()
                     .flex_col()
                     .line_height(px(17.))
-                    .child(
-                        div()
-                            .truncate()
-                            .when(dim, |d| d.text_color(l.text2()))
-                            .when(strike, |d| d.line_through())
-                            .child(format!("{} · {}", e.title, when_line(e.span, e.all_day, &tz))),
-                    )
+                    .child(div().truncate().when(dim, |d| d.text_color(l.text2())).when(strike, |d| d.line_through()).child(format!(
+                        "{} · {}",
+                        e.title,
+                        when_line(e.span, e.all_day, &tz)
+                    )))
                     .child(
                         div()
                             .flex()
@@ -556,9 +546,7 @@ pub(crate) fn render(card: &Card, me: Option<&str>, cx: &mut Context<ReadingPane
         .items_center()
         .gap(px(8.))
         .min_w_0()
-        .child(
-            highlight(div().flex_1().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD), was_title.is_some()).child(e.title.clone()),
-        )
+        .child(highlight(div().flex_1().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD), was_title.is_some()).child(e.title.clone()))
         .when_some(was_title.clone(), |d, t| d.child(old(t)))
         .child(chip(p.answered, &l));
     let when_row = div()
@@ -569,10 +557,11 @@ pub(crate) fn render(card: &Card, me: Option<&str>, cx: &mut Context<ReadingPane
         .min_w_0()
         .child(day_line(e.span, &tz))
         .child(div().text_color(l.text3()).child("·"))
-        .child(
-            highlight(div().flex_none().font_weight(FontWeight::SEMIBOLD), changed(|c| matches!(c, Change::Time(_))))
-                .child(if e.all_day { tr!("cal-all-day") } else { time_range(e.span, &tz) }),
-        )
+        .child(highlight(div().flex_none().font_weight(FontWeight::SEMIBOLD), changed(|c| matches!(c, Change::Time(_)))).child(if e.all_day {
+            tr!("cal-all-day")
+        } else {
+            time_range(e.span, &tz)
+        }))
         .child(length_chip(e.span.len(), &l))
         .when_some(was_time, |d, s| d.child(old(when_line(s, e.all_day, &tz))));
     let place = (!e.location.trim().is_empty() || was_place.is_some()).then(|| {
@@ -585,19 +574,14 @@ pub(crate) fn render(card: &Card, me: Option<&str>, cx: &mut Context<ReadingPane
             .when_some(was_place.clone(), |d, p| d.when(!p.trim().is_empty(), |d| d.child(old(p))))
     });
     let names = p.names.clone();
-    let people = div()
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .child(dots(inv, &l))
-        .child(
-            div()
-                .id("invite-people")
-                .flex_none()
-                .text_color(l.text())
-                .child(tr!("invite-accepted-of", n = p.accepted, total = p.total))
-                .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(names.clone()).build(window, cx)),
-        );
+    let people = div().flex().items_center().gap(px(8.)).child(dots(inv, &l)).child(
+        div()
+            .id("invite-people")
+            .flex_none()
+            .text_color(l.text())
+            .child(tr!("invite-accepted-of", n = p.accepted, total = p.total))
+            .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(names.clone()).build(window, cx)),
+    );
     let facts = div()
         .flex()
         .flex_wrap()
@@ -643,7 +627,11 @@ pub(crate) fn render(card: &Card, me: Option<&str>, cx: &mut Context<ReadingPane
         .map(|d| match (&p.state, p.answered) {
             (InviteState::NotInvited, _) => d.child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("reading-invite-not-invited"))),
             (_, Some(s)) => d.child(done_text(s, &l)).child(
-                crate::buttons::secondary("invite-change", &l).ml(px(12.)).child(tr!("cal-change-answer")).child(icon(g::DOWN, 10.)).on_click(change_answer(cx)),
+                crate::buttons::secondary("invite-change", &l)
+                    .ml(px(12.))
+                    .child(tr!("cal-change-answer"))
+                    .child(icon(g::DOWN, 10.))
+                    .on_click(change_answer(cx)),
             ),
             _ => d.children(answer_buttons(card, false, &l, cx)).when(card.sending.is_some(), |d| {
                 d.child(div().ml(px(8.)).text_size(px(12.)).text_color(l.text2()).child(tr!("reading-invite-sending")))
@@ -729,9 +717,9 @@ pub(crate) fn render_side(card: &Card, me: Option<&str>, cx: &mut Context<Readin
                         .on_click(change_answer(cx)),
                 ),
         ),
-        _ => d.children(answer_buttons(card, true, &l, cx).into_iter().map(|b| b.text_size(px(13.)))).when(card.sending.is_some(), |d| {
-            d.child(div().text_color(l.text2()).child(tr!("reading-invite-sending")))
-        }),
+        _ => d
+            .children(answer_buttons(card, true, &l, cx).into_iter().map(|b| b.text_size(px(13.))))
+            .when(card.sending.is_some(), |d| d.child(div().text_color(l.text2()).child(tr!("reading-invite-sending")))),
     });
     let day = div()
         .flex()
@@ -893,7 +881,13 @@ fn timeline(card: &Card, inv: &Invitation, me: Option<&str>, tz: &TimeZone, side
                     .items_start()
                     .gap(px(if side { 2. } else { 8. }))
                     .px(px(if side { 6. } else { 8. }))
-                    .py(px(if bottom - top < 24. { 1. } else if side { 2. } else { 4. }))
+                    .py(px(if bottom - top < 24. {
+                        1.
+                    } else if side {
+                        2.
+                    } else {
+                        4.
+                    }))
                     .rounded(px(4.))
                     .overflow_hidden()
                     .text_size(px(if side { 11. } else { 12. }))
@@ -1030,14 +1024,13 @@ fn demo_day(date: jiff::civil::Date, tz: &TimeZone) -> Vec<Event> {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "invite", commands: COMMANDS, handlers, scenes: scenes::SCENES, reset: Some(scenes::reset), ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part =
+    crate::part::Part { name: "invite", commands: COMMANDS, handlers, scenes: scenes::SCENES, reset: Some(scenes::reset), ..crate::part::Part::NONE };
 
 /// Обработчики команд части — на корне экрана почты (`Mailer::render`).
 fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
     root.on_action(cx.listener(|this, _: &invite::Accept, _, cx| this.invite_key(postman_calendar::Partstat::Accepted, cx)))
-        .on_action(cx.listener(|this, _: &invite::Tentative, _, cx| {
-            this.invite_key(postman_calendar::Partstat::Tentative, cx)
-        }))
+        .on_action(cx.listener(|this, _: &invite::Tentative, _, cx| this.invite_key(postman_calendar::Partstat::Tentative, cx)))
         .on_action(cx.listener(|this, _: &invite::Decline, _, cx| this.invite_key(postman_calendar::Partstat::Declined, cx)))
 }
 
@@ -1099,8 +1092,7 @@ pub(crate) mod scenes {
     fn invite_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
         let target = screens::demo_id(m.list.read(cx), invitation);
         let shown = |r: &crate::reading::Reading| {
-            r.doc.is_some()
-                && r.invite.as_ref().is_some_and(|c| c.invitation().is_some() && c.day.is_some() && c.clock.is_some())
+            r.doc.is_some() && r.invite.as_ref().is_some_and(|c| c.invitation().is_some() && c.day.is_some() && c.clock.is_some())
         };
         target.is_some() && screens::reading(m, cx).is_some_and(|r| Some(r.row.id.as_str()) == target && shown(r))
     }
@@ -1200,10 +1192,7 @@ mod tests {
     #[test]
     fn attendees_skip_the_organizer() {
         let a = attendees(&inv("REQUEST"));
-        assert_eq!(
-            a,
-            [("maria@partner.example".to_string(), Partstat::Accepted), ("Я".to_string(), Partstat::NeedsAction)]
-        );
+        assert_eq!(a, [("maria@partner.example".to_string(), Partstat::Accepted), ("Я".to_string(), Partstat::NeedsAction)]);
     }
 
     fn event(uid: &str, title: &str, start: &str, end: &str, extra: serde_json::Value) -> postman_calendar::Event {
@@ -1227,10 +1216,16 @@ mod tests {
             // Копия самой встречи в моём календаре — не дублируется.
             event("u-1@partner.example", "Созвон", "2026-10-21T11:00:00Z", "2026-10-21T12:00:00Z", json!({})),
             // Отклонённое мной — скрыто.
-            event("own-4", "Отклонено", "2026-10-21T11:00:00Z", "2026-10-21T11:30:00Z", json!({ "participants": {
-                "o": { "calendarAddress": "mailto:boss@corp.example", "roles": { "owner": true } },
-                "m": { "calendarAddress": "mailto:me@corp.example", "roles": { "attendee": true }, "participationStatus": "declined" }
-            }})),
+            event(
+                "own-4",
+                "Отклонено",
+                "2026-10-21T11:00:00Z",
+                "2026-10-21T11:30:00Z",
+                json!({ "participants": {
+                    "o": { "calendarAddress": "mailto:boss@corp.example", "roles": { "owner": true } },
+                    "m": { "calendarAddress": "mailto:me@corp.example", "roles": { "attendee": true }, "participationStatus": "declined" }
+                }}),
+            ),
             event("own-5", "Весь день", "2026-10-21T00:00:00Z", "2026-10-22T00:00:00Z", json!({ "showWithoutTime": true })),
             // Вне окна 9–15.
             event("own-6", "Вечер", "2026-10-21T18:00:00Z", "2026-10-21T19:00:00Z", json!({})),

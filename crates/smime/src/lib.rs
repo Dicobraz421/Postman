@@ -185,10 +185,8 @@ impl Report {
 pub fn is_smime_part(mime: &str, name: &str) -> bool {
     let mime = mime.to_ascii_lowercase();
     let name = name.to_ascii_lowercase();
-    matches!(
-        mime.as_str(),
-        "application/pkcs7-signature" | "application/x-pkcs7-signature" | "application/pkcs7-mime" | "application/x-pkcs7-mime"
-    ) || (mime == "application/octet-stream" && (name.ends_with(".p7s") || name.ends_with(".p7m")))
+    matches!(mime.as_str(), "application/pkcs7-signature" | "application/x-pkcs7-signature" | "application/pkcs7-mime" | "application/x-pkcs7-mime")
+        || (mime == "application/octet-stream" && (name.ends_with(".p7s") || name.ends_with(".p7m")))
 }
 
 /// Тело подписанного содержимого `signed-data` (внутренний MIME): HTML и текст — для показа письма вместо пустого

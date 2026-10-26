@@ -103,9 +103,8 @@ fn find_run(t: &[(usize, char)], q: &[char], from: usize, word_start: bool) -> O
     if q.is_empty() || q.len() > t.len() {
         return None;
     }
-    (from..=t.len() - q.len()).find(|&i| {
-        (!word_start || i == 0 || !is_word(t[i - 1].1)) && t[i..i + q.len()].iter().map(|x| x.1).eq(q.iter().copied())
-    })
+    (from..=t.len() - q.len())
+        .find(|&i| (!word_start || i == 0 || !is_word(t[i - 1].1)) && t[i..i + q.len()].iter().map(|x| x.1).eq(q.iter().copied()))
 }
 
 /// Совпадение запроса со строкой без смены раскладки.
@@ -128,8 +127,7 @@ fn find_plain(query: &str, text: &str) -> Option<Match> {
         return whole(Tier::Prefix);
     }
     // Слова запроса — начала слов строки (в любом порядке, каждое — своё место).
-    let words: Vec<Vec<char>> =
-        q.split(|c| c.is_whitespace()).filter(|w| !w.is_empty()).map(<[char]>::to_vec).collect();
+    let words: Vec<Vec<char>> = q.split(|c| c.is_whitespace()).filter(|w| !w.is_empty()).map(<[char]>::to_vec).collect();
     let mut spans = Vec::new();
     let mut taken: Vec<usize> = Vec::new();
     let all = words.iter().all(|w| {
@@ -304,11 +302,7 @@ pub fn highlight_terms<S: AsRef<str>>(words: &[S]) -> Vec<String> {
 /// Где в тексте совпадения поиска: слово текста, которое начинается с основы слова запроса, — целиком
 /// («договор» → «договора», «догов» → «договор»). Диапазоны — байты `text`, по возрастанию, без пересечений.
 pub fn term_spans<S: AsRef<str>>(text: &str, terms: &[S]) -> Vec<Range<usize>> {
-    let stems: Vec<Vec<char>> = terms
-        .iter()
-        .map(|t| stem(&folded(t.as_ref()).chars().collect::<Vec<_>>()))
-        .filter(|s| !s.is_empty())
-        .collect();
+    let stems: Vec<Vec<char>> = terms.iter().map(|t| stem(&folded(t.as_ref()).chars().collect::<Vec<_>>())).filter(|s| !s.is_empty()).collect();
     if stems.is_empty() || text.is_empty() {
         return Vec::new();
     }
@@ -409,10 +403,7 @@ mod tests {
         let order: Vec<&str> = rank("срок", &items, &["y".into()]).into_iter().map(|r| items[r.index].key).collect();
         assert_eq!(order, ["y", "x"]);
         // Совпала только подпись — ниже совпавшего названия.
-        let items = [
-            Candidate { key: "sub", text: "Входящие", extra: "архив" },
-            Candidate { key: "main", text: "Архивировать", extra: "" },
-        ];
+        let items = [Candidate { key: "sub", text: "Входящие", extra: "архив" }, Candidate { key: "main", text: "Архивировать", extra: "" }];
         let r = rank("арх", &items, &[]);
         assert_eq!(r.iter().map(|r| items[r.index].key).collect::<Vec<_>>(), ["main", "sub"]);
         assert!(r[1].in_extra);

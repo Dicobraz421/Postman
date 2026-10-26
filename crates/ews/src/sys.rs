@@ -35,9 +35,9 @@ mod imp {
 
     use windows::Win32::Foundation::{SEC_E_OK, SEC_I_COMPLETE_AND_CONTINUE, SEC_I_COMPLETE_NEEDED, SEC_I_CONTINUE_NEEDED};
     use windows::Win32::Security::Authentication::Identity::{
-        AcquireCredentialsHandleW, CompleteAuthToken, DeleteSecurityContext, FreeContextBuffer, FreeCredentialsHandle,
-        ISC_REQ_ALLOCATE_MEMORY, InitializeSecurityContextW, SECBUFFER_CHANNEL_BINDINGS, SECBUFFER_TOKEN, SECBUFFER_VERSION,
-        SECPKG_CRED_OUTBOUND, SECURITY_NATIVE_DREP, SecBuffer, SecBufferDesc,
+        AcquireCredentialsHandleW, CompleteAuthToken, DeleteSecurityContext, FreeContextBuffer, FreeCredentialsHandle, ISC_REQ_ALLOCATE_MEMORY,
+        InitializeSecurityContextW, SECBUFFER_CHANNEL_BINDINGS, SECBUFFER_TOKEN, SECBUFFER_VERSION, SECPKG_CRED_OUTBOUND, SECURITY_NATIVE_DREP,
+        SecBuffer, SecBufferDesc,
     };
     use windows::Win32::Security::Credentials::SecHandle;
     use windows::Win32::System::Rpc::{SEC_WINNT_AUTH_IDENTITY_UNICODE, SEC_WINNT_AUTH_IDENTITY_W};
@@ -178,8 +178,7 @@ mod imp {
             }
             if status == SEC_I_COMPLETE_NEEDED || status == SEC_I_COMPLETE_AND_CONTINUE {
                 // SAFETY: контекст только что создан этим вызовом, `out_desc` указывает на его выходной токен.
-                unsafe { CompleteAuthToken(ctx, &out_desc) }
-                    .map_err(|e| Error::Sspi { call: "CompleteAuthToken", code: e.code().0 as u32 })?;
+                unsafe { CompleteAuthToken(ctx, &out_desc) }.map_err(|e| Error::Sspi { call: "CompleteAuthToken", code: e.code().0 as u32 })?;
             }
             let token = if out_buf.pvBuffer.is_null() || out_buf.cbBuffer == 0 {
                 Vec::new()

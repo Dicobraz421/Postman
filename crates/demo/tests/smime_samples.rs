@@ -22,12 +22,17 @@ fn build() -> Vec<(String, Vec<u8>)> {
     let mut out = vec![("ca-rsa.der".to_string(), rsa_root.der.clone()), ("ca-gost.der".to_string(), gost_root.der.clone())];
     // Шифрованные (Ф2): ключ владельца ящика — RSA «c», сертификат — от корпоративного УЦ.
     let me_key = Key::rsa('c');
-    let me = issue(&Spec { org: Some("Корпорация (демо)".into()), serial: 0x7702, ..Spec::user("Смирнова Анна", "me@corp.example") }, &me_key, Some((&rsa_root, &rsa_root_key)));
+    let me = issue(
+        &Spec { org: Some("Корпорация (демо)".into()), serial: 0x7702, ..Spec::user("Смирнова Анна", "me@corp.example") },
+        &me_key,
+        Some((&rsa_root, &rsa_root_key)),
+    );
     let Key::Rsa(k) = &me_key else { unreachable!() };
     out.push(("me-cert.der".into(), me.der.clone()));
     out.push(("me-key.der".into(), postman_smime::soft::pkcs1_der(k).unwrap()));
     let stranger_key = Key::rsa('a');
-    let stranger = issue(&Spec { serial: 0x7701, ..Spec::user("Петрова Ольга", "o.petrova@corp.example") }, &stranger_key, Some((&rsa_root, &rsa_root_key)));
+    let stranger =
+        issue(&Spec { serial: 0x7701, ..Spec::user("Петрова Ольга", "o.petrova@corp.example") }, &stranger_key, Some((&rsa_root, &rsa_root_key)));
     for s in SAMPLES.iter().filter(|s| s.encrypted) {
         use postman_smime::envelope::Cipher;
         use postman_smime::testkit::{KeyAlg, To};
@@ -37,10 +42,19 @@ fn build() -> Vec<(String, Vec<u8>)> {
         let (inner, to, cipher, tamper) = match s.kind {
             "enc" => {
                 let sender_key = Key::rsa('b');
-                let sender = issue(&Spec { org: Some("Корпорация (демо)".into()), ..Spec::user(s.from_name, s.from_addr) }, &sender_key, Some((&rsa_root, &rsa_root_key)));
+                let sender = issue(
+                    &Spec { org: Some("Корпорация (демо)".into()), ..Spec::user(s.from_name, s.from_addr) },
+                    &sender_key,
+                    Some((&rsa_root, &rsa_root_key)),
+                );
                 let opts = Sign { signing_time: Some(1_792_567_800), ..Sign::default() };
                 let doc = testkit::mixed_part(s.html, ("Условия сделки.pdf", "application/pdf", b"%PDF-1.4 demo"));
-                (testkit::signed_part(&doc, &sender, &sender_key, &[&rsa_root], &opts), vec![(me.clone(), KeyAlg::RsaPkcs1)], Cipher::AesCbc(256), false)
+                (
+                    testkit::signed_part(&doc, &sender, &sender_key, &[&rsa_root], &opts),
+                    vec![(me.clone(), KeyAlg::RsaPkcs1)],
+                    Cipher::AesCbc(256),
+                    false,
+                )
             }
             "enc-other" => (testkit::html_part(s.html), vec![(stranger.clone(), KeyAlg::RsaPkcs1)], Cipher::AesCbc(256), false),
             _ => (testkit::html_part(s.html), vec![(me.clone(), KeyAlg::RsaOaep(postman_smime::Hash::Sha256))], Cipher::AesGcm(256), true),
@@ -56,7 +70,14 @@ fn build() -> Vec<(String, Vec<u8>)> {
             "untrusted" => (&other_root, &other_key, Key::p256("demo-vector-user")),
             _ => (&rsa_root, &rsa_root_key, Key::rsa('b')),
         };
-        let user = issue(&Spec { org: root.cert.tbs_certificate().subject().organization().ok().flatten().map(|o| o.value().into_owned()), ..Spec::user(s.from_name, s.from_addr) }, &user_key, Some((root, root_key)));
+        let user = issue(
+            &Spec {
+                org: root.cert.tbs_certificate().subject().organization().ok().flatten().map(|o| o.value().into_owned()),
+                ..Spec::user(s.from_name, s.from_addr)
+            },
+            &user_key,
+            Some((root, root_key)),
+        );
         let from = head(s);
         let h = Head { from: &from, to: "Смирнова Анна <me@corp.example>", subject: s.subject, date };
         let opts = Sign { signing_time: Some(1_792_567_800), ..Sign::default() };

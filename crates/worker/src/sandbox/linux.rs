@@ -6,9 +6,7 @@ use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use seccompiler::{
-    BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter, SeccompRule,
-};
+use seccompiler::{BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter, SeccompRule};
 
 use super::Level;
 use crate::Process;
@@ -86,8 +84,7 @@ fn landlock() -> Result<(), String> {
 
 fn filter() -> Result<BpfProgram, String> {
     let no_exec = || -> Result<Vec<SeccompRule>, String> {
-        let c = SeccompCondition::new(2, SeccompCmpArgLen::Dword, SeccompCmpOp::MaskedEq(libc::PROT_EXEC as u64), 0)
-            .map_err(|e| e.to_string())?;
+        let c = SeccompCondition::new(2, SeccompCmpArgLen::Dword, SeccompCmpOp::MaskedEq(libc::PROT_EXEC as u64), 0).map_err(|e| e.to_string())?;
         Ok(vec![SeccompRule::new(vec![c]).map_err(|e| e.to_string())?])
     };
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = [

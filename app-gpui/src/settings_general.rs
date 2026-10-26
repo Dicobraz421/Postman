@@ -11,8 +11,8 @@ use gpui_kit::*;
 use pets_i18n::tr;
 use postman_core::prefs::{Channel, LANGUAGES, LogLevel, Notify, QUIET_FROM, QUIET_TO, StartView};
 
-use crate::roles::Look;
 use crate::buttons::button;
+use crate::roles::Look;
 use crate::settings_tab::{SettingsView, group, row, seg, seg_group, toggle};
 
 /// Пометка «сохраняется»: выбор запомнен, действия пока нет.
@@ -114,20 +114,16 @@ impl SettingsView {
         let g = p.general.clone();
         // Язык.
         let lang = g.language.clone();
-        let mut langs = vec![seg("settings-lang-auto", tr!("settings-lang-auto"), lang.is_none(), true, l).on_click(cx.listener(
-            |_, _, _, cx| {
-                crate::prefs::set_language(None, cx);
-                cx.notify();
-            },
-        ))];
+        let mut langs = vec![seg("settings-lang-auto", tr!("settings-lang-auto"), lang.is_none(), true, l).on_click(cx.listener(|_, _, _, cx| {
+            crate::prefs::set_language(None, cx);
+            cx.notify();
+        }))];
         for (i, code) in LANGUAGES.iter().copied().enumerate() {
             let on = lang.as_deref() == Some(code);
-            langs.push(seg(("settings-lang", i), tr!(&format!("settings-lang-{code}")), on, true, l).on_click(cx.listener(
-                move |_, _, _, cx| {
-                    crate::prefs::set_language(Some(code), cx);
-                    cx.notify();
-                },
-            )));
+            langs.push(seg(("settings-lang", i), tr!(&format!("settings-lang-{code}")), on, true, l).on_click(cx.listener(move |_, _, _, cx| {
+                crate::prefs::set_language(Some(code), cx);
+                cx.notify();
+            })));
         }
         let auto = self.os.autostart.unwrap_or(g.autostart);
         let starts = [(StartView::Inbox, "settings-start-inbox"), (StartView::LastTabs, "settings-start-last")].map(|(v, key)| {

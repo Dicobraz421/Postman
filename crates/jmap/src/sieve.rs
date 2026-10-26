@@ -57,20 +57,11 @@ impl Client {
 
     /// Проверить и записать скрипт: загрузка один раз, `SieveScript/validate`, затем `SieveScript/set` (новый —
     /// `id: None`). Возвращает id скрипта.
-    pub async fn save_sieve(
-        &self,
-        id: Option<&str>,
-        name: &str,
-        text: &str,
-        activate: Activate,
-    ) -> std::result::Result<String, SaveError> {
+    pub async fn save_sieve(&self, id: Option<&str>, name: &str, text: &str, activate: Activate) -> std::result::Result<String, SaveError> {
         let other = |e: Error| SaveError::Other(e.to_string());
         let acc = self.account_for(SIEVE).map_err(other)?.to_string();
         let blob = self.upload(&acc, text.as_bytes().to_vec(), MIME).await.map_err(other)?;
-        let mut r = self
-            .call(USING, &[inv("SieveScript/validate", json!({ "accountId": acc, "blobId": blob }), "v")])
-            .await
-            .map_err(other)?;
+        let mut r = self.call(USING, &[inv("SieveScript/validate", json!({ "accountId": acc, "blobId": blob }), "v")]).await.map_err(other)?;
         let v: Value = take(&mut r, "v").map_err(other)?;
         if let Some(e) = v.get("error").filter(|e| !e.is_null()) {
             let text = e["description"].as_str().or(e["type"].as_str()).unwrap_or("invalidScript");
@@ -109,10 +100,7 @@ impl Client {
         }
         match id {
             Some(id) => Ok(id.to_string()),
-            None => v["created"]["new"]["id"]
-                .as_str()
-                .map(str::to_string)
-                .ok_or_else(|| SaveError::Other("SieveScript/set не вернул id".into())),
+            None => v["created"]["new"]["id"].as_str().map(str::to_string).ok_or_else(|| SaveError::Other("SieveScript/set не вернул id".into())),
         }
     }
 
@@ -131,8 +119,7 @@ impl Client {
     /// Удалить скрипт (активный сервер не удаляет — сначала `activate_sieve(None)`).
     pub async fn destroy_sieve(&self, id: &str) -> Result<()> {
         let acc = self.account_for(SIEVE)?;
-        let mut r =
-            self.call(USING, &[inv("SieveScript/set", json!({ "accountId": acc, "destroy": [id] }), "s")]).await?;
+        let mut r = self.call(USING, &[inv("SieveScript/set", json!({ "accountId": acc, "destroy": [id] }), "s")]).await?;
         let v: Value = take(&mut r, "s")?;
         set_error(&v, "notDestroyed", id, "SieveScript/set")
     }
@@ -144,8 +131,7 @@ mod tests {
 
     #[test]
     fn stalwart_shape() {
-        let s: SieveScript =
-            serde_json::from_value(json!({ "id": "b", "name": "vacation", "blobId": "c1", "isActive": true })).unwrap();
+        let s: SieveScript = serde_json::from_value(json!({ "id": "b", "name": "vacation", "blobId": "c1", "isActive": true })).unwrap();
         assert_eq!((s.id.as_str(), s.name.as_deref(), s.is_active), ("b", Some("vacation"), true));
     }
 }

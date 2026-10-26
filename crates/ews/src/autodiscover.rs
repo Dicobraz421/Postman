@@ -65,10 +65,16 @@ pub(crate) fn parse(body: &[u8]) -> Result<Pox> {
     let account = resp.child("Account").ok_or_else(|| Error::Autodiscover("no Account".into()))?;
     match account.text_at(&["Action"]) {
         Some("redirectAddr") => {
-            return account.text_at(&["RedirectAddr"]).map(|a| Pox::RedirectAddr(a.to_owned())).ok_or_else(|| Error::Autodiscover("no RedirectAddr".into()));
+            return account
+                .text_at(&["RedirectAddr"])
+                .map(|a| Pox::RedirectAddr(a.to_owned()))
+                .ok_or_else(|| Error::Autodiscover("no RedirectAddr".into()));
         }
         Some("redirectUrl") => {
-            return account.text_at(&["RedirectUrl"]).map(|a| Pox::RedirectUrl(a.to_owned())).ok_or_else(|| Error::Autodiscover("no RedirectUrl".into()));
+            return account
+                .text_at(&["RedirectUrl"])
+                .map(|a| Pox::RedirectUrl(a.to_owned()))
+                .ok_or_else(|| Error::Autodiscover("no RedirectUrl".into()));
         }
         _ => {}
     }
@@ -137,11 +143,9 @@ pub async fn discover(email: &str, auth: &Auth, fallback_host: Option<&str>) -> 
     let mut redirects = 0usize;
     'address: loop {
         let domain = domain_of(&email)?;
-        let mut queue: VecDeque<String> = [
-            format!("https://{domain}/autodiscover/autodiscover.xml"),
-            format!("https://autodiscover.{domain}/autodiscover/autodiscover.xml"),
-        ]
-        .into();
+        let mut queue: VecDeque<String> =
+            [format!("https://{domain}/autodiscover/autodiscover.xml"), format!("https://autodiscover.{domain}/autodiscover/autodiscover.xml")]
+                .into();
         while let Some(next) = queue.pop_front() {
             let Ok(url) = url::Url::parse(&next) else { continue };
             if !allowed(&url, &domain) {
@@ -214,7 +218,10 @@ mod tests {
 
     #[test]
     fn redirect_and_error() {
-        assert_eq!(parse(include_bytes!("../tests/fixtures/autodiscover_redirect.xml")).unwrap(), Pox::RedirectAddr("user1@corp.example.test".into()));
+        assert_eq!(
+            parse(include_bytes!("../tests/fixtures/autodiscover_redirect.xml")).unwrap(),
+            Pox::RedirectAddr("user1@corp.example.test".into())
+        );
         let Pox::Error { code, .. } = parse(include_bytes!("../tests/fixtures/autodiscover_error.xml")).unwrap() else { panic!() };
         assert_eq!(code, "500");
         assert!(parse(b"<html><body>not here</body></html>").is_err());

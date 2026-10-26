@@ -158,8 +158,7 @@ async fn table_is_shared_between_sessions_last_writer_wins() {
     let mut other = last.clone();
     other.rename("pm.cat.team", "bump", 5_000).unwrap();
     postman_backend_jmap::categories::save(&b, &acc, &other).await.unwrap();
-    let w =
-        a.write_file(&acc, &folder.id, Some(&file.id), FILE, &blob, "application/json", Some(&state)).await.unwrap();
+    let w = a.write_file(&acc, &folder.id, Some(&file.id), FILE, &blob, "application/json", Some(&state)).await.unwrap();
     assert_eq!(w, Written::Stale);
     assert_eq!(name(&postman_backend_jmap::categories::load(&a, &acc).await.unwrap().unwrap(), "pm.cat.team").as_deref(), Some("bump"));
     // Создать файл, который уже есть, — alreadyExists с его id.
@@ -210,7 +209,13 @@ async fn tables_through_sync_and_shared_mailbox() {
 
     let cache = Cache::open_in_memory().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
-    let commands = postman_backend_jmap::spawn(Account { url: env("POSTMAN_STAND_URL"), auth: postman_backend_jmap::convert::FromJmap::from_jmap(auth()) }, cache, None, tx, || {});
+    let commands = postman_backend_jmap::spawn(
+        Account { url: env("POSTMAN_STAND_URL"), auth: postman_backend_jmap::convert::FromJmap::from_jmap(auth()) },
+        cache,
+        None,
+        tx,
+        || {},
+    );
     // При входе — ответ на каждый аккаунт: свой, общий ящик и папка shared-ro, открытая user3 (у неё файлы
     // закрыты — `Unsupported`).
     let readonly = other.session().shared_accounts().into_iter().find(|a| a.name == "shared-ro@itt.test").map(|a| a.id);
@@ -234,9 +239,7 @@ async fn tables_through_sync_and_shared_mailbox() {
     }
     assert_eq!(own_table.as_ref().and_then(|t| name(t, "pm.cat.clients")).as_deref(), Some("Свои clients"));
     assert_eq!(group_table.as_ref(), Some(&group_saved));
-    wait_for(&rx, "первая синхронизация", |e| {
-        matches!(e, Event::Status(Status::Synced)).then_some(())
-    });
+    wait_for(&rx, "первая синхронизация", |e| matches!(e, Event::Status(Status::Synced)).then_some(()));
 
     // Запись командой: ответ — таблица после сведения.
     let mut edit = own_table.unwrap();

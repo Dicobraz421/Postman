@@ -5,9 +5,36 @@ use std::time::Instant;
 use postman_search::{Doc, SearchIndex};
 
 const WORDS: &[&str] = &[
-    "отчёт", "квартал", "совещание", "проект", "договор", "оплата", "счёт", "поставка", "сервер", "доступ", "пропуск",
-    "парковка", "регламент", "бюджет", "закупка", "лицензия", "deploy", "pipeline", "release", "incident", "migration",
-    "сотрудник", "отпуск", "командировка", "презентация", "заказчик", "требования", "аудит", "безопасность", "сертификат",
+    "отчёт",
+    "квартал",
+    "совещание",
+    "проект",
+    "договор",
+    "оплата",
+    "счёт",
+    "поставка",
+    "сервер",
+    "доступ",
+    "пропуск",
+    "парковка",
+    "регламент",
+    "бюджет",
+    "закупка",
+    "лицензия",
+    "deploy",
+    "pipeline",
+    "release",
+    "incident",
+    "migration",
+    "сотрудник",
+    "отпуск",
+    "командировка",
+    "презентация",
+    "заказчик",
+    "требования",
+    "аудит",
+    "безопасность",
+    "сертификат",
 ];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -30,17 +57,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         texts.push((i.to_string(), subj.join(" "), format!("Сотрудник {} user{}@corp.example", i % 300, i % 300), body.join(" ")));
     }
     for chunk in texts.chunks(5000) {
-        let docs: Vec<Doc> = chunk
-            .iter()
-            .map(|(id, s, p, b)| Doc { id, subject: s, people: p, body: b, attachments: "", received_at: 0 })
-            .collect();
+        let docs: Vec<Doc> = chunk.iter().map(|(id, s, p, b)| Doc { id, subject: s, people: p, body: b, attachments: "", received_at: 0 }).collect();
         idx.upsert(&docs)?;
     }
     idx.commit()?;
     let index_time = t.elapsed();
     let size: u64 = std::fs::read_dir(&dir)?.flatten().filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum();
     println!("docs={} index={:?} size={:.1}MB", idx.len(), index_time, size as f64 / 1e6);
-    for q in ["отчеты", "кваратл", "jnxtn", "командир", "отчет квартал безопасность", "deploying", "сотрудник 17", "лиценз"] {
+    for q in ["отчеты", "кваратл", "jnxtn", "командир", "отчет квартал безопасность", "deploying", "сотрудник 17", "лиценз"]
+    {
         let t = Instant::now();
         let mut hits = 0;
         for _ in 0..20 {

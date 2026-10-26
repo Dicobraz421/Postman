@@ -18,26 +18,20 @@ use std::path::Path;
 use std::ptr::{null, null_mut};
 use std::sync::Arc;
 
-use windows_sys::Win32::Foundation::{
-    CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation, WAIT_OBJECT_0,
-};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation, WAIT_OBJECT_0};
 use windows_sys::Win32::Security::Isolation::{CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName};
 use windows_sys::Win32::Security::{FreeSid, PSID, SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES};
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
-    JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
-    JOBOBJECT_BASIC_UI_RESTRICTIONS, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_PROCESS_MEMORY, JOBOBJECT_BASIC_UI_RESTRICTIONS, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JobObjectBasicUIRestrictions, JobObjectExtendedLimitInformation, SetInformationJobObject,
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
-    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, DETACHED_PROCESS, CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
-    GetExitCodeProcess, WaitForSingleObject,
-    InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-    PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-    PROCESS_INFORMATION,
-    ProcessSystemCallDisablePolicy, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, SetProcessMitigationPolicy,
-    TerminateProcess, UpdateProcThreadAttribute,
+    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DETACHED_PROCESS, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+    GetExitCodeProcess, InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+    PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION, ProcessSystemCallDisablePolicy,
+    ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, SetProcessMitigationPolicy, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
 use windows_sys::Win32::System::SystemServices::{JOB_OBJECT_UILIMIT_ALL, PROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY};
@@ -82,8 +76,7 @@ const MITIGATIONS: u64 = DEP_ENABLE
 /// перечисленные ограничения, чтобы найти то, из-за которого воркер не стартует.
 /// В release переменная не читается — ослабить песочницу снаружи нельзя.
 fn dropped(name: &str) -> bool {
-    cfg!(debug_assertions)
-        && std::env::var("POSTMAN_SANDBOX_DROP").is_ok_and(|v| v.split(',').any(|x| x.trim() == name || x.trim() == "all"))
+    cfg!(debug_assertions) && std::env::var("POSTMAN_SANDBOX_DROP").is_ok_and(|v| v.split(',').any(|x| x.trim() == name || x.trim() == "all"))
 }
 
 fn mitigations() -> u64 {
@@ -155,8 +148,9 @@ pub(crate) fn spawn(exe: &Path, relaxed: bool) -> io::Result<Process> {
         }
         // Любой отказ AppContainer — запуск с остальными ограничениями; причина — в `fallback` и в ошибке, если и он
         // не удался.
-        Err(strict) => partial(exe, format!("запуск в AppContainer: {strict}"))
-            .map_err(|e| io::Error::new(e.kind(), format!("{e}; в AppContainer: {strict}"))),
+        Err(strict) => {
+            partial(exe, format!("запуск в AppContainer: {strict}")).map_err(|e| io::Error::new(e.kind(), format!("{e}; в AppContainer: {strict}")))
+        }
     }
 }
 
@@ -341,12 +335,7 @@ fn create(exe: &Path, sid: Option<PSID>) -> io::Result<Process> {
     let mitigations: u64 = mitigations();
     let child_policy: u32 = PROCESS_CREATION_CHILD_PROCESS_RESTRICTED;
     let handles: [HANDLE; 2] = [child_in.0, child_out.0];
-    let caps = sid.map(|sid| SECURITY_CAPABILITIES {
-        AppContainerSid: sid,
-        Capabilities: null_mut(),
-        CapabilityCount: 0,
-        Reserved: 0,
-    });
+    let caps = sid.map(|sid| SECURITY_CAPABILITIES { AppContainerSid: sid, Capabilities: null_mut(), CapabilityCount: 0, Reserved: 0 });
     let mut attrs = Attributes::new(if caps.is_some() { 4 } else { 3 })?;
     // SAFETY: все значения — локальные переменные, живущие до CreateProcessW.
     unsafe {
@@ -435,8 +424,7 @@ fn create(exe: &Path, sid: Option<PSID>) -> io::Result<Process> {
         exit_code: Box::new(move || {
             let mut code = 0u32;
             // SAFETY: хэндл процесса жив, пока жив `watched`; ждём завершения не дольше 500 мс.
-            let done = unsafe { WaitForSingleObject(watched.0, 500) } == WAIT_OBJECT_0
-                && unsafe { GetExitCodeProcess(watched.0, &mut code) } != 0;
+            let done = unsafe { WaitForSingleObject(watched.0, 500) } == WAIT_OBJECT_0 && unsafe { GetExitCodeProcess(watched.0, &mut code) } != 0;
             done.then_some(code)
         }),
         level: Level::Partial,
@@ -453,11 +441,8 @@ pub(crate) fn lockdown() -> Result<(), String> {
     p.Anonymous.Flags = 1;
     // SAFETY: указатель на локальную структуру правильного размера.
     let ok = unsafe {
-        SetProcessMitigationPolicy(
-            ProcessSystemCallDisablePolicy,
-            (&raw const p).cast(),
-            size_of::<PROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY>(),
-        ) != 0
+        SetProcessMitigationPolicy(ProcessSystemCallDisablePolicy, (&raw const p).cast(), size_of::<PROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY>())
+            != 0
     };
     // Уже включено при создании процесса — тогда повторный вызов может вернуть ошибку; это не отказ.
     let _ = ok;

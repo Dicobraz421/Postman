@@ -138,8 +138,8 @@ fn probe() {
             let cfg = postman_imap::Config { host: mail_host.clone(), port, security, user: user.clone(), password: password.clone() };
             match tokio::time::timeout(Duration::from_secs(20), postman_imap::Session::connect(&cfg)).await {
                 Ok(Ok(mut s)) => {
-                    let caps = ["IMAP4rev1", "IDLE", "MOVE", "UIDPLUS", "CONDSTORE", "QRESYNC", "SPECIAL-USE", "ID"]
-                        .map(|k| format!("{k}={}", s.has(k)));
+                    let caps =
+                        ["IMAP4rev1", "IDLE", "MOVE", "UIDPLUS", "CONDSTORE", "QRESYNC", "SPECIAL-USE", "ID"].map(|k| format!("{k}={}", s.has(k)));
                     let folders = s.folders().await.map(|f| f.len()).unwrap_or(0);
                     let inbox = s.select("INBOX").await;
                     println!(
@@ -170,12 +170,15 @@ fn probe() {
                 }
                 Err(mail_send::Error::AuthenticationFailed(_)) => println!("SMTP {port}: вход отклонён"),
                 Err(mail_send::Error::Io(_) | mail_send::Error::Timeout) => println!("SMTP {port}: нет связи"),
-                Err(e) => println!("SMTP {port}: {}", match e {
-                    mail_send::Error::MissingStartTls => "нет STARTTLS".to_owned(),
-                    mail_send::Error::UnsupportedAuthMechanism => "нет подходящего AUTH".to_owned(),
-                    mail_send::Error::Tls(_) => "TLS".to_owned(),
-                    _ => "протокол".to_owned(),
-                }),
+                Err(e) => println!(
+                    "SMTP {port}: {}",
+                    match e {
+                        mail_send::Error::MissingStartTls => "нет STARTTLS".to_owned(),
+                        mail_send::Error::UnsupportedAuthMechanism => "нет подходящего AUTH".to_owned(),
+                        mail_send::Error::Tls(_) => "TLS".to_owned(),
+                        _ => "протокол".to_owned(),
+                    }
+                ),
             }
         }
     });

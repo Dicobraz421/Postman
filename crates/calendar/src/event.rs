@@ -145,12 +145,7 @@ impl Event {
             }
         };
         let participants = raw.participants.values().map(participant).collect();
-        let location = raw
-            .locations
-            .values()
-            .filter_map(|l| l.get("name").and_then(Value::as_str))
-            .collect::<Vec<_>>()
-            .join("; ");
+        let location = raw.locations.values().filter_map(|l| l.get("name").and_then(Value::as_str)).collect::<Vec<_>>().join("; ");
         Ok(Event {
             id: raw.id,
             uid: raw.uid,
@@ -172,8 +167,7 @@ impl Event {
             participants,
             recurring: [raw.recurrence_rules, raw.recurrence_rule].into_iter().flatten().any(|r| !r.is_null()) || raw.recurrence_id.is_some(),
             keywords: {
-                let mut k: Vec<String> =
-                    raw.keywords.into_iter().chain(raw.categories).filter(|(_, on)| *on).map(|(k, _)| k).collect();
+                let mut k: Vec<String> = raw.keywords.into_iter().chain(raw.categories).filter(|(_, on)| *on).map(|(k, _)| k).collect();
                 k.sort();
                 k.dedup();
                 k

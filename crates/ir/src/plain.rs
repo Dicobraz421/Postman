@@ -25,10 +25,7 @@ fn blocks(lines: &[&str], depth: usize) -> Vec<Block> {
             while i < lines.len() && lines[i].starts_with('>') {
                 i += 1;
             }
-            let inner: Vec<&str> = lines[start..i]
-                .iter()
-                .map(|l| l[1..].strip_prefix(' ').unwrap_or(&l[1..]))
-                .collect();
+            let inner: Vec<&str> = lines[start..i].iter().map(|l| l[1..].strip_prefix(' ').unwrap_or(&l[1..])).collect();
             out.push(Block::Quote(blocks(&inner, depth + 1)));
             continue;
         }

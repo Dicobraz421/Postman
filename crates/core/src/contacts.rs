@@ -195,9 +195,7 @@ impl AddressBook {
                 (score, e)
             })
             .collect();
-        hits.sort_by(|a, b| {
-            b.0.total_cmp(&a.0).then_with(|| b.1.last.cmp(&a.1.last)).then_with(|| a.1.email.cmp(&b.1.email))
-        });
+        hits.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| b.1.last.cmp(&a.1.last)).then_with(|| a.1.email.cmp(&b.1.email)));
         hits.into_iter().take(limit).map(|(_, e)| e).collect()
     }
 }
@@ -271,10 +269,36 @@ fn translit(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         let t = match c {
-            'а' => "a", 'б' => "b", 'в' => "v", 'г' => "g", 'д' => "d", 'е' | 'ё' | 'э' => "e", 'ж' => "zh",
-            'з' => "z", 'и' => "i", 'й' => "y", 'к' => "k", 'л' => "l", 'м' => "m", 'н' => "n", 'о' => "o",
-            'п' => "p", 'р' => "r", 'с' => "s", 'т' => "t", 'у' => "u", 'ф' => "f", 'х' => "kh", 'ц' => "ts",
-            'ч' => "ch", 'ш' => "sh", 'щ' => "shch", 'ъ' | 'ь' => "", 'ы' => "y", 'ю' => "yu", 'я' => "ya",
+            'а' => "a",
+            'б' => "b",
+            'в' => "v",
+            'г' => "g",
+            'д' => "d",
+            'е' | 'ё' | 'э' => "e",
+            'ж' => "zh",
+            'з' => "z",
+            'и' => "i",
+            'й' => "y",
+            'к' => "k",
+            'л' => "l",
+            'м' => "m",
+            'н' => "n",
+            'о' => "o",
+            'п' => "p",
+            'р' => "r",
+            'с' => "s",
+            'т' => "t",
+            'у' => "u",
+            'ф' => "f",
+            'х' => "kh",
+            'ц' => "ts",
+            'ч' => "ch",
+            'ш' => "sh",
+            'щ' => "shch",
+            'ъ' | 'ь' => "",
+            'ы' => "y",
+            'ю' => "yu",
+            'я' => "ya",
             c => {
                 out.push(c);
                 continue;

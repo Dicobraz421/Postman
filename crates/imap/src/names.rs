@@ -52,13 +52,7 @@ pub fn folder(raw: &str, delimiter: Option<&str>, attrs: &[Attr]) -> Folder {
         Attr::Role(r) => Some(*r),
         _ => None,
     });
-    Folder {
-        raw: raw.to_owned(),
-        name,
-        parent,
-        role: special.or_else(|| role_by_name(raw, &decoded)),
-        selectable: !attrs.contains(&Attr::NoSelect),
-    }
+    Folder { raw: raw.to_owned(), name, parent, role: special.or_else(|| role_by_name(raw, &decoded)), selectable: !attrs.contains(&Attr::NoSelect) }
 }
 
 /// Роль по имени папки (без SPECIAL-USE): «Входящие» — всегда `INBOX`; остальное — частые имена en/ru верхнего
@@ -137,10 +131,7 @@ pub fn decode_header(value: &str) -> String {
         return value.to_owned();
     }
     let raw = format!("Subject: {value}\r\n\r\n");
-    mail_parser::MessageParser::new()
-        .parse_headers(raw.as_bytes())
-        .and_then(|m| m.subject().map(str::to_owned))
-        .unwrap_or_else(|| value.to_owned())
+    mail_parser::MessageParser::new().parse_headers(raw.as_bytes()).and_then(|m| m.subject().map(str::to_owned)).unwrap_or_else(|| value.to_owned())
 }
 
 /// Есть ли у письма вложение: часть с `Content-Disposition: attachment` или не текст и не multipart/alternative
@@ -152,9 +143,7 @@ pub fn has_attachment(b: &BodyStructure<'_>) -> bool {
         }
         BodyStructure::Multipart { common, bodies, .. } => {
             let mixed = common.ty.subtype.eq_ignore_ascii_case("mixed");
-            bodies.iter().any(|p| {
-                has_attachment(p) || (mixed && matches!(p, BodyStructure::Basic { .. } | BodyStructure::Message { .. }))
-            })
+            bodies.iter().any(|p| has_attachment(p) || (mixed && matches!(p, BodyStructure::Basic { .. } | BodyStructure::Message { .. })))
         }
     }
 }

@@ -112,8 +112,7 @@ pub fn bind(cx: &mut App, prefs: &postman_core::prefs::Prefs) {
         let context = b.context.as_deref().and_then(|s| KeyBindingContextPredicate::parse(s).ok()).map(Rc::new);
         let keys = b.keys.as_str();
         // «Нет у сервера — нет на экране» (S7-03): клавиша команды, которой у сервера нет, — тост, а не тишина.
-        let unavailable = (!crate::features::available(c.id, features))
-            .then(|| Box::new(crate::features::Unavailable) as Box<dyn Action>);
+        let unavailable = (!crate::features::available(c.id, features)).then(|| Box::new(crate::features::Unavailable) as Box<dyn Action>);
         let action = match unavailable.or_else(|| keyed_action(c, keys)) {
             Some(a) => a,
             None => match cx.build_action(&c.action_name(), None) {
@@ -147,16 +146,39 @@ fn keyed_action(c: &Command, keys: &str) -> Option<Box<dyn Action>> {
 pub(crate) mod rule {
     /// Исключения правила одного модификатора (DESIGN «Хоткеи»): ради привычки Outlook и стандарта Windows.
     /// Ctrl+Shift+B — встреча (S5-23).
-    pub(crate) const TWO_MODIFIERS: &[&str] =
-        &["ctrl-shift-r", "ctrl-shift-q", "ctrl-shift-c", "ctrl-shift-b", "ctrl-shift-v", "ctrl-shift-tab"];
+    pub(crate) const TWO_MODIFIERS: &[&str] = &["ctrl-shift-r", "ctrl-shift-q", "ctrl-shift-c", "ctrl-shift-b", "ctrl-shift-v", "ctrl-shift-tab"];
 
     /// Клавиши без модификатора (DESIGN «Хоткеи»): навигация и действие над выделенным; 1–9 — категории (решение №6);
     /// Space — «выполнено» в задачах (S6 решение 6);
     /// End — пара к Home в списке; «Меню» — контекстное меню, как Shift+F10. Буквы без модификатора — только в схеме
     /// «Одиночные клавиши» (S5-17).
     pub(crate) const BARE_KEYS: &[&str] = &[
-        "up", "down", "left", "right", "enter", "escape", "delete", "insert", "f2", "f3", "home", "end", "pageup", "pagedown",
-        "backspace", "menu", "space", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+        "up",
+        "down",
+        "left",
+        "right",
+        "enter",
+        "escape",
+        "delete",
+        "insert",
+        "f2",
+        "f3",
+        "home",
+        "end",
+        "pageup",
+        "pagedown",
+        "backspace",
+        "menu",
+        "space",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
     ];
 
     /// Сочетания, которые держит дизайн за будущими командами: привязать их раньше — нельзя (тест правила). Ctrl+J
@@ -351,10 +373,40 @@ mod tests {
     #[test]
     fn the_rule_rejects_what_the_design_forbids() {
         use super::rule::rule_check;
-        for bad in ["alt-s", "alt-up", "alt-home", "ctrl-shift-g", "ctrl-shift-f", "ctrl-alt-r", "j", "k", "a", "t", "n", "/", "shift-ctrl-k", "ctrl-k ctrl-s"] {
+        for bad in [
+            "alt-s",
+            "alt-up",
+            "alt-home",
+            "ctrl-shift-g",
+            "ctrl-shift-f",
+            "ctrl-alt-r",
+            "j",
+            "k",
+            "a",
+            "t",
+            "n",
+            "/",
+            "shift-ctrl-k",
+            "ctrl-k ctrl-s",
+        ] {
             assert!(rule_check(bad).is_err(), "{bad} прошло правило");
         }
-        for ok in ["ctrl-t", "ctrl-1", "ctrl-,", "shift-f3", "shift-down", "shift-f10", "insert", "pagedown", "home", "1", "shift-ctrl-r", "ctrl-shift-tab", "f2", "ctrl--"] {
+        for ok in [
+            "ctrl-t",
+            "ctrl-1",
+            "ctrl-,",
+            "shift-f3",
+            "shift-down",
+            "shift-f10",
+            "insert",
+            "pagedown",
+            "home",
+            "1",
+            "shift-ctrl-r",
+            "ctrl-shift-tab",
+            "f2",
+            "ctrl--",
+        ] {
             assert_eq!(rule_check(ok), Ok(()), "{ok}");
         }
     }
@@ -431,11 +483,7 @@ pub(crate) mod parity {
         s.push_str("> Генерируется из реестра команд (`app-gpui/src/commands.rs`) тестом `parity_doc_is_current`.\n");
         s.push_str("> Руками не править. Обновить: `POSTMAN_UPDATE_DOCS=1 cargo test -p postman-gpui parity`.\n");
         s.push_str("> «есть» — у действия команды есть обработчик на экране; доля сделанного только растёт (тест).\n\n");
-        s.push_str(&format!(
-            "Сделано: {done} из {} ({} %).\n\n",
-            all().len(),
-            done * 100 / all().len().max(1)
-        ));
+        s.push_str(&format!("Сделано: {done} из {} ({} %).\n\n", all().len(), done * 100 / all().len().max(1)));
         s.push_str("Хоткей — схема «Outlook» (по умолчанию); «Одиночные» — буквы схемы «Одиночные клавиши» (S5-17) поверх неё.\n\n");
         s.push_str("| Функция | Команда | Хоткей | Одиночные | Статус |\n|---|---|---|---|---|\n");
         for c in all() {

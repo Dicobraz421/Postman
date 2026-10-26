@@ -106,7 +106,11 @@ pub fn assign(task: &Task, me: &Address, watchers: &[Address], input: &Input, no
     let mut recipients = vec![to.clone()];
     recipients.extend(observers(&t));
     let ics = assign::request(&t, comment, false, now, tz);
-    Ok(Plan { task: t, status: Status::Waiting, outgoing: vec![Outgoing { method: "REQUEST".into(), ics, to: recipients, kind: StepKind::Assigned }] })
+    Ok(Plan {
+        task: t,
+        status: Status::Waiting,
+        outgoing: vec![Outgoing { method: "REQUEST".into(), ics, to: recipients, kind: StepKind::Assigned }],
+    })
 }
 
 /// Действие стороны `me` над поручением: проверка по таблице переходов, своя копия после него и письма.
@@ -546,7 +550,9 @@ mod tests {
         let boss = Address::new("Начальник", BOSS);
         let me = Address::new("Исполнитель", ME);
         let task = Task::new("d1@postman", "b", "Проверить отчёт");
-        let plan = assign(&task, &boss, &[Address::new("Наблюдатель", OBS)], &ask(&me, Some(at("2027-03-04T18:00:00")), "Нужен к четвергу"), 100, &tz).unwrap();
+        let plan =
+            assign(&task, &boss, &[Address::new("Наблюдатель", OBS)], &ask(&me, Some(at("2027-03-04T18:00:00")), "Нужен к четвергу"), 100, &tz)
+                .unwrap();
         assert_eq!(plan.status, Status::Waiting);
         let out = &plan.outgoing[0];
         assert_eq!((out.method.as_str(), out.to.iter().map(|a| a.email.as_str()).collect::<Vec<_>>()), ("REQUEST", vec![ME, OBS]));
@@ -593,12 +599,23 @@ mod tests {
     #[test]
     fn sides_due_and_reminders() {
         let tz = tz();
-        let plan = assign(&Task::new("d2", "b", "КП"), &Address::new("", BOSS), &[], &ask(&Address::new("", ME), Some(at("2027-03-04T18:00:00")), ""), 0, &tz).unwrap();
+        let plan = assign(
+            &Task::new("d2", "b", "КП"),
+            &Address::new("", BOSS),
+            &[],
+            &ask(&Address::new("", ME), Some(at("2027-03-04T18:00:00")), ""),
+            0,
+            &tz,
+        )
+        .unwrap();
         let t = plan.task;
         // Исполнитель не принимает результат, поручивший не «принимает» поручение.
         assert_eq!(act(&t, ME, Action::Remind, &Input::default(), 0, &tz), Err(Error::WrongSide));
         assert_eq!(act(&t, BOSS, Action::Accept, &Input::default(), 0, &tz), Err(Error::WrongSide));
-        assert_eq!(act(&t, BOSS, Action::AcceptResult, &Input::default(), 0, &tz), Err(Error::Invalid(Invalid { from: Status::Waiting, action: Action::AcceptResult })));
+        assert_eq!(
+            act(&t, BOSS, Action::AcceptResult, &Input::default(), 0, &tz),
+            Err(Error::Invalid(Invalid { from: Status::Waiting, action: Action::AcceptResult }))
+        );
         assert_eq!(act(&t, BOSS, Action::ChangeDue, &Input::default(), 0, &tz), Err(Error::NoDue));
         assert_eq!(act(&Task::new("x", "", "своя"), BOSS, Action::Remind, &Input::default(), 0, &tz), Err(Error::NotDelegation));
 
@@ -627,11 +644,21 @@ mod tests {
     #[test]
     fn counter_agree_and_keep() {
         let tz = tz();
-        let plan = assign(&Task::new("d3", "b", "ТЗ"), &Address::new("", BOSS), &[], &ask(&Address::new("", ME), Some(at("2027-03-04T12:00:00")), ""), 0, &tz).unwrap();
+        let plan = assign(
+            &Task::new("d3", "b", "ТЗ"),
+            &Address::new("", BOSS),
+            &[],
+            &ask(&Address::new("", ME), Some(at("2027-03-04T12:00:00")), ""),
+            0,
+            &tz,
+        )
+        .unwrap();
         let mut boss = plan.task.clone();
         let mine = parse(&plan.outgoing[0].ics).task;
         let want = at("2027-03-09T18:00:00");
-        let p = act(&mine, ME, Action::ProposeDue, &Input { due: Some(want.clone()), comment: "Жду разъяснений".into(), ..Input::default() }, 10, &tz).unwrap();
+        let p =
+            act(&mine, ME, Action::ProposeDue, &Input { due: Some(want.clone()), comment: "Жду разъяснений".into(), ..Input::default() }, 10, &tz)
+                .unwrap();
         assert_eq!((p.status, p.outgoing[0].method.as_str()), (Status::Proposed, "COUNTER"));
         let Received::Applied(b) = receive(&boss, &parse(&p.outgoing[0].ics), 11) else { panic!() };
         boss = *b;
@@ -653,7 +680,15 @@ mod tests {
     #[test]
     fn decline_reassign_and_revoke() {
         let tz = tz();
-        let plan = assign(&Task::new("d4", "b", "Пропуска"), &Address::new("", BOSS), &[Address::new("", OBS)], &ask(&Address::new("", ME), None, ""), 0, &tz).unwrap();
+        let plan = assign(
+            &Task::new("d4", "b", "Пропуска"),
+            &Address::new("", BOSS),
+            &[Address::new("", OBS)],
+            &ask(&Address::new("", ME), None, ""),
+            0,
+            &tz,
+        )
+        .unwrap();
         let mine = parse(&plan.outgoing[0].ics).task;
         let d = act(&mine, ME, Action::Decline, &Input { comment: "Нет доступа к системе".into(), ..Input::default() }, 5, &tz).unwrap();
         assert_eq!(d.outgoing[0].to.len(), 2, "отказ — и наблюдателю");
@@ -685,18 +720,21 @@ mod tests {
         let me = postman_demo::ME;
         let mut by_me = names(&section(&list, me, Tab::ByMe, true, &tz));
         // «Ждут принятия»: отклонено, предложен срок, ждёт.
-        assert_eq!(by_me, [
-            (Bucket::Review, vec![d::REVIEW]),
-            (Bucket::InWork, vec!["Ресурсный план группы на ноябрь"]),
-            (Bucket::Waiting, vec!["Заказать пропуска для аудиторов", "Требования к мониторингу для ТЗ", "Расчёт коммерческого предложения"]),
-        ]);
+        assert_eq!(
+            by_me,
+            [
+                (Bucket::Review, vec![d::REVIEW]),
+                (Bucket::InWork, vec!["Ресурсный план группы на ноябрь"]),
+                (Bucket::Waiting, vec!["Заказать пропуска для аудиторов", "Требования к мониторингу для ТЗ", "Расчёт коммерческого предложения"]),
+            ]
+        );
         // «Только свои» снят — ещё и где я наблюдатель.
         by_me[1].1.push(d::WATCHED);
         assert_eq!(names(&section(&list, me, Tab::ByMe, false, &tz)), by_me);
-        assert_eq!(names(&section(&list, me, Tab::ToMe, true, &tz)), [
-            (Bucket::New, vec![d::LETTER, d::INCOMING]),
-            (Bucket::InWork, vec!["Комментарии к статусу проектов"]),
-        ]);
+        assert_eq!(
+            names(&section(&list, me, Tab::ToMe, true, &tz)),
+            [(Bucket::New, vec![d::LETTER, d::INCOMING]), (Bucket::InWork, vec!["Комментарии к статусу проектов"]),]
+        );
         let c = counts(&list, me, false);
         assert_eq!(c, Counts { by_me: 5, by_me_shown: 6, to_me: 3, new: 2, review: 1, waiting: 4 });
         // Наблюдаю — не мне поручено и не я поручил; «Ждём» — только мои.

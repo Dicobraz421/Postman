@@ -355,8 +355,7 @@ pub async fn has_dav(url: &str) -> bool {
 
 /// Путь нового ресурса в коллекции: имя — из UID (процентное кодирование всего, кроме букв, цифр и `-._~`).
 pub fn child_href(collection: &str, name: &str, content: Content) -> String {
-    const KEEP: &percent_encoding::AsciiSet =
-        &percent_encoding::NON_ALPHANUMERIC.remove(b'-').remove(b'.').remove(b'_').remove(b'~');
+    const KEEP: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC.remove(b'-').remove(b'.').remove(b'_').remove(b'~');
     let base = if collection.ends_with('/') { collection.to_owned() } else { format!("{collection}/") };
     format!("{base}{}.{}", percent_encoding::utf8_percent_encode(name, KEEP), content.ext())
 }

@@ -10,75 +10,75 @@
 // Release: без окна консоли (S4-01). Отладочная сборка — с консолью, журнал виден сразу.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod account;
+mod actions;
+mod attachments;
+mod backend;
+mod bar;
+mod bulk;
 mod buttons;
 mod cal_model;
 mod calendar;
+mod chrome;
 mod commands;
-mod features;
-mod ir_view;
-#[cfg(test)]
-mod keys_doc;
-mod screens;
-mod sys;
-mod list;
-mod folders;
-mod reading;
-mod attachments;
-mod preview;
-mod invite_card;
-mod backend;
-mod plugins;
-mod bar;
-mod mailer;
-mod account;
-mod live;
-mod signin;
 mod compose;
 mod composer;
-mod actions;
-mod meeting;
-mod settings;
-mod vacation;
 mod contacts;
-mod rules;
-mod labels;
-mod thread;
-mod outline;
-mod folder_menu;
-mod send_later;
-mod roles;
-mod tabs;
-mod chrome;
-mod prefs;
-mod keymap;
-mod keytips;
 mod diagnostics;
-mod settings_general;
-mod settings_security;
-mod settings_look;
-mod security;
-mod settings_tab;
-mod settings_cats;
-mod settings_cal;
-mod settings_keys;
-mod settings_sign;
-mod settings_accounts;
+mod features;
 mod filters;
+mod folder_menu;
+mod folders;
+mod invite_card;
+mod ir_view;
+mod keymap;
+#[cfg(test)]
+mod keys_doc;
+mod keytips;
+mod labels;
 mod lifecycle;
-mod select;
-mod bulk;
+mod list;
+mod live;
+mod mailer;
+mod meeting;
 mod menu;
-mod states;
 mod notices;
+mod outline;
 mod palette;
-mod search;
-mod smime;
-mod shared;
-mod smime_enc;
-mod smime_seal;
-mod tasks;
 mod part;
 mod parts;
+mod plugins;
+mod prefs;
+mod preview;
+mod reading;
+mod roles;
+mod rules;
+mod screens;
+mod search;
+mod security;
+mod select;
+mod send_later;
+mod settings;
+mod settings_accounts;
+mod settings_cal;
+mod settings_cats;
+mod settings_general;
+mod settings_keys;
+mod settings_look;
+mod settings_security;
+mod settings_sign;
+mod settings_tab;
+mod shared;
+mod signin;
+mod smime;
+mod smime_enc;
+mod smime_seal;
+mod states;
+mod sys;
+mod tabs;
+mod tasks;
+mod thread;
+mod vacation;
 
 pub(crate) use mailer::{Mailer, Section};
 
@@ -367,9 +367,7 @@ mod tests {
             let source = std::fs::read_to_string(&path).unwrap();
             for (n, line) in source.lines().enumerate() {
                 for call in CALLS {
-                    let hit = line.match_indices(call).any(|(i, _)| {
-                        !line[..i].ends_with(|c: char| c.is_alphanumeric() || "_:.\"".contains(c))
-                    });
+                    let hit = line.match_indices(call).any(|(i, _)| !line[..i].ends_with(|c: char| c.is_alphanumeric() || "_:.\"".contains(c)));
                     if hit {
                         found.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
                     }

@@ -538,11 +538,7 @@ mod tests {
             let table = if lang == Lang::En { Categories::defaults(|id| id.to_owned()) } else { t.clone() };
             let p = parse(text, lang, today(), now(), Hours::default(), &table, &[]);
             let want_time = time.map(|(h, m)| Time::constant(h, m, 0, 0));
-            assert_eq!(
-                (p.title.as_str(), p.date, p.time, p.category.as_deref(), p.important),
-                (title, d, want_time, cat, imp),
-                "«{text}»"
-            );
+            assert_eq!((p.title.as_str(), p.date, p.time, p.category.as_deref(), p.important), (title, d, want_time, cat, imp), "«{text}»");
         }
     }
 

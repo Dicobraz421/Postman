@@ -185,10 +185,7 @@ impl Dav {
         );
         let r = self.xml("REPORT", cal, "1", &body).await;
         assert_eq!(r.status, 207, "sync-collection: {}", r.body);
-        let items = responses(&r.body)
-            .into_iter()
-            .map(|x| (between(x, "href>", "<").unwrap().to_owned(), !x.contains("404 Not Found")))
-            .collect();
+        let items = responses(&r.body).into_iter().map(|x| (between(x, "href>", "<").unwrap().to_owned(), !x.contains("404 Not Found"))).collect();
         let token = between(&r.body, "sync-token>", "<").expect("sync-token").to_owned();
         (items, token)
     }
@@ -229,8 +226,7 @@ fn cal_account(c: &Client) -> String {
 
 /// Вызовы одним запросом; ответы по порядку (ошибка метода — паника с текстом).
 async fn call(c: &Client, using: &[&str], calls: Vec<(&str, Value)>) -> Vec<Value> {
-    let inv: Vec<Invocation> =
-        calls.into_iter().enumerate().map(|(i, (m, a))| Invocation(m.into(), a, format!("c{i}"))).collect();
+    let inv: Vec<Invocation> = calls.into_iter().enumerate().map(|(i, (m, a))| Invocation(m.into(), a, format!("c{i}"))).collect();
     c.call(using, &inv).await.unwrap_or_else(|e| panic!("{e}")).into_iter().map(|r| r.1).collect()
 }
 
@@ -526,8 +522,22 @@ async fn jmap_task_fields_round_trip() {
     let got = get(&u.jmap, &id, Some(&props)).await;
     println!("JMAP Task: {got}");
     for k in [
-        "@type", "uid", "title", "description", "start", "due", "timeZone", "estimatedDuration", "priority",
-        "percentComplete", "progress", "keywords", "categories", "recurrenceRule", "alerts", "links",
+        "@type",
+        "uid",
+        "title",
+        "description",
+        "start",
+        "due",
+        "timeZone",
+        "estimatedDuration",
+        "priority",
+        "percentComplete",
+        "progress",
+        "keywords",
+        "categories",
+        "recurrenceRule",
+        "alerts",
+        "links",
     ] {
         assert_eq!(got[k], sent[k], "{k}");
     }
@@ -634,14 +644,22 @@ async fn task_query_by_due_and_status() {
     // CalDAV: и срок, и статус — на сервере.
     let (dav_cal, _) = u.dav.default_calendar().await;
     let uids = |items: Vec<(String, String)>| -> Vec<String> {
-        items.iter().filter_map(|(_, ics)| between(ics, "UID:", "\n").map(|s| s.trim().to_owned())).filter(|s| s.ends_with(&format!("{run}@itt.test"))).collect()
+        items
+            .iter()
+            .filter_map(|(_, ics)| between(ics, "UID:", "\n").map(|s| s.trim().to_owned()))
+            .filter(|s| s.ends_with(&format!("{run}@itt.test")))
+            .collect()
     };
     let uid = |i: u8| format!("{prefix}{i}-{run}@itt.test");
     let r = uids(u.dav.query(&dav_cal, "VTODO", r#"<c:time-range start="20270404T000000Z" end="20270409T000000Z"/>"#).await);
     assert!(r.contains(&uid(1)) && r.contains(&uid(2)) && !r.contains(&uid(3)), "{r:?}");
     let r = uids(u.dav.query(&dav_cal, "VTODO", r#"<c:prop-filter name="STATUS"><c:text-match>COMPLETED</c:text-match></c:prop-filter>"#).await);
     assert_eq!(r, vec![uid(2)]);
-    let r = uids(u.dav.query(&dav_cal, "VTODO", r#"<c:prop-filter name="STATUS"><c:text-match negate-condition="yes">COMPLETED</c:text-match></c:prop-filter>"#).await);
+    let r = uids(
+        u.dav
+            .query(&dav_cal, "VTODO", r#"<c:prop-filter name="STATUS"><c:text-match negate-condition="yes">COMPLETED</c:text-match></c:prop-filter>"#)
+            .await,
+    );
     println!("STATUS не COMPLETED: {r:?}");
     assert!(r.contains(&uid(1)) && r.contains(&uid(3)) && !r.contains(&uid(2)), "{r:?}");
 
@@ -679,7 +697,28 @@ async fn caldav_vtodo_round_trip_and_sync() {
     assert_eq!(unfold(&r.body).trim_end(), unfold(&ics).trim_end());
 
     // Вид в JMAP: CATEGORIES → keywords, ATTACH → links (`rel: enclosure`), X-, COMMENT — в `iCalendar`.
-    let j = by_uid(&u.jmap, &uid, &["@type", "keywords", "links", "estimatedDuration", "alerts", "relatedTo", "recurrenceRule", "progress", "percentComplete", "priority", "due", "start", "timeZone", "iCalendar"]).await.expect("VTODO не виден в JMAP");
+    let j = by_uid(
+        &u.jmap,
+        &uid,
+        &[
+            "@type",
+            "keywords",
+            "links",
+            "estimatedDuration",
+            "alerts",
+            "relatedTo",
+            "recurrenceRule",
+            "progress",
+            "percentComplete",
+            "priority",
+            "due",
+            "start",
+            "timeZone",
+            "iCalendar",
+        ],
+    )
+    .await
+    .expect("VTODO не виден в JMAP");
     println!("JMAP view of VTODO: {j}");
     assert_eq!(j["@type"], "Task");
     assert_eq!(j["keywords"], json!({ "Клиенты": true, "Команда": true }));
@@ -697,7 +736,10 @@ async fn caldav_vtodo_round_trip_and_sync() {
     }
 
     // Выполнение с If-Match; повтор со старым ETag — 412.
-    let done = vtodo(&uid, &body.replace("PERCENT-COMPLETE:20\r\nSTATUS:IN-PROCESS", "PERCENT-COMPLETE:100\r\nSTATUS:COMPLETED\r\nCOMPLETED:20261021T100000Z"));
+    let done = vtodo(
+        &uid,
+        &body.replace("PERCENT-COMPLETE:20\r\nSTATUS:IN-PROCESS", "PERCENT-COMPLETE:100\r\nSTATUS:COMPLETED\r\nCOMPLETED:20261021T100000Z"),
+    );
     let r = u.dav.put(&path, &done, Some(&etag1)).await;
     assert!(matches!(r.status, 200 | 204), "{} {}", r.status, r.body);
     let r = u.dav.put(&path, &ics, Some(&etag1)).await;
@@ -741,7 +783,10 @@ async fn filenode_task_list_round_trip() {
 
     let list2 = json!({ "tasks": [{ "uid": "t1", "title": "Ресурсный план", "progress": "completed" }] });
     let blob2 = u.jmap.upload(&acc, serde_json::to_vec(&list2).unwrap(), "application/json").await.unwrap();
-    assert!(matches!(u.jmap.write_file(&acc, &folder, Some(&id), &name, &blob2, "application/json", Some(&state)).await.unwrap(), Written::Done { .. }));
+    assert!(matches!(
+        u.jmap.write_file(&acc, &folder, Some(&id), &name, &blob2, "application/json", Some(&state)).await.unwrap(),
+        Written::Done { .. }
+    ));
     // Тот же прежний state — уже `stateMismatch`: правку другого клиента не затрём.
     assert_eq!(u.jmap.write_file(&acc, &folder, Some(&id), &name, &blob, "application/json", Some(&state)).await.unwrap(), Written::Stale);
 
@@ -798,11 +843,20 @@ async fn delegation_round_trip() {
     let their_id = by_uid(&b.jmap, &uid, &["id"]).await.unwrap()["id"].as_str().unwrap().to_owned();
     assert_eq!(theirs["organizerCalendarAddress"], format!("mailto:{}", a.email));
     assert_eq!(theirs["participants"]["p"]["participationStatus"], "needs-action");
-    assert!(theirs["iCalendar"]["properties"].as_array().unwrap().contains(&json!(["x-postman-project", {}, "unknown", "vec"])), "X-POSTMAN-* доходят до исполнителя");
-    assert!(mail_arrives(&b, "s601", &format!("Invitation: {title}"), DELIVERY).await, "письмо не пришло: порог входящих на адрес (docs/STALWART.md п. 17)?");
+    assert!(
+        theirs["iCalendar"]["properties"].as_array().unwrap().contains(&json!(["x-postman-project", {}, "unknown", "vec"])),
+        "X-POSTMAN-* доходят до исполнителя"
+    );
+    assert!(
+        mail_arrives(&b, "s601", &format!("Invitation: {title}"), DELIVERY).await,
+        "письмо не пришло: порог входящих на адрес (docs/STALWART.md п. 17)?"
+    );
     // Сейчас: наблюдатель получает то же приглашение и копию — сервер не различает «только итоги» (решение 9).
     assert!(eventually("копия у наблюдателя", DELIVERY, || by_uid(&w.jmap, &uid, &["id"])).await.is_some());
-    assert!(mail_arrives(&w, "s601", &format!("Invitation: {title}"), DELIVERY).await, "письмо не пришло: порог входящих на адрес (docs/STALWART.md п. 17)?");
+    assert!(
+        mail_arrives(&w, "s601", &format!("Invitation: {title}"), DELIVERY).await,
+        "письмо не пришло: порог входящих на адрес (docs/STALWART.md п. 17)?"
+    );
 
     let at_organizer = |want: fn(&Value) -> bool| {
         let c = a.jmap.clone();
@@ -815,12 +869,18 @@ async fn delegation_round_trip() {
 
     // Принять.
     update(&b.jmap, &their_id, json!({ "participants/p/participationStatus": "accepted" }), true).await;
-    let v = eventually("принято у поручившего", DELIVERY, || at_organizer(|v| v["participants"]["p"]["participationStatus"] == "accepted")).await;
+    let v = eventually("принято у поручившего", DELIVERY, || {
+        at_organizer(|v| v["participants"]["p"]["participationStatus"] == "accepted")
+    })
+    .await;
     assert!(v.is_some(), "REPLY ACCEPTED не дошёл");
 
     // В работе, 50 %: прогресс участника и задачи — одним патчем.
     update(&b.jmap, &their_id, json!({ "participants/p/progress": "in-process", "progress": "in-process", "percentComplete": 50 }), true).await;
-    let v = eventually("в работе у поручившего", DELIVERY, || at_organizer(|v| v["percentComplete"] == 50 && v["participants"]["p"]["progress"] == "in-process")).await;
+    let v = eventually("в работе у поручившего", DELIVERY, || {
+        at_organizer(|v| v["percentComplete"] == 50 && v["participants"]["p"]["progress"] == "in-process")
+    })
+    .await;
     let v = v.expect("прогресс исполнителя не дошёл");
     assert_eq!(v["progress"], "in-process");
     let (_, ics) = a.dav.by_uid(&cal_a, "VTODO", &uid).await.unwrap();
@@ -843,7 +903,10 @@ async fn delegation_round_trip() {
     .await
     .expect("изменение срока не дошло");
     assert_eq!(t["sequence"], 1);
-    assert!(mail_arrives(&b, "s601", &format!("Updated invitation: {title}"), DELIVERY).await, "письмо не пришло: порог входящих на адрес (docs/STALWART.md п. 17)?");
+    assert!(
+        mail_arrives(&b, "s601", &format!("Updated invitation: {title}"), DELIVERY).await,
+        "письмо не пришло: порог входящих на адрес (docs/STALWART.md п. 17)?"
+    );
 
     // «Предложить срок» письмом: COUNTER (RFC 5546 §3.4.7). Сейчас: письмо доходит, копию у поручившего сервер не
     // меняет — предложение разбирает и показывает клиент.
@@ -856,7 +919,10 @@ async fn delegation_round_trip() {
         ),
     );
     send_imip(&b, &a.email, &format!("Counter: {title}"), "COUNTER", &counter).await;
-    assert!(mail_arrives(&a, "s601", &format!("Counter: {title}"), DELIVERY).await, "письмо не пришло: порог входящих на адрес (docs/STALWART.md п. 17)?");
+    assert!(
+        mail_arrives(&a, "s601", &format!("Counter: {title}"), DELIVERY).await,
+        "письмо не пришло: порог входящих на адрес (docs/STALWART.md п. 17)?"
+    );
     tokio::time::sleep(Duration::from_secs(3)).await;
     assert_eq!(get(&a.jmap, &mine, Some(&["due"])).await["due"], "2027-03-05T18:00:00", "COUNTER применён сервером");
 
@@ -870,7 +936,10 @@ async fn delegation_round_trip() {
         ),
     );
     send_imip(&b, &a.email, &format!("Declined: {title}"), "REPLY", &decline).await;
-    let v = eventually("отказ у поручившего", DELIVERY, || at_organizer(|v| v["participants"]["p"]["participationStatus"] == "declined")).await;
+    let v = eventually("отказ у поручившего", DELIVERY, || {
+        at_organizer(|v| v["participants"]["p"]["participationStatus"] == "declined")
+    })
+    .await;
     assert!(v.is_some(), "REPLY письмом не применён");
     let (_, ics) = a.dav.by_uid(&cal_a, "VTODO", &uid).await.unwrap();
     assert!(ics.contains("PARTSTAT=DECLINED") && !ics.contains("Нет доступа"), "{ics}");
@@ -882,7 +951,10 @@ async fn delegation_round_trip() {
     })
     .await;
     assert!(cancelled.is_some(), "CANCEL не дошёл до наблюдателя");
-    assert!(mail_arrives(&w, "s601", &format!("Cancelled: {title}"), DELIVERY).await, "письмо не пришло: порог входящих на адрес (docs/STALWART.md п. 17)?");
+    assert!(
+        mail_arrives(&w, "s601", &format!("Cancelled: {title}"), DELIVERY).await,
+        "письмо не пришло: порог входящих на адрес (docs/STALWART.md п. 17)?"
+    );
     let t = by_uid(&b.jmap, &uid, &["progress"]).await.expect("копия исполнителя");
     assert_ne!(t["progress"], "cancelled", "CANCEL дошёл и до отказавшегося — обновить находку");
     assert!(mails(&b.jmap, "s601", &format!("Cancelled: {title}")).await.is_empty());
@@ -978,14 +1050,19 @@ async fn imip_request_by_mail_lands_in_calendar() {
         ),
     );
     send_imip(&a, &b.email, &format!("Поручение: {title}"), "REQUEST", &request).await;
-    let t = eventually("VTODO из письма у исполнителя", DELIVERY, || by_uid(&b.jmap, &uid, &["@type", "due", "participants", "iCalendar"]))
-        .await
-        .expect("сервер не положил VTODO из iMIP в календарь (или письмо не дошло: порог входящих, п. 17)");
+    let t = eventually("VTODO из письма у исполнителя", DELIVERY, || {
+        by_uid(&b.jmap, &uid, &["@type", "due", "participants", "iCalendar"])
+    })
+    .await
+    .expect("сервер не положил VTODO из iMIP в календарь (или письмо не дошло: порог входящих, п. 17)");
     println!("копия из iMIP: {t}");
     assert_eq!(t["@type"], "Task");
     assert_eq!(t["due"], "2027-03-10T00:00:00");
     assert!(t["iCalendar"]["properties"].as_array().unwrap().contains(&json!(["x-postman-project", {}, "unknown", "vec"])));
-    assert!(mail_arrives(&b, "s601", &format!("Поручение: {title}"), DELIVERY).await, "письмо не пришло: порог входящих на адрес (docs/STALWART.md п. 17)?");
+    assert!(
+        mail_arrives(&b, "s601", &format!("Поручение: {title}"), DELIVERY).await,
+        "письмо не пришло: порог входящих на адрес (docs/STALWART.md п. 17)?"
+    );
     sweep(&a, prefix, subject).await;
     sweep(&b, prefix, subject).await;
 }
@@ -1072,8 +1149,8 @@ async fn letter_row(c: &Client, id: &str) -> Option<postman_cache::EmailRow> {
 #[tokio::test]
 #[ignore = "нужен стенд Stalwart: docs/STALWART.md"]
 async fn mail_due_is_task() {
-    use postman_core::mailtask;
     use postman_backend_jmap::tasks::JmapStore;
+    use postman_core::mailtask;
     use postman_core::tasks::{self, Reply, Request};
     let (a, b) = (user(1).await, user(1).await);
     let prefix = "postman-s601-maildue-";
@@ -1177,9 +1254,9 @@ async fn task_block_in_calendar() {
 #[tokio::test]
 #[ignore = "нужен стенд Stalwart: docs/STALWART.md"]
 async fn postman_delegation_cycle() {
+    use postman_backend_jmap::tasks::JmapStore;
     use postman_calendar::assign::{self as model, Action, Incoming, Status};
     use postman_core::assign::{self, Input, Received};
-    use postman_backend_jmap::tasks::JmapStore;
     use postman_core::tasks::{self, Reply, Request};
     let (a, b, w) = (user(1).await, user(2).await, user(3).await);
     let prefix = "postman-s609-deleg-";
@@ -1200,7 +1277,15 @@ async fn postman_delegation_cycle() {
 
     // Поручить: своя запись (без рассылки) и письмо REQUEST исполнителю и наблюдателю.
     let due = postman_calendar::Moment::new("2027-03-04T18:00:00".parse().unwrap(), Some("Europe/Moscow"));
-    let plan = assign::assign(&postman_calendar::Task::new(&uid, "", &title), &addr(&a, "User 1"), &[addr(&w, "User 3")], &Input { comment: "Нужен к четвергу".into(), due: Some(due), to: Some(addr(&b, "User 2")) }, now(), &tz).unwrap();
+    let plan = assign::assign(
+        &postman_calendar::Task::new(&uid, "", &title),
+        &addr(&a, "User 1"),
+        &[addr(&w, "User 3")],
+        &Input { comment: "Нужен к четвергу".into(), due: Some(due), to: Some(addr(&b, "User 2")) },
+        now(),
+        &tz,
+    )
+    .unwrap();
     tasks::handle(&sa, &ca, Request::Save(Box::new(plan.task.clone())), &quiet).await.unwrap();
     let out = &plan.outgoing[0];
     for to in &out.to {
@@ -1208,7 +1293,9 @@ async fn postman_delegation_cycle() {
     }
 
     // У исполнителя — копия из письма (сервер кладёт VTODO сам); шаг «поручено» с комментарием — из письма.
-    let raw = eventually("копия у исполнителя", DELIVERY, || by_uid(&b.jmap, &uid, postman_calendar::TASK_PROPERTIES)).await.expect("поручение не дошло (порог входящих, п. 17?)");
+    let raw = eventually("копия у исполнителя", DELIVERY, || by_uid(&b.jmap, &uid, postman_calendar::TASK_PROPERTIES))
+        .await
+        .expect("поручение не дошло (порог входящих, п. 17?)");
     tasks::handle(&sb, &cb, Request::Load, &quiet).await.unwrap();
     let mut mine = tasks::from_row(&cb.task(&uid).unwrap().expect("копия в кэше исполнителя")).unwrap();
     assert!(mine.is_assigned_to(&b.email), "{raw}");
@@ -1219,11 +1306,9 @@ async fn postman_delegation_cycle() {
 
     // Шаги исполнителя: своя копия — правкой без рассылки, ответ — своим письмом REPLY.
     let mut boss = tasks::from_row(&ca.task(&uid).unwrap().unwrap()).unwrap();
-    for (action, comment, want) in [
-        (Action::Accept, "", Status::Accepted),
-        (Action::Start, "Начал", Status::InProgress),
-        (Action::Finish, "Отчёт готов", Status::Done),
-    ] {
+    for (action, comment, want) in
+        [(Action::Accept, "", Status::Accepted), (Action::Start, "Начал", Status::InProgress), (Action::Finish, "Отчёт готов", Status::Done)]
+    {
         let p = assign::act(&mine, &b.email, action, &Input { comment: comment.into(), ..Input::default() }, now(), &tz).unwrap();
         tasks::handle(&sb, &cb, Request::Save(Box::new(p.task.clone())), &quiet).await.unwrap();
         mine = tasks::from_row(&cb.task(&uid).unwrap().unwrap()).unwrap();

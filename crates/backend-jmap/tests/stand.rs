@@ -306,10 +306,7 @@ async fn event_keywords_sequence_and_principal_kinds() {
     })
     .await;
     let mine = a.client.event_by_uid(&uid).await.unwrap().expect("у организатора");
-    eprintln!(
-        "sequence: organizer={} attendee before={} after={}",
-        mine["sequence"], first["sequence"], moved["sequence"]
-    );
+    eprintln!("sequence: organizer={} attendee before={} after={}", mine["sequence"], first["sequence"], moved["sequence"]);
     // Перенос с рассылкой — новая версия у участника (без `sequence` в ответе — 0).
     let seq = |e: &Value| e["sequence"].as_i64().unwrap_or(0);
     assert!(seq(&moved) > seq(&first), "sequence не вырос: {} → {}", first["sequence"], moved["sequence"]);
@@ -438,11 +435,7 @@ async fn contacts_are_read() {
         "name": { "components": [{ "kind": "given", "value": "Иван" }, { "kind": "surname", "value": format!("Стендов{stamp}") }] },
         "emails": { "e1": { "address": format!("ivan.{stamp}@example.com") } }
     });
-    let created = a
-        .client
-        .call(&using, &[call("ContactCard/set", serde_json::json!({ "accountId": acc, "create": { "n": card } }))])
-        .await
-        .unwrap();
+    let created = a.client.call(&using, &[call("ContactCard/set", serde_json::json!({ "accountId": acc, "create": { "n": card } }))]).await.unwrap();
     let id = created[0].1["created"]["n"]["id"].as_str().expect("карточка создана").to_string();
 
     let cards = a.client.contact_cards().await.unwrap();
@@ -450,10 +443,7 @@ async fn contacts_are_read() {
     // Stalwart сам заполняет `name.full` по компонентам в их порядке (`isOrdered`): имя, фамилия.
     assert_eq!(c.name, format!("Иван Стендов{stamp}"));
     assert_eq!(c.emails, [format!("ivan.{stamp}@example.com")]);
-    a.client
-        .call(&using, &[call("ContactCard/set", serde_json::json!({ "accountId": acc, "destroy": [id] }))])
-        .await
-        .unwrap();
+    a.client.call(&using, &[call("ContactCard/set", serde_json::json!({ "accountId": acc, "destroy": [id] }))]).await.unwrap();
 }
 
 /// Контакты (S4-02) методами клиента, как в приложении: user3 создаёт карточку с телефоном, организацией и
@@ -511,8 +501,8 @@ async fn contacts_are_edited_and_directory_is_listed() {
 #[tokio::test]
 #[ignore = "нужен стенд Stalwart: docs/STALWART.md"]
 async fn contacts_through_sync() {
-    use postman_core::sync::{Account, Command, Event as SyncEvent};
     use postman_core::model::ContactCard;
+    use postman_core::sync::{Account, Command, Event as SyncEvent};
 
     let email = env("POSTMAN_STAND_USER3");
     let account = Account {
@@ -535,17 +525,12 @@ async fn contacts_through_sync() {
             }
         }
     };
-    let SyncEvent::DirectoryLoaded(people) = wait("DirectoryLoaded", &|e| matches!(e, SyncEvent::DirectoryLoaded(_))) else {
-        unreachable!()
-    };
+    let SyncEvent::DirectoryLoaded(people) = wait("DirectoryLoaded", &|e| matches!(e, SyncEvent::DirectoryLoaded(_))) else { unreachable!() };
     assert!(people.iter().any(|p| p.email.as_deref().is_some_and(|e| e.eq_ignore_ascii_case(&email))), "{people:?}");
 
     let stamp = stamp();
-    let card = ContactCard {
-        name: format!("Синхронов{stamp} Иван"),
-        emails: vec![format!("ivan.{stamp}@example.com")],
-        ..Default::default()
-    };
+    let card =
+        ContactCard { name: format!("Синхронов{stamp} Иван"), emails: vec![format!("ivan.{stamp}@example.com")], ..Default::default() };
     // Список с карточкой `id` и `phones` телефонами; `None` — без неё.
     let listed = |e: &SyncEvent, id: &str, phones: Option<usize>| match (e, phones) {
         (SyncEvent::ContactsLoaded(cards), Some(n)) => cards.iter().any(|c| c.id == id && c.phones.len() == n),
@@ -646,16 +631,13 @@ async fn calendar_through_sync() {
     let zoned = |d: jiff::civil::DateTime| d.to_zoned(jiff::tz::TimeZone::get(tz).unwrap()).unwrap().timestamp().as_second();
     let (from, to) = (zoned(busy_start.date().at(0, 0, 0, 0)), zoned(busy_start.date().at(23, 59, 0, 0)));
     assert!(commands.send(Command::Events { from, to }).is_ok());
-    let SyncEvent::EventsLoaded { events, .. } = wait("EventsLoaded", &|e| matches!(e, SyncEvent::EventsLoaded { .. })) else {
-        unreachable!()
-    };
+    let SyncEvent::EventsLoaded { events, .. } = wait("EventsLoaded", &|e| matches!(e, SyncEvent::EventsLoaded { .. })) else { unreachable!() };
     let mine = events.iter().find(|e| e.uid == uid).expect("встреча в неделе user1");
     assert_eq!((mine.span.start, mine.span.len()), (zoned(meeting_start), 1800));
     assert!(mine.participants.iter().any(|p| p.email.eq_ignore_ascii_case(&c.email)));
 
     assert!(commands.send(Command::Availability { ticket: 2, emails: vec![c.email.clone()], from, to, sender: None }).is_ok());
-    let SyncEvent::Availability { me, people, error, .. } = wait("Availability", &|e| matches!(e, SyncEvent::Availability { .. }))
-    else {
+    let SyncEvent::Availability { me, people, error, .. } = wait("Availability", &|e| matches!(e, SyncEvent::Availability { .. })) else {
         unreachable!()
     };
     assert_eq!(error, None);
@@ -684,7 +666,7 @@ type SyncEvents = std::sync::mpsc::Receiver<postman_core::sync::Event>;
 
 /// Поток синхронизации user`n` на кэше в памяти: команды и события.
 fn sync_of(n: u8, password: String) -> (postman_core::sync::UnboundedSender<postman_core::sync::Command>, SyncEvents) {
-    use postman_core::sync::{Account};
+    use postman_core::sync::Account;
     let user = env(&format!("POSTMAN_STAND_USER{n}"));
     let account = Account { url: env("POSTMAN_STAND_URL"), auth: postman_core::model::Auth::Basic { user, password } };
     let (tx, rx) = std::sync::mpsc::channel();
@@ -902,7 +884,15 @@ async fn meeting_edit_and_cancel_through_sync() {
     // Забытое прошлыми прогонами (упавший тест) — убрать у обоих: события с UID `postman-s707b-` в окне.
     for u in [&a, &c] {
         let utc = |t: i64| jiff::Timestamp::from_second(t).unwrap().strftime("%Y-%m-%dT%H:%M:%SZ").to_string();
-        let mut uids: Vec<String> = u.client.events(None, &utc(from), &utc(to)).await.unwrap().iter().filter_map(|v| v["uid"].as_str().map(str::to_owned)).filter(|x| x.starts_with("postman-s707b-")).collect();
+        let mut uids: Vec<String> = u
+            .client
+            .events(None, &utc(from), &utc(to))
+            .await
+            .unwrap()
+            .iter()
+            .filter_map(|v| v["uid"].as_str().map(str::to_owned))
+            .filter(|x| x.starts_with("postman-s707b-"))
+            .collect();
         uids.dedup();
         for x in uids {
             if let Some(e) = u.client.event_by_uid(&x).await.unwrap() {

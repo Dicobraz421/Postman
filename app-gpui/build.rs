@@ -40,12 +40,7 @@ fn rc_path(p: &Path) -> String {
 fn version_info(description: &str, file: &str) -> Result<String, Box<dyn Error>> {
     let v = env::var("CARGO_PKG_VERSION")?;
     let n = |k: &str| env::var(k).map_err(|e| format!("{k}: {e}"));
-    let comma = format!(
-        "{},{},{},0",
-        n("CARGO_PKG_VERSION_MAJOR")?,
-        n("CARGO_PKG_VERSION_MINOR")?,
-        n("CARGO_PKG_VERSION_PATCH")?
-    );
+    let comma = format!("{},{},{},0", n("CARGO_PKG_VERSION_MAJOR")?, n("CARGO_PKG_VERSION_MINOR")?, n("CARGO_PKG_VERSION_PATCH")?);
     let license = env::var("CARGO_PKG_LICENSE").unwrap_or_default();
     Ok(format!(
         "1 VERSIONINFO\n\

@@ -103,7 +103,9 @@ mod tests {
     use super::*;
 
     fn card<'a>(emails: &'a [String], phones: &'a [String]) -> Card<'a> {
-        Card { uid: "c1", name: "Иван Петров", emails, phones, organization: "Рога и копыта", title: "Директор, отдел" }
+        Card {
+            uid: "c1", name: "Иван Петров", emails, phones, organization: "Рога и копыта", title: "Директор, отдел"
+        }
     }
 
     #[test]

@@ -39,14 +39,7 @@ pub struct MailboxRights {
 
 impl Default for MailboxRights {
     fn default() -> Self {
-        Self {
-            may_read_items: true,
-            may_add_items: true,
-            may_remove_items: true,
-            may_set_seen: true,
-            may_set_keywords: true,
-            may_submit: true,
-        }
+        Self { may_read_items: true, may_add_items: true, may_remove_items: true, may_set_seen: true, may_set_keywords: true, may_submit: true }
     }
 }
 
@@ -63,8 +56,19 @@ impl EmailAddress {
 }
 
 pub const SUMMARY_PROPERTIES: &[&str] = &[
-    "id", "threadId", "mailboxIds", "keywords", "receivedAt", "subject", "from", "to", "cc", "preview",
-    "hasAttachment", "size", "header:Content-Type",
+    "id",
+    "threadId",
+    "mailboxIds",
+    "keywords",
+    "receivedAt",
+    "subject",
+    "from",
+    "to",
+    "cc",
+    "preview",
+    "hasAttachment",
+    "size",
+    "header:Content-Type",
 ];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -357,9 +361,7 @@ pub enum Filter {
 
 impl Filter {
     pub fn to_json(&self) -> Value {
-        let op = |op: &str, list: &[Filter]| {
-            json!({ "operator": op, "conditions": list.iter().map(Filter::to_json).collect::<Vec<_>>() })
-        };
+        let op = |op: &str, list: &[Filter]| json!({ "operator": op, "conditions": list.iter().map(Filter::to_json).collect::<Vec<_>>() });
         match self {
             Filter::InMailbox(m) => json!({ "inMailbox": m }),
             Filter::HasKeyword(k) => json!({ "hasKeyword": k }),
@@ -443,14 +445,7 @@ impl Client {
         let mut r = self.call(USING, &calls).await?;
         let q: QueryResponse = take(&mut r, "q")?;
         let g: GetResponse<EmailSummary> = take(&mut r, "g")?;
-        Ok(EmailPage {
-            total: q.total.unwrap_or(0),
-            position: q.position,
-            ids: q.ids,
-            emails: g.list,
-            query_state: q.query_state,
-            state: g.state,
-        })
+        Ok(EmailPage { total: q.total.unwrap_or(0), position: q.position, ids: q.ids, emails: g.list, query_state: q.query_state, state: g.state })
     }
 
     pub async fn email_get(&self, ids: &[String]) -> Result<(Vec<EmailSummary>, String)> {
@@ -583,8 +578,7 @@ impl Client {
                 from: e.from.as_ref().and_then(|f| f.first()).and_then(|a| a.email.clone()).unwrap_or_default(),
                 received_at: utc_to_unix(&e.received_at).unwrap_or(0),
                 seen: e.keywords.get("$seen").copied().unwrap_or(false),
-                list: e.list_id.as_deref().is_some_and(|v| !v.trim().is_empty())
-                    || e.unsubscribe.as_deref().is_some_and(|v| !v.trim().is_empty()),
+                list: e.list_id.as_deref().is_some_and(|v| !v.trim().is_empty()) || e.unsubscribe.as_deref().is_some_and(|v| !v.trim().is_empty()),
                 id: e.id,
             })
             .collect())
@@ -750,10 +744,7 @@ mod tests {
     fn keyword_patch_touches_only_named_keywords() {
         let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
         let patch = keywords_patch(&s(&["pm.cat.clients", "$flagged"]), &s(&["pm.cat.team"]));
-        assert_eq!(
-            patch,
-            json!({ "keywords/pm.cat.clients": true, "keywords/$flagged": true, "keywords/pm.cat.team": null })
-        );
+        assert_eq!(patch, json!({ "keywords/pm.cat.clients": true, "keywords/$flagged": true, "keywords/pm.cat.team": null }));
         assert_eq!(keyword_path("a/b~c"), "keywords/a~1b~0c");
         assert_eq!(keywords_patch(&[], &[]), json!({}));
         // Снять и поставить одно слово — ставится (добавления — после снятий).
@@ -792,10 +783,7 @@ mod tests {
     #[test]
     fn email_patch_paths() {
         let p = EmailPatch::default().mailbox("in", false).mailbox("arch", true).keyword("$seen", false).keyword("pm.remind", true);
-        assert_eq!(
-            p.to_json(),
-            json!({ "mailboxIds/in": null, "mailboxIds/arch": true, "keywords/$seen": null, "keywords/pm.remind": true })
-        );
+        assert_eq!(p.to_json(), json!({ "mailboxIds/in": null, "mailboxIds/arch": true, "keywords/$seen": null, "keywords/pm.remind": true }));
         assert!(EmailPatch::default().is_empty());
     }
 

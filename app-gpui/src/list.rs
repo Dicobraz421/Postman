@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
 use gpui_kit::component::{VirtualListScrollHandle, v_virtual_list};
-use gpui_kit::*;
 use gpui_kit::prelude::*;
+use gpui_kit::*;
 use pets_i18n::tr;
 use postman_cache::{Cache, EmailRow, MailboxRow, Rights, Scan};
 use postman_core::filters::{Arranged, Counts, Days, Facts, Group, Hit, Me, Sort, arrange};
@@ -48,9 +48,17 @@ pub(crate) struct FlagWriter {
 
 /// Что записать в хранилище.
 pub(crate) enum Write {
-    Flags { id: String, seen: bool, flagged: bool },
+    Flags {
+        id: String,
+        seen: bool,
+        flagged: bool,
+    },
     /// Ключевые слова (категории): поставить `add`, снять `remove`.
-    Keywords { id: String, add: Vec<String>, remove: Vec<String> },
+    Keywords {
+        id: String,
+        add: Vec<String>,
+        remove: Vec<String>,
+    },
 }
 
 impl Write {
@@ -296,10 +304,7 @@ pub(crate) struct More {
 impl More {
     /// Просить следующую страницу: до конца загруженного меньше запаса окна, а на сервере писем больше.
     pub(crate) fn wanted(&self, visible_end: usize, count: usize) -> bool {
-        !self.asked
-            && !self.exhausted
-            && self.total.is_some_and(|t| count < t)
-            && visible_end + WINDOW_MARGIN >= count
+        !self.asked && !self.exhausted && self.total.is_some_and(|t| count < t) && visible_end + WINDOW_MARGIN >= count
     }
 
     /// Число писем на сервере (папки перечитаны); изменилось — снова можно просить.
@@ -698,11 +703,7 @@ impl MailList {
     /// Клавиша 1–9: категория с этой клавишей на выбранном письме — поставить или снять (DESIGN.md, «Настройки»).
     pub(crate) fn toggle_category(&mut self, key: u8, cx: &mut Context<Self>) {
         let Some(mut row) = self.selected_row() else { return };
-        let keyword = self
-            .labels
-            .for_account(postman_cache::account_of(&row.id))
-            .and_then(|t| t.by_key(key))
-            .map(|c| c.keyword.clone());
+        let keyword = self.labels.for_account(postman_cache::account_of(&row.id)).and_then(|t| t.by_key(key)).map(|c| c.keyword.clone());
         let Some(keyword) = keyword else {
             cx.emit(LabelNotice::NoCategory(key));
             return;
@@ -948,8 +949,7 @@ impl MailList {
         let (off, rows) = (self.rows.0, self.rows.1.len());
         let end = off + rows;
         let loaded = rows > 0 && range.start >= off && range.end <= end;
-        let near_edge = (off > 0 && range.start < off + WINDOW_MARGIN / 2)
-            || (end < self.count && range.end + WINDOW_MARGIN / 2 > end);
+        let near_edge = (off > 0 && range.start < off + WINDOW_MARGIN / 2) || (end < self.count && range.end + WINDOW_MARGIN / 2 > end);
         if loaded && !near_edge {
             return;
         }
@@ -1065,8 +1065,7 @@ impl MailList {
 
     pub(crate) fn set_flags(&mut self, seen: Option<bool>, toggle_flag: bool, cx: &mut Context<Self>) {
         let Some(mut row) = self.selected.and_then(|i| self.row(i)).cloned() else { return };
-        let allowed = (seen.is_none() || may(&self.rights, &row, |r| r.seen))
-            && (!toggle_flag || may(&self.rights, &row, |r| r.keywords));
+        let allowed = (seen.is_none() || may(&self.rights, &row, |r| r.seen)) && (!toggle_flag || may(&self.rights, &row, |r| r.keywords));
         if !allowed {
             cx.emit(ReadOnly);
             return;
@@ -1314,30 +1313,18 @@ impl Render for MailList {
         } else if empty {
             let model = self.filters.clone();
             body.child(
-                div()
-                    .pt(px(40.))
-                    .px(px(24.))
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(px(8.))
-                    .text_color(l.text2())
-                    .child(tr!("filters-empty"))
-                    .child(
-                        div()
-                            .id("empty-reset")
-                            .text_color(l.accent_text())
-                            .cursor_pointer()
-                            .child(tr!("filters-chip-reset"))
-                            .on_click(move |_, _, cx| {
-                                model.update(cx, |m, cx| {
-                                    m.change(cx, |q| {
-                                        q.criteria.clear_panel();
-                                        q.criteria.quick.clear();
-                                    })
+                div().pt(px(40.)).px(px(24.)).flex().flex_col().items_center().gap(px(8.)).text_color(l.text2()).child(tr!("filters-empty")).child(
+                    div().id("empty-reset").text_color(l.accent_text()).cursor_pointer().child(tr!("filters-chip-reset")).on_click(
+                        move |_, _, cx| {
+                            model.update(cx, |m, cx| {
+                                m.change(cx, |q| {
+                                    q.criteria.clear_panel();
+                                    q.criteria.quick.clear();
                                 })
-                            }),
+                            })
+                        },
                     ),
+                ),
             )
         } else {
             body.child(list).child(Scrollbar::vertical(&self.scroll).mode(ScrollbarMode::Always))
@@ -1348,16 +1335,10 @@ impl Render for MailList {
                 Sort::Sender => Box::new(crate::filters::view::SortBySender),
                 Sort::Size => Box::new(crate::filters::view::SortBySize),
             });
-            div()
-                .id("sort-menu")
-                .absolute()
-                .top(px(38.))
-                .right(px(6.))
-                .child(menu)
-                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    this.sort_open = false;
-                    cx.notify();
-                }))
+            div().id("sort-menu").absolute().top(px(38.)).right(px(6.)).child(menu).on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.sort_open = false;
+                cx.notify();
+            }))
         });
         div()
             .relative()

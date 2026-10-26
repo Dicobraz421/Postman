@@ -341,11 +341,9 @@ pub fn issue(spec: &Spec, key: &Key, issuer: Option<(&Issued, &Key)>) -> Issued 
     exts.push(ext(const_oid::db::rfc5280::ID_CE_KEY_USAGE, true, &KeyUsage(ku)));
     match spec.eku {
         Eku::Email => exts.push(ext(const_oid::db::rfc5280::ID_CE_EXT_KEY_USAGE, false, &ExtendedKeyUsage(vec![oid::EKU_EMAIL_PROTECTION]))),
-        Eku::Server => exts.push(ext(
-            const_oid::db::rfc5280::ID_CE_EXT_KEY_USAGE,
-            false,
-            &ExtendedKeyUsage(vec![const_oid::db::rfc5280::ID_KP_SERVER_AUTH]),
-        )),
+        Eku::Server => {
+            exts.push(ext(const_oid::db::rfc5280::ID_CE_EXT_KEY_USAGE, false, &ExtendedKeyUsage(vec![const_oid::db::rfc5280::ID_KP_SERVER_AUTH])))
+        }
         Eku::None => {}
     }
     if let Some(e) = &spec.email {
@@ -1042,7 +1040,8 @@ pub fn mixed_part(html: &str, attachment: (&str, &str, &[u8])) -> Vec<u8> {
 pub fn signed_part(inner: &[u8], signer: &Issued, key: &Key, chain: &[&Issued], opts: &Sign) -> Vec<u8> {
     let scheme = opts.scheme.unwrap_or_else(|| key.default_scheme());
     let p7s = signed_data(inner, signer, key, chain, opts);
-    let full = multipart_signed(&Head { from: "x@x", to: "x@x", subject: "x", date: "Wed, 21 Oct 2026 10:00:00 +0300" }, inner, &p7s, micalg(scheme.hash()));
+    let full =
+        multipart_signed(&Head { from: "x@x", to: "x@x", subject: "x", date: "Wed, 21 Oct 2026 10:00:00 +0300" }, inner, &p7s, micalg(scheme.hash()));
     // Без заголовков письма: от `Content-Type` до конца.
     let at = full.windows(13).position(|w| w == b"Content-Type:").unwrap();
     full[at..].to_vec()
@@ -1085,8 +1084,12 @@ impl crate::seal::Ops for TestOps {
 /// Общий секрет ECDH своим ключом `key` с точкой `peer` (тесты: получатель снимает обёртку).
 pub fn ecdh_with(key: &Key, peer: &[u8]) -> Option<Vec<u8>> {
     match key {
-        Key::P256(sk) => Some(p256::ecdh::diffie_hellman(*sk.as_nonzero_scalar(), p256::PublicKey::from_sec1_bytes(peer).ok()?.as_affine()).raw_secret_bytes().to_vec()),
-        Key::P384(sk) => Some(p384::ecdh::diffie_hellman(*sk.as_nonzero_scalar(), p384::PublicKey::from_sec1_bytes(peer).ok()?.as_affine()).raw_secret_bytes().to_vec()),
+        Key::P256(sk) => Some(
+            p256::ecdh::diffie_hellman(*sk.as_nonzero_scalar(), p256::PublicKey::from_sec1_bytes(peer).ok()?.as_affine()).raw_secret_bytes().to_vec(),
+        ),
+        Key::P384(sk) => Some(
+            p384::ecdh::diffie_hellman(*sk.as_nonzero_scalar(), p384::PublicKey::from_sec1_bytes(peer).ok()?.as_affine()).raw_secret_bytes().to_vec(),
+        ),
         _ => None,
     }
 }

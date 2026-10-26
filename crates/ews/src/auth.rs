@@ -36,8 +36,7 @@ pub(crate) fn challenges(values: &[String]) -> Vec<(String, Option<Vec<u8>>)> {
             let (scheme, rest) = part.split_once(char::is_whitespace).unwrap_or((part, ""));
             let token = rest.trim();
             // Токен — base64 (`=` только в конце); параметры вида `realm="…"` (Basic, Digest) — не токен.
-            let is_token = !token.is_empty()
-                && token.trim_end_matches('=').bytes().all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/');
+            let is_token = !token.is_empty() && token.trim_end_matches('=').bytes().all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/');
             let token = if is_token { B64.decode(token).ok() } else { None };
             Some((scheme.to_owned(), token))
         })

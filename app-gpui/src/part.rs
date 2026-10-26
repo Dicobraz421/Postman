@@ -29,6 +29,5 @@ pub(crate) struct Part {
 
 impl Part {
     /// Пустая опись: `Part { name: "…", texts: TEXTS, ..Part::NONE }`.
-    pub(crate) const NONE: Part =
-        Part { name: "", texts: &[], commands: &[], handlers: |root, _| root, scenes: &[], reset: None };
+    pub(crate) const NONE: Part = Part { name: "", texts: &[], commands: &[], handlers: |root, _| root, scenes: &[], reset: None };
 }

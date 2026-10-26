@@ -342,7 +342,11 @@ mod tests {
 </d:multistatus>"#;
         let new = items(&ms(doc), "/c/");
         assert_eq!(new.iter().map(|i| i.href.as_str()).collect::<Vec<_>>(), ["/c/a.ics", "/c/b.ics"]);
-        let old = vec![Item { href: "/c/a.ics".into(), etag: "\"1\"".into() }, Item { href: "/c/gone.ics".into(), etag: "\"5\"".into() }, Item { href: "/c/b.ics".into(), etag: "\"0\"".into() }];
+        let old = vec![
+            Item { href: "/c/a.ics".into(), etag: "\"1\"".into() },
+            Item { href: "/c/gone.ics".into(), etag: "\"5\"".into() },
+            Item { href: "/c/b.ics".into(), etag: "\"0\"".into() },
+        ];
         let (changed, removed) = diff(&old, &new);
         assert_eq!(changed, [Item { href: "/c/b.ics".into(), etag: "\"2\"".into() }]);
         assert_eq!(removed, ["/c/gone.ics"]);

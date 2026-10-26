@@ -494,10 +494,7 @@ impl ReadingPane {
 pub(crate) const PART: crate::part::Part = crate::part::Part { name: "smime", texts: TEXTS, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
-const TEXTS: &[pets_i18n::Resource] = &[
-    ("ru", include_str!("../i18n/ru/smime.ftl")),
-    ("en", include_str!("../i18n/en/smime.ftl")),
-];
+const TEXTS: &[pets_i18n::Resource] = &[("ru", include_str!("../i18n/ru/smime.ftl")), ("en", include_str!("../i18n/en/smime.ftl"))];
 
 /// Сцены `--screens` S/MIME (ADR 0005).
 pub(crate) mod scenes {
@@ -563,10 +560,7 @@ pub(crate) mod scenes {
             let smime = r.smime.as_ref();
             let lock = smime.and_then(|s| s.lock.as_ref());
             let ok = match s.name {
-                "encrypted" => {
-                    matches!(lock, Some(Lock::Open(_)))
-                        && smime.is_some_and(|s| s.open && matches!(s.seal, crate::smime::Seal::Done(_)))
-                }
+                "encrypted" => matches!(lock, Some(Lock::Open(_))) && smime.is_some_and(|s| s.open && matches!(s.seal, crate::smime::Seal::Done(_))),
                 "encrypted-other" => matches!(lock, Some(Lock::Failed(Problem::NotForYou(_)))),
                 "encrypted-bad" => matches!(lock, Some(Lock::Failed(Problem::Damaged))),
                 _ => matches!(lock, Some(Lock::Failed(Problem::NeedPin))),
@@ -578,11 +572,7 @@ pub(crate) mod scenes {
     /// Подпись проверена — раскрыть карточку, как щелчок по значку.
     fn open_card(_: &Scene, m: &mut Mailer, cx: &mut Context<Mailer>) {
         m.reading.update(cx, |r, cx| {
-            let closed = r
-                .reading
-                .as_ref()
-                .and_then(|r| r.smime.as_ref())
-                .is_some_and(|s| !s.open && matches!(s.seal, crate::smime::Seal::Done(_)));
+            let closed = r.reading.as_ref().and_then(|r| r.smime.as_ref()).is_some_and(|s| !s.open && matches!(s.seal, crate::smime::Seal::Done(_)));
             if closed {
                 r.toggle_smime(cx);
             }

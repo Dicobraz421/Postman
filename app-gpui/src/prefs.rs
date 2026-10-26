@@ -90,12 +90,13 @@ pub(crate) fn update(cx: &mut App, f: impl FnOnce(&mut Prefs)) {
     }
     let Some(path) = path else { return };
     let seq = writer.next();
-    cx.background_executor().spawn(async move {
-        if let Err(e) = writer.write(seq, || after.save(&path)) {
-            tracing::warn!("{e}");
-        }
-    })
-    .detach();
+    cx.background_executor()
+        .spawn(async move {
+            if let Err(e) = writer.write(seq, || after.save(&path)) {
+                tracing::warn!("{e}");
+            }
+        })
+        .detach();
 }
 
 /// Тема: выбор pets-ui и в настройки. Политика запретила смену — ошибка, настройки не меняются.

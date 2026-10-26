@@ -225,8 +225,7 @@ impl WeekIndex {
     }
 }
 
-const MONTHS: [&str; 12] =
-    ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
 /// Правило повтора EWS (месяцы — 1…12).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,11 +322,9 @@ impl Recurrence {
         let date = |d: &Date| d.strftime("%Y-%m-%d").to_string();
         let range = match &self.range {
             Range::NoEnd { start } => format!("<t:NoEndRecurrence><t:StartDate>{}</t:StartDate></t:NoEndRecurrence>", date(start)),
-            Range::EndDate { start, end } => format!(
-                "<t:EndDateRecurrence><t:StartDate>{}</t:StartDate><t:EndDate>{}</t:EndDate></t:EndDateRecurrence>",
-                date(start),
-                date(end)
-            ),
+            Range::EndDate { start, end } => {
+                format!("<t:EndDateRecurrence><t:StartDate>{}</t:StartDate><t:EndDate>{}</t:EndDate></t:EndDateRecurrence>", date(start), date(end))
+            }
             Range::Numbered { start, count } => format!(
                 "<t:NumberedRecurrence><t:StartDate>{}</t:StartDate><t:NumberOfOccurrences>{count}</t:NumberOfOccurrences></t:NumberedRecurrence>",
                 date(start)
@@ -338,9 +335,8 @@ impl Recurrence {
 
     fn from_el(el: &El) -> Option<Recurrence> {
         let num = |e: &El, k: &str| e.text_at(&[k]).and_then(|t| t.parse::<u32>().ok());
-        let day_list = |e: &El| -> Vec<DayOfWeek> {
-            e.text_at(&["DaysOfWeek"]).unwrap_or("").split_whitespace().filter_map(DayOfWeek::parse).collect()
-        };
+        let day_list =
+            |e: &El| -> Vec<DayOfWeek> { e.text_at(&["DaysOfWeek"]).unwrap_or("").split_whitespace().filter_map(DayOfWeek::parse).collect() };
         let one_day = |e: &El| day_list(e).first().copied();
         let index = |e: &El| e.text_at(&["DayOfWeekIndex"]).and_then(WeekIndex::parse);
         let month = |e: &El| e.text_at(&["Month"]).and_then(|m| MONTHS.iter().position(|x| *x == m)).map(|i| i as u8 + 1);
@@ -357,28 +353,18 @@ impl Recurrence {
                         first_day: p.text_at(&["FirstDayOfWeek"]).and_then(DayOfWeek::parse),
                     })
                 }
-                "AbsoluteMonthlyRecurrence" => {
-                    pattern = Some(Pattern::AbsoluteMonthly { interval: num(p, "Interval")?, day: day_of_month(p)? })
-                }
+                "AbsoluteMonthlyRecurrence" => pattern = Some(Pattern::AbsoluteMonthly { interval: num(p, "Interval")?, day: day_of_month(p)? }),
                 "RelativeMonthlyRecurrence" => {
                     pattern = Some(Pattern::RelativeMonthly { interval: num(p, "Interval")?, days: one_day(p)?, index: index(p)? })
                 }
                 "AbsoluteYearlyRecurrence" => pattern = Some(Pattern::AbsoluteYearly { month: month(p)?, day: day_of_month(p)? }),
-                "RelativeYearlyRecurrence" => {
-                    pattern = Some(Pattern::RelativeYearly { month: month(p)?, days: one_day(p)?, index: index(p)? })
-                }
+                "RelativeYearlyRecurrence" => pattern = Some(Pattern::RelativeYearly { month: month(p)?, days: one_day(p)?, index: index(p)? }),
                 "NoEndRecurrence" => range = Some(Range::NoEnd { start: parse_date(p.text_at(&["StartDate"])?)? }),
                 "EndDateRecurrence" => {
-                    range = Some(Range::EndDate {
-                        start: parse_date(p.text_at(&["StartDate"])?)?,
-                        end: parse_date(p.text_at(&["EndDate"])?)?,
-                    })
+                    range = Some(Range::EndDate { start: parse_date(p.text_at(&["StartDate"])?)?, end: parse_date(p.text_at(&["EndDate"])?)? })
                 }
                 "NumberedRecurrence" => {
-                    range = Some(Range::Numbered {
-                        start: parse_date(p.text_at(&["StartDate"])?)?,
-                        count: num(p, "NumberOfOccurrences")?,
-                    })
+                    range = Some(Range::Numbered { start: parse_date(p.text_at(&["StartDate"])?)?, count: num(p, "NumberOfOccurrences")? })
                 }
                 _ => {}
             }
@@ -474,8 +460,7 @@ pub(crate) fn item(el: &El) -> Option<CalendarItem> {
             });
         }
     }
-    let mut keywords: Vec<String> =
-        el.child("Categories").into_iter().flat_map(|c| c.all("String")).map(|s| s.text.trim().to_owned()).collect();
+    let mut keywords: Vec<String> = el.child("Categories").into_iter().flat_map(|c| c.all("String")).map(|s| s.text.trim().to_owned()).collect();
     keywords.sort();
     keywords.dedup();
     let event = Event {
@@ -603,11 +588,7 @@ impl NewItem {
 }
 
 fn times(span: Span, all_day: bool) -> String {
-    format!(
-        "<t:Start>{}</t:Start><t:End>{}</t:End><t:IsAllDayEvent>{all_day}</t:IsAllDayEvent>",
-        format_time(span.start),
-        format_time(span.end)
-    )
+    format!("<t:Start>{}</t:Start><t:End>{}</t:End><t:IsAllDayEvent>{all_day}</t:IsAllDayEvent>", format_time(span.start), format_time(span.end))
 }
 
 fn free_busy(f: FreeBusy) -> &'static str {
@@ -836,20 +817,15 @@ pub(crate) mod parse {
             .at(&["RootFolder", "Folders"])
             .into_iter()
             .flat_map(|f| f.children.iter())
-            .filter(|f| {
-                f.name == "CalendarFolder" || f.text_at(&["FolderClass"]).is_some_and(|c| c.starts_with("IPF.Appointment"))
-            })
+            .filter(|f| f.name == "CalendarFolder" || f.text_at(&["FolderClass"]).is_some_and(|c| c.starts_with("IPF.Appointment")))
             .filter_map(folder)
             .collect())
     }
 
     pub(crate) fn sync(resp: &El) -> Result<SyncChanges> {
         let msg = soap::single(resp)?;
-        let mut out = SyncChanges {
-            state: SyncState(msg.str_at(&["SyncState"])),
-            done: msg.bool_at(&["IncludesLastItemInRange"]),
-            ..SyncChanges::default()
-        };
+        let mut out =
+            SyncChanges { state: SyncState(msg.str_at(&["SyncState"])), done: msg.bool_at(&["IncludesLastItemInRange"]), ..SyncChanges::default() };
         for c in msg.child("Changes").into_iter().flat_map(|c| c.children.iter()) {
             match c.name.as_str() {
                 "Create" | "Update" => {
@@ -1002,7 +978,9 @@ impl Client {
         match parse::get_items(&self.call("GetItem", &body).await?) {
             Ok(items) => Ok(items.into_iter().find(|i| i.kind == ItemKind::RecurringMaster)),
             // Не экземпляр серии — у объекта нет серии.
-            Err(e) if matches!(e.code(), Some("ErrorItemCorrupt" | "ErrorInvalidOperation" | "ErrorCalendarOccurrenceIsDeletedFromRecurrence")) => Ok(None),
+            Err(e) if matches!(e.code(), Some("ErrorItemCorrupt" | "ErrorInvalidOperation" | "ErrorCalendarOccurrenceIsDeletedFromRecurrence")) => {
+                Ok(None)
+            }
             Err(e) => Err(e),
         }
     }
@@ -1010,11 +988,8 @@ impl Client {
     /// Создать встречу (в `folder` или основном календаре); участникам — приглашения по `notify`.
     pub async fn create(&mut self, folder: Option<&FolderRef>, item: &NewItem, notify: Notify) -> Result<ItemId> {
         let folder = folder.map(|f| format!("<m:SavedItemFolderId>{}</m:SavedItemFolderId>", f.xml())).unwrap_or_default();
-        let body = format!(
-            r#"<m:CreateItem SendMeetingInvitations="{}">{folder}<m:Items>{}</m:Items></m:CreateItem>"#,
-            notify.invitations(),
-            item.to_xml()
-        );
+        let body =
+            format!(r#"<m:CreateItem SendMeetingInvitations="{}">{folder}<m:Items>{}</m:Items></m:CreateItem>"#, notify.invitations(), item.to_xml());
         parse::created(&self.call("CreateItem", &body).await?)
     }
 
@@ -1146,7 +1121,11 @@ mod tests {
         let people: Vec<_> = e.participants.iter().filter(|p| !p.owner).map(|p| (p.email.as_str(), p.optional, p.status)).collect();
         assert_eq!(
             people,
-            [("user1@example.test", false, Partstat::Tentative), ("boris@example.test", false, Partstat::Accepted), ("vera@example.test", true, Partstat::NeedsAction)]
+            [
+                ("user1@example.test", false, Partstat::Tentative),
+                ("boris@example.test", false, Partstat::Accepted),
+                ("vera@example.test", true, Partstat::NeedsAction)
+            ]
         );
     }
 
@@ -1220,7 +1199,19 @@ mod tests {
         let order: Vec<&str> = c.children.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(
             order,
-            ["Subject", "Body", "Start", "End", "IsAllDayEvent", "LegacyFreeBusyStatus", "Location", "RequiredAttendees", "Recurrence", "StartTimeZone", "EndTimeZone"]
+            [
+                "Subject",
+                "Body",
+                "Start",
+                "End",
+                "IsAllDayEvent",
+                "LegacyFreeBusyStatus",
+                "Location",
+                "RequiredAttendees",
+                "Recurrence",
+                "StartTimeZone",
+                "EndTimeZone"
+            ]
         );
         assert_eq!(c.text_at(&["Subject"]), Some("Обзор <Q3>"));
         assert_eq!(c.child("StartTimeZone").and_then(|z| z.attr("Id")), Some("Russian Standard Time"));
@@ -1261,7 +1252,13 @@ mod tests {
             ..Changes::default()
         };
         let x = xml(format!("<x>{}</x>", ch.to_xml()).as_bytes()).unwrap();
-        let ops: Vec<String> = x.child("Updates").unwrap().children.iter().map(|op| format!("{} {}", op.name, op.child("FieldURI").and_then(|f| f.attr("FieldURI")).unwrap_or(""))).collect();
+        let ops: Vec<String> = x
+            .child("Updates")
+            .unwrap()
+            .children
+            .iter()
+            .map(|op| format!("{} {}", op.name, op.child("FieldURI").and_then(|f| f.attr("FieldURI")).unwrap_or("")))
+            .collect();
         assert_eq!(
             ops,
             [

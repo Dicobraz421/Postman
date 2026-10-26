@@ -207,18 +207,14 @@ pub fn markdown_to_html(md: &str) -> String {
     let mut link_stack: Vec<bool> = Vec::new();
     let mut image_depth = 0usize;
     let events = Parser::new_ext(md, opts).filter_map(|ev| match ev {
-        Event::InlineHtml(s) if s.eq_ignore_ascii_case("<u>") || s.eq_ignore_ascii_case("</u>") => {
-            Some(Event::InlineHtml(s))
-        }
+        Event::InlineHtml(s) if s.eq_ignore_ascii_case("<u>") || s.eq_ignore_ascii_case("</u>") => Some(Event::InlineHtml(s)),
         Event::Html(s) | Event::InlineHtml(s) => Some(Event::Text(s)),
         Event::Start(Tag::Link { link_type, dest_url, title, id }) => {
             let ok = safe_link(&dest_url);
             link_stack.push(ok);
             ok.then_some(Event::Start(Tag::Link { link_type, dest_url, title, id }))
         }
-        Event::End(TagEnd::Link) => {
-            link_stack.pop().unwrap_or(false).then_some(Event::End(TagEnd::Link))
-        }
+        Event::End(TagEnd::Link) => link_stack.pop().unwrap_or(false).then_some(Event::End(TagEnd::Link)),
         // Внешняя картинка: остаётся только alt-текст.
         Event::Start(Tag::Image { dest_url, .. }) if !dest_url.starts_with("cid:") => {
             image_depth += 1;
@@ -251,10 +247,7 @@ mod tests {
             r#"<p><b>Важно</b>: см. <a href="https://ex.com/a">отчёт</a> и <a href="https://ex.com/">https://ex.com</a></p><ul><li>раз</li><li>два<br>строка</li></ul><blockquote><p>q1</p><p>q2</p></blockquote>"#,
         );
         let md = to_markdown(&d);
-        assert_eq!(
-            md,
-            "**Важно**: см. [отчёт](https://ex.com/a) и <https://ex.com/>\n\n- раз\n- два  \n  строка\n\n> q1\n>\n> q2"
-        );
+        assert_eq!(md, "**Важно**: см. [отчёт](https://ex.com/a) и <https://ex.com/>\n\n- раз\n- два  \n  строка\n\n> q1\n>\n> q2");
     }
 
     #[test]
@@ -265,9 +258,7 @@ mod tests {
 
     #[test]
     fn outgoing_html_is_sanitized() {
-        let h = markdown_to_html(
-            "<script>x</script>\n\n[a](javascript:x) [b](https://ok.ru) ![t](https://track/p.gif) ![l](cid:logo)",
-        );
+        let h = markdown_to_html("<script>x</script>\n\n[a](javascript:x) [b](https://ok.ru) ![t](https://track/p.gif) ![l](cid:logo)");
         assert!(!h.contains("<script"));
         assert!(!h.contains("href=\"javascript"));
         assert!(h.contains(r#"href="https://ok.ru""#));

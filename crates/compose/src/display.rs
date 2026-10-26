@@ -148,7 +148,7 @@ pub fn display(md: &str) -> Vec<Span> {
     let bytes = md.as_bytes();
     let mut i = 0;
     while i + 1 < bytes.len() {
-        if bytes[i] == b'\\' &&bytes[i + 1].is_ascii_punctuation() && !code.iter().any(|c| c.contains(&i)) {
+        if bytes[i] == b'\\' && bytes[i + 1].is_ascii_punctuation() && !code.iter().any(|c| c.contains(&i)) {
             looks[i].markup = true;
             i += 2;
         } else {

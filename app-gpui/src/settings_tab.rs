@@ -207,19 +207,17 @@ impl EventEmitter<SettingsEvent> for SettingsView {}
 impl SettingsView {
     pub(crate) fn new(section: Section, info: Info, cats: Categories, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| InputState::new(window, cx).placeholder(tr!("settings-search")));
-        let subscriptions = vec![cx.subscribe_in(&search, window, |this: &mut Self, state, ev: &InputEvent, window, cx| {
-            match ev {
-                InputEvent::Change => {
-                    this.query = state.read(cx).value().to_string();
-                    cx.notify();
-                }
-                InputEvent::PressEnter { .. } => {
-                    if let Some(&s) = found(&this.query, crate::features::get(cx)).first() {
-                        this.select(s, window, cx);
-                    }
-                }
-                _ => {}
+        let subscriptions = vec![cx.subscribe_in(&search, window, |this: &mut Self, state, ev: &InputEvent, window, cx| match ev {
+            InputEvent::Change => {
+                this.query = state.read(cx).value().to_string();
+                cx.notify();
             }
+            InputEvent::PressEnter { .. } => {
+                if let Some(&s) = found(&this.query, crate::features::get(cx)).first() {
+                    this.select(s, window, cx);
+                }
+            }
+            _ => {}
         })];
         let keys = crate::settings_keys::KeysState::new(window, cx);
         let sign = crate::settings_sign::SignState::new(info.cache.clone(), window, cx);
@@ -348,15 +346,11 @@ pub(crate) fn switch(on: bool, l: &Look) -> Div {
         .rounded_full()
         .when(on, |d| d.bg(l.accent()))
         .when(!on, |d| d.border_1().border_color(l.c(Role::StrokeStrong)))
-        .child(
-            div()
-                .absolute()
-                .top(px(if on { 4. } else { 3. }))
-                .left(px(if on { 24. } else { 3. }))
-                .size(px(12.))
-                .rounded_full()
-                .bg(if on { l.on_accent() } else { l.text2() }),
-        )
+        .child(div().absolute().top(px(if on { 4. } else { 3. })).left(px(if on { 24. } else { 3. })).size(px(12.)).rounded_full().bg(if on {
+            l.on_accent()
+        } else {
+            l.text2()
+        }))
 }
 
 /// Переключатель с id для нажатия.
@@ -571,15 +565,13 @@ impl SettingsView {
             };
             let up = arrow("settings-quick-up", '\u{E70E}', -1, i > 0);
             let down = arrow("settings-quick-down", '\u{E70D}', 1, i + 1 < n);
-            let control = div()
-                .flex()
-                .items_center()
-                .gap_3()
-                .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("settings-quick-shown")))
-                .child(toggle(("settings-quick-toggle", i), item.shown, l).on_click(cx.listener(move |_, _, _, cx| {
-                    crate::prefs::update(cx, |p| p.quick.toggle(q));
-                    cx.notify();
-                })));
+            let control =
+                div().flex().items_center().gap_3().child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("settings-quick-shown"))).child(
+                    toggle(("settings-quick-toggle", i), item.shown, l).on_click(cx.listener(move |_, _, _, cx| {
+                        crate::prefs::update(cx, |p| p.quick.toggle(q));
+                        cx.notify();
+                    })),
+                );
             list = list.child(
                 div()
                     .flex()
@@ -591,7 +583,12 @@ impl SettingsView {
             );
         }
         let lc = p.lifecycle;
-        let stepper = |id: &'static str, value: u16, unit: &'static str, range: std::ops::RangeInclusive<u16>, on: bool, set: fn(&mut postman_core::prefs::Lifecycle, u16)| {
+        let stepper = |id: &'static str,
+                       value: u16,
+                       unit: &'static str,
+                       range: std::ops::RangeInclusive<u16>,
+                       on: bool,
+                       set: fn(&mut postman_core::prefs::Lifecycle, u16)| {
             let step = |sid: &'static str, g: char, to: u16, enabled: bool| {
                 div()
                     .id(sid)
@@ -632,15 +629,12 @@ impl SettingsView {
         let news = stepper("settings-news-minus", lc.archive_news_days, "settings-days", DAYS, lc.archive_news, |l, v| l.archive_news_days = v);
         let codes = stepper("settings-codes-minus", lc.expire_codes_hours, "settings-hours", HOURS, lc.expire_codes, |l, v| l.expire_codes_hours = v);
         let rule = |i: usize, title: String, hint: String, on: bool, flip: fn(&mut postman_core::prefs::Lifecycle), extra: Option<Div>| {
-            let control = div()
-                .flex()
-                .items_center()
-                .gap_4()
-                .children(extra)
-                .child(toggle(("settings-life-toggle", i), on, l).on_click(cx.listener(move |_, _, _, cx| {
+            let control = div().flex().items_center().gap_4().children(extra).child(toggle(("settings-life-toggle", i), on, l).on_click(
+                cx.listener(move |_, _, _, cx| {
                     crate::prefs::update(cx, |p| flip(&mut p.lifecycle));
                     cx.notify();
-                })));
+                }),
+            ));
             row(title, Some(hint), control, l)
         };
         // Куда уходит письмо в срок «Исчезнет» (S5-04): свой срок и коды подтверждения.
@@ -652,10 +646,7 @@ impl SettingsView {
             }))
         };
         let expire_to = seg_group(
-            [
-                target(0, ExpireTo::Archive, tr!("lifecycle-settings-to-archive")),
-                target(1, ExpireTo::Trash, tr!("lifecycle-settings-to-trash")),
-            ],
+            [target(0, ExpireTo::Archive, tr!("lifecycle-settings-to-archive")), target(1, ExpireTo::Trash, tr!("lifecycle-settings-to-trash"))],
             l,
         );
         let rules = vec![
@@ -682,47 +673,40 @@ impl SettingsView {
         let mut cards = div().flex().gap_3();
         for (i, c) in Conversation::ALL.into_iter().enumerate() {
             let on = p.conversation == c;
-            cards = cards.child(
-                div()
-                    .id(("settings-conv", i))
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .p_3()
-                    .rounded(l.px(Metric::RadiusOverlay))
-                    .cursor_pointer()
-                    .border_1()
-                    .when(on, |d| d.border_color(l.accent()).bg(l.picked()))
-                    .when(!on, |d| d.border_color(l.stroke()).hover(|d| d.bg(l.hover())))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(radio(on, l))
-                            .child(div().font_weight(FontWeight::SEMIBOLD).child(conversation_name(c))),
-                    )
-                    .child(div().text_size(px(12.)).text_color(l.text2()).child(conversation_hint(c)))
-                    .when(c == Conversation::Feed, |d| {
-                        d.child(
-                            div().flex().child(
-                                div()
-                                    .px_1p5()
-                                    .rounded_sm()
-                                    .bg(l.fill())
-                                    .text_size(px(11.))
-                                    .text_color(l.text2())
-                                    .child(tr!("settings-default")),
-                            ),
+            cards =
+                cards.child(
+                    div()
+                        .id(("settings-conv", i))
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .p_3()
+                        .rounded(l.px(Metric::RadiusOverlay))
+                        .cursor_pointer()
+                        .border_1()
+                        .when(on, |d| d.border_color(l.accent()).bg(l.picked()))
+                        .when(!on, |d| d.border_color(l.stroke()).hover(|d| d.bg(l.hover())))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(radio(on, l))
+                                .child(div().font_weight(FontWeight::SEMIBOLD).child(conversation_name(c))),
                         )
-                    })
-                    .on_click(cx.listener(move |_, _, _, cx| {
-                        crate::prefs::update(cx, |p| p.reading.conversation = c);
-                        cx.notify();
-                    })),
-            );
+                        .child(div().text_size(px(12.)).text_color(l.text2()).child(conversation_hint(c)))
+                        .when(c == Conversation::Feed, |d| {
+                            d.child(div().flex().child(
+                                div().px_1p5().rounded_sm().bg(l.fill()).text_size(px(11.)).text_color(l.text2()).child(tr!("settings-default")),
+                            ))
+                        })
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            crate::prefs::update(cx, |p| p.reading.conversation = c);
+                            cx.notify();
+                        })),
+                );
         }
         let mut folders = div().flex().flex_col();
         for (fi, (id, name)) in self.info.folders.iter().enumerate() {
@@ -738,13 +722,13 @@ impl SettingsView {
             )));
             for (ci, c) in Conversation::ALL.into_iter().enumerate() {
                 let id = id.clone();
-                items.push(seg(("settings-folder-view", fi * 4 + ci), conversation_short(c), own == Some(c), true, l).on_click(
-                    cx.listener(move |_, _, _, cx| {
+                items.push(seg(("settings-folder-view", fi * 4 + ci), conversation_short(c), own == Some(c), true, l).on_click(cx.listener(
+                    move |_, _, _, cx| {
                         let id = id.clone();
                         crate::prefs::update(cx, |p| p.reading.set_folder(&id, Some(c)));
                         cx.notify();
-                    }),
-                ));
+                    },
+                )));
             }
             folders = folders.child(row(name.clone(), None, seg_group(items, l), l));
         }
@@ -813,7 +797,8 @@ impl SettingsView {
                 (None, self.quick(l, cx).into_any_element(), aside)
             }
             Section::Reading => {
-                let aside = vec![aside_card(tr!("settings-reading-aside"), vec![tr!("settings-reading-aside-1"), tr!("settings-reading-aside-2")], l)];
+                let aside =
+                    vec![aside_card(tr!("settings-reading-aside"), vec![tr!("settings-reading-aside-1"), tr!("settings-reading-aside-2")], l)];
                 (None, self.reading(l, cx).into_any_element(), aside)
             }
             Section::Calendar => self.calendar(l, cx),
@@ -857,9 +842,10 @@ impl Render for SettingsView {
             .child(if embedded {
                 div().flex_1().min_h_0().flex().child(body)
             } else {
-                div().flex_1().min_h_0().child(
-                    div().id("settings-content").size_full().overflow_y_scroll().track_scroll(&self.scroll).px_6().pb_6().child(body),
-                )
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(div().id("settings-content").size_full().overflow_y_scroll().track_scroll(&self.scroll).px_6().pb_6().child(body))
             });
         div()
             .size_full()
@@ -868,9 +854,7 @@ impl Render for SettingsView {
             .text_size(px(13.))
             .child(self.nav(&l, cx))
             .child(main)
-            .when(!aside.is_empty(), |d| {
-                d.child(div().w(px(300.)).flex_none().flex().flex_col().gap_2().children(aside))
-            })
+            .when(!aside.is_empty(), |d| d.child(div().w(px(300.)).flex_none().flex().flex_col().gap_2().children(aside)))
     }
 }
 

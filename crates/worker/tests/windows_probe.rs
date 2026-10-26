@@ -13,8 +13,22 @@ use postman_worker::{Client, Request};
 #[ignore = "диагностика, запускается явно"]
 fn which_restriction_breaks_startup() {
     let variants = [
-        "", "appcontainer", "job_ui", "job", "childproc", "win32k", "dyncode", "msonly", "strict", "ext", "font",
-        "heap", "aslr", "dep", "imageload", "all",
+        "",
+        "appcontainer",
+        "job_ui",
+        "job",
+        "childproc",
+        "win32k",
+        "dyncode",
+        "msonly",
+        "strict",
+        "ext",
+        "font",
+        "heap",
+        "aslr",
+        "dep",
+        "imageload",
+        "all",
     ];
     for v in variants {
         // Тест один и идёт последовательно: переменная окружения меняется только здесь.
@@ -22,9 +36,13 @@ fn which_restriction_breaks_startup() {
         unsafe { std::env::set_var("POSTMAN_SANDBOX_DROP", v) };
         let mut c = Client::new(PathBuf::from(env!("CARGO_BIN_EXE_postman-worker")), Duration::from_secs(5));
         let r = c.render(&Request::Text("проверка".into()));
-        println!("снято [{v:>12}]: {:?} {}", c.level(), match r {
-            Ok(_) => "ОК".to_string(),
-            Err(e) => e,
-        });
+        println!(
+            "снято [{v:>12}]: {:?} {}",
+            c.level(),
+            match r {
+                Ok(_) => "ОК".to_string(),
+                Err(e) => e,
+            }
+        );
     }
 }

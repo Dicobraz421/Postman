@@ -78,10 +78,7 @@ impl Plan {
 /// Папка с ролью `role` аккаунта письма `id`.
 fn by_role(mailboxes: &[MailboxRow], id: &str, role: &str) -> Option<String> {
     let account = account_of(id);
-    mailboxes
-        .iter()
-        .find(|m| m.role.as_deref() == Some(role) && account_of(&m.id) == account)
-        .map(|m| m.id.clone())
+    mailboxes.iter().find(|m| m.role.as_deref() == Some(role) && account_of(&m.id) == account).map(|m| m.id.clone())
 }
 
 /// Ключевое слово меняется: `(слово, вкл)` — только если у письма оно сейчас другое.

@@ -184,13 +184,7 @@ impl<D> Undo<D> {
     /// Письмо отправлено с задержкой: предложить «Отменить» на [`UNDO_WINDOW`].
     pub fn offer(&mut self, scheduled: Scheduled, content: D, now: Instant) -> u64 {
         self.next += 1;
-        self.offers.push(Offer {
-            id: self.next,
-            scheduled,
-            content,
-            until: now + UNDO_WINDOW,
-            state: OfferState::Open,
-        });
+        self.offers.push(Offer { id: self.next, scheduled, content, until: now + UNDO_WINDOW, state: OfferState::Open });
         self.next
     }
 
@@ -300,9 +294,7 @@ mod tests {
         assert_eq!(p("22.10", "9.05").as_deref(), Ok("Thu 2026-10-22 09:05 +03:00"));
         assert_eq!(p("2026-10-22", "9").as_deref(), Ok("Thu 2026-10-22 09:00 +03:00"));
         assert_eq!(p(" 1.11.26 ", " 08:00 ").as_deref(), Ok("Sun 2026-11-01 08:00 +03:00"));
-        for (d, t) in
-            [("31.02.2026", "10:00"), ("22.10.2026", "25:00"), ("завтра", "10:00"), ("22.10", ""), ("", "10:00")]
-        {
+        for (d, t) in [("31.02.2026", "10:00"), ("22.10.2026", "25:00"), ("завтра", "10:00"), ("22.10", ""), ("", "10:00")] {
             assert_eq!(p(d, t), Err(Reject::Format), "{d} {t}");
         }
     }

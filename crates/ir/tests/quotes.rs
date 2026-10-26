@@ -15,21 +15,11 @@ struct Case {
     stripped: &'static [&'static str],
 }
 
-const fn html(
-    name: &'static str,
-    source: &'static str,
-    kept: &'static [&'static str],
-    stripped: &'static [&'static str],
-) -> Case {
+const fn html(name: &'static str, source: &'static str, kept: &'static [&'static str], stripped: &'static [&'static str]) -> Case {
     Case { name, html: true, source, kept, stripped }
 }
 
-const fn text(
-    name: &'static str,
-    source: &'static str,
-    kept: &'static [&'static str],
-    stripped: &'static [&'static str],
-) -> Case {
+const fn text(name: &'static str, source: &'static str, kept: &'static [&'static str], stripped: &'static [&'static str]) -> Case {
     Case { name, html: false, source, kept, stripped }
 }
 

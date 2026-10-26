@@ -48,9 +48,7 @@ fn flush(group: &mut Vec<(usize, usize)>, columns_end: &mut Vec<i64>, items: &[S
     for &(i, col) in group.iter() {
         // Растягиваем вправо, пока соседние колонки свободны на время события.
         let mut span = 1;
-        while col + span < columns
-            && !group.iter().any(|&(j, c)| c == col + span && items[j].overlaps(&items[i]))
-        {
+        while col + span < columns && !group.iter().any(|&(j, c)| c == col + span && items[j].overlaps(&items[i])) {
             span += 1;
         }
         out.push(Placed { index: i, column: col, span_columns: span, columns });

@@ -42,12 +42,7 @@ impl Rng {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let target: u64 = args.first().and_then(|s| s.parse().ok()).unwrap_or(20_000);
-    let batch: usize = args
-        .iter()
-        .position(|a| a == "--batch")
-        .and_then(|i| args.get(i + 1))
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(250);
+    let batch: usize = args.iter().position(|a| a == "--batch").and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(250);
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     rt.block_on(fill(target, batch));
 }
@@ -58,10 +53,9 @@ fn utc(ts: i64) -> String {
 
 async fn fill(target: u64, batch: usize) {
     let user = env("POSTMAN_USER");
-    let client =
-        Client::connect(&env("POSTMAN_URL"), Auth::Basic { user: user.clone(), password: env("POSTMAN_PASSWORD") })
-            .await
-            .unwrap_or_else(|e| panic!("sign-in as {user}: {e}"));
+    let client = Client::connect(&env("POSTMAN_URL"), Auth::Basic { user: user.clone(), password: env("POSTMAN_PASSWORD") })
+        .await
+        .unwrap_or_else(|e| panic!("sign-in as {user}: {e}"));
     let acc = client.mail_account().unwrap().to_string();
     let (boxes, _) = client.mailboxes().await.unwrap();
     let role = |r: &str| boxes.iter().find(|m| m.role.as_deref() == Some(r));
@@ -84,11 +78,7 @@ async fn fill(target: u64, batch: usize) {
             at -= (rng.next() % 3600) as i64;
             let (name, addr) = *rng.pick(postman_demo::SENDERS);
             let subject = format!("{} {}", rng.pick(postman_demo::SUBJECTS), (done as usize + i) % 997);
-            let text = format!(
-                "{}\n\n- пункт {}\n- срок — пятница\n\nС уважением,\n{name}",
-                postman_demo::PREVIEW,
-                rng.next() % 100
-            );
+            let text = format!("{}\n\n- пункт {}\n- срок — пятница\n\nС уважением,\n{name}", postman_demo::PREVIEW, rng.next() % 100);
             let html = postman_ir::markdown_to_html(&text);
             let mailbox = match (&archive, rng.next() % 100) {
                 (Some(a), 0..15) => a.clone(),

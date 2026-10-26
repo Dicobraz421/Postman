@@ -102,11 +102,10 @@ pub fn detached(content: &[u8], signer: &dyn Signer, signing_time: i64) -> Resul
     let hash = scheme.hash();
     let cert = Certificate::from_der(signer.certificate()).map_err(failed)?;
     let tbs = cert.tbs_certificate();
-    let isn = IssuerAndSerialNumber {
-        issuer: tbs.issuer().clone(),
-        serial_number: SerialNumber::new(tbs.serial_number().as_bytes()).map_err(failed)?,
-    };
-    let time = x509_cert::time::Time::try_from(std::time::UNIX_EPOCH + std::time::Duration::from_secs(u64::try_from(signing_time).unwrap_or(0))).map_err(failed)?;
+    let isn =
+        IssuerAndSerialNumber { issuer: tbs.issuer().clone(), serial_number: SerialNumber::new(tbs.serial_number().as_bytes()).map_err(failed)? };
+    let time = x509_cert::time::Time::try_from(std::time::UNIX_EPOCH + std::time::Duration::from_secs(u64::try_from(signing_time).unwrap_or(0)))
+        .map_err(failed)?;
     let gost = matches!(scheme, Scheme::Gost256 | Scheme::Gost512);
     let caps: Vec<Capability> = if gost {
         vec![Capability { id: oid::KUZNYECHIK_CTR_ACPKM }]
@@ -124,7 +123,10 @@ pub fn detached(content: &[u8], signer: &dyn Signer, signing_time: i64) -> Resul
     let (seq, _) = crate::ber::read(&isn_der).ok_or_else(|| failed("IssuerAndSerialNumber"))?;
     let mut pref = crate::ber::header(0xA0, seq.value.len());
     pref.extend_from_slice(seq.value);
-    attrs.push(Attribute { oid: oid::ATTR_ENCRYPTION_KEY_PREFERENCE, values: SetOfVec::try_from(vec![Any::from_der(&pref).map_err(failed)?]).map_err(failed)? });
+    attrs.push(Attribute {
+        oid: oid::ATTR_ENCRYPTION_KEY_PREFERENCE,
+        values: SetOfVec::try_from(vec![Any::from_der(&pref).map_err(failed)?]).map_err(failed)?,
+    });
     let set = SetOfVec::try_from(attrs).map_err(failed)?;
     let signed_attrs_der = set.to_der().map_err(failed)?;
     let signature = signer.sign(&hash.digest(&signed_attrs_der))?;
@@ -222,7 +224,8 @@ pub fn sign_message(raw: &[u8], signer: &dyn Signer, now: i64) -> Result<Vec<u8>
         return Err(SignError::EightBit);
     }
     let p7s = detached(&entity, signer, now)?;
-    let boundary = format!("----=_Postman_Signed_{:016x}", u64::from_le_bytes(signer.scheme().hash().digest(&entity)[..8].try_into().unwrap_or_default()));
+    let boundary =
+        format!("----=_Postman_Signed_{:016x}", u64::from_le_bytes(signer.scheme().hash().digest(&entity)[..8].try_into().unwrap_or_default()));
     let micalg = micalg(signer.scheme().hash());
     let mut out = outer;
     out.extend_from_slice(b"MIME-Version: 1.0\r\n");

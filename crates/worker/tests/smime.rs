@@ -52,7 +52,8 @@ fn verdicts_through_the_sandbox() {
     assert!(r.status == Status::Valid && !r.address_ok);
 
     // Подпись внутри: тело — IR из воркера.
-    let opaque = testkit::signed_letter(&head("user1@itt.test"), HTML, &pki.user, &pki.user_key, &[&pki.root], &Sign { opaque: true, ..Sign::default() });
+    let opaque =
+        testkit::signed_letter(&head("user1@itt.test"), HTML, &pki.user, &pki.user_key, &[&pki.root], &Sign { opaque: true, ..Sign::default() });
     let (r, doc) = c.smime_verify(&opaque, &pki.trust(), NOW).unwrap();
     assert_eq!((r.kind, r.status), (Kind::Opaque, Status::Valid));
     assert_eq!(postman_ir::to_markdown(&doc.unwrap()), "Подписанное письмо.");

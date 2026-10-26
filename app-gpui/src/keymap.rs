@@ -8,7 +8,6 @@ use std::collections::BTreeMap;
 use pets_commands::{Command, Scheme, SchemeKeys, parse_keys};
 use postman_core::prefs::{KeyScheme, Prefs};
 
-
 /// Свои клавиши: id команды → сочетания (пустой список — без клавиши).
 pub(crate) type Overrides = BTreeMap<String, Vec<String>>;
 
@@ -312,14 +311,7 @@ pub(crate) fn taken_by(commands: &[Command], layer: &Scheme, set: &KeySet, id: &
 
 /// Назначить команде `id` сочетание `keys` (вместо прежних) в столбце выбранной схемы. `replace` — снять его там,
 /// где оно действовало у других команд. Своё, совпавшее с умолчанием, не хранится. Ошибка — сочетание не разобрано.
-pub(crate) fn assign(
-    commands: &[Command],
-    layer: &Scheme,
-    set: &mut KeySet,
-    id: &str,
-    keys: &str,
-    replace: bool,
-) -> Result<(), String> {
+pub(crate) fn assign(commands: &[Command], layer: &Scheme, set: &mut KeySet, id: &str, keys: &str, replace: bool) -> Result<(), String> {
     let canonical = parse_keys(keys)?;
     let Some(c) = commands.iter().find(|c| c.id == id).filter(|c| editable(c)) else {
         return Err(format!("{id}: keys are fixed"));
@@ -327,8 +319,7 @@ pub(crate) fn assign(
     if replace {
         while let Some(other) = taken_by(commands, layer, set, id, keys) {
             let Some(o) = commands.iter().find(|c| c.id == other) else { break };
-            let Some(col) = bound(commands, layer, set).into_iter().find(|b| b.id == other && canon(&b.keys) == canonical).map(|b| b.column)
-            else {
+            let Some(col) = bound(commands, layer, set).into_iter().find(|b| b.id == other && canon(&b.keys) == canonical).map(|b| b.column) else {
                 break;
             };
             let rest: Vec<String> = column_keys(layer, set, o, col).into_iter().filter(|e| canon(e) != canonical).collect();
@@ -409,8 +400,7 @@ pub(crate) fn migrate(commands: &[Command], overrides: &mut Overrides, rev: u32)
     for id in ids {
         let Some(c) = commands.iter().find(|c| c.id == id) else { continue };
         let Some(keys) = overrides.get(&id) else { continue };
-        let kept: Vec<String> =
-            keys.iter().filter(|k| !REMOVED_1.iter().any(|(cid, r)| *cid == id && canon(k) == canon(r))).cloned().collect();
+        let kept: Vec<String> = keys.iter().filter(|k| !REMOVED_1.iter().any(|(cid, r)| *cid == id && canon(k) == canon(r))).cloned().collect();
         set_outlook(overrides, c, kept);
     }
     for &(id, key) in ADDED_1 {

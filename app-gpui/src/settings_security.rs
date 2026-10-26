@@ -10,8 +10,8 @@ use pets_i18n::tr;
 use postman_core::prefs::Images;
 use postman_worker::Level;
 
-use crate::roles::Look;
 use crate::buttons::button;
+use crate::roles::Look;
 use crate::settings_tab::{SettingsView, group, link, row, seg, seg_group, toggle};
 
 impl SettingsView {
@@ -145,7 +145,10 @@ impl SettingsView {
             .child(group(tr!("settings-content-group"), l))
             .child(row(
                 tr!("settings-images"),
-                Some(pinned(tr!(if eff.images == Images::Ask { "settings-images-ask-hint" } else { "settings-images-hint" }), policy.images.is_some())),
+                Some(pinned(
+                    tr!(if eff.images == Images::Ask { "settings-images-ask-hint" } else { "settings-images-hint" }),
+                    policy.images.is_some(),
+                )),
                 images,
                 l,
             ))
@@ -158,7 +161,12 @@ impl SettingsView {
                 })),
                 l,
             ))
-            .child(row(tr!("settings-browser"), Some(tr!("settings-browser-hint")), div().text_color(l.text2()).child(tr!("settings-browser-system")), l))
+            .child(row(
+                tr!("settings-browser"),
+                Some(tr!("settings-browser-hint")),
+                div().text_color(l.text2()).child(tr!("settings-browser-system")),
+                l,
+            ))
             .child(group(tr!("settings-attach-group"), l))
             .child(row(tr!("settings-macros"), Some(tr!("settings-macros-hint")), fixed("settings-macros-block", "settings-macros-blocked"), l))
             .child(row(
@@ -183,19 +191,16 @@ impl SettingsView {
             .child(row(
                 tr!("settings-sandbox"),
                 Some(sandbox_hint),
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(chip)
-                    .when(partial, |d| {
-                        d.child(link("settings-sandbox-help", tr!(if help { "settings-sandbox-help-hide" } else { "settings-sandbox-help" }), l).on_click(
+                div().flex().items_center().gap_2().child(chip).when(partial, |d| {
+                    d.child(
+                        link("settings-sandbox-help", tr!(if help { "settings-sandbox-help-hide" } else { "settings-sandbox-help" }), l).on_click(
                             cx.listener(|this, _, _, cx| {
                                 this.sandbox_help = !this.sandbox_help;
                                 cx.notify();
                             }),
-                        ))
-                    }),
+                        ),
+                    )
+                }),
                 l,
             ))
             .when(partial && help, |d| {
@@ -224,7 +229,10 @@ impl SettingsView {
             .child(group(tr!("settings-signin-group"), l))
             .child(row(
                 tr!("settings-passwords"),
-                Some(pinned(tr!(if eff.store_password { "settings-passwords-hint" } else { "settings-passwords-none-hint" }), policy.store_password.is_some())),
+                Some(pinned(
+                    tr!(if eff.store_password { "settings-passwords-hint" } else { "settings-passwords-none-hint" }),
+                    policy.store_password.is_some(),
+                )),
                 passwords,
                 l,
             ))

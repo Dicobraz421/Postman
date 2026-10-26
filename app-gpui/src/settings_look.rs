@@ -95,14 +95,16 @@ impl SettingsView {
                 }))
             })
         };
-        let delays = KEYTIPS_DELAYS.map(|ms| {
-            seg(("settings-keytips-delay", ms as usize), tr!("settings-keytips-delay-value", ms = ms), p.look.keytips_delay == ms, p.keytips, l).when(p.keytips, |d| {
-                d.on_click(cx.listener(move |_, _, _, cx| {
-                    crate::prefs::update(cx, |p| p.look.keytips_delay = ms);
-                    cx.notify();
-                }))
-            })
-        });
+        let delays =
+            KEYTIPS_DELAYS.map(|ms| {
+                seg(("settings-keytips-delay", ms as usize), tr!("settings-keytips-delay-value", ms = ms), p.look.keytips_delay == ms, p.keytips, l)
+                    .when(p.keytips, |d| {
+                        d.on_click(cx.listener(move |_, _, _, cx| {
+                            crate::prefs::update(cx, |p| p.look.keytips_delay = ms);
+                            cx.notify();
+                        }))
+                    })
+            });
         // Акцент: точки цвета с подписью; выбранный — в кольце акцента.
         let accents = div().flex().items_center().gap_3().children(Accent::ALL.map(|a| {
             let on = p.look.accent == a;
@@ -114,13 +116,7 @@ impl SettingsView {
                 .items_center()
                 .gap_1()
                 .cursor_pointer()
-                .child(
-                    div()
-                        .size(px(24.))
-                        .rounded_full()
-                        .bg(dot)
-                        .when(on, |d| d.border_2().border_color(l.panel()).shadow_sm()),
-                )
+                .child(div().size(px(24.)).rounded_full().bg(dot).when(on, |d| d.border_2().border_color(l.panel()).shadow_sm()))
                 .child(
                     div()
                         .text_size(px(11.))

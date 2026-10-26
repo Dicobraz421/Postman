@@ -10,15 +10,31 @@ use crate::{Align, Block, Document, Inline, Marks, link, plain_text, style};
 
 /// Элементы, поддерево которых выбрасывается целиком.
 const DROPPED: &[&str] = &[
-    "head", "script", "style", "iframe", "frame", "frameset", "object", "embed", "applet",
-    "form", "input", "button", "select", "textarea", "option", "svg", "math", "link", "meta",
-    "base", "title", "noscript", "template", "audio", "video", "canvas", "map", "dialog",
+    "head", "script", "style", "iframe", "frame", "frameset", "object", "embed", "applet", "form", "input", "button", "select", "textarea", "option",
+    "svg", "math", "link", "meta", "base", "title", "noscript", "template", "audio", "video", "canvas", "map", "dialog",
 ];
 
 /// Элементы, задающие границу блока (содержимое становится абзацем).
 const BLOCKISH: &[&str] = &[
-    "p", "div", "center", "section", "article", "header", "footer", "main", "nav", "aside",
-    "address", "figure", "figcaption", "dl", "dt", "dd", "caption", "body", "html",
+    "p",
+    "div",
+    "center",
+    "section",
+    "article",
+    "header",
+    "footer",
+    "main",
+    "nav",
+    "aside",
+    "address",
+    "figure",
+    "figcaption",
+    "dl",
+    "dt",
+    "dd",
+    "caption",
+    "body",
+    "html",
 ];
 
 /// Не больше этой глубины вложенности — защита стека от «бомб» из тегов.
@@ -389,10 +405,7 @@ impl Builder {
         let content = self.sub(node, Ctx { in_link: true, ..ctx }).into_inlines();
         let checked = attr(node, "href").and_then(|h| link::check_link(&h, &plain_text(&content)));
         match checked {
-            Some(l) if !content.is_empty() => sink.inline(
-                Inline::Link { href: l.href, host: l.host, suspicious: l.suspicious, content },
-                ctx.align,
-            ),
+            Some(l) if !content.is_empty() => sink.inline(Inline::Link { href: l.href, host: l.host, suspicious: l.suspicious, content }, ctx.align),
             // Запрещённая схема или пустая ссылка: остаётся только текст.
             _ => {
                 for i in content {
@@ -435,9 +448,7 @@ fn quote_mark(node: &Handle, tag: &str) -> Option<MarkKind> {
     ["divRplyFwdMsg", "appendonsend"].iter().any(|i| id.eq_ignore_ascii_case(i)).then_some(MarkKind::From)
 }
 
-const VOID: &[&str] = &[
-    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr",
-];
+const VOID: &[&str] = &["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"];
 
 /// Грубая оценка максимальной глубины вложенности по тегам, без разбора.
 /// Незакрытые `<p>`/`<li>` её завышают — это безопасная сторона.
@@ -481,11 +492,9 @@ fn strip_tags(html: &str) -> String {
 
 fn attr(node: &Handle, name: &str) -> Option<String> {
     match &node.data {
-        NodeData::Element { attrs, .. } => attrs
-            .borrow()
-            .iter()
-            .find(|a| a.name.ns.is_empty() && &*a.name.local == name)
-            .map(|a| a.value.to_string()),
+        NodeData::Element { attrs, .. } => {
+            attrs.borrow().iter().find(|a| a.name.ns.is_empty() && &*a.name.local == name).map(|a| a.value.to_string())
+        }
         _ => None,
     }
 }
@@ -502,10 +511,7 @@ fn is_presentation(node: &Handle) -> bool {
 }
 
 fn has_descendant(node: &Handle, tag: &str) -> bool {
-    node.children
-        .borrow()
-        .iter()
-        .any(|c| element_name(c).as_deref() == Some(tag) || has_descendant(c, tag))
+    node.children.borrow().iter().any(|c| element_name(c).as_deref() == Some(tag) || has_descendant(c, tag))
 }
 
 /// Строки таблицы (через thead/tbody/tfoot), не заходя во вложенные таблицы.
@@ -522,12 +528,7 @@ fn rows_of(table: &Handle) -> Vec<Handle> {
 }
 
 fn cells_of(row: &Handle) -> Vec<Handle> {
-    row.children
-        .borrow()
-        .iter()
-        .filter(|c| matches!(element_name(c).as_deref(), Some("td" | "th")))
-        .cloned()
-        .collect()
+    row.children.borrow().iter().filter(|c| matches!(element_name(c).as_deref(), Some("td" | "th"))).cloned().collect()
 }
 
 fn raw_text(node: &Handle, out: &mut String, depth: usize) {
@@ -569,9 +570,8 @@ mod tests {
 
     #[test]
     fn marks_from_tags_and_style() {
-        let d = from_html(
-            r#"<p><b>жир</b> <span style="font-style: italic; color: red">курс</span> <span style="font-weight:400"><b>не</b></span></p>"#,
-        );
+        let d =
+            from_html(r#"<p><b>жир</b> <span style="font-style: italic; color: red">курс</span> <span style="font-weight:400"><b>не</b></span></p>"#);
         let Block::Paragraph { content, .. } = &d.blocks[0] else { panic!() };
         assert!(matches!(&content[0], Inline::Text { marks, .. } if marks.bold));
         assert!(matches!(&content[2], Inline::Text { text, marks } if text == "курс" && marks.italic));
@@ -594,9 +594,7 @@ mod tests {
 
     #[test]
     fn layout_tables_are_linearized() {
-        let d = from_html(
-            "<table><tr><td><table><tr><td>a</td><td>b</td></tr></table></td></tr><tr><td>c</td></tr></table>",
-        );
+        let d = from_html("<table><tr><td><table><tr><td>a</td><td>b</td></tr></table></td></tr><tr><td>c</td></tr></table>");
         assert_eq!(d.blocks, vec![para(vec![text("a")]), para(vec![text("b")]), para(vec![text("c")])]);
         let d = from_html("<table><tr><th>Имя</th><th>Сумма</th></tr><tr><td>A</td><td>5</td></tr></table>");
         assert!(matches!(&d.blocks[0], Block::Table(rows) if rows.len() == 2 && rows[0].len() == 2));
@@ -604,9 +602,7 @@ mod tests {
 
     #[test]
     fn structure() {
-        let d = from_html(
-            "<h2>Тема</h2><blockquote><p>цитата</p></blockquote><ul><li>один</li><li>два</li></ul><pre>  x\n  y</pre><hr>",
-        );
+        let d = from_html("<h2>Тема</h2><blockquote><p>цитата</p></blockquote><ul><li>один</li><li>два</li></ul><pre>  x\n  y</pre><hr>");
         assert!(matches!(&d.blocks[0], Block::Heading { level: 2, .. }));
         assert!(matches!(&d.blocks[1], Block::Quote(b) if b.len() == 1));
         assert!(matches!(&d.blocks[2], Block::List { ordered: false, items } if items.len() == 2));

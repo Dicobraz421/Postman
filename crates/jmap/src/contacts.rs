@@ -59,12 +59,7 @@ impl ContactCard {
     /// Неизменённые адреса и телефоны не переписываются — их метки и контексты на сервере остаются.
     pub fn patch(&self, old: &ContactCard) -> Map<String, Value> {
         let old: Vec<(&str, Value)> = old.properties();
-        self.properties()
-            .into_iter()
-            .zip(old)
-            .filter(|((_, new), (_, was))| new != was)
-            .map(|((k, v), _)| (k.into(), v))
-            .collect()
+        self.properties().into_iter().zip(old).filter(|((_, new), (_, was))| new != was).map(|((k, v), _)| (k.into(), v)).collect()
     }
 
     /// Свойства JSContact в порядке `PROPERTIES` (без `id`); пустое — `null`.
@@ -72,26 +67,15 @@ impl ContactCard {
         let name = self.name.trim();
         let name = if name.is_empty() { Value::Null } else { json!({ "full": name }) };
         let map = |prefix: &str, items: &[String], entry: &dyn Fn(&str) -> Value| -> Value {
-            let items: Map<String, Value> = items
-                .iter()
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-                .enumerate()
-                .map(|(i, s)| (format!("{prefix}{}", i + 1), entry(s)))
-                .collect();
+            let items: Map<String, Value> =
+                items.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).enumerate().map(|(i, s)| (format!("{prefix}{}", i + 1), entry(s))).collect();
             if items.is_empty() { Value::Null } else { Value::Object(items) }
         };
         let emails = map("e", &self.emails, &|a| json!({ "address": a }));
         let phones = map("p", &self.phones, &|n| json!({ "number": n }));
         let organizations = map("o", std::slice::from_ref(&self.organization), &|n| json!({ "name": n }));
         let titles = map("t", std::slice::from_ref(&self.title), &|n| json!({ "name": n, "kind": "title" }));
-        vec![
-            ("name", name),
-            ("emails", emails),
-            ("phones", phones),
-            ("organizations", organizations),
-            ("titles", titles),
-        ]
+        vec![("name", name), ("emails", emails), ("phones", phones), ("organizations", organizations), ("titles", titles)]
     }
 }
 
@@ -115,20 +99,13 @@ impl Client {
     /// Новая карточка в книге по умолчанию (иначе в первой); id карточки на сервере.
     pub async fn create_contact(&self, card: &ContactCard) -> Result<String> {
         let books = self.address_books().await?;
-        let book = books
-            .iter()
-            .find(|b| b.is_default)
-            .or(books.first())
-            .ok_or_else(|| Error::Protocol("на сервере нет адресной книги".into()))?;
+        let book = books.iter().find(|b| b.is_default).or(books.first()).ok_or_else(|| Error::Protocol("на сервере нет адресной книги".into()))?;
         let acc = self.account_for(CONTACTS)?;
         let args = json!({ "accountId": acc, "create": { "new": card.to_jmap(&book.id) } });
         let mut r = self.call(USING, &[inv("ContactCard/set", args, "s")]).await?;
         let v: Value = take(&mut r, "s")?;
         set_error(&v, "notCreated", "new", "ContactCard/set")?;
-        v["created"]["new"]["id"]
-            .as_str()
-            .map(str::to_string)
-            .ok_or_else(|| Error::Protocol("ContactCard/set не вернул id".into()))
+        v["created"]["new"]["id"].as_str().map(str::to_string).ok_or_else(|| Error::Protocol("ContactCard/set не вернул id".into()))
     }
 
     /// Изменить карточку `old.id` на `card` (патч изменённых свойств; нечего менять — без запроса).
@@ -165,19 +142,12 @@ fn card(v: &Value) -> ContactCard {
     let full = name["full"].as_str().map(str::to_string).unwrap_or_else(|| {
         // Нет `full` — собираем из компонентов: фамилия, имя, отчество.
         let part = |kind: &str| -> Vec<&str> {
-            name["components"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|c| c["kind"] == kind)
-                .filter_map(|c| c["value"].as_str())
-                .collect()
+            name["components"].as_array().into_iter().flatten().filter(|c| c["kind"] == kind).filter_map(|c| c["value"].as_str()).collect()
         };
         [part("surname"), part("given"), part("given2")].concat().join(" ")
     });
-    let strings = |field: &str, key: &str| -> Vec<String> {
-        entries(v, field).into_iter().filter_map(|e| e[key].as_str()).map(str::to_string).collect()
-    };
+    let strings =
+        |field: &str, key: &str| -> Vec<String> { entries(v, field).into_iter().filter_map(|e| e[key].as_str()).map(str::to_string).collect() };
     let organization = entries(v, "organizations")
         .into_iter()
         .find_map(|o| {

@@ -81,11 +81,7 @@ fn flat(blocks: &[Block]) -> Vec<Line> {
                 out.push(Line { at: Cut { block: b, line: 0 }, text: plain_text(content), rule: false });
             }
             // Цитата, список, таблица, код — без текста: строкой шапки они не бывают.
-            other => out.push(Line {
-                at: Cut { block: b, line: 0 },
-                text: String::new(),
-                rule: matches!(other, Block::Rule),
-            }),
+            other => out.push(Line { at: Cut { block: b, line: 0 }, text: String::new(), rule: matches!(other, Block::Rule) }),
         }
     }
     out
@@ -173,11 +169,7 @@ fn attribution_before(lines: &[Line], cut: Cut) -> Option<Cut> {
         }
         // Нашлась короткая — но, может быть, это хвост перенесённой строки («i@x> wrote:» под «On … Ivan <»).
         let start = i - k;
-        if start > 0
-            && k < 3
-            && continues(window[0].text.trim(), &lines[start - 1])
-            && lines[start - 1].at.block == window[0].at.block
-        {
+        if start > 0 && k < 3 && continues(window[0].text.trim(), &lines[start - 1]) && lines[start - 1].at.block == window[0].at.block {
             let longer = format!("{} {joined}", lines[start - 1].text.trim());
             if is_attribution(&longer) {
                 return Some(lines[start - 1].at);
@@ -237,8 +229,7 @@ fn dashed(line: &str) -> Option<String> {
 }
 
 fn is_original_separator(line: &str) -> bool {
-    dashed(line)
-        .is_some_and(|s| ["original message", "исходное сообщение", "оригинальное сообщение"].contains(&s.as_str()))
+    dashed(line).is_some_and(|s| ["original message", "исходное сообщение", "оригинальное сообщение"].contains(&s.as_str()))
 }
 
 /// Линия из подчёркиваний или дефисов (Outlook ставит её над шапкой в тексте).
@@ -253,14 +244,8 @@ fn forwarded(lines: &[Line], cut: Cut) -> bool {
     lines[i..].iter().map(|l| l.text.trim()).filter(|t| !t.is_empty()).take(4).any(|t| {
         let lower = t.to_lowercase();
         let marker = dashed(t).unwrap_or_else(|| lower.trim_end_matches(':').to_string());
-        [
-            "forwarded message",
-            "пересылаемое сообщение",
-            "пересланное сообщение",
-            "begin forwarded message",
-            "начало переадресованного сообщения",
-        ]
-        .contains(&marker.as_str())
+        ["forwarded message", "пересылаемое сообщение", "пересланное сообщение", "begin forwarded message", "начало переадресованного сообщения"]
+            .contains(&marker.as_str())
     })
 }
 
@@ -272,9 +257,7 @@ fn is_attribution(text: &str) -> bool {
         return false;
     }
     let lower = t.to_lowercase();
-    let ends = ["wrote:", "writes:", "пишет:", "написал:", "написала:", "написал(а):", "написал(-а):"]
-        .iter()
-        .any(|s| lower.ends_with(s))
+    let ends = ["wrote:", "writes:", "пишет:", "написал:", "написала:", "написал(а):", "написал(-а):"].iter().any(|s| lower.ends_with(s))
         || (lower.ends_with(">:") && lower.contains('@'));
     ends && (lower.contains('@') || has_time(&lower))
 }
@@ -332,10 +315,7 @@ mod tests {
     fn header_keys() {
         assert!(has_key("From: Ivan", FROM) && has_key("ОТ : Иван", FROM) && has_key("От кого: Иван", FROM));
         assert!(!has_key("Fromage: cheese", FROM) && !has_key("Отчёт: готов", FROM));
-        assert!(
-            is_original_separator("-----Original Message-----")
-                && is_original_separator("----- Исходное сообщение -----")
-        );
+        assert!(is_original_separator("-----Original Message-----") && is_original_separator("----- Исходное сообщение -----"));
         assert!(!is_original_separator("---") && is_line_separator("________________________________"));
     }
 }

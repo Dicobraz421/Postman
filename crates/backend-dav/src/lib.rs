@@ -180,8 +180,16 @@ impl Dav {
         let client = Client::new(&Config { url: url.to_owned(), user: user.to_owned(), password: password.to_owned() })?;
         let found = client.discover().await?;
         let me = found.email().unwrap_or(email).to_owned();
-        let mut dav =
-            Dav { client, found, me, calendars: Vec::new(), books: Vec::new(), book_state: BTreeMap::new(), seen: Vec::new(), worker: Mutex::new(None) };
+        let mut dav = Dav {
+            client,
+            found,
+            me,
+            calendars: Vec::new(),
+            books: Vec::new(),
+            book_state: BTreeMap::new(),
+            seen: Vec::new(),
+            worker: Mutex::new(None),
+        };
         dav.refresh_collections().await?;
         Ok(dav)
     }
@@ -247,9 +255,8 @@ impl Dav {
     /// .ics ресурсов → записи JSCalendar с `id` (путь, у экземпляра повтора — ещё `#recurrenceId`) и `calendarIds`.
     /// Неразборчивый ресурс пропускается.
     async fn parse_ics(&self, resources: Vec<postman_dav::Resource>) -> Result<Vec<Value>, Error> {
-        let parsed = self
-            .in_worker(move |w| resources.into_iter().map(|r| (r.href, w.parse_calendar(r.data.as_bytes()))).collect::<Vec<_>>())
-            .await?;
+        let parsed =
+            self.in_worker(move |w| resources.into_iter().map(|r| (r.href, w.parse_calendar(r.data.as_bytes()))).collect::<Vec<_>>()).await?;
         let mut out = Vec::new();
         for (href, r) in parsed {
             match r {
@@ -289,7 +296,10 @@ impl Dav {
             .into_iter()
             .filter(|e| {
                 let people = e.participants.iter().flat_map(|p| [p.name.to_lowercase(), p.email.to_lowercase()]);
-                [e.title.to_lowercase(), e.location.to_lowercase(), e.description.to_lowercase()].into_iter().chain(people).any(|s| s.contains(&needle))
+                [e.title.to_lowercase(), e.location.to_lowercase(), e.description.to_lowercase()]
+                    .into_iter()
+                    .chain(people)
+                    .any(|s| s.contains(&needle))
             })
             .collect();
         found.truncate(SEARCH_LIMIT);
@@ -362,7 +372,8 @@ impl Dav {
         let pre = res.etag.as_deref().map_or(Precondition::None, Precondition::Etag);
         match rid.as_deref().filter(|_| !series && postman_calendar::ics::is_series(&res.data)) {
             Some(r) => {
-                let ics = postman_calendar::ics::without_instance(&res.data, r, now()).ok_or_else(|| Error::Protocol("no series in the resource".into()))?;
+                let ics = postman_calendar::ics::without_instance(&res.data, r, now())
+                    .ok_or_else(|| Error::Protocol("no series in the resource".into()))?;
                 self.client.put(&res.href, Content::Calendar, &ics, pre).await?;
             }
             None => {
@@ -445,8 +456,11 @@ impl Dav {
             Err(Error::SyncToken) => self.client.sync(book, None).await?,
             other => other?,
         };
-        let known: Vec<Item> =
-            self.book_state.get(book).map(|b| b.cards.iter().map(|(h, s)| Item { href: h.clone(), etag: s.etag.clone() }).collect()).unwrap_or_default();
+        let known: Vec<Item> = self
+            .book_state
+            .get(book)
+            .map(|b| b.cards.iter().map(|(h, s)| Item { href: h.clone(), etag: s.etag.clone() }).collect())
+            .unwrap_or_default();
         let (changed, removed) = if ch.full {
             // Полный список вместо изменений (первый раз или сервер не узнал токен): сверка по ETag.
             let listed = if token.is_some() { self.client.etags(book).await? } else { ch.changed.clone() };
@@ -456,8 +470,7 @@ impl Dav {
         };
         let hrefs: Vec<String> = changed.iter().map(|i| i.href.clone()).collect();
         let got = if hrefs.is_empty() { Default::default() } else { self.client.addressbook_multiget(book, &hrefs).await? };
-        let pairs: Vec<(String, String, String)> =
-            got.resources.into_iter().map(|r| (r.href, r.etag.unwrap_or_default(), r.data)).collect();
+        let pairs: Vec<(String, String, String)> = got.resources.into_iter().map(|r| (r.href, r.etag.unwrap_or_default(), r.data)).collect();
         let datas: Vec<String> = pairs.iter().map(|(_, _, d)| d.clone()).collect();
         let parsed = self.in_worker(move |w| datas.into_iter().map(|d| w.parse_contacts(d.as_bytes())).collect::<Vec<_>>()).await?;
         let state = self.book_state.entry(book.to_owned()).or_default();
@@ -630,7 +643,8 @@ impl TaskStore for DavTasks<'_> {
         let (uid, ics) = if task["@type"] == "Event" {
             // Блок времени задачи (`tasks::block_event`).
             let uid = task["uid"].as_str().map(str::to_owned).unwrap_or_else(new_uid);
-            let start = task["start"].as_str().and_then(|s| format!("{s}Z").parse::<jiff::Timestamp>().ok()).map(|t| t.as_second()).unwrap_or_else(now);
+            let start =
+                task["start"].as_str().and_then(|s| format!("{s}Z").parse::<jiff::Timestamp>().ok()).map(|t| t.as_second()).unwrap_or_else(now);
             let secs = task["duration"].as_str().and_then(|d| postman_calendar::parse_duration(d).ok()).unwrap_or(1800);
             let parent = task["relatedTo"].as_object().and_then(|m| m.keys().next().cloned()).unwrap_or_default();
             let title = task["title"].as_str().unwrap_or_default();

@@ -293,11 +293,7 @@ fn passwords(line: &str, base: usize, out: &mut Vec<Check>) {
                 continue;
             }
             let start = line.len() - value.len();
-            out.push(Check::Secret {
-                range: base + start..base + start + len,
-                text: value[..len].to_owned(),
-                kind: Secret::Password,
-            });
+            out.push(Check::Secret { range: base + start..base + start + len, text: value[..len].to_owned(), kind: Secret::Password });
         }
     }
 }
@@ -312,10 +308,7 @@ fn private_keys(body: &str, out: &mut Vec<Check>) {
         if !label.ends_with("PRIVATE KEY") {
             continue;
         }
-        let end = body[from..]
-            .find("-----END ")
-            .and_then(|p| body[from + p + 9..].find("-----").map(|q| from + p + 9 + q + 5))
-            .unwrap_or(body.len());
+        let end = body[from..].find("-----END ").and_then(|p| body[from + p + 9..].find("-----").map(|q| from + p + 9 + q + 5)).unwrap_or(body.len());
         out.push(Check::Secret { range: start..end, text: body[start..end].to_owned(), kind: Secret::PrivateKey });
         from = end;
     }
@@ -364,8 +357,19 @@ pub fn mask(body: &str, check: &Check) -> String {
 
 /// Начала слов, означающих вложение (RU/EN), в нижнем регистре.
 const ATTACH_WORDS: [&str; 13] = [
-    "вложени", "вложен", "вложил", "вложу", "прилага", "приложил", "приложен", "прикрепл", "прикрепил", "attach",
-    "enclosed", "enclosing", "enclose",
+    "вложени",
+    "вложен",
+    "вложил",
+    "вложу",
+    "прилага",
+    "приложил",
+    "приложен",
+    "прикрепл",
+    "прикрепил",
+    "attach",
+    "enclosed",
+    "enclosing",
+    "enclose",
 ];
 
 fn attachment_word(line: &str) -> Option<String> {
@@ -539,10 +543,7 @@ mod tests {
         ];
         assert!(recipients(&list, false, &own, &book).is_empty());
         let got = recipients(&list, true, &own, &book);
-        assert_eq!(
-            got,
-            [Check::External { count: 3, domains: vec!["other.example".into(), "partner.example".into()] }]
-        );
+        assert_eq!(got, [Check::External { count: 3, domains: vec!["other.example".into(), "partner.example".into()] }]);
         assert!(!got[0].blocks_send());
         assert!(!is_external("a@b.example", &[]), "своих доменов не знаем");
     }

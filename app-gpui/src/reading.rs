@@ -137,7 +137,10 @@ pub(crate) enum ReadingEvent {
     /// Письмо-поручение разобрано (S6-10): учесть его в своей копии задачи (шаг, комментарий, срок).
     TaskMail(Box<postman_calendar::assign::Incoming>),
     /// Кнопка карточки поручения в письме: действие над задачей `uid`; `None` — открыть её в «Задачах».
-    TaskAction { uid: String, action: Option<postman_calendar::assign::Action> },
+    TaskAction {
+        uid: String,
+        action: Option<postman_calendar::assign::Action>,
+    },
     /// Ответ на приглашение ушёл, «Удалять письмо-приглашение после ответа» включено (S5-20): письмо — в «Удалённые».
     TrashAnswered(EmailRow),
 }
@@ -146,11 +149,18 @@ pub(crate) enum ReadingEvent {
 #[derive(Clone)]
 pub(crate) enum SyncRequest {
     Blob(AttachmentRow),
-    RespondInvite { invite: Box<Invitation>, status: Partstat, in_reply_to: Option<String> },
+    RespondInvite {
+        invite: Box<Invitation>,
+        status: Partstat,
+        in_reply_to: Option<String>,
+    },
     /// Беседа с сервера (ключ цепочки).
     Thread(String),
     /// Мои события в сутки встречи из приглашения (S5-11): пересечения и «Ваш день».
-    Events { from: i64, to: i64 },
+    Events {
+        from: i64,
+        to: i64,
+    },
 }
 
 impl SyncRequest {
@@ -252,12 +262,8 @@ impl ReadingPane {
                 .child(crate::chrome::icon(crate::chrome::glyph::SEARCH, 14.))
                 .child(div().text_color(l.text()).child(count))
                 .when(n > 1, |d| {
-                    d.child(arrow("hit-prev", crate::chrome::glyph::UP, "cmd-search-prev-match", || {
-                        Box::new(crate::search::search::PrevMatch)
-                    }))
-                    .child(arrow("hit-next", crate::chrome::glyph::DOWN, "cmd-search-next-match", || {
-                        Box::new(crate::search::search::NextMatch)
-                    }))
+                    d.child(arrow("hit-prev", crate::chrome::glyph::UP, "cmd-search-prev-match", || Box::new(crate::search::search::PrevMatch)))
+                        .child(arrow("hit-next", crate::chrome::glyph::DOWN, "cmd-search-next-match", || Box::new(crate::search::search::NextMatch)))
                 })
                 .child(div().flex_1())
                 .child(div().min_w_0().truncate().child(tr!("search-matches-query", query = query.clone()))),
@@ -271,20 +277,11 @@ impl ReadingPane {
         let s = self.scheduled.iter().find(|s| &s.email == id && s.send_at > now)?.clone();
         let text = tr!("send-scheduled-bar", when = crate::send_later::when(s.send_at));
         let l = look(cx);
-        let bar = div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .bg(l.picked())
-            .child(div().flex_1().child(text))
-            .child(
-                crate::buttons::secondary("unsend", &l)
-                    .child(tr!("send-scheduled-cancel"))
-                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(ReadingEvent::Unsend(s.clone())))),
-            );
+        let bar = div().flex().items_center().gap_2().px_2().py_1().rounded_md().bg(l.picked()).child(div().flex_1().child(text)).child(
+            crate::buttons::secondary("unsend", &l)
+                .child(tr!("send-scheduled-cancel"))
+                .on_click(cx.listener(move |_, _, _, cx| cx.emit(ReadingEvent::Unsend(s.clone())))),
+        );
         Some(bar.into_any_element())
     }
 
@@ -342,11 +339,8 @@ impl ReadingPane {
             Event::BlobReady { blob_id, data } => self.blob_ready(blob_id, data.clone(), cx),
             Event::BlobFailed { blob_id, error } => self.blob_failed(blob_id, error.clone(), cx),
             Event::InviteAnswered { uid, status, delivery } => {
-                let letter = self
-                    .reading
-                    .as_ref()
-                    .filter(|r| r.invite.as_ref().is_some_and(|c| c.uid() == Some(uid.as_str())))
-                    .map(|r| r.row.clone());
+                let letter =
+                    self.reading.as_ref().filter(|r| r.invite.as_ref().is_some_and(|c| c.uid() == Some(uid.as_str()))).map(|r| r.row.clone());
                 // Ответ запоминается с версией встречи из карточки (S5-11), без карточки — только статус.
                 let value = self.card_for(uid).map(|c| c.remember(*status)).unwrap_or_else(|| invite_card::encode(*status));
                 let (cache, key) = (self.cache.clone(), invite_card::state_key(uid));
@@ -749,7 +743,10 @@ pub(crate) fn render_image(rgba: Rgba) -> Result<Arc<RenderImage>, String> {
 
 /// Каталог по умолчанию для «Сохранить как».
 fn downloads_dir() -> PathBuf {
-    std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(|h| PathBuf::from(h).join("Downloads")).unwrap_or_else(|| PathBuf::from("."))
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(|h| PathBuf::from(h).join("Downloads"))
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 impl Render for ReadingPane {
@@ -760,14 +757,7 @@ impl Render for ReadingPane {
         let reveal = std::mem::take(&mut self.reveal);
         let l = look(cx);
         let Some(r) = &self.reading else {
-            return div()
-                .flex()
-                .size_full()
-                .items_center()
-                .justify_center()
-                .text_color(l.text2())
-                .child(tr!("reading-empty"))
-                .into_any_element();
+            return div().flex().size_full().items_center().justify_center().text_color(l.text2()).child(tr!("reading-empty")).into_any_element();
         };
         let scheduled = self.scheduled_bar(cx);
         // Стопка беседы (S5-05б, макет «Беседа»): тема, сроки, «N писем · M участников», письма карточками — у каждого
@@ -845,38 +835,35 @@ impl Render for ReadingPane {
             .pb(px(12.))
             .border_b_1()
             .border_color(l.border())
+            .child(div().text_size(l.px(pets_ui::theme::Metric::TypeSubtitle)).line_height(px(26.)).font_weight(FontWeight::SEMIBOLD).child(subject))
             .child(
                 div()
-                    .text_size(l.px(pets_ui::theme::Metric::TypeSubtitle))
-                    .line_height(px(26.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(subject),
-            )
-            .child(
-                div().flex().items_center().gap(px(12.)).child(avatar).child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(
-                            div()
-                                .flex()
-                                .gap(px(6.))
-                                .items_baseline()
-                                .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child(name))
-                                .child(div().min_w_0().truncate().text_color(l.text2()).child(format!("<{}>", r.row.from_addr))),
-                        )
-                        .child(
-                            div()
-                                .truncate()
-                                .text_size(l.px(pets_ui::theme::Metric::TypeCaption))
-                                .text_color(l.text2())
-                                .child(tr!("frame-reading-to", to = to, date = format_date(r.row.received_at))),
-                        ),
-                )
-                .children(lock)
-                .children(seal),
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .child(avatar)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap(px(6.))
+                                    .items_baseline()
+                                    .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child(name))
+                                    .child(div().min_w_0().truncate().text_color(l.text2()).child(format!("<{}>", r.row.from_addr))),
+                            )
+                            .child(div().truncate().text_size(l.px(pets_ui::theme::Metric::TypeCaption)).text_color(l.text2()).child(tr!(
+                                "frame-reading-to",
+                                to = to,
+                                date = format_date(r.row.received_at)
+                            ))),
+                    )
+                    .children(lock)
+                    .children(seal),
             )
             // Общий ящик (S5-28): кто взял письмо в работу и «Взять» / «Забрать себе» / «Вернуть в очередь».
             .children(crate::shared::strip(&r.row, &l, cx))
@@ -949,12 +936,7 @@ impl Render for ReadingPane {
                 let mut col = div().flex().flex_col().gap_2();
                 if doc.remote_images_blocked > 0 {
                     col = col.child(
-                        div()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .bg(l.warning_bg())
-                            .child(tr!("reading-remote-blocked", n = doc.remote_images_blocked)),
+                        div().px_2().py_1().rounded_md().bg(l.warning_bg()).child(tr!("reading-remote-blocked", n = doc.remote_images_blocked)),
                     );
                 }
                 col.children(ir_view::blocks_marked(&doc.blocks, "doc", &r.images, &hits, cx)).into_any_element()

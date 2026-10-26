@@ -503,12 +503,7 @@ impl Cache {
     /// ящики. Аккаунты других учётных записей не трогаются.
     pub fn replace_accounts_of(&self, profile: Option<&str>, rows: &[AccountRow]) -> Result<()> {
         let ours = |id: &str| profile_of(Some(id)) == profile;
-        let gone: Vec<String> = self
-            .accounts()?
-            .into_iter()
-            .map(|a| a.id)
-            .filter(|id| ours(id) && !rows.iter().any(|r| &r.id == id))
-            .collect();
+        let gone: Vec<String> = self.accounts()?.into_iter().map(|a| a.id).filter(|id| ours(id) && !rows.iter().any(|r| &r.id == id)).collect();
         for acc in &gone {
             self.forget_account(acc)?;
         }
@@ -769,12 +764,7 @@ impl Cache {
 
     /// Оставить из `ids` только письма ящика, сохранив порядок.
     pub fn filter_mailbox(&self, ids: &[String], mailbox_id: &str) -> Result<Vec<String>> {
-        Ok(self
-            .rows_by_ids(ids)?
-            .into_iter()
-            .filter(|e| e.mailbox_ids.iter().any(|m| m == mailbox_id))
-            .map(|e| e.id)
-            .collect())
+        Ok(self.rows_by_ids(ids)?.into_iter().filter(|e| e.mailbox_ids.iter().any(|m| m == mailbox_id)).map(|e| e.id).collect())
     }
 
     /// Все письма порциями (для первичного построения поискового индекса).
@@ -931,9 +921,7 @@ impl Cache {
         let tx = self.db.begin_read()?;
         let email = tx.open_table(EMAIL)?;
         let recipients = tx.open_table(RECIPIENTS)?;
-        let to = |id: &str| -> Result<Recipients> {
-            Ok(recipients.get(id)?.map(|v| dec(v.value())).transpose()?.unwrap_or_default())
-        };
+        let to = |id: &str| -> Result<Recipients> { Ok(recipients.get(id)?.map(|v| dec(v.value())).transpose()?.unwrap_or_default()) };
         match scan {
             Scan::Mailbox(mb) => {
                 let by = tx.open_table(BY_MAILBOX)?;
@@ -1263,8 +1251,7 @@ mod tests {
     #[test]
     fn scan_with_recipients_and_count_since() {
         let c = Cache::open_in_memory().unwrap();
-        c.upsert_emails(&[email("a", 10, &["in"]), email("b", 30, &["in"]), email("c", 20, &["x"]), email("j/d", 5, &["j/in"])])
-            .unwrap();
+        c.upsert_emails(&[email("a", 10, &["in"]), email("b", 30, &["in"]), email("c", 20, &["x"]), email("j/d", 5, &["j/in"])]).unwrap();
         let me = Recipients { to: vec!["me@x".into()], cc: Vec::new() };
         c.set_recipients(&[("b".into(), me.clone())]).unwrap();
         assert_eq!(c.recipients("b").unwrap(), me);
@@ -1424,10 +1411,8 @@ mod tests {
     #[test]
     fn keyword_index_follows_the_letters() {
         let c = Cache::open_in_memory().unwrap();
-        let tagged = |id: &str, at, mbs: &[&str], kws: &[&str]| EmailRow {
-            keywords: kws.iter().map(|k| k.to_string()).collect(),
-            ..email(id, at, mbs)
-        };
+        let tagged =
+            |id: &str, at, mbs: &[&str], kws: &[&str]| EmailRow { keywords: kws.iter().map(|k| k.to_string()).collect(), ..email(id, at, mbs) };
         c.upsert_emails(&[
             tagged("a", 1, &["in"], &["pm.cat.clients"]),
             tagged("b", 3, &["in", "x"], &["pm.cat.clients", "pm.cat.team"]),

@@ -48,12 +48,7 @@ impl Client {
     /// Узел с именем `name` в папке `parent` (`None` — корень) и состояние FileNode аккаунта. Корень — условие
     /// `isTopLevel: true` (draft-ietf-jmap-filenode-18: `parentId` там типа `Id`, `null` по спецификации отвергается).
     /// Фильтр `name` у Stalwart — точное совпадение с учётом регистра (`docs/STALWART.md` п. 30).
-    pub async fn file_node(
-        &self,
-        account: &str,
-        parent: Option<&str>,
-        name: &str,
-    ) -> Result<(Option<FileNode>, String)> {
+    pub async fn file_node(&self, account: &str, parent: Option<&str>, name: &str) -> Result<(Option<FileNode>, String)> {
         let filter = match parent {
             Some(p) => json!({ "parentId": p, "name": name }),
             None => json!({ "isTopLevel": true, "name": name }),
@@ -77,12 +72,7 @@ impl Client {
 
     /// Создать папку `name` в `parent` (`None` — корень). Ответ — id папки и, если создал этот вызов, новое
     /// состояние; папка уже была (`alreadyExists`) — её id и `None`.
-    pub async fn create_folder(
-        &self,
-        account: &str,
-        parent: Option<&str>,
-        name: &str,
-    ) -> Result<(String, Option<String>)> {
+    pub async fn create_folder(&self, account: &str, parent: Option<&str>, name: &str) -> Result<(String, Option<String>)> {
         let args = json!({ "accountId": account, "create": { "d": { "name": name, "parentId": parent } } });
         let mut r = self.call(USING, &[inv("FileNode/set", args, "s")]).await?;
         let v: Value = take(&mut r, "s")?;
@@ -116,10 +106,7 @@ impl Client {
         }
         match existing {
             Some(id) => args.insert("update".into(), json!({ id: { "blobId": blob_id } })),
-            None => args.insert(
-                "create".into(),
-                json!({ "f": { "name": name, "parentId": parent, "blobId": blob_id, "type": mime } }),
-            ),
+            None => args.insert("create".into(), json!({ "f": { "name": name, "parentId": parent, "blobId": blob_id, "type": mime } })),
         };
         let r = self.call(USING, &[inv("FileNode/set", Value::Object(args), "s")]).await;
         let mut r = match r {

@@ -50,12 +50,7 @@ fn weekday(at: &Zoned) -> String {
 /// Срок полностью: «ср 21.10 09:00».
 pub(crate) fn when(ts: i64) -> String {
     let Some(at) = local(ts) else { return String::new() };
-    tr!(
-        "send-later-when",
-        weekday = weekday(&at),
-        date = at.strftime("%d.%m").to_string(),
-        time = at.strftime("%H:%M").to_string()
-    )
+    tr!("send-later-when", weekday = weekday(&at), date = at.strftime("%d.%m").to_string(), time = at.strftime("%H:%M").to_string())
 }
 
 /// Срок коротко для строки письма: «ср 09:00».
@@ -75,12 +70,7 @@ pub(crate) fn choice_label(c: Choice) -> String {
 pub(crate) fn menu_hint(c: Choice, at: &Zoned) -> String {
     match c {
         Choice::Monday => {
-            tr!(
-                "send-later-when",
-                weekday = weekday(at),
-                date = at.strftime("%d.%m").to_string(),
-                time = at.strftime("%H:%M").to_string()
-            )
+            tr!("send-later-when", weekday = weekday(at), date = at.strftime("%d.%m").to_string(), time = at.strftime("%H:%M").to_string())
         }
         _ => format!("{} {}", weekday(at), at.strftime("%H:%M")),
     }
@@ -119,13 +109,7 @@ fn draft_from_cache(m: &Mailer, key: &str) -> Option<Draft> {
         attachments: body
             .attachments
             .into_iter()
-            .map(|a| Attachment {
-                inline_cid: a.cid.filter(|_| a.inline),
-                name: a.name,
-                mime: a.mime,
-                data: Vec::new(),
-                blob_id: Some(a.blob_id),
-            })
+            .map(|a| Attachment { inline_cid: a.cid.filter(|_| a.inline), name: a.name, mime: a.mime, data: Vec::new(), blob_id: Some(a.blob_id) })
             .collect(),
         ..Default::default()
     })
@@ -166,11 +150,8 @@ impl Mailer {
             Event::UnsendFailed { ticket, too_late, error } => {
                 self.send_later.undo.failed(*ticket);
                 self.send_later.cancels.remove(ticket);
-                let (level, text) = if *too_late {
-                    (Toast::Warning, tr!("send-too-late"))
-                } else {
-                    (Toast::Error, tr!("send-unsend-failed", error = error.clone()))
-                };
+                let (level, text) =
+                    if *too_late { (Toast::Warning, tr!("send-too-late")) } else { (Toast::Error, tr!("send-unsend-failed", error = error.clone())) };
                 self.toasts.update(cx, |t, cx| t.push(level, text, cx));
                 cx.notify();
             }

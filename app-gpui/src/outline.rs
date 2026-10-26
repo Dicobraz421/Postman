@@ -141,15 +141,7 @@ pub(crate) fn child_row(
         .child(line(div()).top_0().when(last, |d| d.h(px(CHILD_H / 2.))).when(!last, |d| d.bottom_0()))
         .child(div().absolute().left(px(GUIDE_X)).top(px(CHILD_H / 2.)).w(px(18.)).h(px(1.)).bg(l.stroke()))
         .child(div().size(px(6.)).flex_none().rounded_full().when(!r.seen, |d| d.bg(l.accent_text())))
-        .child(
-            div()
-                .w(px(112.))
-                .flex_none()
-                .truncate()
-                .text_size(px(13.))
-                .when(!r.seen, |d| d.font_weight(FontWeight::SEMIBOLD))
-                .child(from),
-        )
+        .child(div().w(px(112.)).flex_none().truncate().text_size(px(13.)).when(!r.seen, |d| d.font_weight(FontWeight::SEMIBOLD)).child(from))
         .child(div().flex_1().min_w_0().truncate().text_color(l.text2()).child(text))
         .when(r.has_attachment, |d| d.child(icon(glyph::ATTACH, 12.).text_color(l.text3())))
         .child(div().flex_none().text_color(l.text2()).child(crate::format_date(r.received_at)))
@@ -213,10 +205,7 @@ impl MailList {
     /// Вид «как Outlook» в открытой папке (поиск — без бесед).
     pub(crate) fn outlook_mode(&self, cx: &App) -> bool {
         self.search_ids.is_none()
-            && self
-                .mailbox
-                .as_deref()
-                .is_some_and(|mb| crate::prefs::get(cx).reading.conversation_in(Some(mb)) == Conversation::Outlook)
+            && self.mailbox.as_deref().is_some_and(|mb| crate::prefs::get(cx).reading.conversation_in(Some(mb)) == Conversation::Outlook)
     }
 
     /// Беседы показаны: посчитаны и список — не результаты поиска (поиск — без бесед, беседы ждут возврата к папке).

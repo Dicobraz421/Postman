@@ -34,7 +34,9 @@ const SUGGEST: usize = 5;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Edit {
     /// «Поручить» (`reassign` — «Поручить другому» после отказа).
-    Assign { reassign: bool },
+    Assign {
+        reassign: bool,
+    },
     Return,
     Decline,
     Propose,
@@ -93,7 +95,18 @@ impl State {
                 }
             }),
         ];
-        let s = Self { edit: None, person, watcher, comment, to: None, watchers: Vec::new(), due_days: None, suggest: Vec::new(), suggest_watcher: false, held: Vec::new() };
+        let s = Self {
+            edit: None,
+            person,
+            watcher,
+            comment,
+            to: None,
+            watchers: Vec::new(),
+            due_days: None,
+            suggest: Vec::new(),
+            suggest_watcher: false,
+            held: Vec::new(),
+        };
         (s, subs)
     }
 }
@@ -153,7 +166,11 @@ fn who(t: &Task, email: &str, me: &str) -> String {
     if email.eq_ignore_ascii_case(me) {
         return tr!("assign-you");
     }
-    t.participants.iter().find(|p| p.email.eq_ignore_ascii_case(email)).map(|p| if p.name.is_empty() { p.email.clone() } else { p.name.clone() }).unwrap_or_else(|| email.to_owned())
+    t.participants
+        .iter()
+        .find(|p| p.email.eq_ignore_ascii_case(email))
+        .map(|p| if p.name.is_empty() { p.email.clone() } else { p.name.clone() })
+        .unwrap_or_else(|| email.to_owned())
 }
 
 fn kind_id(k: StepKind) -> &'static str {
@@ -179,7 +196,12 @@ fn kind_id(k: StepKind) -> &'static str {
 
 /// Что сделано шагом: «готово, на проверку», «новый срок: …».
 fn step_what(t: &Task, s: &Step, tz: &TimeZone) -> String {
-    let due = s.due.as_deref().and_then(|d| d.parse().ok()).map(|local| moment_text(&Moment { local, tz: t.due.as_ref().and_then(|m| m.tz.clone()) }, tz)).unwrap_or_default();
+    let due = s
+        .due
+        .as_deref()
+        .and_then(|d| d.parse().ok())
+        .map(|local| moment_text(&Moment { local, tz: t.due.as_ref().and_then(|m| m.tz.clone()) }, tz))
+        .unwrap_or_default();
     tr!(&format!("assign-what-{}", kind_id(s.kind)), due = due)
 }
 
@@ -325,7 +347,8 @@ impl TasksView {
         if let (Edit::Assign { .. }, Some(t)) = (edit, self.selected_task()) {
             // Срок задачи — выбранным, если он среди вариантов.
             let today = day_of(self.now(), &self.tz).unwrap_or_default();
-            self.deleg.due_days = t.due.as_ref().and_then(|d| d.date_in(&self.tz)).map(|d| (d - today).get_days() as i64).filter(|n| DUE_DAYS.contains(n)).or(Some(2));
+            self.deleg.due_days =
+                t.due.as_ref().and_then(|d| d.date_in(&self.tz)).map(|d| (d - today).get_days() as i64).filter(|n| DUE_DAYS.contains(n)).or(Some(2));
         }
         cx.notify();
     }
@@ -736,7 +759,10 @@ impl TasksView {
             .text_size(px(12.))
             .text_color(l.text2())
             .child(div().flex_1().min_w_0().child(tr!("deleg-wait-hint", n = c.waiting as i64)))
-            .child(crate::settings_tab::link("deleg-open-wait", tr!("deleg-open-wait"), l).on_click(cx.listener(|_, _, _, cx| cx.emit(TasksAction::OpenWaiting))))
+            .child(
+                crate::settings_tab::link("deleg-open-wait", tr!("deleg-open-wait"), l)
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(TasksAction::OpenWaiting))),
+            )
     }
 
     /// Space у поручения: главное действие стороны (принять результат, согласиться, принять, в работе, готово).
@@ -857,12 +883,8 @@ impl TasksView {
 
     /// Ввод на месте: комментарий, срок, кнопки «Отправить» / «Отмена».
     fn inline_form(&self, edit: Edit, t: &Task, l: &Look, cx: &mut Context<Self>) -> Div {
-        let other = if owner_side(t, &self.me_email()) {
-            assign::assignee(t).map(|p| p.name.clone())
-        } else {
-            t.organizer().map(|p| p.name.clone())
-        }
-        .unwrap_or_default();
+        let other = if owner_side(t, &self.me_email()) { assign::assignee(t).map(|p| p.name.clone()) } else { t.organizer().map(|p| p.name.clone()) }
+            .unwrap_or_default();
         let (label, send) = match edit {
             Edit::Return => (tr!("assign-comment-return", who = other.clone()), tr!("assign-do-return")),
             Edit::Decline => (tr!("assign-comment-decline", who = other.clone()), tr!("assign-decline")),
@@ -890,7 +912,10 @@ impl TasksView {
                     .flex()
                     .gap(px(8.))
                     .child(crate::buttons::button("assign-send", send, true, l).on_click(cx.listener(|this, _, _, cx| this.deleg_submit(cx))))
-                    .child(crate::buttons::button("assign-cancel", tr!("assign-cancel"), false, l).on_click(cx.listener(|this, _, _, cx| this.deleg_reset(cx)))),
+                    .child(
+                        crate::buttons::button("assign-cancel", tr!("assign-cancel"), false, l)
+                            .on_click(cx.listener(|this, _, _, cx| this.deleg_reset(cx))),
+                    ),
             )
     }
 
@@ -927,30 +952,52 @@ impl TasksView {
             .gap(px(10.))
             .child(crate::calendar::avatar(&other_name, 32., &l))
             .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .child(div().font_weight(FontWeight::SEMIBOLD).truncate().child(other_name.clone()))
-                    .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!(if owner { "assign-role-assignee" } else { "assign-role-owner" }))),
+                div().flex_1().min_w_0().flex().flex_col().child(div().font_weight(FontWeight::SEMIBOLD).truncate().child(other_name.clone())).child(
+                    div().text_size(px(12.)).text_color(l.text2()).child(tr!(if owner { "assign-role-assignee" } else { "assign-role-owner" })),
+                ),
             )
-            .child(div().flex().items_center().gap(px(6.)).child(status_circle(st, 20., &l)).child(div().text_size(px(12.)).child(status_text(st, owner))));
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(status_circle(st, 20., &l))
+                    .child(div().text_size(px(12.)).child(status_text(st, owner))),
+            );
         let head = div().pt(px(16.)).px(px(20.)).flex().flex_col().gap(px(10.)).flex_none().child(top).child(title).child(person);
         let rib = div().mx(px(20.)).mt(px(14.)).flex_none().child(ribbon(t, st, owner, now, &tz, &l));
         // Поля: срок, наблюдатели.
         let field = |key: &str, value: AnyElement| {
-            div().h(px(30.)).flex().items_center().gap(px(10.)).child(div().w(px(110.)).flex_none().text_size(px(12.)).text_color(l.text2()).child(tr!(key))).child(value)
+            div()
+                .h(px(30.))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .child(div().w(px(110.)).flex_none().text_size(px(12.)).text_color(l.text2()).child(tr!(key)))
+                .child(value)
         };
         let due = match &t.due {
             Some(_) => {
                 let badge = (!st.is_final()).then(|| super::due_badge(t, now, &tz)).flatten();
-                div().flex().items_center().gap(px(8.)).min_w_0().child(div().truncate().child(super::due_text(t, &tz))).children(badge.map(|b| crate::lifecycle::chip(&b, &l))).into_any_element()
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .min_w_0()
+                    .child(div().truncate().child(super::due_text(t, &tz)))
+                    .children(badge.map(|b| crate::lifecycle::chip(&b, &l)))
+                    .into_any_element()
             }
             None => div().text_color(l.text3()).child(tr!("tasks-no-due")).into_any_element(),
         };
-        let watchers: Vec<String> = t.participants.iter().filter(|p| p.role == Role::Observer).map(|p| if p.name.is_empty() { p.email.clone() } else { p.name.clone() }).collect();
-        let watchers = if watchers.is_empty() { div().text_color(l.text3()).child(tr!("assign-none")) } else { div().truncate().child(watchers.join(", ")) };
+        let watchers: Vec<String> = t
+            .participants
+            .iter()
+            .filter(|p| p.role == Role::Observer)
+            .map(|p| if p.name.is_empty() { p.email.clone() } else { p.name.clone() })
+            .collect();
+        let watchers =
+            if watchers.is_empty() { div().text_color(l.text3()).child(tr!("assign-none")) } else { div().truncate().child(watchers.join(", ")) };
         let proposed = assign::proposed(t).map(|m| moment_text(&m, &tz));
         let fields = div()
             .mx(px(20.))
@@ -962,7 +1009,12 @@ impl TasksView {
             .border_b_1()
             .border_color(l.border())
             .child(field("assign-field-due", due))
-            .when_some(proposed.clone(), |d, p| d.child(field("assign-field-proposed", div().text_color(l.pm(Pm::DeadlineFg)).font_weight(FontWeight::SEMIBOLD).child(p).into_any_element())))
+            .when_some(proposed.clone(), |d, p| {
+                d.child(field(
+                    "assign-field-proposed",
+                    div().text_color(l.pm(Pm::DeadlineFg)).font_weight(FontWeight::SEMIBOLD).child(p).into_any_element(),
+                ))
+            })
             .child(field("assign-field-watchers", watchers.into_any_element()));
         // Заметка последнего шага: результат, предложенный срок, причина отказа, что доработать.
         let steps = assign::steps(t);
@@ -974,21 +1026,29 @@ impl TasksView {
             Status::Waiting | Status::Accepted => Some((StepKind::Assigned, "assign-note-assigned")),
             Status::Revoked => None,
         };
-        let note = note_kind.and_then(|(k, head)| steps.iter().rev().find(|s| s.kind == k && !s.comment.is_empty()).map(|s| (head, s.clone()))).map(|(head, s)| {
-            div()
-                .mx(px(20.))
-                .mt(px(12.))
-                .p(px(12.))
-                .flex_none()
-                .flex()
-                .flex_col()
-                .gap(px(4.))
-                .rounded(px(6.))
-                .border_1()
-                .border_color(l.stroke())
-                .child(div().flex().gap(px(8.)).child(div().font_weight(FontWeight::SEMIBOLD).child(tr!(head))).child(div().text_size(px(12.)).text_color(l.text2()).child(when(s.at, now, &tz))))
-                .child(div().line_height(px(19.)).child(s.comment.clone()))
-        });
+        let note = note_kind.and_then(|(k, head)| steps.iter().rev().find(|s| s.kind == k && !s.comment.is_empty()).map(|s| (head, s.clone()))).map(
+            |(head, s)| {
+                div()
+                    .mx(px(20.))
+                    .mt(px(12.))
+                    .p(px(12.))
+                    .flex_none()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(l.stroke())
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(8.))
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child(tr!(head)))
+                            .child(div().text_size(px(12.)).text_color(l.text2()).child(when(s.at, now, &tz))),
+                    )
+                    .child(div().line_height(px(19.)).child(s.comment.clone()))
+            },
+        );
         // Кнопки — по статусу и стороне (макеты).
         let mut b1: Vec<Stateful<Div>> = Vec::new();
         let mut b2: Vec<Stateful<Div>> = Vec::new();
@@ -1002,7 +1062,14 @@ impl TasksView {
                     b2.push(self.deleg_button("assign-revoke", tr!("assign-revoke"), false, Action::Revoke, &l, cx));
                 }
                 Status::Proposed => {
-                    b1.push(self.deleg_button("assign-agree", tr!("assign-agree", due = proposed.clone().unwrap_or_default()), true, Action::AgreeDue, &l, cx));
+                    b1.push(self.deleg_button(
+                        "assign-agree",
+                        tr!("assign-agree", due = proposed.clone().unwrap_or_default()),
+                        true,
+                        Action::AgreeDue,
+                        &l,
+                        cx,
+                    ));
                     b1.push(self.deleg_button("assign-keep", tr!("assign-keep"), false, Action::KeepDue, &l, cx));
                     b2.push(self.deleg_button("assign-revoke", tr!("assign-revoke"), false, Action::Revoke, &l, cx));
                 }
@@ -1013,7 +1080,10 @@ impl TasksView {
                 Status::Waiting | Status::Accepted | Status::InProgress => {
                     let next = assign::next_reminder(t).filter(|n| now < *n);
                     let remind = match next {
-                        Some(n) => crate::buttons::secondary("assign-remind", &l).opacity(0.55).cursor_default().child(tr!("assign-reminded", time = when(n - assign::REMIND_EVERY, now, &tz))),
+                        Some(n) => crate::buttons::secondary("assign-remind", &l)
+                            .opacity(0.55)
+                            .cursor_default()
+                            .child(tr!("assign-reminded", time = when(n - assign::REMIND_EVERY, now, &tz))),
                         None => self.deleg_button("assign-remind", tr!("assign-remind"), false, Action::Remind, &l, cx),
                     };
                     b1.push(remind);
@@ -1063,7 +1133,9 @@ impl TasksView {
                 .flex()
                 .flex_col()
                 .gap(px(8.))
-                .when_some(done_text, |d, text| d.child(div().flex().items_center().gap(px(6.)).text_color(l.text2()).child(status_circle(st, 16., &l)).child(text)))
+                .when_some(done_text, |d, text| {
+                    d.child(div().flex().items_center().gap(px(6.)).text_color(l.text2()).child(status_circle(st, 16., &l)).child(text))
+                })
                 .when(!b1.is_empty(), |d| d.child(div().flex().flex_wrap().gap(px(8.)).children(b1)))
                 .when(!b2.is_empty(), |d| d.child(div().flex().flex_wrap().gap(px(8.)).children(b2)))
         });
@@ -1080,14 +1152,27 @@ impl TasksView {
             .overflow_hidden()
             .border_t_1()
             .border_color(l.border())
-            .child(div().flex().gap(px(8.)).child(div().font_weight(FontWeight::SEMIBOLD).child(tr!("assign-history"))).child(div().text_color(l.text2()).child(steps.len().to_string())))
+            .child(
+                div()
+                    .flex()
+                    .gap(px(8.))
+                    .child(div().font_weight(FontWeight::SEMIBOLD).child(tr!("assign-history")))
+                    .child(div().text_color(l.text2()).child(steps.len().to_string())),
+            )
             .children(steps.iter().rev().enumerate().map(|(i, s)| {
                 div()
                     .flex()
                     .gap(px(10.))
                     .text_size(px(12.))
                     .child(div().w(px(76.)).flex_none().text_color(l.text3()).child(when(s.at, now, &tz)))
-                    .child(div().flex_1().min_w_0().when(i == 0, |d| d.text_color(l.text())).when(i > 0, |d| d.text_color(l.text2())).child(step_text(t, s, &me, &tz)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .when(i == 0, |d| d.text_color(l.text()))
+                            .when(i > 0, |d| d.text_color(l.text2()))
+                            .child(step_text(t, s, &me, &tz)),
+                    )
             }));
         div()
             .size_full()
@@ -1118,7 +1203,19 @@ impl TasksView {
                 .border_1()
                 .border_color(l.stroke())
                 .child(crate::calendar::avatar(if a.name.is_empty() { &a.email } else { &a.name }, 28., &l))
-                .child(div().flex_1().min_w_0().flex().flex_col().child(div().font_weight(FontWeight::SEMIBOLD).truncate().child(if a.name.is_empty() { a.email.clone() } else { a.name.clone() })).child(div().text_size(px(12.)).text_color(l.text2()).truncate().child(a.email.clone())))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(div().font_weight(FontWeight::SEMIBOLD).truncate().child(if a.name.is_empty() {
+                            a.email.clone()
+                        } else {
+                            a.name.clone()
+                        }))
+                        .child(div().text_size(px(12.)).text_color(l.text2()).truncate().child(a.email.clone())),
+                )
                 .child(
                     div()
                         .id("assign-unpick")
@@ -1140,22 +1237,24 @@ impl TasksView {
         };
         let suggest = |watcher: bool, cx: &mut Context<Self>| -> Option<Div> {
             (self.deleg.suggest_watcher == watcher && !self.deleg.suggest.is_empty()).then(|| {
-                div().flex().flex_col().rounded(px(6.)).border_1().border_color(l.stroke()).bg(l.c(pets_ui::theme::Role::LayerOverlay)).children(self.deleg.suggest.iter().enumerate().map(|(i, a)| {
-                    let pick = a.clone();
-                    div()
-                        .id(("assign-suggest", i))
-                        .h(px(36.))
-                        .px(px(10.))
-                        .flex()
-                        .items_center()
-                        .gap(px(10.))
-                        .cursor_pointer()
-                        .when(i == 0, |d| d.bg(l.hover()))
-                        .hover(|d| d.bg(l.hover()))
-                        .child(crate::calendar::avatar(if a.name.is_empty() { &a.email } else { &a.name }, 24., &l))
-                        .child(div().flex_1().min_w_0().truncate().child(a.display()))
-                        .on_click(cx.listener(move |this, _, _, cx| this.deleg_pick(watcher, pick.clone(), cx)))
-                }))
+                div().flex().flex_col().rounded(px(6.)).border_1().border_color(l.stroke()).bg(l.c(pets_ui::theme::Role::LayerOverlay)).children(
+                    self.deleg.suggest.iter().enumerate().map(|(i, a)| {
+                        let pick = a.clone();
+                        div()
+                            .id(("assign-suggest", i))
+                            .h(px(36.))
+                            .px(px(10.))
+                            .flex()
+                            .items_center()
+                            .gap(px(10.))
+                            .cursor_pointer()
+                            .when(i == 0, |d| d.bg(l.hover()))
+                            .hover(|d| d.bg(l.hover()))
+                            .child(crate::calendar::avatar(if a.name.is_empty() { &a.email } else { &a.name }, 24., &l))
+                            .child(div().flex_1().min_w_0().truncate().child(a.display()))
+                            .on_click(cx.listener(move |this, _, _, cx| this.deleg_pick(watcher, pick.clone(), cx)))
+                    }),
+                )
             })
         };
         let watchers = div().flex().flex_wrap().gap(px(6.)).children(self.deleg.watchers.iter().enumerate().map(|(i, w)| {
@@ -1183,7 +1282,8 @@ impl TasksView {
         let send = crate::buttons::button("assign-submit", tr!("assign-delegate"), true, &l)
             .when(picked.is_none(), |d| d.opacity(0.45))
             .on_click(cx.listener(|this, _, _, cx| this.deleg_submit(cx)));
-        let cancel = crate::buttons::button("assign-cancel", tr!("assign-cancel"), false, &l).on_click(cx.listener(|this, _, _, cx| this.deleg_reset(cx)));
+        let cancel =
+            crate::buttons::button("assign-cancel", tr!("assign-cancel"), false, &l).on_click(cx.listener(|this, _, _, cx| this.deleg_reset(cx)));
         div()
             .size_full()
             .flex()
@@ -1191,16 +1291,41 @@ impl TasksView {
             .gap(px(12.))
             .pt(px(16.))
             .px(px(20.))
-            .child(div().flex().items_center().gap(px(8.)).text_size(px(12.)).text_color(l.text2()).child(icon(g::DELEGATE, 14.)).child(tr!(if reassign { "assign-reassign" } else { "assign-form-title" })).child(div().flex_1().min_w_0().truncate().child(t.project.clone().unwrap_or_default())))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .text_size(px(12.))
+                    .text_color(l.text2())
+                    .child(icon(g::DELEGATE, 14.))
+                    .child(tr!(if reassign { "assign-reassign" } else { "assign-form-title" }))
+                    .child(div().flex_1().min_w_0().truncate().child(t.project.clone().unwrap_or_default())),
+            )
             .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).line_height(px(26.)).child(t.title.clone()))
-            .child(div().flex().flex_col().gap(px(6.)).child(label("assign-form-person")).child(person).children(suggest(false, cx)).when(picked.is_none(), |d| d.child(div().text_size(px(11.)).text_color(l.text3()).child(tr!("assign-form-person-hint")))))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(label("assign-form-person"))
+                    .child(person)
+                    .children(suggest(false, cx))
+                    .when(picked.is_none(), |d| d.child(div().text_size(px(11.)).text_color(l.text3()).child(tr!("assign-form-person-hint")))),
+            )
             .when(!reassign, |d| {
                 d.child(
                     div()
                         .flex()
                         .flex_col()
                         .gap(px(6.))
-                        .child(div().flex().gap(px(6.)).child(label("assign-form-watchers")).child(div().text_size(px(12.)).text_color(l.text3()).child(tr!("assign-form-watchers-opt"))))
+                        .child(
+                            div()
+                                .flex()
+                                .gap(px(6.))
+                                .child(label("assign-form-watchers"))
+                                .child(div().text_size(px(12.)).text_color(l.text3()).child(tr!("assign-form-watchers-opt"))),
+                        )
                         .child(watchers)
                         .child(Input::new(&self.deleg.watcher))
                         .children(suggest(true, cx)),
@@ -1238,7 +1363,14 @@ fn letter_body(t: &Task, kind: StepKind, me: &Address, tz: &TimeZone) -> String 
 
 /// Карточка письма-поручения над текстом письма: что, от кого, срок, комментарий, статус; главное действие и
 /// «Открыть в задачах». `task` — своя копия (если уже пришла), `me` — мой адрес.
-pub(crate) fn mail_card(inc: &Incoming, task: Option<&Task>, me: &str, tz: &TimeZone, cx: &mut App, on: impl Fn(Option<Action>, &mut Window, &mut App) + Clone + 'static) -> AnyElement {
+pub(crate) fn mail_card(
+    inc: &Incoming,
+    task: Option<&Task>,
+    me: &str,
+    tz: &TimeZone,
+    cx: &mut App,
+    on: impl Fn(Option<Action>, &mut Window, &mut App) + Clone + 'static,
+) -> AnyElement {
     let l = crate::roles::look(cx);
     let shown = task.unwrap_or(&inc.task);
     let owner = owner_side(shown, me);
@@ -1287,8 +1419,17 @@ pub(crate) fn mail_card(inc: &Incoming, task: Option<&Task>, me: &str, tz: &Time
                 .children(st.map(|s| div().flex().items_center().gap(px(6.)).child(status_circle(s, 18., &l)).child(status_text(s, owner)))),
         )
         .child(div().text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).child(inc.task.title.clone()))
-        .child(div().flex().gap(px(16.)).text_size(px(12.)).child(div().text_color(l.text2()).child(tr!("assign-mail-from", who = from))).children(due.map(|d| div().child(tr!("assign-mail-due", due = d)))))
-        .when(!inc.comment.is_empty(), |d| d.child(div().p(px(8.)).rounded(px(6.)).bg(l.fill_passive()).line_height(px(19.)).child(inc.comment.clone())))
+        .child(
+            div()
+                .flex()
+                .gap(px(16.))
+                .text_size(px(12.))
+                .child(div().text_color(l.text2()).child(tr!("assign-mail-from", who = from)))
+                .children(due.map(|d| div().child(tr!("assign-mail-due", due = d)))),
+        )
+        .when(!inc.comment.is_empty(), |d| {
+            d.child(div().p(px(8.)).rounded(px(6.)).bg(l.fill_passive()).line_height(px(19.)).child(inc.comment.clone()))
+        })
         .child(
             div()
                 .flex()
@@ -1298,7 +1439,10 @@ pub(crate) fn mail_card(inc: &Incoming, task: Option<&Task>, me: &str, tz: &Time
                 .when_some(main.zip(main_label), |d, (a, label)| {
                     d.child(crate::buttons::button("mail-assign-main", label, true, &l).on_click(move |_, window, cx| on_main(Some(a), window, cx)))
                 })
-                .child(crate::buttons::button("mail-assign-open", tr!("assign-open-tasks"), main.is_none(), &l).on_click(move |_, window, cx| on_open(None, window, cx)))
+                .child(
+                    crate::buttons::button("mail-assign-open", tr!("assign-open-tasks"), main.is_none(), &l)
+                        .on_click(move |_, window, cx| on_open(None, window, cx)),
+                )
                 .when(task.is_none(), |d| d.child(div().text_size(px(12.)).text_color(l.text3()).self_center().child(tr!("assign-not-yet")))),
         )
         .into_any_element()
@@ -1320,7 +1464,16 @@ mod tests {
         assert_eq!(primary(Status::Closed, false), None);
         // Каждое главное действие допустимо по таблице.
         for owner in [true, false] {
-            for st in [Status::Waiting, Status::Proposed, Status::Accepted, Status::InProgress, Status::Done, Status::Declined, Status::Closed, Status::Revoked] {
+            for st in [
+                Status::Waiting,
+                Status::Proposed,
+                Status::Accepted,
+                Status::InProgress,
+                Status::Done,
+                Status::Declined,
+                Status::Closed,
+                Status::Revoked,
+            ] {
                 if let Some(a) = primary(st, owner) {
                     assert!(postman_calendar::assign::next(st, a).is_ok(), "{st:?} {a:?}");
                     assert_eq!(a.by_owner(), owner);

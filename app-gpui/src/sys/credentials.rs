@@ -51,11 +51,7 @@ pub fn read(target: &str) -> Result<Option<String>, String> {
     // SAFETY: при успехе `cred` указывает на запись, выделенную системой; блоб — `CredentialBlobSize` байт.
     let secret = unsafe {
         let c = &*cred;
-        let bytes = if c.CredentialBlob.is_null() {
-            &[][..]
-        } else {
-            std::slice::from_raw_parts(c.CredentialBlob, c.CredentialBlobSize as usize)
-        };
+        let bytes = if c.CredentialBlob.is_null() { &[][..] } else { std::slice::from_raw_parts(c.CredentialBlob, c.CredentialBlobSize as usize) };
         let s = String::from_utf8(bytes.to_vec());
         CredFree(cred.cast());
         s

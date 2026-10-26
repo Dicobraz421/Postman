@@ -67,16 +67,25 @@ fn own_signature_verifies() {
 fn eight_bit_and_tamper() {
     let pki = Pki::rsa("Postman Test Root", "Иванов", "user1@itt.test");
     let signer = TestSigner { cert: &pki.user, key: &pki.user_key, chain: Vec::new() };
-    let eight = letter("Content-Type: text/plain; charset=utf-8
+    let eight = letter(
+        "Content-Type: text/plain; charset=utf-8
 Content-Transfer-Encoding: 8bit
 
 Привет
-");
+",
+    );
     assert_eq!(sign::sign_message(&eight, &signer, NOW as i64), Err(SignError::EightBit));
-    let signed = sign::sign_message(&letter("Content-Type: text/plain
+    let signed = sign::sign_message(
+        &letter(
+            "Content-Type: text/plain
 
 Pay 100
-"), &signer, NOW as i64).unwrap();
+",
+        ),
+        &signer,
+        NOW as i64,
+    )
+    .unwrap();
     let text = String::from_utf8(signed).unwrap().replace("Pay 100", "Pay 900");
     assert_eq!(postman_smime::verify(text.as_bytes(), &pki.trust(), NOW).status, Status::Invalid);
 }

@@ -327,8 +327,7 @@ impl VacationPanel {
             subscriptions.push(cx.subscribe_in(state, window, |this, _, ev: &InputEvent, _, cx| this.changed(ev, None, cx)));
         }
         for (i, state) in bodies.iter().enumerate() {
-            subscriptions
-                .push(cx.subscribe_in(state, window, move |this, _, ev: &InputEvent, _, cx| this.changed(ev, Some(i), cx)));
+            subscriptions.push(cx.subscribe_in(state, window, move |this, _, ev: &InputEvent, _, cx| this.changed(ev, Some(i), cx)));
         }
         let week = crate::prefs::get(cx).calendar.work_days;
         let mut p = Self {
@@ -518,16 +517,7 @@ fn toggle_row(id: &'static str, title: Div, hint: String, on: bool, l: &Look) ->
         .border_b_1()
         .border_color(l.border())
         .cursor_pointer()
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap_0p5()
-                .child(title)
-                .child(div().text_size(px(12.)).text_color(l.text2()).child(hint)),
-        )
+        .child(div().flex_1().min_w_0().flex().flex_col().gap_0p5().child(title).child(div().text_size(px(12.)).text_color(l.text2()).child(hint)))
         .child(switch(on, l))
 }
 
@@ -650,9 +640,7 @@ impl VacationPanel {
                         .cursor_pointer()
                         .child(checkbox(only))
                         .child(tr!("vacation-contacts-only"))
-                        .on_click(
-                            cx.listener(|this, _, _, cx| this.set(|f| f.reply.contacts_only = !f.reply.contacts_only, cx)),
-                        ),
+                        .on_click(cx.listener(|this, _, _, cx| this.set(|f| f.reply.contacts_only = !f.reply.contacts_only, cx))),
                 )
                 .child(div().pl_6().text_size(px(12.)).text_color(l.text2()).child(if only {
                     tr!("vacation-contacts-only-on")
@@ -720,15 +708,8 @@ impl VacationPanel {
 
     fn extra(&self, l: &Look, cx: &mut Context<Self>) -> Div {
         let r = &self.form.reply;
-        let badge = div()
-            .px_1p5()
-            .rounded_sm()
-            .bg(l.fill())
-            .text_size(px(11.))
-            .text_color(l.text2())
-            .child(tr!("vacation-recommended"));
-        let once_title =
-            div().flex().items_center().gap_2().child(tr!("vacation-once", n = i64::from(r.days))).child(badge);
+        let badge = div().px_1p5().rounded_sm().bg(l.fill()).text_size(px(11.)).text_color(l.text2()).child(tr!("vacation-recommended"));
+        let once_title = div().flex().items_center().gap_2().child(tr!("vacation-once", n = i64::from(r.days))).child(badge);
         let once_hint = if r.once { tr!("vacation-once-on") } else { tr!("vacation-once-off") };
         let ooo_hint = if r.out_of_office { tr!("vacation-ooo-on") } else { tr!("vacation-ooo-off") };
         div()
@@ -740,9 +721,8 @@ impl VacationPanel {
                     .on_click(cx.listener(|this, _, _, cx| this.set(|f| f.reply.once = !f.reply.once, cx))),
             )
             .child(
-                toggle_row("vacation-ooo", div().child(tr!("vacation-ooo")), ooo_hint, r.out_of_office, l).on_click(
-                    cx.listener(|this, _, _, cx| this.set(|f| f.reply.out_of_office = !f.reply.out_of_office, cx)),
-                ),
+                toggle_row("vacation-ooo", div().child(tr!("vacation-ooo")), ooo_hint, r.out_of_office, l)
+                    .on_click(cx.listener(|this, _, _, cx| this.set(|f| f.reply.out_of_office = !f.reply.out_of_office, cx))),
             )
     }
 
@@ -769,10 +749,7 @@ impl VacationPanel {
             .border_color(l.border())
             .child(div().size(px(6.)).rounded_full().bg(dot))
             .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(l.text2()).child(text))
-            .child(
-                button("vacation-cancel", tr!("vacation-cancel"), false)
-                    .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
-            )
+            .child(button("vacation-cancel", tr!("vacation-cancel"), false).on_click(cx.listener(|this, _, _, cx| this.cancel(cx))))
             .child(
                 button("vacation-save", tr!("vacation-save"), !busy)
                     .when(busy, |d| d.opacity(0.6))
@@ -801,8 +778,7 @@ impl VacationPanel {
             Tab::External if f.reply.contacts_only => tr!("vacation-rule-contacts"),
             Tab::External => tr!("vacation-rule-everyone"),
         };
-        let once =
-            if f.reply.once { tr!("vacation-rule-once", n = i64::from(f.reply.days)) } else { tr!("vacation-rule-each") };
+        let once = if f.reply.once { tr!("vacation-rule-once", n = i64::from(f.reply.days)) } else { tr!("vacation-rule-each") };
         let when = match to_save(f, &tz()) {
             Ok((v, _)) if f.period && (v.from_date.is_some() || v.to_date.is_some()) => {
                 tr!("vacation-rule-period", period = period_text(&v, &tz()))
@@ -816,15 +792,9 @@ impl VacationPanel {
             div().line_height(px(19.)).child(preview_text(t.body.trim_end(), l)).into_any_element()
         };
         let rule = |g: char, text: String| {
-            div()
-                .flex()
-                .items_start()
-                .gap_2()
-                .child(icon(g, 12.).text_color(l.text2()).mt(px(3.)))
-                .child(div().flex_1().child(text))
+            div().flex().items_start().gap_2().child(icon(g, 12.).text_color(l.text2()).mt(px(3.))).child(div().flex_1().child(text))
         };
-        let subject =
-            if t.subject.trim().is_empty() { tr!("vacation-subject-placeholder") } else { t.subject.trim().to_owned() };
+        let subject = if t.subject.trim().is_empty() { tr!("vacation-subject-placeholder") } else { t.subject.trim().to_owned() };
         div()
             .flex()
             .flex_col()
@@ -897,9 +867,7 @@ impl Render for VacationPanel {
             ] {
                 state.update(cx, |s, cx| s.set_value(value, window, cx));
             }
-            for (state, value) in
-                [(&self.bodies[0], f.reply.internal.body.clone()), (&self.bodies[1], f.reply.external.body.clone())]
-            {
+            for (state, value) in [(&self.bodies[0], f.reply.internal.body.clone()), (&self.bodies[1], f.reply.external.body.clone())] {
                 state.update(cx, |s, cx| s.replace_all(value, window, cx));
             }
             self.paint(0, cx);
@@ -980,19 +948,12 @@ impl Render for VacationBar {
                 .text_size(px(13.))
                 .text_color(l.text())
                 .child(icon(glyph::MAIL, 14.).text_color(l.text2()))
-                .child(
-                    div()
-                        .flex()
-                        .min_w_0()
-                        .child(div().font_weight(FontWeight::SEMIBOLD).child(tr!("vacation-bar-on")))
-                        .child(self.until.clone()),
-                )
+                .child(div().flex().min_w_0().child(div().font_weight(FontWeight::SEMIBOLD).child(tr!("vacation-bar-on"))).child(self.until.clone()))
                 .when_some(self.reach.clone(), |d, r| d.child(div().text_color(l.text2()).truncate().child(format!("· {r}"))))
                 .child(div().flex_1())
                 .child(
-                    link("vacation-bar-edit", tr!("vacation-bar-edit")).on_click(|_, window, cx| {
-                        window.dispatch_action(Box::new(crate::settings::settings::Vacation), cx)
-                    }),
+                    link("vacation-bar-edit", tr!("vacation-bar-edit"))
+                        .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::settings::settings::Vacation), cx)),
                 )
                 .child(
                     link("vacation-bar-off", tr!("vacation-bar-off"))
@@ -1051,10 +1012,7 @@ mod tests {
         assert_eq!(v.from_date.as_deref(), Some("2026-10-21T06:00:00Z"));
         assert_eq!(v.to_date.as_deref(), Some("2026-10-23T15:00:00Z"));
         assert_eq!((v.subject.as_deref(), v.text_body.as_deref()), (Some("Автоответ"), Some("Спасибо за письмо.")));
-        assert_eq!(
-            (reply.internal.subject.as_str(), reply.internal.body.as_str()),
-            ("Нет на месте", "Коллеги, я в отпуске.")
-        );
+        assert_eq!((reply.internal.subject.as_str(), reply.internal.body.as_str()), ("Нет на месте", "Коллеги, я в отпуске."));
         let back = from_server(&v, Some(&reply), &tz);
         assert_eq!(back, Form { reply: reply.clone(), ..form() });
         // Настроек Postman нет — один текст сервера обеим группам.

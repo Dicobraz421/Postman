@@ -270,7 +270,8 @@ mod tests {
     fn system_roots_are_loaded() {
         let t = load_trust(&[]);
         assert!(t.roots.len() > 5, "{}", t.roots.len());
-        let size: usize = t.roots.iter().map(|a| a.der.len()).sum::<usize>() + t.intermediates.iter().chain(&t.disallowed).map(Vec::len).sum::<usize>();
+        let size: usize =
+            t.roots.iter().map(|a| a.der.len()).sum::<usize>() + t.intermediates.iter().chain(&t.disallowed).map(Vec::len).sum::<usize>();
         assert!(size <= postman_smime::MAX_TRUST);
         assert_eq!(sha256(b"abc").len(), 32);
     }

@@ -13,9 +13,28 @@ const USING: &[&str] = &[CORE, CALENDARS, PRINCIPALS];
 
 /// Свойства события, нужные для отображения; `utcStart`/`utcEnd` вычисляет сервер.
 pub const EVENT_PROPERTIES: &[&str] = &[
-    "id", "uid", "calendarIds", "title", "description", "start", "timeZone", "duration", "showWithoutTime",
-    "status", "freeBusyStatus", "participants", "locations", "recurrenceRules", "recurrenceRule", "recurrenceOverrides", "recurrenceId", "utcStart",
-    "utcEnd", "keywords", "categories", "sequence",
+    "id",
+    "uid",
+    "calendarIds",
+    "title",
+    "description",
+    "start",
+    "timeZone",
+    "duration",
+    "showWithoutTime",
+    "status",
+    "freeBusyStatus",
+    "participants",
+    "locations",
+    "recurrenceRules",
+    "recurrenceRule",
+    "recurrenceOverrides",
+    "recurrenceId",
+    "utcStart",
+    "utcEnd",
+    "keywords",
+    "categories",
+    "sequence",
 ];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -249,11 +268,7 @@ impl Client {
         let acc = self.account_for(PRINCIPALS)?;
         let calls = [
             inv("Principal/query", json!({ "accountId": acc, "filter": { "text": text }, "limit": limit }), "q"),
-            inv(
-                "Principal/get",
-                json!({ "accountId": acc, "#ids": { "resultOf": "q", "name": "Principal/query", "path": "/ids" } }),
-                "g",
-            ),
+            inv("Principal/get", json!({ "accountId": acc, "#ids": { "resultOf": "q", "name": "Principal/query", "path": "/ids" } }), "g"),
         ];
         let mut r = self.call(USING, &calls).await?;
         let g: GetResponse<Principal> = take(&mut r, "g")?;
@@ -265,11 +280,7 @@ impl Client {
         let acc = self.account_for(PRINCIPALS)?;
         let calls = [
             inv("Principal/query", json!({ "accountId": acc, "limit": limit }), "q"),
-            inv(
-                "Principal/get",
-                json!({ "accountId": acc, "#ids": { "resultOf": "q", "name": "Principal/query", "path": "/ids" } }),
-                "g",
-            ),
+            inv("Principal/get", json!({ "accountId": acc, "#ids": { "resultOf": "q", "name": "Principal/query", "path": "/ids" } }), "g"),
         ];
         let mut r = self.call(USING, &calls).await?;
         let g: GetResponse<Principal> = take(&mut r, "g")?;
@@ -281,11 +292,7 @@ impl Client {
         let acc = self.account_for(PRINCIPALS)?;
         let calls = [
             inv("Principal/query", json!({ "accountId": acc, "filter": { "email": email }, "limit": 5 }), "q"),
-            inv(
-                "Principal/get",
-                json!({ "accountId": acc, "#ids": { "resultOf": "q", "name": "Principal/query", "path": "/ids" } }),
-                "g",
-            ),
+            inv("Principal/get", json!({ "accountId": acc, "#ids": { "resultOf": "q", "name": "Principal/query", "path": "/ids" } }), "g"),
         ];
         let mut r = self.call(USING, &calls).await?;
         let g: GetResponse<Principal> = take(&mut r, "g")?;

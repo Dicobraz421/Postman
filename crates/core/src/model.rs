@@ -80,19 +80,12 @@ impl ContactCard {
         let full = name["full"].as_str().map(str::to_string).unwrap_or_else(|| {
             // Нет `full` — собираем из компонентов: фамилия, имя, отчество.
             let part = |kind: &str| -> Vec<&str> {
-                name["components"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter(|c| c["kind"] == kind)
-                    .filter_map(|c| c["value"].as_str())
-                    .collect()
+                name["components"].as_array().into_iter().flatten().filter(|c| c["kind"] == kind).filter_map(|c| c["value"].as_str()).collect()
             };
             [part("surname"), part("given"), part("given2")].concat().join(" ")
         });
-        let strings = |field: &str, key: &str| -> Vec<String> {
-            entries(field).into_iter().filter_map(|e| e[key].as_str()).map(str::to_string).collect()
-        };
+        let strings =
+            |field: &str, key: &str| -> Vec<String> { entries(field).into_iter().filter_map(|e| e[key].as_str()).map(str::to_string).collect() };
         let organization = entries("organizations")
             .into_iter()
             .find_map(|o| {

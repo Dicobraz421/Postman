@@ -82,7 +82,9 @@ impl Signer for CngSigner {
         let mut out = vec![0u8; 1024];
         let mut got = 0u32;
         // SAFETY: хэш и буфер с длинами; заполнение живёт до конца вызова; ключ — открытый хэндл.
-        let hr = unsafe { NCryptSignHash(self.key, padding, digest.as_ptr(), digest.len() as u32, out.as_mut_ptr(), out.len() as u32, &mut got, flags | silent) };
+        let hr = unsafe {
+            NCryptSignHash(self.key, padding, digest.as_ptr(), digest.len() as u32, out.as_mut_ptr(), out.len() as u32, &mut got, flags | silent)
+        };
         if hr != 0 {
             return Err(sign_error(hr, "NCryptSignHash"));
         }
@@ -154,7 +156,9 @@ fn intermediates(ctx: *const CERT_CONTEXT) -> Vec<Vec<u8>> {
     let para = CERT_CHAIN_PARA { cbSize: size_of::<CERT_CHAIN_PARA>() as u32, ..Default::default() };
     let mut chain: *mut CERT_CHAIN_CONTEXT = ptr::null_mut();
     // SAFETY: свой сертификат из хранилища; контекст цепочки освобождается ниже.
-    if unsafe { CertGetCertificateChain(ptr::null_mut(), ctx, ptr::null(), ptr::null_mut(), &para, 0, ptr::null(), &mut chain) } == 0 || chain.is_null() {
+    if unsafe { CertGetCertificateChain(ptr::null_mut(), ctx, ptr::null(), ptr::null_mut(), &para, 0, ptr::null(), &mut chain) } == 0
+        || chain.is_null()
+    {
         return Vec::new();
     }
     let mut out = Vec::new();
@@ -264,7 +268,14 @@ pub(super) fn sign_message(raw: &[u8], from: &str, hwnd: Option<isize>, now: i64
     result
 }
 
-fn sign_with(ctx: *const CERT_CONTEXT, scheme: Scheme, raw: &[u8], hwnd: Option<isize>, now: i64, gost_provider: Option<String>) -> Result<Vec<u8>, SignError> {
+fn sign_with(
+    ctx: *const CERT_CONTEXT,
+    scheme: Scheme,
+    raw: &[u8],
+    hwnd: Option<isize>,
+    now: i64,
+    gost_provider: Option<String>,
+) -> Result<Vec<u8>, SignError> {
     let gost = matches!(scheme, Scheme::Gost256 | Scheme::Gost512);
     if gost && gost_provider.is_none() {
         return Err(SignError::NeedSkzi);
@@ -367,7 +378,10 @@ mod tests {
     /// Адреса в `My` нет — «нет сертификата»; ГОСТ без СКЗИ — «нужно СКЗИ» (до доступа к ключу).
     #[test]
     fn no_certificate_and_no_skzi() {
-        assert_eq!(sign_message(LETTER, "nobody-postman-test@itt.test", None, NOW as i64, None), Err(SignError::NoCertificate("nobody-postman-test@itt.test".into())));
+        assert_eq!(
+            sign_message(LETTER, "nobody-postman-test@itt.test", None, NOW as i64, None),
+            Err(SignError::NoCertificate("nobody-postman-test@itt.test".into()))
+        );
         assert_eq!(sign_error(NTE_SILENT_CONTEXT, "x"), SignError::NeedPin);
         assert_eq!(sign_error(SCARD_W_REMOVED_CARD, "x"), SignError::NoCard);
     }

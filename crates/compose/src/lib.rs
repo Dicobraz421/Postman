@@ -185,8 +185,8 @@ pub fn parse_addresses(input: &str) -> (Vec<Address>, Vec<String>) {
             (Some(l), Some(r)) if l < r => (p[..l].trim().trim_matches('"').trim(), p[l + 1..r].trim()),
             _ => ("", p.trim_matches(|c| c == '<' || c == '>')),
         };
-        let valid = email.split_once('@').is_some_and(|(l, d)| !l.is_empty() && d.contains('.') && !d.ends_with('.'))
-            && !email.contains(char::is_whitespace);
+        let valid =
+            email.split_once('@').is_some_and(|(l, d)| !l.is_empty() && d.contains('.') && !d.ends_with('.')) && !email.contains(char::is_whitespace);
         if valid {
             ok.push(Address::new(name, email));
         } else {
@@ -236,10 +236,7 @@ fn mb_list(list: &[Address]) -> MbAddress<'_> {
 
 /// Собрать письмо. `date` — Unix-время; `message_id` — без угловых скобок.
 pub fn build(d: &Draft, date: i64, message_id: &str) -> std::io::Result<Vec<u8>> {
-    let html = format!(
-        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head><body>{}</body></html>",
-        postman_ir::markdown_to_html(&d.markdown)
-    );
+    let html = format!("<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head><body>{}</body></html>", postman_ir::markdown_to_html(&d.markdown));
     let mut m = MessageBuilder::new()
         .from(mb_list(std::slice::from_ref(&d.from)))
         .subject(header_safe(&d.subject))
@@ -267,9 +264,7 @@ pub fn build(d: &Draft, date: i64, message_id: &str) -> std::io::Result<Vec<u8>>
                 MimePart::new("text/plain", d.markdown.as_str()),
                 MimePart::new("text/html", html.as_str()),
                 MimePart::new(
-                    ContentType::new("text/calendar")
-                        .attribute("method", cal.method.as_str())
-                        .attribute("charset", "utf-8"),
+                    ContentType::new("text/calendar").attribute("method", cal.method.as_str()).attribute("charset", "utf-8"),
                     cal.ics.as_str(),
                 ),
             ],
@@ -355,13 +350,7 @@ mod tests {
         d.markdown = format!("Привет, **коллеги**!\n\n<script>x</script>{}", d.markdown);
         d.subject = "Тема\r\nBcc: evil@x".into();
         d.bcc = vec![Address::new("", "secret@corp.example")];
-        d.attachments.push(Attachment {
-            name: "a.txt".into(),
-            mime: "text/plain".into(),
-            data: b"data".to_vec(),
-            inline_cid: None,
-            blob_id: None,
-        });
+        d.attachments.push(Attachment { name: "a.txt".into(), mime: "text/plain".into(), data: b"data".to_vec(), inline_cid: None, blob_id: None });
         let raw = build(&d, 1_792_240_200, "id1@corp.example").unwrap();
         let text = String::from_utf8_lossy(&raw);
         assert!(!text.contains("secret@corp.example"), "Bcc не должен попадать в заголовки");
@@ -379,11 +368,10 @@ mod tests {
     #[test]
     fn address_field() {
         let (ok, bad) = parse_addresses(r#""Иванов, Иван" <ivan@corp.example>; petr@corp.example, мусор,  Анна <anna@x.ru>"#);
-        assert_eq!(ok, vec![
-            Address::new("Иванов, Иван", "ivan@corp.example"),
-            Address::new("", "petr@corp.example"),
-            Address::new("Анна", "anna@x.ru"),
-        ]);
+        assert_eq!(
+            ok,
+            vec![Address::new("Иванов, Иван", "ivan@corp.example"), Address::new("", "petr@corp.example"), Address::new("Анна", "anna@x.ru"),]
+        );
         assert_eq!(bad, ["мусор"]);
     }
 

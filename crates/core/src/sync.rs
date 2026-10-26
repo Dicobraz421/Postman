@@ -38,10 +38,7 @@ impl Account {
         let url = std::env::var("POSTMAN_URL").ok()?;
         let auth = match std::env::var("POSTMAN_TOKEN") {
             Ok(t) => Auth::Bearer(t),
-            Err(_) => Auth::Basic {
-                user: std::env::var("POSTMAN_USER").ok()?,
-                password: std::env::var("POSTMAN_PASSWORD").ok()?,
-            },
+            Err(_) => Auth::Basic { user: std::env::var("POSTMAN_USER").ok()?, password: std::env::var("POSTMAN_PASSWORD").ok()? },
         };
         Some(Self { url, auth })
     }
@@ -51,82 +48,179 @@ pub enum Command {
     Body(String),
     /// Беседа (ключ цепочки, `EmailRow::thread_id`): письма из всех папок и их тела — в кэш → `ThreadReady`.
     Thread(String),
-    Keyword { id: String, keyword: &'static str, on: bool },
+    Keyword {
+        id: String,
+        keyword: &'static str,
+        on: bool,
+    },
     /// Поставить `add` и снять `remove` (ключевые слова — категории, метки, флаг) у писем `ids` (ключи кэша) — по
     /// одному `Email/set` на аккаунт (S5-02). UI уже поменял кэш; письма, которые сервер не изменил, — с сервера
     /// заново.
-    SetKeywords { ids: Vec<String>, add: Vec<String>, remove: Vec<String> },
+    SetKeywords {
+        ids: Vec<String>,
+        add: Vec<String>,
+        remove: Vec<String>,
+    },
     /// Письма по фильтру на сервере (`hasKeyword`, `notKeyword`…) → `SearchResults`. `mailbox` — ключ папки кэша;
     /// `None` — все папки своего аккаунта («Где искать: Все папки»).
-    Query { filter: Filter, mailbox: Option<String>, ticket: u64 },
+    Query {
+        filter: Filter,
+        mailbox: Option<String>,
+        ticket: u64,
+    },
     /// Число писем по каждому фильтру на сервере (в папке `mailbox` или во всех) → `Counts`.
-    Counts { filters: Vec<Filter>, mailbox: Option<String>, ticket: u64 },
+    Counts {
+        filters: Vec<Filter>,
+        mailbox: Option<String>,
+        ticket: u64,
+    },
     /// Перенести письмо (удаление в «Удалённые»). UI уже перенёс его в кэше; сбой — письмо с сервера заново.
-    Move { id: String, from: String, to: String },
+    Move {
+        id: String,
+        from: String,
+        to: String,
+    },
     /// Удалить письмо насовсем (из «Удалённых»). UI уже убрал его из кэша; сбой — письмо с сервера заново.
     Destroy(String),
     /// `replace` — id прежней версии черновика на сервере. `release` — когда сервер выпустит письмо (S5-06):
     /// `After` — окно «Отменить» (без FUTURERELEASE у сервера — сразу), `At` — «Отправить позже» → `Sent`.
-    Send { draft: Box<Draft>, replace: Option<String>, ticket: u64, release: Release },
+    Send {
+        draft: Box<Draft>,
+        replace: Option<String>,
+        ticket: u64,
+        release: Release,
+    },
     /// Отменить отправку, которую сервер ещё держит, и вернуть письмо в «Черновики» → `Unsent` или `UnsendFailed`,
     /// затем `Scheduled`.
-    Unsend { scheduled: Scheduled, ticket: u64 },
+    Unsend {
+        scheduled: Scheduled,
+        ticket: u64,
+    },
     /// Перечитать отложенные отправки → `Scheduled`.
     Scheduled,
-    SaveDraft { draft: Box<Draft>, replace: Option<String>, ticket: u64 },
+    SaveDraft {
+        draft: Box<Draft>,
+        replace: Option<String>,
+        ticket: u64,
+    },
     /// Догрузить следующую страницу ящика (после самого старого письма в кэше).
-    LoadMore { mailbox: String },
+    LoadMore {
+        mailbox: String,
+    },
     /// Серверный поиск; `mailbox: None` — во всех папках.
-    Search { query: String, mailbox: Option<String>, ticket: u64 },
+    Search {
+        query: String,
+        mailbox: Option<String>,
+        ticket: u64,
+    },
     /// Скачать вложение/картинку.
-    Blob { blob_id: String, name: String, mime: String },
+    Blob {
+        blob_id: String,
+        name: String,
+        mime: String,
+    },
     /// Ответить на приглашение из письма; `in_reply_to` — Message-ID письма с приглашением.
-    RespondInvite { invite: Box<Invitation>, status: Partstat, in_reply_to: Option<String> },
+    RespondInvite {
+        invite: Box<Invitation>,
+        status: Partstat,
+        in_reply_to: Option<String>,
+    },
     /// События календаря в `[from, to)` (Unix-секунды), повторения разворачивает сервер → `EventsLoaded`.
-    Events { from: i64, to: i64 },
+    Events {
+        from: i64,
+        to: i64,
+    },
     /// Поиск в календаре по тексту в `[from, to)` → `EventsFound` (S5-21).
-    SearchEvents { text: String, from: i64, to: i64 },
+    SearchEvents {
+        text: String,
+        from: i64,
+        to: i64,
+    },
     /// Занятость адресов и моя в `[from, to)` → `Availability`. `sender` — адрес «От» встречи (S7-03б): занятость
     /// — путём его учётной записи профиля; `None` — основной.
-    Availability { ticket: u64, emails: Vec<String>, from: i64, to: i64, sender: Option<String> },
+    Availability {
+        ticket: u64,
+        emails: Vec<String>,
+        from: i64,
+        to: i64,
+        sender: Option<String>,
+    },
     /// Создать встречу и разослать приглашения → `MeetingCreated` или `MeetingFailed`.
-    CreateMeeting { meeting: Box<Meeting>, ticket: u64 },
+    CreateMeeting {
+        meeting: Box<Meeting>,
+        ticket: u64,
+    },
     /// Изменить свою встречу (я — организатор) и разослать изменения → `MeetingUpdated` или `MeetingFailed` (S7-07б,
     /// решение владельца 2026-10-23). `event` — событие недели (id и UID — как их дал путь); `meeting` — поля вкладки
     /// встречи (`uid` — UID события, `from` — организатор). `series` — у экземпляра повтора изменить всю серию (время
     /// серии сдвигается на ту же разницу), иначе — только этот экземпляр; у одиночной не важно.
-    UpdateMeeting { event: Box<postman_calendar::Event>, meeting: Box<Meeting>, series: bool, ticket: u64 },
+    UpdateMeeting {
+        event: Box<postman_calendar::Event>,
+        meeting: Box<Meeting>,
+        series: bool,
+        ticket: u64,
+    },
     /// Отменить свою встречу: участникам — отмена, у меня встречи нет → `MeetingCancelled` или `MeetingFailed`.
     /// `series` — как у `UpdateMeeting` (иначе — только этот экземпляр); `from` — адрес организатора (учётная запись).
-    CancelMeeting { event: Box<postman_calendar::Event>, series: bool, from: Option<String>, ticket: u64 },
+    CancelMeeting {
+        event: Box<postman_calendar::Event>,
+        series: bool,
+        from: Option<String>,
+        ticket: u64,
+    },
     /// Открыть коллеге (адрес) только мою занятость → `FreeBusyShared` или `CalendarFailed`.
-    ShareFreeBusy { email: String },
+    ShareFreeBusy {
+        email: String,
+    },
     /// Настройки ящика на сервере: автоответ, квота (`settings.rs`) → `Event::Settings`.
     Settings(settings::Request),
     /// Перечитать личные контакты и справочник → `ContactsLoaded`, `DirectoryLoaded` (и `Contacts` для подсказок).
     Contacts,
     /// Люди справочника по набранной строке → `PeopleFound` (S7-08): поиск людей — функция ядра, каждый путь отвечает
     /// своим поиском (JMAP — `Principal/query`, EWS — `FindPeople`, запасной — `ResolveNames`); справочника нет — пусто.
-    FindPeople { text: String },
+    FindPeople {
+        text: String,
+    },
     /// Подробности человека справочника по адресу — при открытии его карточки → `PersonDetails` (S7-08б): у EWS
     /// `FindPeople` телефона не отдаёт, его даёт `ResolveNames`. У кого подробностей нет — `person: None`.
-    PersonDetails { email: String },
+    PersonDetails {
+        email: String,
+    },
     /// Создать (`old: None`) или изменить карточку → `ContactSaved` или `ContactFailed`, затем `ContactsLoaded`.
-    SaveContact { card: Box<ContactCard>, old: Option<Box<ContactCard>>, ticket: u64 },
+    SaveContact {
+        card: Box<ContactCard>,
+        old: Option<Box<ContactCard>>,
+        ticket: u64,
+    },
     /// Удалить карточку → `ContactDeleted` или `ContactFailed`, затем `ContactsLoaded`.
-    DeleteContact { id: String, ticket: u64 },
+    DeleteContact {
+        id: String,
+        ticket: u64,
+    },
     /// Таблица категорий аккаунта на сервере (`categories.rs`, S5-02б) → `Event::Categories`.
     Categories(categories::Request),
     /// Жизненный цикл (S5-04, `lifecycle.rs`): правки писем (ключи кэша; папки — ключи кэша или
     /// [`lifecycle::ARCHIVE`] — «Архив» аккаунта, нет — создаётся с именем `archive_name`) — один `Email/set` на
     /// аккаунт. UI уже поменял кэш; письма, которые сервер не изменил, — с сервера заново.
-    Patch { patches: Vec<lifecycle::Patch>, archive_name: String },
+    Patch {
+        patches: Vec<lifecycle::Patch>,
+        archive_name: String,
+    },
     /// Рассылки «Входящих» своего аккаунта: прочитанные раньше `cutoff` (Unix-секунды), кроме последней от каждого
     /// отправителя, — в «Архив» → `Event::Newsletters`.
-    Newsletters { cutoff: i64, archive_name: String },
+    Newsletters {
+        cutoff: i64,
+        archive_name: String,
+    },
     /// «Сообщить о фишинге» (S5-08): письма `ids` (ключи кэша) — вложениями `message/rfc822` одним письмом на адрес
     /// `to` от своего адреса → `Event::Reported`. Без связи — в очередь, как правки писем.
-    ReportPhishing { ids: Vec<String>, to: Address, subject: String, text: String, ticket: u64 },
+    ReportPhishing {
+        ids: Vec<String>,
+        to: Address,
+        subject: String,
+        text: String,
+        ticket: u64,
+    },
     /// «Повторить сейчас» (S5-08): без связи — попытка сразу, не дожидаясь паузы; со связью — ничего.
     Reconnect,
     /// Задачи (S6-02, `tasks.rs`): загрузка, сверка, правки → `Event::Tasks`. Правка без связи — в кэше, уходит
@@ -135,10 +229,18 @@ pub enum Command {
     /// Шаг поручения (S6-09, `assign.rs`): своя копия задачи уже в кэше (`tasks::save_local`) — сначала она на
     /// сервер (без рассылки), затем письма iTIP шага → `Event::Delegated`. Без связи — в очередь, как правки.
     /// `release` — как у `Send`: «Забрать» и «Удалить поручение» (S6-11) держатся сервером окно «Отменить».
-    Delegate { uid: String, drafts: Vec<Draft>, ticket: u64, release: Release },
+    Delegate {
+        uid: String,
+        drafts: Vec<Draft>,
+        ticket: u64,
+        release: Release,
+    },
     /// «Отменить» шага поручения (S6-11): письма, которые сервер ещё держит, не отправлять и удалить из
     /// «Отправленных» → `Event::Withheld`.
-    Withhold { scheduled: Vec<Scheduled>, ticket: u64 },
+    Withhold {
+        scheduled: Vec<Scheduled>,
+        ticket: u64,
+    },
 }
 
 impl Command {
@@ -147,25 +249,17 @@ impl Command {
     pub fn replayable(&self) -> Option<Command> {
         Some(match self {
             Command::Keyword { id, keyword, on } => Command::Keyword { id: id.clone(), keyword, on: *on },
-            Command::SetKeywords { ids, add, remove } => {
-                Command::SetKeywords { ids: ids.clone(), add: add.clone(), remove: remove.clone() }
-            }
+            Command::SetKeywords { ids, add, remove } => Command::SetKeywords { ids: ids.clone(), add: add.clone(), remove: remove.clone() },
             Command::Move { id, from, to } => Command::Move { id: id.clone(), from: from.clone(), to: to.clone() },
             Command::Destroy(id) => Command::Destroy(id.clone()),
-            Command::Patch { patches, archive_name } => {
-                Command::Patch { patches: patches.clone(), archive_name: archive_name.clone() }
-            }
+            Command::Patch { patches, archive_name } => Command::Patch { patches: patches.clone(), archive_name: archive_name.clone() },
             Command::Tasks(r) => Command::Tasks(r.replayable()?),
             Command::Delegate { uid, drafts, ticket, release } => {
                 Command::Delegate { uid: uid.clone(), drafts: drafts.clone(), ticket: *ticket, release: *release }
             }
-            Command::ReportPhishing { ids, to, subject, text, ticket } => Command::ReportPhishing {
-                ids: ids.clone(),
-                to: to.clone(),
-                subject: subject.clone(),
-                text: text.clone(),
-                ticket: *ticket,
-            },
+            Command::ReportPhishing { ids, to, subject, text, ticket } => {
+                Command::ReportPhishing { ids: ids.clone(), to: to.clone(), subject: subject.clone(), text: text.clone(), ticket: *ticket }
+            }
             _ => return None,
         })
     }
@@ -250,9 +344,7 @@ impl Command {
     pub fn for_each_account(&self) -> Option<Command> {
         Some(match self {
             Command::Query { filter, mailbox, ticket } => Command::Query { filter: filter.clone(), mailbox: mailbox.clone(), ticket: *ticket },
-            Command::Counts { filters, mailbox, ticket } => {
-                Command::Counts { filters: filters.clone(), mailbox: mailbox.clone(), ticket: *ticket }
-            }
+            Command::Counts { filters, mailbox, ticket } => Command::Counts { filters: filters.clone(), mailbox: mailbox.clone(), ticket: *ticket },
             Command::Search { query, mailbox, ticket } => Command::Search { query: query.clone(), mailbox: mailbox.clone(), ticket: *ticket },
             Command::Events { from, to } => Command::Events { from: *from, to: *to },
             Command::Scheduled => Command::Scheduled,
@@ -266,10 +358,16 @@ impl Command {
 /// Что делает синхронизация. Текст — у интерфейса (`sync.ftl`), здесь только код и данные.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
-    Connecting { url: String },
-    SignedIn { user: String },
+    Connecting {
+        url: String,
+    },
+    SignedIn {
+        user: String,
+    },
     /// Первая загрузка: папка `mailbox` (имя с сервера).
-    Loading { mailbox: String },
+    Loading {
+        mailbox: String,
+    },
     Synced,
 }
 
@@ -345,20 +443,42 @@ pub enum Event {
     EmailsChanged,
     BodyReady(String),
     /// Беседа загружена: ключ цепочки и ключи её писем по времени (старые первыми), тела — в кэше.
-    ThreadReady { thread: String, ids: Vec<String> },
-    BlobReady { blob_id: String, data: Arc<Vec<u8>> },
+    ThreadReady {
+        thread: String,
+        ids: Vec<String>,
+    },
+    BlobReady {
+        blob_id: String,
+        data: Arc<Vec<u8>>,
+    },
     /// Тела загружены в фоне — их текст можно добавить в поиск.
     BodiesStored(Vec<String>),
     /// Догрузка ящика (`LoadMore`) пришла: `added` писем; 0 — на сервере старше нет.
-    LoadedMore { mailbox: String, added: usize },
+    LoadedMore {
+        mailbox: String,
+        added: usize,
+    },
     /// В календаре на сервере что-то изменилось (push, с задержкой на пачку) — открытую неделю перечитать.
     CalendarChanged,
-    SearchResults { ticket: u64, ids: Vec<String>, total: u64 },
+    SearchResults {
+        ticket: u64,
+        ids: Vec<String>,
+        total: u64,
+    },
     /// Ответ на `Counts`: по числу на фильтр; `None` — запрос не удался.
-    Counts { ticket: u64, counts: Option<Vec<u64>> },
-    BlobFailed { blob_id: String, error: String },
+    Counts {
+        ticket: u64,
+        counts: Option<Vec<u64>>,
+    },
+    BlobFailed {
+        blob_id: String,
+        error: String,
+    },
     /// Учётная запись отправителя и подпись (из Identity).
-    Me { address: Address, signature: String },
+    Me {
+        address: Address,
+        signature: String,
+    },
     /// Что умеет сервер (ADR 0003, S7-03): интерфейс прячет то, чего нет. Приходит сразу после входа.
     Features(crate::model::Features),
     /// Адреса, от которых можно отправить письмо (S4-06): свои Identity и Identity общих ящиков.
@@ -366,19 +486,45 @@ pub enum Event {
     /// Личные контакты (имя, адрес) — для автодополнения.
     Contacts(Vec<(String, String)>),
     /// Письмо отправлено; `scheduled` — сервер держит его до срока (окно «Отменить» или «Отправить позже»).
-    Sent { ticket: u64, scheduled: Option<Scheduled> },
+    Sent {
+        ticket: u64,
+        scheduled: Option<Scheduled>,
+    },
     /// Отправка отменена, письмо — снова черновик в «Черновиках» (`email` — ключ кэша).
-    Unsent { ticket: u64, email: String },
+    Unsent {
+        ticket: u64,
+        email: String,
+    },
     /// Отмена не удалась: `too_late` — письмо уже ушло.
-    UnsendFailed { ticket: u64, too_late: bool, error: String },
+    UnsendFailed {
+        ticket: u64,
+        too_late: bool,
+        error: String,
+    },
     /// Отправки, которые сервер держит, и сколько он позволяет задержать письмо (секунды, `send_later::max_delay`;
     /// 0 — отложенной отправки нет).
-    Scheduled { list: Vec<Scheduled>, max_delay: u64 },
-    DraftSaved { ticket: u64, id: String },
+    Scheduled {
+        list: Vec<Scheduled>,
+        max_delay: u64,
+    },
+    DraftSaved {
+        ticket: u64,
+        id: String,
+    },
     /// Ошибка конкретной отправки/сохранения — показывается в окне письма.
-    ComposeFailed { ticket: u64, error: String },
-    InviteAnswered { uid: String, status: Partstat, delivery: Delivery },
-    InviteFailed { uid: String, error: String },
+    ComposeFailed {
+        ticket: u64,
+        error: String,
+    },
+    InviteAnswered {
+        uid: String,
+        status: Partstat,
+        delivery: Delivery,
+    },
+    InviteFailed {
+        uid: String,
+        error: String,
+    },
     /// События календаря в `[from, to)` — без отменённых, по времени начала.
     /// События недели: мои и календарей коллег (`Event::owner`, S5-22); коллеги — все, кто открыл мне календарь.
     /// `account` — учётная запись профиля, чьи это события (S7-03б): у дополнительной её события — с владельцем, как
@@ -391,18 +537,41 @@ pub enum Event {
         account: Option<String>,
     },
     /// Найдено в календаре по тексту `text` (S5-21); `error` — запрос не удался.
-    EventsFound { text: String, events: Vec<postman_calendar::Event>, error: Option<String> },
+    EventsFound {
+        text: String,
+        events: Vec<postman_calendar::Event>,
+        error: Option<String>,
+    },
     /// Занятость для помощника: моя и по адресам; `None` — нет данных (календарь не открыт мне, сотрудник
     /// не найден): это не «свободен». `error` — запрос не удался целиком.
-    Availability { ticket: u64, me: Vec<Busy>, people: Vec<(String, Option<Vec<Busy>>)>, error: Option<String> },
-    MeetingCreated { ticket: u64, uid: String },
+    Availability {
+        ticket: u64,
+        me: Vec<Busy>,
+        people: Vec<(String, Option<Vec<Busy>>)>,
+        error: Option<String>,
+    },
+    MeetingCreated {
+        ticket: u64,
+        uid: String,
+    },
     /// Встреча изменена, изменения разосланы (`UpdateMeeting`).
-    MeetingUpdated { ticket: u64, uid: String },
+    MeetingUpdated {
+        ticket: u64,
+        uid: String,
+    },
     /// Встреча отменена, участникам ушла отмена (`CancelMeeting`).
-    MeetingCancelled { ticket: u64, uid: String },
+    MeetingCancelled {
+        ticket: u64,
+        uid: String,
+    },
     /// Ошибка создания, правки или отмены встречи с этим тикетом.
-    MeetingFailed { ticket: u64, error: String },
-    FreeBusyShared { email: String },
+    MeetingFailed {
+        ticket: u64,
+        error: String,
+    },
+    FreeBusyShared {
+        email: String,
+    },
     /// Ошибка календаря (неделя, открытие занятости) — тостом.
     CalendarFailed(String),
     /// Ответ по настройкам ящика (`settings.rs`).
@@ -412,29 +581,58 @@ pub enum Event {
     /// Справочник: сотрудники, переговорные и ресурсы с адресами (раздел «Контакты», подсказки адресов).
     DirectoryLoaded(Vec<Principal>),
     /// Найдено в справочнике по строке `FindPeople` — к уже загруженному (подсказки адресов, поиск в «Контактах»).
-    PeopleFound { text: String, people: Vec<Principal> },
+    PeopleFound {
+        text: String,
+        people: Vec<Principal>,
+    },
     /// Подробности человека справочника (`PersonDetails`): `None` — путь их не даёт или человек не найден.
-    PersonDetails { email: String, person: Option<Principal> },
-    ContactSaved { ticket: u64, id: String },
-    ContactDeleted { ticket: u64, id: String },
+    PersonDetails {
+        email: String,
+        person: Option<Principal>,
+    },
+    ContactSaved {
+        ticket: u64,
+        id: String,
+    },
+    ContactDeleted {
+        ticket: u64,
+        id: String,
+    },
     /// Ошибка контактов: `ticket` — сохранения или удаления, `0` — загрузки.
-    ContactFailed { ticket: u64, error: String },
+    ContactFailed {
+        ticket: u64,
+        error: String,
+    },
     /// Таблица категорий: прочитана при входе или по push, записана, снята с писем (`categories.rs`).
     Categories(categories::Reply),
     /// Задачи: из кэша и с сервера, правки (`tasks.rs`, S6-02).
     Tasks(tasks::Reply),
     /// Рассылки перенесены в «Архив» (`Command::Newsletters`): сколько.
-    Newsletters { archived: usize },
+    Newsletters {
+        archived: usize,
+    },
     /// Связь с сервером (S5-08, `link`): пропала (повтор через N с, правок в очереди) или вернулась.
     Connection(Connection),
     /// Сообщение о фишинге (`Command::ReportPhishing`) отправлено (`error: None`) или не отправлено. Без связи
     /// события нет — команда ждёт в очереди.
-    Reported { ticket: u64, error: Option<String> },
+    Reported {
+        ticket: u64,
+        error: Option<String>,
+    },
     /// Шаг поручения (`Command::Delegate`) ушёл (`error: None`) или нет. Без связи события нет — ждёт в очереди.
     /// `scheduled` — письма, которые сервер держит (окно «Отменить»).
-    Delegated { ticket: u64, uid: String, error: Option<String>, scheduled: Vec<Scheduled> },
+    Delegated {
+        ticket: u64,
+        uid: String,
+        error: Option<String>,
+        scheduled: Vec<Scheduled>,
+    },
     /// Письма шага не ушли (`Command::Withhold`); `too_late` — хотя бы одно уже отправлено.
-    Withheld { ticket: u64, too_late: bool, error: Option<String> },
+    Withheld {
+        ticket: u64,
+        too_late: bool,
+        error: Option<String>,
+    },
     Error(SyncError),
 }
 
@@ -517,12 +715,7 @@ pub async fn supervise(session: &mut impl Session, mut rx: UnboundedReceiver<Com
 
 /// Без связи до входа: ждать паузу `wait` (или «Повторить сейчас»); правки писем — в очередь (уйдут после входа),
 /// прочие команды без сервера выполнить нельзя. `false` — интерфейс закрыл канал команд: синхронизации конец.
-async fn wait_offline(
-    rx: &mut UnboundedReceiver<Command>,
-    link: &mut Link<Command>,
-    wait: Duration,
-    notify: &dyn Fn(Event),
-) -> bool {
+async fn wait_offline(rx: &mut UnboundedReceiver<Command>, link: &mut Link<Command>, wait: Duration, notify: &dyn Fn(Event)) -> bool {
     let until = tokio::time::Instant::now() + wait;
     loop {
         tokio::select! {
@@ -697,9 +890,7 @@ mod tests {
             ) -> BoxFuture<'a, Result<(), SyncError>> {
                 self.0 += 1;
                 let queued = link.queued();
-                Box::pin(async move {
-                    Err(SyncError { kind: ErrorKind::Network, stage: Stage::Connect, detail: format!("down, queued {queued}") })
-                })
+                Box::pin(async move { Err(SyncError { kind: ErrorKind::Network, stage: Stage::Connect, detail: format!("down, queued {queued}") }) })
             }
         }
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();

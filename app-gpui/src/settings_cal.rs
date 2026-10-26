@@ -16,10 +16,10 @@ use pets_i18n::tr;
 use pets_ui::theme::{Metric, Role};
 use postman_core::prefs::{Calendar, CalendarView, DURATIONS, FreeColor, REMINDERS, STEPS, WeekStart, ZONES};
 
+use crate::buttons::button;
 use crate::calendar::{duration_text, g};
 use crate::chrome::{glyph, icon};
 use crate::roles::{Look, Pm};
-use crate::buttons::button;
 use crate::settings_tab::{SettingsView, aside_card, group, seg, seg_group, toggle};
 
 /// Открытый список выбора.
@@ -54,11 +54,7 @@ fn offset(tz: &jiff::tz::TimeZone) -> String {
 /// «(UTC+03:00) Москва»; пояс не из списка — его имя IANA.
 pub(crate) fn zone_name(name: &str) -> String {
     let tz = jiff::tz::TimeZone::get(name).unwrap_or(jiff::tz::TimeZone::UTC);
-    let city = if ZONES.contains(&name) {
-        tr!(&format!("settings-cal-zone-{}", name.to_lowercase().replace('/', "-")))
-    } else {
-        name.to_owned()
-    };
+    let city = if ZONES.contains(&name) { tr!(&format!("settings-cal-zone-{}", name.to_lowercase().replace('/', "-"))) } else { name.to_owned() };
     format!("{} {city}", offset(&tz))
 }
 
@@ -232,7 +228,15 @@ impl SettingsView {
     }
 
     /// Сегмент «одно из» настройки календаря.
-    fn cal_seg(&self, id: (&'static str, usize), label: String, on: bool, set: impl Fn(&mut Calendar) + 'static, l: &Look, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn cal_seg(
+        &self,
+        id: (&'static str, usize),
+        label: String,
+        on: bool,
+        set: impl Fn(&mut Calendar) + 'static,
+        l: &Look,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         seg(id, label, on, true, l).on_click(cx.listener(move |_, _, _, cx| {
             crate::prefs::update(cx, |p| set(&mut p.calendar));
             cx.notify();
@@ -260,7 +264,14 @@ impl SettingsView {
         let days: Vec<Stateful<Div>> = order
             .into_iter()
             .map(|d| {
-                self.cal_seg(("settings-cal-day", d), tr!("settings-cal-day", d = d), c.work_days[d], move |c| c.work_days[d] = !c.work_days[d], l, cx)
+                self.cal_seg(
+                    ("settings-cal-day", d),
+                    tr!("settings-cal-day", d = d),
+                    c.work_days[d],
+                    move |c| c.work_days[d] = !c.work_days[d],
+                    l,
+                    cx,
+                )
             })
             .collect();
         let hours_pick = |values: [u16; 5], current: u16, start: bool| -> Vec<Pick> {

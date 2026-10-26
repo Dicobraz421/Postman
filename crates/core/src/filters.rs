@@ -18,8 +18,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use postman_cache::{EmailRow, Recipients};
 use crate::model::Filter;
+use postman_cache::{EmailRow, Recipients};
 
 /// Фишинг: ключевое слово IANA (RFC 8621 §4.1.1, реестр ключевых слов IMAP/JMAP).
 pub const PHISHING: &str = "$phishing";
@@ -117,9 +117,10 @@ impl Me {
         let lower = text.to_lowercase();
         for (at, _) in lower.match_indices('@') {
             let rest = &lower[at + 1..];
-            let hit = self.handles.iter().any(|h| {
-                rest.strip_prefix(h.as_str()).is_some_and(|tail| tail.chars().next().is_none_or(|c| !c.is_alphanumeric()))
-            });
+            let hit = self
+                .handles
+                .iter()
+                .any(|h| rest.strip_prefix(h.as_str()).is_some_and(|tail| tail.chars().next().is_none_or(|c| !c.is_alphanumeric())));
             if hit {
                 return true;
             }
@@ -318,10 +319,9 @@ impl Criteria {
             .flat_map(|q| match q {
                 Quick::Threats => vec![Filter::HasKeyword(PHISHING.into()), Filter::HasKeyword(THREAT.into())],
                 Quick::Due => vec![Filter::HasKeyword(DUE.into())],
-                Quick::Waiting => std::iter::once(WAIT.to_owned())
-                    .chain(me.waiting.iter().take(WAITING_MAX).cloned())
-                    .map(Filter::HasKeyword)
-                    .collect(),
+                Quick::Waiting => {
+                    std::iter::once(WAIT.to_owned()).chain(me.waiting.iter().take(WAITING_MAX).cloned()).map(Filter::HasKeyword).collect()
+                }
                 Quick::Expiring => vec![Filter::HasKeyword(EXPIRE.into())],
                 Quick::ToMe => me.addresses.iter().map(|a| Filter::To(a.clone())).collect(),
             })
@@ -525,12 +525,14 @@ pub type Arranged = (Vec<String>, Vec<(Group, usize)>);
 /// одна папка по дате — группы по датам, иначе без групп. В одной папке по дате письма `Hit::top` — первыми, группой
 /// [`Group::Top`].
 pub fn arrange(mut hits: Vec<Hit>, sort: Sort, folders: Option<&[String]>, days: &Days) -> Arranged {
-    let by_sort = |a: &Hit, b: &Hit| match sort {
-        Sort::Date => b.received_at.cmp(&a.received_at),
-        Sort::Sender => a.sender.cmp(&b.sender).then(b.received_at.cmp(&a.received_at)),
-        Sort::Size => b.size.cmp(&a.size).then(b.received_at.cmp(&a.received_at)),
-    }
-    .then_with(|| a.id.cmp(&b.id));
+    let by_sort = |a: &Hit, b: &Hit| {
+        match sort {
+            Sort::Date => b.received_at.cmp(&a.received_at),
+            Sort::Sender => a.sender.cmp(&b.sender).then(b.received_at.cmp(&a.received_at)),
+            Sort::Size => b.size.cmp(&a.size).then(b.received_at.cmp(&a.received_at)),
+        }
+        .then_with(|| a.id.cmp(&b.id))
+    };
     hits.sort_by(|a, b| match folders {
         Some(_) => a.folder.cmp(&b.folder).then_with(|| by_sort(a, b)),
         None if sort == Sort::Date => b.top.cmp(&a.top).then_with(|| by_sort(a, b)),
@@ -613,10 +615,8 @@ mod tests {
     #[test]
     fn to_me_is_my_address_in_to() {
         let me = me();
-        let r = |to: &[&str], cc: &[&str]| Recipients {
-            to: to.iter().map(|s| s.to_string()).collect(),
-            cc: cc.iter().map(|s| s.to_string()).collect(),
-        };
+        let r =
+            |to: &[&str], cc: &[&str]| Recipients { to: to.iter().map(|s| s.to_string()).collect(), cc: cc.iter().map(|s| s.to_string()).collect() };
         assert!(me.to_me(&r(&["team@corp.example", "me@corp.example"], &[])));
         assert!(!me.to_me(&r(&["team@corp.example"], &["me@corp.example"])), "копия — не «мне»");
     }
@@ -723,12 +723,10 @@ mod tests {
             .chain([ts("2026-01-01T09:00:00+00:00[UTC]"); 4])
             .collect::<Vec<_>>();
         let since = |t: i64| dates.iter().filter(|&&x| x >= t).count();
-        assert_eq!(d.groups(dates.len(), since), [
-            (Group::Day(Day::Today), 2),
-            (Group::Day(Day::Yesterday), 1),
-            (Group::Day(Day::LastWeek), 3),
-            (Group::Day(Day::Earlier), 4),
-        ]);
+        assert_eq!(
+            d.groups(dates.len(), since),
+            [(Group::Day(Day::Today), 2), (Group::Day(Day::Yesterday), 1), (Group::Day(Day::LastWeek), 3), (Group::Day(Day::Earlier), 4),]
+        );
     }
 
     #[test]

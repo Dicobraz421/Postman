@@ -10,11 +10,11 @@
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::model::{Error, ErrorKind, Result};
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
 use postman_cache::{Cache, TaskRow};
 use postman_calendar::Task;
-use crate::model::{Error, ErrorKind, Result};
 use serde_json::{Map, Value, json};
 
 use crate::labels::{Categories, Category};
@@ -176,7 +176,6 @@ pub trait TaskStore {
     /// Календарь для новых задач.
     fn default_calendar(&self) -> impl Future<Output = Result<String>>;
 }
-
 
 // ---------------------------------------------------------------------------------------------------------------
 // Запросы интерфейса и ответы.
@@ -590,10 +589,7 @@ mod tests {
                 ts[sub].set_done(true, 1);
             }
         }
-        assert_eq!(
-            projects(&ts),
-            [Project { name: "Альфа".into(), done: 0, total: 1 }, Project { name: "Вектор".into(), done: 1, total: 2 }]
-        );
+        assert_eq!(projects(&ts), [Project { name: "Альфа".into(), done: 0, total: 1 }, Project { name: "Вектор".into(), done: 1, total: 2 }]);
         assert_eq!(uids(subtasks(&ts, "a")), ["s2", "s1", "s3"]);
         assert_eq!(subtask_progress(&ts, "a"), (1, 3));
         // Все подзадачи выполнены — сама задача нет.
@@ -661,7 +657,11 @@ mod tests {
         async fn changes(&self, since: &str) -> Result<Delta> {
             self.net()?;
             let Ok(since) = since.parse::<u64>() else {
-                return Err(Error::Method { method: "CalendarEvent/changes".into(), kind: "cannotCalculateChanges".into(), description: String::new() });
+                return Err(Error::Method {
+                    method: "CalendarEvent/changes".into(),
+                    kind: "cannotCalculateChanges".into(),
+                    description: String::new(),
+                });
             };
             let after = |l: &RefCell<Vec<(u64, String)>>| l.borrow().iter().filter(|(s, _)| *s > since).map(|(_, i)| i.clone()).collect::<Vec<_>>();
             let ids = after(&self.changed);

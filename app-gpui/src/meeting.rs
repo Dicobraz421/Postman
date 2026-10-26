@@ -14,9 +14,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use gpui_kit::component::input::{
-    Enter, IndentInline, Input, InputEvent, InputState, MoveDown, MoveUp, Textarea, TextareaState,
-};
+use gpui_kit::component::input::{Enter, IndentInline, Input, InputEvent, InputState, MoveDown, MoveUp, Textarea, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use jiff::civil::{Date, DateTime, Time};
@@ -30,14 +28,11 @@ use postman_core::schedule::Meeting;
 use postman_core::sync::{Command, Event};
 use postman_demo::calendar as demo;
 
-use crate::calendar::{
-    FIRST_HOUR, HOURS, STEP, add_days, avatar, day_start, duration_text, g, hm, long_day, monday_of,
-    zone_label,
-};
+use crate::Mailer;
+use crate::calendar::{FIRST_HOUR, HOURS, STEP, add_days, avatar, day_start, duration_text, g, hm, long_day, monday_of, zone_label};
 use crate::chrome::icon;
 use crate::compose::{Book, accept_suggestion, current_token};
 use crate::roles::{Look, Pm};
-use crate::Mailer;
 
 const LABEL_W: f32 = 120.0;
 const NAME_W: f32 = 244.0;
@@ -156,10 +151,7 @@ pub(crate) fn default_start(now: &jiff::Zoned) -> DateTime {
     let next = (mins / 30 + 1) * 30;
     let workday = |d: Date| d.weekday().to_monday_zero_offset() < 5;
     let mut date = now.date();
-    let at = |h: i64| {
-        Time::new(i8::try_from(h / 60).unwrap_or(10), i8::try_from(h % 60).unwrap_or(0), 0, 0)
-            .unwrap_or(Time::midnight())
-    };
+    let at = |h: i64| Time::new(i8::try_from(h / 60).unwrap_or(10), i8::try_from(h % 60).unwrap_or(0), 0, 0).unwrap_or(Time::midnight());
     if workday(date) && next <= 17 * 60 {
         return date.to_datetime(at(next.max(9 * 60)));
     }
@@ -350,9 +342,7 @@ impl MeetingModel {
         if !bad.is_empty() {
             return Err(Status::BadAddresses(bad));
         }
-        let start = self
-            .start_at(today)
-            .ok_or_else(|| Status::BadTime(format!("{} {}", self.date.trim(), self.start.trim())))?;
+        let start = self.start_at(today).ok_or_else(|| Status::BadTime(format!("{} {}", self.date.trim(), self.start.trim())))?;
         // Зона без имени IANA (редко на Windows) — время в UTC: сервер его поймёт.
         let (start, time_zone) = match tz.iana_name() {
             Some(name) => (start, name.to_string()),
@@ -362,8 +352,7 @@ impl MeetingModel {
             }
         };
         let required = self.people();
-        let optional =
-            self.optional_people().into_iter().filter(|(_, e)| !required.iter().any(|(_, r)| r.eq_ignore_ascii_case(e))).collect();
+        let optional = self.optional_people().into_iter().filter(|(_, e)| !required.iter().any(|(_, r)| r.eq_ignore_ascii_case(e))).collect();
         Ok(Meeting {
             uid,
             title: self.title.trim().to_string(),
@@ -740,8 +729,7 @@ impl MeetingView {
         let required = line("meeting-attendees-placeholder", String::new(), cx);
         let optional = line("meeting-attendees-placeholder", String::new(), cx);
         let desc_text = model.description.clone();
-        let description =
-            cx.new(|cx| TextareaState::new(window, cx).placeholder(tr!("meeting-description-placeholder")).default_value(desc_text));
+        let description = cx.new(|cx| TextareaState::new(window, cx).placeholder(tr!("meeting-description-placeholder")).default_value(desc_text));
         let chips = [chips_of(&model.attendees), chips_of(&model.optional)];
         let mut subscriptions = Vec::new();
         for (f, state) in [
@@ -1031,8 +1019,7 @@ impl MeetingView {
             self.busy.people = emails
                 .into_iter()
                 .map(|e| {
-                    let busy =
-                        colleagues.iter().find(|(_, mail, _)| mail.eq_ignore_ascii_case(&e)).map(|(_, _, b)| b.clone());
+                    let busy = colleagues.iter().find(|(_, mail, _)| mail.eq_ignore_ascii_case(&e)).map(|(_, _, b)| b.clone());
                     (e, busy)
                 })
                 .collect();
@@ -1137,12 +1124,7 @@ impl MeetingView {
     /// Чья занятость закрывает общие окна: я и обязательные, необязательные — по флажку.
     fn counted(&self) -> Vec<Option<Vec<Busy>>> {
         let optional_from = 1 + self.chips[0].iter().filter(|c| !c.bad).count();
-        self.rows()
-            .into_iter()
-            .enumerate()
-            .filter(|(i, _)| *i < optional_from || self.with_optional)
-            .map(|(_, r)| r.busy)
-            .collect()
+        self.rows().into_iter().enumerate().filter(|(i, _)| *i < optional_from || self.with_optional).map(|(_, r)| r.busy).collect()
     }
 
     /// ←/→ (S5-23): курсор — на соседнее общее окно; от окна под курсором, без него — от выбранного времени.
@@ -1301,23 +1283,15 @@ impl MeetingView {
                     .child(display.clone())
                     .on_click(cx.listener(move |this, _, _, cx| this.set_from(pick.clone(), cx)))
             });
-            deferred(
-                crate::composer::menu_box("meeting-from-menu", &l).left(px(LABEL_W + 8.)).children(items).on_mouse_down_out(cx.listener(
-                    |this, _, _, cx| {
-                        this.from_menu = false;
-                        cx.notify();
-                    },
-                )),
-            )
+            deferred(crate::composer::menu_box("meeting-from-menu", &l).left(px(LABEL_W + 8.)).children(items).on_mouse_down_out(cx.listener(
+                |this, _, _, cx| {
+                    this.from_menu = false;
+                    cx.notify();
+                },
+            )))
             .with_priority(1)
         });
-        Some(
-            Self::field_row(&l)
-                .relative()
-                .child(Self::label(tr!("shared-compose-from")))
-                .child(div().child(button))
-                .children(menu),
-        )
+        Some(Self::field_row(&l).relative().child(Self::label(tr!("shared-compose-from"))).child(div().child(button)).children(menu))
     }
 
     /// Выбран адрес «От»: занятость — заново, путём его учётной записи.
@@ -1473,11 +1447,7 @@ impl MeetingView {
 
     fn time_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let l = crate::roles::look(cx);
-        let end = self
-            .model
-            .span(&self.tz, self.today())
-            .map(|s| hm(s.end, &self.tz))
-            .unwrap_or_else(|| "—".to_string());
+        let end = self.model.span(&self.tz, self.today()).map(|s| hm(s.end, &self.tz)).unwrap_or_else(|| "—".to_string());
         let boxed = |w: f32| div().w(px(w)).flex_none();
         Self::field_row(&l)
             .child(Self::label(tr!("meeting-when")))
@@ -1539,12 +1509,7 @@ impl MeetingView {
 
     /// Строки помощника: я, обязательные, необязательные.
     fn rows(&self) -> Vec<Row> {
-        let mut rows = vec![Row {
-            name: tr!("meeting-me"),
-            sub: tr!("meeting-role-organizer"),
-            email: None,
-            busy: self.busy.me.clone(),
-        }];
+        let mut rows = vec![Row { name: tr!("meeting-me"), sub: tr!("meeting-role-organizer"), email: None, busy: self.busy.me.clone() }];
         for (kind, list) in [(Kind::Required, &self.chips[0]), (Kind::Optional, &self.chips[1])] {
             for c in list.iter().filter(|c| !c.bad) {
                 let busy = self.busy_of(&c.email);
@@ -1582,13 +1547,23 @@ impl MeetingView {
             .flex()
             .items_center()
             .gap(px(8.))
-            .child(crate::buttons::secondary("day-prev", &l).w(px(32.)).px_0().justify_center().child(icon(g::PREV, 12.)).on_click(
-                cx.listener(move |this, _, _, cx| this.pick_day(add_days(day, -1), cx)),
-            ))
+            .child(
+                crate::buttons::secondary("day-prev", &l)
+                    .w(px(32.))
+                    .px_0()
+                    .justify_center()
+                    .child(icon(g::PREV, 12.))
+                    .on_click(cx.listener(move |this, _, _, cx| this.pick_day(add_days(day, -1), cx))),
+            )
             .child(div().w(px(170.)).text_center().font_weight(FontWeight::SEMIBOLD).child(long_day(day)))
-            .child(crate::buttons::secondary("day-next", &l).w(px(32.)).px_0().justify_center().child(icon(g::NEXT, 12.)).on_click(
-                cx.listener(move |this, _, _, cx| this.pick_day(add_days(day, 1), cx)),
-            ))
+            .child(
+                crate::buttons::secondary("day-next", &l)
+                    .w(px(32.))
+                    .px_0()
+                    .justify_center()
+                    .child(icon(g::NEXT, 12.))
+                    .on_click(cx.listener(move |this, _, _, cx| this.pick_day(add_days(day, 1), cx))),
+            )
             .child(
                 crate::buttons::secondary("day-today", &l)
                     .child(tr!("cal-today"))
@@ -1604,24 +1579,21 @@ impl MeetingView {
                 .when(on, |d| d.bg(l.accent()))
                 .when(!on, |d| d.border_1().border_color(l.text2()))
                 .child(
-                    div()
-                        .absolute()
-                        .top(px(if on { 4. } else { 3. }))
-                        .left(px(if on { 24. } else { 3. }))
-                        .size(px(12.))
-                        .rounded_full()
-                        .bg(if on { l.on_accent() } else { l.text2() }),
+                    div().absolute().top(px(if on { 4. } else { 3. })).left(px(if on { 24. } else { 3. })).size(px(12.)).rounded_full().bg(if on {
+                        l.on_accent()
+                    } else {
+                        l.text2()
+                    }),
                 )
         };
-        let only = crate::buttons::secondary("only-free", &l)
-            .child(toggle(self.only_free))
-            .child(tr!("meeting-only-free"))
-            .on_click(cx.listener(|this, _, _, cx| {
+        let only = crate::buttons::secondary("only-free", &l).child(toggle(self.only_free)).child(tr!("meeting-only-free")).on_click(cx.listener(
+            |this, _, _, cx| {
                 this.only_free = !this.only_free;
                 cx.notify();
-            }));
-        let durations = div().flex().h(px(32.)).rounded(px(4.)).border_1().border_color(l.stroke()).overflow_hidden().children(
-            DURATIONS.map(|secs| {
+            },
+        ));
+        let durations =
+            div().flex().h(px(32.)).rounded(px(4.)).border_1().border_color(l.stroke()).overflow_hidden().children(DURATIONS.map(|secs| {
                 let on = secs == self.model.duration;
                 div()
                     .id(("duration", secs as usize))
@@ -1637,8 +1609,7 @@ impl MeetingView {
                         this.model.duration = secs;
                         cx.notify();
                     }))
-            }),
-        );
+            }));
         let check = div()
             .id("with-optional")
             .flex()
@@ -1672,9 +1643,8 @@ impl MeetingView {
             .child(div().ml(px(8.)).text_size(px(12.)).text_color(l.text2()).child(tr!("meeting-duration")))
             .child(durations)
             .child(check);
-        let swatch = |bg: Hsla, border: Option<Hsla>| {
-            div().w(px(16.)).h(px(8.)).rounded(px(2.)).bg(bg).when_some(border, |d, b| d.border_1().border_color(b))
-        };
+        let swatch =
+            |bg: Hsla, border: Option<Hsla>| div().w(px(16.)).h(px(8.)).rounded(px(2.)).bg(bg).when_some(border, |d, b| d.border_1().border_color(b));
         // Неизвестная занятость и внешние — заливка с прозрачностью, как дорожки (S5-23).
         let (unknown_fill, external_fill) = (l.pm(Pm::FbUnknown).opacity(UNKNOWN_ALPHA), l.pm(Pm::FbExt).opacity(EXTERNAL_ALPHA));
         let legend: Vec<(Div, String)> = if self.only_free {
@@ -1700,29 +1670,30 @@ impl MeetingView {
         } else {
             (unknown > 0).then(|| (tr!("meeting-not-counted-n", n = unknown), false))
         };
-        let legend_row = div()
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .h(px(28.))
-            .px(px(24.))
-            .child(div().w(px(NAME_W + 84.)).flex_none())
-            .when_some(note, |d, (text, error)| {
-                d.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .text_size(px(12.))
-                        .text_color(if error { l.error() } else { l.text2() })
-                        .child(presence_dot(Presence::Unknown, 8., &l, free.line))
-                        .child(text),
-                )
-            })
-            .child(div().flex_1())
-            .children(legend.into_iter().map(|(sw, text)| {
-                div().flex().items_center().gap(px(8.)).ml(px(8.)).text_size(px(12.)).text_color(l.text2()).child(sw).child(text)
-            }));
+        let legend_row =
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .h(px(28.))
+                .px(px(24.))
+                .child(div().w(px(NAME_W + 84.)).flex_none())
+                .when_some(note, |d, (text, error)| {
+                    d.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .text_size(px(12.))
+                            .text_color(if error { l.error() } else { l.text2() })
+                            .child(presence_dot(Presence::Unknown, 8., &l, free.line))
+                            .child(text),
+                    )
+                })
+                .child(div().flex_1())
+                .children(legend.into_iter().map(|(sw, text)| {
+                    div().flex().items_center().gap(px(8.)).ml(px(8.)).text_size(px(12.)).text_color(l.text2()).child(sw).child(text)
+                }));
         // Сетка: имена слева, дорожки справа (позиции — доли дня 8–19).
         let block = |b: &Busy, label: Option<String>| -> Option<AnyElement> {
             let (s, e) = (b.span.start.max(range.start), b.span.end.min(range.end));
@@ -1772,13 +1743,7 @@ impl MeetingView {
             .flex_none()
             .flex()
             .flex_col()
-            .child(
-                div()
-                    .h(px(24.))
-                    .text_size(px(12.))
-                    .text_color(l.text2())
-                    .child(tr!("meeting-participants-n", n = rows.len())),
-            )
+            .child(div().h(px(24.)).text_size(px(12.)).text_color(l.text2()).child(tr!("meeting-participants-n", n = rows.len())))
             .child(
                 div()
                     .h(px(ROW_H))
@@ -1794,12 +1759,11 @@ impl MeetingView {
                             .flex_col()
                             .line_height(px(16.))
                             .child(div().font_weight(FontWeight::SEMIBOLD).child(tr!("meeting-everyone")))
-                            .child(
-                                div()
-                                    .text_size(px(12.))
-                                    .text_color(l.text2())
-                                    .child(tr!("meeting-known", known = rows.len() - unknown, n = rows.len())),
-                            ),
+                            .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!(
+                                "meeting-known",
+                                known = rows.len() - unknown,
+                                n = rows.len()
+                            ))),
                     ),
             )
             .children(rows.iter().enumerate().map(|(i, Row { name, sub, email, busy })| {
@@ -1864,13 +1828,11 @@ impl MeetingView {
                 .child(format!("{:02}:00", FIRST_HOUR + h))
         }));
         let lines = (0..HOURS * 2).map(|i| {
-            div()
-                .absolute()
-                .top(px(24.))
-                .bottom_0()
-                .left(relative(i as f32 / (HOURS * 2) as f32))
-                .w(px(1.))
-                .bg(if i % 2 == 0 { l.stroke() } else { l.border() })
+            div().absolute().top(px(24.)).bottom_0().left(relative(i as f32 / (HOURS * 2) as f32)).w(px(1.)).bg(if i % 2 == 0 {
+                l.stroke()
+            } else {
+                l.border()
+            })
         });
         // Нерабочее время — подложкой.
         let work = self.hours.spans(range);
@@ -1896,36 +1858,29 @@ impl MeetingView {
                 })
                 .collect()
         };
-        let summary_row = div()
-            .h(px(ROW_H))
-            .relative()
-            .border_b_1()
-            .border_color(l.stroke())
-            .children(summary.iter().filter_map(|b| block(b, None)));
+        let summary_row = div().h(px(ROW_H)).relative().border_b_1().border_color(l.stroke()).children(summary.iter().filter_map(|b| block(b, None)));
         let tracks = rows.iter().map(|Row { email, busy, .. }| {
             let external = email.as_deref().is_some_and(|e| self.external(e));
             let row = div().h(px(ROW_H)).relative().border_b_1().border_color(l.border());
             match busy {
                 Some(list) => row.children(list.iter().filter_map(|b| block(b, None))),
-                None => row
-                    .bg(if external { external_fill } else { unknown_fill })
-                    .child(
-                        div()
-                            .absolute()
-                            .left(px(8.))
-                            .top(px(6.))
-                            .h(px(24.))
-                            .px(px(8.))
-                            .flex()
-                            .items_center()
-                            .rounded(px(4.))
-                            .bg(l.panel())
-                            .border_1()
-                            .border_color(l.border())
-                            .text_size(px(12.))
-                            .text_color(l.text2())
-                            .child(tr!(if external { "meeting-row-external" } else { "meeting-row-hidden" })),
-                    ),
+                None => row.bg(if external { external_fill } else { unknown_fill }).child(
+                    div()
+                        .absolute()
+                        .left(px(8.))
+                        .top(px(6.))
+                        .h(px(24.))
+                        .px(px(8.))
+                        .flex()
+                        .items_center()
+                        .rounded(px(4.))
+                        .bg(l.panel())
+                        .border_1()
+                        .border_color(l.border())
+                        .text_size(px(12.))
+                        .text_color(l.text2())
+                        .child(tr!(if external { "meeting-row-external" } else { "meeting-row-hidden" })),
+                ),
             }
         });
         // Общие окна (S5-23, макет встречи): тонкая мягкая рамка цвета свободного времени без заливки, подпись снизу
@@ -2005,10 +1960,7 @@ impl MeetingView {
                 .occlude()
                 .cursor(CursorStyle::OpenHand)
                 .children(glow(free.line))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, ev: &MouseDownEvent, window, cx| this.grab(ev.position.x, window, cx)),
-                )
+                .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, window, cx| this.grab(ev.position.x, window, cx)))
                 .on_drag(Grip::Move, |_, _, _, cx| cx.new(|_| DragGhost))
                 .child(handle("picked-start", Grip::Start))
                 .child(handle("picked-end", Grip::End))
@@ -2080,15 +2032,7 @@ const GLOW: [(f32, f32); 4] = [(2., 0.4), (4., 0.24), (6., 0.13), (8., 0.06)];
 /// Кольца свечения вокруг рамки (S5-23): поверх сетки, мышь проходит сквозь.
 fn glow(line: Hsla) -> impl Iterator<Item = Div> {
     GLOW.into_iter().map(move |(d, a)| {
-        div()
-            .absolute()
-            .top(px(-d))
-            .bottom(px(-d))
-            .left(px(-d))
-            .right(px(-d))
-            .rounded(px(4. + d))
-            .border_2()
-            .border_color(line.opacity(a))
+        div().absolute().top(px(-d)).bottom(px(-d)).left(px(-d)).right(px(-d)).rounded(px(4. + d)).border_2().border_color(line.opacity(a))
     })
 }
 
@@ -2141,9 +2085,9 @@ impl Render for MeetingView {
             self.schedule_query(cx);
         }
         let busy = self.model.busy();
-        let status = self.status_line().map(|(text, error)| {
-            div().text_size(px(12.)).text_color(if error { l.error() } else { l.text2() }).truncate().child(text)
-        });
+        let status = self
+            .status_line()
+            .map(|(text, error)| div().text_size(px(12.)).text_color(if error { l.error() } else { l.text2() }).truncate().child(text));
         let toolbar = div()
             .h(px(48.))
             .flex_none()
@@ -2159,7 +2103,10 @@ impl Render for MeetingView {
                     .child(icon(g::SEND, 14.))
                     .child(tr!("meeting-send"))
                     .when(busy, |d| d.opacity(0.5))
-                    .tooltip({ let tip = crate::keytips::with_key(tr!("meeting-send-tip"), crate::keytips::key("meeting.send", cx)); move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx) })
+                    .tooltip({
+                        let tip = crate::keytips::with_key(tr!("meeting-send-tip"), crate::keytips::key("meeting.send", cx));
+                        move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                    })
                     .on_click(cx.listener(|this, _, window, cx| this.send(window, cx))),
             )
             .child(div().w(px(1.)).h(px(20.)).mx(px(4.)).bg(l.border()))
@@ -2195,9 +2142,7 @@ impl Render for MeetingView {
             .px(px(24.))
             .children(self.sender_row(cx))
             .child(
-                Self::field_row(&l)
-                    .child(Self::label(tr!("meeting-subject")))
-                    .child(div().flex_1().child(Input::new(&self.title).appearance(false))),
+                Self::field_row(&l).child(Self::label(tr!("meeting-subject"))).child(div().flex_1().child(Input::new(&self.title).appearance(false))),
             )
             .child(self.people_row(Kind::Required, "meeting-required", cx))
             .child(self.people_row(Kind::Optional, "meeting-optional", cx))
@@ -2241,21 +2186,19 @@ impl Render for MeetingView {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "meeting", commands: COMMANDS, scenes: scenes::SCENES, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part =
+    crate::part::Part { name: "meeting", commands: COMMANDS, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Вкладка встречи (S3-05, вкладкой — S5-11).
 // Имя — область действий (`meeting::…`), как в id команд: так обработчики читаются и их находит `docs/PARITY.md`.
 #[allow(clippy::module_inception)]
 pub(crate) mod meeting {
-    gpui_kit::actions!(
-        meeting,
-        [Send, Close, Discard, NextSlot, PrevSlot, PickSlot, Longer, Shorter, PrevDay, NextDay, Today, AddPerson]
-    );
+    gpui_kit::actions!(meeting, [Send, Close, Discard, NextSlot, PrevSlot, PickSlot, Longer, Shorter, PrevDay, NextDay, Today, AddPerson]);
 }
 
 /// Команды части (`commands.rs`: контексты и `cmd`).
 const COMMANDS: &[pets_commands::Command] = {
-    use crate::commands::{MEETING_GRID, MEETING, cmd};
+    use crate::commands::{MEETING, MEETING_GRID, cmd};
     &[
         cmd("meeting.send", &["ctrl-enter"], MEETING),
         cmd("meeting.close", &["escape"], MEETING),
@@ -2345,8 +2288,7 @@ pub(crate) mod scenes {
 mod tests {
     // Не `use super::*`: вместе с gpui пришёл бы атрибут `gpui::test`, он перекрывает `#[test]`.
     use super::{
-        Command, Date, Grip, MeetingModel, Status, TimeZone, chips_of, default_start, dragged, free_runs, parse_date, parse_time,
-        step_slot,
+        Command, Date, Grip, MeetingModel, Status, TimeZone, chips_of, default_start, dragged, free_runs, parse_date, parse_time, step_slot,
     };
     use postman_calendar::{Busy, BusyKind, Span, WorkHours};
 
@@ -2374,13 +2316,7 @@ mod tests {
         assert_eq!(meeting.description, "Повестка");
         assert_eq!(meeting.time_zone, "Europe/Moscow");
         assert_eq!(meeting.start, "2026-10-21T11:00:00".parse().unwrap());
-        assert_eq!(
-            meeting.attendees,
-            vec![
-                ("User 3".to_string(), "user3@itt.test".to_string()),
-                (String::new(), "ivan@corp.example".to_string())
-            ]
-        );
+        assert_eq!(meeting.attendees, vec![("User 3".to_string(), "user3@itt.test".to_string()), (String::new(), "ivan@corp.example".to_string())]);
         // Необязательный, уже обязательный, не повторяется.
         assert_eq!(meeting.optional, vec![("Переговорная 1".to_string(), "room1@itt.test".to_string())]);
         // Дальше — `NewEvent::to_jmap`, как его ждёт Stalwart.
@@ -2419,9 +2355,7 @@ mod tests {
     fn send_goes_through_a_ticket() {
         let tz = TimeZone::UTC;
         let mut m = filled();
-        let Some(Command::CreateMeeting { meeting, ticket }) = m.begin(7, "u7".into(), &tz, today()) else {
-            panic!("нет команды")
-        };
+        let Some(Command::CreateMeeting { meeting, ticket }) = m.begin(7, "u7".into(), &tz, today()) else { panic!("нет команды") };
         assert_eq!((ticket, meeting.uid.as_str()), (7, "u7"));
         assert!(m.busy() && m.status == Status::Sending);
         assert!(!m.on_created(8));
@@ -2513,14 +2447,7 @@ mod tests {
     fn typed_addresses_become_chips() {
         let chips = chips_of("Иван <ivan@corp.example>; petr@; anna@corp.example");
         let shown: Vec<(String, bool)> = chips.iter().map(|c| (c.display(), c.bad)).collect();
-        assert_eq!(
-            shown,
-            [
-                ("Иван <ivan@corp.example>".to_string(), false),
-                ("anna@corp.example".to_string(), false),
-                ("petr@".to_string(), true),
-            ]
-        );
+        assert_eq!(shown, [("Иван <ivan@corp.example>".to_string(), false), ("anna@corp.example".to_string(), false), ("petr@".to_string(), true),]);
         assert!(chips_of("  ").is_empty());
     }
 

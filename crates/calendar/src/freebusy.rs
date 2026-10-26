@@ -201,12 +201,7 @@ mod tests {
     fn grid_cells() {
         let hours = WorkHours::standard(TimeZone::UTC);
         let range = Span::new(at(0, 8, 0), at(0, 11, 0));
-        let g = grid(
-            &[Some(vec![busy(at(0, 9, 30), at(0, 10, 0), BusyKind::Busy)]), None],
-            range,
-            1800,
-            &hours,
-        );
+        let g = grid(&[Some(vec![busy(at(0, 9, 30), at(0, 10, 0), BusyKind::Busy)]), None], range, 1800, &hours);
         assert_eq!(g[0], vec![Cell::OffHours, Cell::OffHours, Cell::Free, Cell::Busy, Cell::Free, Cell::Free]);
         assert!(g[1].iter().all(|c| *c == Cell::Unknown));
     }

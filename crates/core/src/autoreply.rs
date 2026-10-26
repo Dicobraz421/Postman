@@ -60,14 +60,7 @@ pub struct AutoReply {
 
 impl Default for AutoReply {
     fn default() -> Self {
-        Self {
-            internal: Text::default(),
-            external: Text::default(),
-            contacts_only: true,
-            once: true,
-            days: DAYS,
-            out_of_office: true,
-        }
+        Self { internal: Text::default(), external: Text::default(), contacts_only: true, once: true, days: DAYS, out_of_office: true }
     }
 }
 
@@ -156,12 +149,9 @@ impl Audience {
     /// Домены и адреса в нижнем регистре без повторов; контакты — только внешние (свои домены и так «внутри»), не
     /// больше [`MAX_CONTACTS`].
     pub fn normalized(&self) -> Audience {
-        let domains = sorted(
-            self.domains.iter().map(|d| d.trim().trim_start_matches('@').to_lowercase()).filter(|d| !d.is_empty()).collect(),
-        );
+        let domains = sorted(self.domains.iter().map(|d| d.trim().trim_start_matches('@').to_lowercase()).filter(|d| !d.is_empty()).collect());
         let own = |a: &str| a.rsplit_once('@').is_some_and(|(_, d)| domains.iter().any(|x| x == d));
-        let address =
-            |a: &String| Some(a.trim().to_lowercase()).filter(|a| a.contains('@') && !a.contains(char::is_whitespace));
+        let address = |a: &String| Some(a.trim().to_lowercase()).filter(|a| a.contains('@') && !a.contains(char::is_whitespace));
         let mut contacts = sorted(self.contacts.iter().filter_map(address).filter(|a| !own(a)).collect());
         contacts.truncate(MAX_CONTACTS);
         let mine = sorted(self.mine.iter().filter_map(address).collect());
@@ -194,8 +184,7 @@ pub fn mime(body: &str) -> String {
 }
 
 fn vacation(reply: &AutoReply, t: &Text, mine: &[String], indent: &str) -> String {
-    let subject =
-        if t.subject.trim().is_empty() { String::new() } else { format!(" :subject {}", quote(t.subject.trim())) };
+    let subject = if t.subject.trim().is_empty() { String::new() } else { format!(" :subject {}", quote(t.subject.trim())) };
     let addresses = if mine.is_empty() { String::new() } else { format!(" :addresses {}", list(mine)) };
     format!("{indent}vacation :days {}{subject}{addresses} :mime {};\n", reply.days(), quote(&mime(&t.body)))
 }
@@ -214,9 +203,7 @@ pub fn script(stored: &Stored, audience: &Audience) -> String {
     let mut out = format!("{HEADER}\n{SETTINGS}{}\n", serde_json::to_string(stored).unwrap_or_default());
     let dates: Vec<String> = [(&stored.from, "ge"), (&stored.to, "lt")]
         .into_iter()
-        .filter_map(|(d, op)| {
-            d.as_deref().map(|d| format!("currentdate :zone \"+0000\" :value \"{op}\" \"iso8601\" {}", quote(&bound(d))))
-        })
+        .filter_map(|(d, op)| d.as_deref().map(|d| format!("currentdate :zone \"+0000\" :value \"{op}\" \"iso8601\" {}", quote(&bound(d)))))
         .collect();
     let mut require = vec!["vacation".to_owned()];
     if !dates.is_empty() {
@@ -282,14 +269,7 @@ pub fn parse(text: &str) -> Option<Stored> {
 /// Событие «Вне офиса» на весь день за период (`from`/`to` — UTCDate, `to` — исключительно): дни в поясе `tz`,
 /// конец в полночь — этот день уже не входит. Занятость — `busy` (JSCalendar `freeBusyStatus` другого не знает;
 /// «вне офиса» у сервера — [проверить]). `None` — периода нет.
-pub fn out_of_office(
-    title: &str,
-    from: &str,
-    to: &str,
-    tz: &jiff::tz::TimeZone,
-    uid: &str,
-    calendar_id: &str,
-) -> Option<Value> {
+pub fn out_of_office(title: &str, from: &str, to: &str, tz: &jiff::tz::TimeZone, uid: &str, calendar_id: &str) -> Option<Value> {
     let at = |s: &str| s.parse::<jiff::Timestamp>().ok().map(|t| t.to_zoned(tz.clone()));
     let (start, end) = (at(from)?, at(to)?);
     let first = start.date();
@@ -318,8 +298,7 @@ mod tests {
     fn reply() -> AutoReply {
         AutoReply {
             internal: Text {
-                subject: "Нет на месте до пт".into(),
-                body: "Коллеги, я в отпуске.\n\n- срочно — **Дмитрий**".into(),
+                subject: "Нет на месте до пт".into(), body: "Коллеги, я в отпуске.\n\n- срочно — **Дмитрий**".into()
             },
             external: Text { subject: "Автоответ".into(), body: "Спасибо за письмо \"вне офиса\".".into() },
             ..AutoReply::default()
@@ -333,12 +312,7 @@ mod tests {
     fn audience() -> Audience {
         Audience {
             domains: vec!["Corp.Example".into(), "@corp.example".into()],
-            contacts: vec![
-                "Partner@Client.example".into(),
-                "me@corp.example".into(),
-                "partner@client.example".into(),
-                "bad".into(),
-            ],
+            contacts: vec!["Partner@Client.example".into(), "me@corp.example".into(), "partner@client.example".into(), "bad".into()],
             mine: vec![],
         }
     }
@@ -353,10 +327,7 @@ mod tests {
         assert_eq!(AutoReply { days: 0, ..a.clone() }.days(), 1);
         assert_eq!(AutoReply { days: 1000, ..a }.days(), 365);
         let server = AutoReply::from_server(Some("Нет на месте"), Some("В отпуске"));
-        assert_eq!(
-            (server.internal.body.as_str(), server.external.body.as_str(), server.contacts_only),
-            ("В отпуске", "В отпуске", false)
-        );
+        assert_eq!((server.internal.body.as_str(), server.external.body.as_str(), server.contacts_only), ("В отпуске", "В отпуске", false));
         assert_eq!(server.audience(), Reach::Everyone);
         assert_eq!(reply().audience(), Reach::ColleaguesAndContacts);
         assert_eq!(AutoReply { external: Text::default(), ..reply() }.audience(), Reach::Colleagues);
@@ -403,10 +374,7 @@ mod tests {
     fn everyone_and_no_period() {
         let r = AutoReply { contacts_only: false, ..reply() };
         let s = script(&stored(r.clone(), None, None), &audience());
-        assert!(
-            s.contains("require [\"vacation\"];\nif address :domain :is \"from\" [\"corp.example\"] {\n    vacation :days 4"),
-            "{s}"
-        );
+        assert!(s.contains("require [\"vacation\"];\nif address :domain :is \"from\" [\"corp.example\"] {\n    vacation :days 4"), "{s}");
         assert!(s.contains("\n} else {\n    vacation :days 4 :subject \"Автоответ\""));
         assert!(s.ends_with("\n}\n"));
         let s = script(&stored(r, None, None), &Audience::default());

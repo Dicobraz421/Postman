@@ -46,8 +46,12 @@ const UI_CRATES: &[&str] = &["gpui", "egui", "eframe", "winit", "rfd"];
 const PROTOCOL_CRATES: &[&str] = &["postman-jmap", "postman-imap", "postman-dav", "postman-ews"];
 
 /// Плагины путей (L2b, ADR 0004) и их протоколы. Новый плагин — сюда (EWS — `postman-backend-ews`, S7-06б).
-const PLUGINS: &[(&str, &str)] =
-    &[("postman-backend-jmap", "postman-jmap"), ("postman-backend-imap", "postman-imap"), ("postman-backend-dav", "postman-dav"), ("postman-backend-ews", "postman-ews")];
+const PLUGINS: &[(&str, &str)] = &[
+    ("postman-backend-jmap", "postman-jmap"),
+    ("postman-backend-imap", "postman-imap"),
+    ("postman-backend-dav", "postman-dav"),
+    ("postman-backend-ews", "postman-ews"),
+];
 
 const CORE: &str = "postman-core";
 
@@ -59,11 +63,7 @@ fn cargo_tree(args: &[&str]) -> Vec<String> {
         .output()
         .expect("cargo tree");
     assert!(out.status.success(), "cargo tree {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|l| l.split_whitespace().next())
-        .map(str::to_owned)
-        .collect()
+    String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.split_whitespace().next()).map(str::to_owned).collect()
 }
 
 fn layer(name: &str) -> Option<u8> {

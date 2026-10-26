@@ -2,9 +2,9 @@
 
 use std::time::Instant;
 
-use gpui_kit::*;
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
+use gpui_kit::*;
 use pets_i18n::tr;
 use pets_ui::Level as Toast;
 
@@ -13,12 +13,12 @@ use postman_cache::Cache;
 use postman_core::bench::{self, Bench, Step};
 use postman_worker::Level;
 
-use crate::*;
 use crate::backend::Backend;
 use crate::bar::*;
 use crate::folders::*;
 use crate::list::*;
 use crate::reading::*;
+use crate::*;
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Section {
@@ -535,9 +535,8 @@ impl Render for Mailer {
         };
         // Вкладка встречи (S5-11) — так же: карточка на всю ширину, своя строка «Отправить» (макет «Новая встреча»).
         let active = self.tabs.active();
-        let meeting = (active.kind == crate::tabs::TabKind::Meeting)
-            .then(|| self.meetings.view(active.id).map(|v| AnyView::from(v.clone())))
-            .flatten();
+        let meeting =
+            (active.kind == crate::tabs::TabKind::Meeting).then(|| self.meetings.view(active.id).map(|v| AnyView::from(v.clone()))).flatten();
         let free = settings.is_none();
         let first_run = self.section == Section::Mail && self.live.signin.is_some();
         // Командная строка и полоса автоответа — у почты; во вкладках «Настройки», письма и при первом запуске их нет.
@@ -554,7 +553,9 @@ impl Render for Mailer {
             Section::Contacts => "Mailer ContactsView",
             Section::Tasks => "Mailer TasksView",
         };
-        let root = crate::parts::PARTS.iter().fold(div(), |root, p| (p.handlers)(root, cx))
+        let root = crate::parts::PARTS
+            .iter()
+            .fold(div(), |root, p| (p.handlers)(root, cx))
             .key_context(context)
             .track_focus(&self.focus)
             // KeyTips (S5-18): удержание одного Ctrl.
@@ -573,27 +574,13 @@ impl Render for Mailer {
                 d.child(bar.cached(StyleRefinement::default().w_full().h(px(crate::vacation::BAR_HEIGHT)).flex_none()))
             })
             .map(|d| match (letter, meeting) {
-                (Some(view), _) => d.child(
-                    div()
-                        .flex()
-                        .flex_1()
-                        .min_h_0()
-                        .px(px(8.))
-                        .child(view.cached(StyleRefinement::default().size_full())),
-                ),
+                (Some(view), _) => d.child(div().flex().flex_1().min_h_0().px(px(8.)).child(view.cached(StyleRefinement::default().size_full()))),
                 (None, Some(view)) => d.child(
-                    div()
-                        .flex()
-                        .flex_1()
-                        .min_h_0()
-                        .px(px(8.))
-                        .child(card(&l).flex_1().child(view.cached(StyleRefinement::default().size_full()))),
+                    div().flex().flex_1().min_h_0().px(px(8.)).child(card(&l).flex_1().child(view.cached(StyleRefinement::default().size_full()))),
                 ),
                 // Закладки быстрых фильтров — поверх карточки списка (S5-03).
                 // Панель выбора срока (S5-04) — там же, у шапки письма.
-                (None, None) => {
-                    d.child(self.body(&l, settings, free, cx).relative().children(self.quick_overlay(&l, cx)).children(picker))
-                }
+                (None, None) => d.child(self.body(&l, settings, free, cx).relative().children(self.quick_overlay(&l, cx)).children(picker)),
             })
             .child(self.status_bar(&l, cx))
             .children(self.more_menu(&l, cx))
@@ -674,9 +661,7 @@ impl Mailer {
             };
             // Панель чтения — справа, снизу или скрыта (Настройки → Чтение).
             return match crate::prefs::get(cx).reading.pane {
-                Pane::Right => body
-                    .child(card(l).w(px(W_LIST)).flex_none().mr(px(8.)).child(list()))
-                    .child(reading()),
+                Pane::Right => body.child(card(l).w(px(W_LIST)).flex_none().mr(px(8.)).child(list())).child(reading()),
                 Pane::Bottom => body.child(
                     div()
                         .flex_1()
@@ -685,7 +670,9 @@ impl Mailer {
                         .flex()
                         .flex_col()
                         .gap(px(8.))
-                        .child(card(l).h(relative(0.45)).flex_none().rounded_b(l.px(pets_ui::theme::Metric::RadiusOverlay)).border_b_1().child(list()))
+                        .child(
+                            card(l).h(relative(0.45)).flex_none().rounded_b(l.px(pets_ui::theme::Metric::RadiusOverlay)).border_b_1().child(list()),
+                        )
                         .child(reading()),
                 ),
                 Pane::Hidden if self.reading_instead_of_list(cx) => body.child(reading()),

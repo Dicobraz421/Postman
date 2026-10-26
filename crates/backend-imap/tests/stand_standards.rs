@@ -14,9 +14,9 @@
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
+use postman_backend_imap::{self as imap, ImapAccount};
 use postman_cache::Cache;
 use postman_calendar::{Invitation, Partstat, Task};
-use postman_backend_imap::{self as imap, ImapAccount};
 use postman_core::model::{ContactCard, Feature, Features};
 use postman_core::schedule::Meeting;
 use postman_core::sync::{Command, Event, Status, UnboundedSender};
@@ -84,7 +84,8 @@ impl Live {
         let url = format!("imaps://{}?smtp={}&dav={}", env("POSTMAN_STAND_IMAP"), env("POSTMAN_STAND_SMTP"), env("POSTMAN_STAND_DAV"));
         let account = ImapAccount::from_url(&url, &me, &env(&format!("POSTMAN_STAND_PASSWORD{n}"))).unwrap();
         let (tx, events) = std::sync::mpsc::channel();
-        let commands = imap::spawn(account, None, Cache::open_in_memory().unwrap(), None, tx, || {}, vec![std::sync::Arc::new(postman_backend_dav::DavPlugin)]);
+        let commands =
+            imap::spawn(account, None, Cache::open_in_memory().unwrap(), None, tx, || {}, vec![std::sync::Arc::new(postman_backend_dav::DavPlugin)]);
         let mut live = Live { commands, events, me, features: Features::NONE };
         let f = live.wait("Features", |e| matches!(e, Event::Features(_)));
         let Event::Features(f) = f else { unreachable!() };
@@ -274,7 +275,10 @@ fn caldav_meeting_cycle() {
     let uid = format!("postman-std-meet-{}", stamp());
     let at = slot(44);
     let (from, to) = (at - 86_400, at + 86_400);
-    a.send(Command::CreateMeeting { meeting: Box::new(meeting(&uid, &format!("Встреча {uid}"), at, vec![("User 2".into(), b.me.clone())])), ticket: 2 });
+    a.send(Command::CreateMeeting {
+        meeting: Box::new(meeting(&uid, &format!("Встреча {uid}"), at, vec![("User 2".into(), b.me.clone())])),
+        ticket: 2,
+    });
     a.wait("MeetingCreated", |e| matches!(e, Event::MeetingCreated { ticket: 2, .. } | Event::MeetingFailed { .. }));
     // Не дошло — первым делом ограничение входящих Stalwart (25 в час на «домен отправителя × получатель», правило
     // «Sender address to recipient throttle», `docs/STALWART.md` п. 17): приглашение теряется молча, у отправителя успех.
@@ -294,7 +298,9 @@ fn caldav_meeting_cycle() {
     };
     assert_eq!(delivery, postman_core::invite::Delivery::Server);
     let peer = b.me.clone();
-    a.events_until(from, to, "ответ у организатора", |e| e.iter().any(|x| x.uid == uid && mine(x, &peer) == Some(Partstat::Accepted)));
+    a.events_until(from, to, "ответ у организатора", |e| {
+        e.iter().any(|x| x.uid == uid && mine(x, &peer) == Some(Partstat::Accepted))
+    });
     clean_calendar(1, &uid);
     clean_calendar(2, &uid);
     clean_letters(&uid);
@@ -324,8 +330,16 @@ fn caldav_free_busy() {
         c2.share(&cal2, &p1, &[postman_dav::Privilege::read(), postman_dav::Privilege::read_free_busy()]).await.unwrap();
         (c2, p1, cal2)
     });
-    a.send(Command::Availability { ticket: 3, emails: vec![peer.clone(), format!("nobody-{uid}@itt.test")], from: at - 3600, to: at + 7200, sender: None });
-    let Event::Availability { people, error, .. } = a.wait("Availability", |e| matches!(e, Event::Availability { ticket: 3, .. })) else { unreachable!() };
+    a.send(Command::Availability {
+        ticket: 3,
+        emails: vec![peer.clone(), format!("nobody-{uid}@itt.test")],
+        from: at - 3600,
+        to: at + 7200,
+        sender: None,
+    });
+    let Event::Availability { people, error, .. } = a.wait("Availability", |e| matches!(e, Event::Availability { ticket: 3, .. })) else {
+        unreachable!()
+    };
     let unshare = || rt().block_on(async { c2.unshare(&cal2, &principal1).await.unwrap() });
     unshare();
     clean_calendar(2, &uid);
@@ -343,7 +357,8 @@ fn caldav_free_busy() {
         let p2 = dav(2).discover().await.unwrap().principal;
         let cal1 = c1.calendars(&d1.calendar_home[0]).await.unwrap().into_iter().find(|c| c.supports("VEVENT")).unwrap().href;
         let acl = c1.acl(&cal1).await.unwrap();
-        let ace = acl.iter().find(|a| matches!(&a.who, postman_dav::acl::Who::Href(h) if postman_dav::same_href(h, &p2))).expect("запись ACL для user2");
+        let ace =
+            acl.iter().find(|a| matches!(&a.who, postman_dav::acl::Who::Href(h) if postman_dav::same_href(h, &p2))).expect("запись ACL для user2");
         assert!(ace.grant.contains(&postman_dav::Privilege::read_free_busy()) && !ace.grant.contains(&postman_dav::Privilege::read()));
         assert!(c1.unshare(&cal1, &p2).await.unwrap());
     });
@@ -379,12 +394,18 @@ fn caldav_task_round_trip() {
     // Записана на сервере — у строки появился id (путь).
     a.wait("задача на сервере", |e| matches!(e, Event::Tasks(Reply::Changed(v)) if v.iter().any(|x| x.uid == uid && !x.id.is_empty())));
 
-    let Reply::Loaded(seen) = b.tasks(Request::Load, "Loaded у второго", |r| matches!(r, Reply::Loaded(v) if v.iter().any(|x| x.uid == uid))) else { unreachable!() };
+    let Reply::Loaded(seen) = b.tasks(Request::Load, "Loaded у второго", |r| matches!(r, Reply::Loaded(v) if v.iter().any(|x| x.uid == uid)))
+    else {
+        unreachable!()
+    };
     let mut theirs = seen.into_iter().find(|x| x.uid == uid).unwrap();
     assert_eq!(theirs.notes, "Проверка VTODO");
     theirs.set_done(true, now());
     b.send(Command::Tasks(Request::Save(Box::new(theirs))));
-    b.wait("выполнена на сервере", |e| matches!(e, Event::Tasks(Reply::Changed(v)) if v.iter().any(|x| x.uid == uid && x.progress.is_closed() && !x.id.is_empty())));
+    b.wait(
+        "выполнена на сервере",
+        |e| matches!(e, Event::Tasks(Reply::Changed(v)) if v.iter().any(|x| x.uid == uid && x.progress.is_closed() && !x.id.is_empty())),
+    );
 
     a.poll_task(&uid, "выполнение — у первого клиента", |t| t.is_some_and(|t| t.progress.is_closed()));
 
@@ -413,7 +434,12 @@ fn caldav_task_round_trip() {
 fn carddav_round_trip() {
     let live = Live::start(1);
     let name = format!("Проверкин {}", stamp());
-    let card = ContactCard { name: name.clone(), emails: vec![format!("{}@example.test", stamp())], phones: vec!["+7 900 000-00-00".into()], ..Default::default() };
+    let card = ContactCard {
+        name: name.clone(),
+        emails: vec![format!("{}@example.test", stamp())],
+        phones: vec!["+7 900 000-00-00".into()],
+        ..Default::default()
+    };
     live.send(Command::SaveContact { card: Box::new(card), old: None, ticket: 5 });
     let Event::ContactSaved { id, .. } = live.wait("ContactSaved", |e| match e {
         Event::ContactFailed { error, .. } => panic!("контакт: {error}"),
@@ -465,7 +491,12 @@ fn caldav_meeting_edit_and_cancel() {
     b.events_until(from, to, "приглашение у user2 (п. 17 STALWART.md?)", |e| e.iter().any(|x| x.uid == uid));
     let mine = a.events_until(from, to, "встреча у user1", |e| e.iter().any(|x| x.uid == uid));
     let ev = mine.into_iter().find(|x| x.uid == uid).unwrap();
-    a.send(Command::UpdateMeeting { event: Box::new(ev.clone()), meeting: Box::new(meeting(&uid, &format!("Позже {uid}"), at + 3600, peer.clone())), series: false, ticket: 2 });
+    a.send(Command::UpdateMeeting {
+        event: Box::new(ev.clone()),
+        meeting: Box::new(meeting(&uid, &format!("Позже {uid}"), at + 3600, peer.clone())),
+        series: false,
+        ticket: 2,
+    });
     done("MeetingUpdated", 2);
     b.events_until(from, to, "перенос у user2", |e| e.iter().any(|x| x.uid == uid && x.span.start == at + 3600));
     let ev = a.events_until(from, to, "перенос у user1", |e| e.iter().any(|x| x.uid == uid && x.span.start == at + 3600));

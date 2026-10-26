@@ -269,14 +269,20 @@ pub(crate) mod parse {
     /// Id корня из `GetFolder`.
     pub(crate) fn folder_id(resp: &El) -> Result<String> {
         let msg = soap::single(resp)?;
-        msg.at(&["Folders"]).and_then(|f| f.children.first()).and_then(|f| f.child("FolderId")).and_then(|i| i.attr("Id")).map(str::to_owned).ok_or_else(|| Error::Xml("GetFolder: no folder".into()))
+        msg.at(&["Folders"])
+            .and_then(|f| f.children.first())
+            .and_then(|f| f.child("FolderId"))
+            .and_then(|i| i.attr("Id"))
+            .map(str::to_owned)
+            .ok_or_else(|| Error::Xml("GetFolder: no folder".into()))
     }
 
     /// Страница `FindItem`: id по порядку и есть ли ещё.
     pub(crate) fn page(resp: &El) -> Result<(Vec<ItemId>, bool)> {
         let msg = soap::single(resp)?;
         let root = msg.child("RootFolder").ok_or_else(|| Error::Xml("FindItem: no RootFolder".into()))?;
-        let ids = root.child("Items").into_iter().flat_map(|i| i.children.iter()).filter_map(|m| m.child("ItemId").and_then(ItemId::from_el)).collect();
+        let ids =
+            root.child("Items").into_iter().flat_map(|i| i.children.iter()).filter_map(|m| m.child("ItemId").and_then(ItemId::from_el)).collect();
         Ok((ids, root.attr("IncludesLastItemInRange") == Some("false")))
     }
 
@@ -296,11 +302,8 @@ pub(crate) mod parse {
 
     pub(crate) fn sync(resp: &El) -> Result<MailSync> {
         let msg = soap::single(resp)?;
-        let mut out = MailSync {
-            state: SyncState(msg.str_at(&["SyncState"])),
-            done: msg.bool_at(&["IncludesLastItemInRange"]),
-            ..MailSync::default()
-        };
+        let mut out =
+            MailSync { state: SyncState(msg.str_at(&["SyncState"])), done: msg.bool_at(&["IncludesLastItemInRange"]), ..MailSync::default() };
         for c in msg.child("Changes").into_iter().flat_map(|c| c.children.iter()) {
             match c.name.as_str() {
                 "Create" | "Update" => {
@@ -358,24 +361,40 @@ pub(crate) mod parse {
 
     pub(crate) fn attachments(resp: &El) -> Result<Vec<Attachment>> {
         let msg = soap::single(resp)?;
-        Ok(messages(msg.child("Items")).flat_map(|m| m.child("Attachments").into_iter().flat_map(|a| a.children.iter())).filter_map(attachment).collect())
+        Ok(messages(msg.child("Items"))
+            .flat_map(|m| m.child("Attachments").into_iter().flat_map(|a| a.children.iter()))
+            .filter_map(attachment)
+            .collect())
     }
 
     /// Содержимое вложения (`GetAttachment` → `FileAttachment/Content`).
     pub(crate) fn attachment_content(resp: &El) -> Result<Vec<u8>> {
         let msg = soap::single(resp)?;
-        let content = msg.at(&["Attachments", "FileAttachment"]).map(|a| a.str_at(&["Content"])).ok_or_else(|| Error::Xml("GetAttachment: no content".into()))?;
+        let content = msg
+            .at(&["Attachments", "FileAttachment"])
+            .map(|a| a.str_at(&["Content"]))
+            .ok_or_else(|| Error::Xml("GetAttachment: no content".into()))?;
         Ok(b64(&content))
     }
 
     /// Первый id из `<m:Items>` (черновик `SaveOnly`).
     pub(crate) fn saved(resp: &El) -> Result<ItemId> {
         let msg = soap::single(resp)?;
-        msg.child("Items").and_then(|i| i.children.first()).and_then(|m| m.child("ItemId")).and_then(ItemId::from_el).ok_or_else(|| Error::Xml("no ItemId in response".into()))
+        msg.child("Items")
+            .and_then(|i| i.children.first())
+            .and_then(|m| m.child("ItemId"))
+            .and_then(ItemId::from_el)
+            .ok_or_else(|| Error::Xml("no ItemId in response".into()))
     }
 
     pub(crate) fn updated(resp: &El, fallback: &ItemId) -> ItemId {
-        soap::single(resp).ok().and_then(|m| m.child("Items")).and_then(|i| i.children.first()).and_then(|m| m.child("ItemId")).and_then(ItemId::from_el).unwrap_or_else(|| fallback.clone())
+        soap::single(resp)
+            .ok()
+            .and_then(|m| m.child("Items"))
+            .and_then(|i| i.children.first())
+            .and_then(|m| m.child("ItemId"))
+            .and_then(ItemId::from_el)
+            .unwrap_or_else(|| fallback.clone())
     }
 
     pub(crate) fn all_ok(resp: &El) -> Result<()> {
@@ -437,9 +456,8 @@ impl Client {
     /// этой версии Exchange — пропускается.
     pub async fn mail_roles(&mut self) -> Result<Vec<(MailRole, FolderId)>> {
         let ids: String = ROLES.iter().map(|(_, id)| format!(r#"<t:DistinguishedFolderId Id="{id}"/>"#)).collect();
-        let body = format!(
-            r#"<m:GetFolder><m:FolderShape><t:BaseShape>IdOnly</t:BaseShape></m:FolderShape><m:FolderIds>{ids}</m:FolderIds></m:GetFolder>"#
-        );
+        let body =
+            format!(r#"<m:GetFolder><m:FolderShape><t:BaseShape>IdOnly</t:BaseShape></m:FolderShape><m:FolderIds>{ids}</m:FolderIds></m:GetFolder>"#);
         Ok(parse::roles(&self.call("GetFolder", &body).await?))
     }
 
@@ -459,10 +477,13 @@ impl Client {
         let mut out = Vec::with_capacity(ids.len());
         for chunk in ids.chunks(BATCH) {
             let ids: String = chunk.iter().map(|i| i.xml("t:ItemId")).collect();
-            let extra = if HEADER_PROPS.is_empty() { String::new() } else { format!("<t:AdditionalProperties>{}</t:AdditionalProperties>", field_uris(HEADER_PROPS)) };
-            let body = format!(
-                r#"<m:GetItem><m:ItemShape><t:BaseShape>Default</t:BaseShape>{extra}</m:ItemShape><m:ItemIds>{ids}</m:ItemIds></m:GetItem>"#
-            );
+            let extra = if HEADER_PROPS.is_empty() {
+                String::new()
+            } else {
+                format!("<t:AdditionalProperties>{}</t:AdditionalProperties>", field_uris(HEADER_PROPS))
+            };
+            let body =
+                format!(r#"<m:GetItem><m:ItemShape><t:BaseShape>Default</t:BaseShape>{extra}</m:ItemShape><m:ItemIds>{ids}</m:ItemIds></m:GetItem>"#);
             out.extend(parse::headers(&self.call("GetItem", &body).await?)?);
         }
         Ok(out)
@@ -578,7 +599,9 @@ impl Client {
 }
 
 fn create_item(mime: &[u8], disposition: Disposition, folder: Option<WellKnown>) -> String {
-    let saved = folder.map(|w| format!(r#"<m:SavedItemFolderId><t:DistinguishedFolderId Id="{}"/></m:SavedItemFolderId>"#, well_known(w))).unwrap_or_default();
+    let saved = folder
+        .map(|w| format!(r#"<m:SavedItemFolderId><t:DistinguishedFolderId Id="{}"/></m:SavedItemFolderId>"#, well_known(w)))
+        .unwrap_or_default();
     format!(
         r#"<m:CreateItem MessageDisposition="{}">{saved}<m:Items><t:Message><t:MimeContent>{}</t:MimeContent></t:Message></m:Items></m:CreateItem>"#,
         disposition.ews(),
@@ -609,7 +632,10 @@ mod tests {
     fn folder_hierarchy_with_roles() {
         let roles = parse::roles(&resp(include_bytes!("../tests/fixtures/get_folder_mail_roles.xml")));
         // «Архив» нет в 2013 — пропущен; остальные по порядку.
-        assert_eq!(roles.iter().map(|(r, _)| *r).collect::<Vec<_>>(), [MailRole::Inbox, MailRole::Drafts, MailRole::Sent, MailRole::Trash, MailRole::Junk, MailRole::Outbox]);
+        assert_eq!(
+            roles.iter().map(|(r, _)| *r).collect::<Vec<_>>(),
+            [MailRole::Inbox, MailRole::Drafts, MailRole::Sent, MailRole::Trash, MailRole::Junk, MailRole::Outbox]
+        );
         let mut h = parse::hierarchy(&resp(include_bytes!("../tests/fixtures/sync_folder_hierarchy.xml"))).unwrap();
         assert!(!h.done);
         assert_eq!((h.created.len(), h.updated.len(), h.deleted.len()), (3, 1, 1));
@@ -669,7 +695,10 @@ mod tests {
     #[test]
     fn meeting_messages_are_mail() {
         let as_kind = |fixture: &[u8], kind: &str| {
-            let text = String::from_utf8(fixture.to_vec()).unwrap().replace("<t:Message>", &format!("<t:{kind}>")).replace("</t:Message>", &format!("</t:{kind}>"));
+            let text = String::from_utf8(fixture.to_vec())
+                .unwrap()
+                .replace("<t:Message>", &format!("<t:{kind}>"))
+                .replace("</t:Message>", &format!("</t:{kind}>"));
             resp(text.as_bytes())
         };
         let h = parse::headers(&as_kind(include_bytes!("../tests/fixtures/get_item_headers.xml"), "MeetingRequest")).unwrap();

@@ -14,10 +14,10 @@ use pets_ui::theme::Metric;
 
 use postman_core::prefs::KeyScheme;
 
+use crate::buttons::button;
 use crate::commands::SINGLE;
 use crate::keymap::{self, Column, KeySet, Place, human};
 use crate::roles::Look;
-use crate::buttons::button;
 use crate::settings_tab::{SettingsView, aside_card, keycap, link, seg, seg_group};
 
 /// Состояние раздела.
@@ -127,9 +127,8 @@ impl SettingsView {
         let conflicts = keymap::conflicts(crate::commands::all(), &SINGLE, &set);
         let commands = keymap::search(&self.keys.query, command_name, &SINGLE, &set);
         let single = set.scheme == KeyScheme::Single;
-        let column_head = |text: String, on: bool, w: f32| {
-            div().w(px(w)).when(on, |d| d.text_color(l.text()).font_weight(FontWeight::SEMIBOLD)).child(text)
-        };
+        let column_head =
+            |text: String, on: bool, w: f32| div().w(px(w)).when(on, |d| d.text_color(l.text()).font_weight(FontWeight::SEMIBOLD)).child(text);
         let mut table = div().flex().flex_col().child(
             div()
                 .flex()
@@ -169,11 +168,12 @@ impl SettingsView {
         let mut conflict_list = div().flex().flex_col().gap_1();
         for c in &conflicts {
             let name = |id: &str| crate::commands::all().iter().find(|x| x.id == id).map(command_name).unwrap_or_default();
-            conflict_list = conflict_list.child(
-                div()
-                    .text_color(l.warning())
-                    .child(tr!("settings-keys-conflict", keys = human(&c.keys), first = name(c.first), second = name(c.second))),
-            );
+            conflict_list = conflict_list.child(div().text_color(l.warning()).child(tr!(
+                "settings-keys-conflict",
+                keys = human(&c.keys),
+                first = name(c.first),
+                second = name(c.second)
+            )));
         }
         // Конфликты — над таблицей (таблице нужна вся ширина), раскладка — под ней.
         let conflicts_block = div()
@@ -225,15 +225,7 @@ impl SettingsView {
         (reset_all, body.into_any_element(), Vec::new())
     }
 
-    fn key_row(
-        &self,
-        i: usize,
-        c: &'static Command,
-        set: &KeySet,
-        conflicts: &[keymap::Conflict],
-        l: &Look,
-        cx: &mut Context<Self>,
-    ) -> Div {
+    fn key_row(&self, i: usize, c: &'static Command, set: &KeySet, conflicts: &[keymap::Conflict], l: &Look, cx: &mut Context<Self>) -> Div {
         let changed = keymap::changed(set, c.id);
         let editable = keymap::editable(c);
         let recording = self.keys.recording == Some(c.id);
@@ -273,22 +265,21 @@ impl SettingsView {
                 d.child(link(("settings-keys-reset", i), tr!("settings-keys-reset"), l).on_click(cx.listener(move |this, _, _, cx| {
                     this.stop_recording(cx);
                     crate::prefs::update(cx, |p| {
-                    let mut set = KeySet::of(p);
-                    keymap::reset(&mut set, id);
-                    set.store(p);
-                });
+                        let mut set = KeySet::of(p);
+                        keymap::reset(&mut set, id);
+                        set.store(p);
+                    });
                     cx.notify();
                 })))
             })
             .when(editable && !recording, |d| {
-                d.child(link(("settings-keys-edit", i), tr!("settings-edit"), l).on_click(cx.listener(move |this, _, _, cx| {
-                    this.start_recording(id, cx)
-                })))
+                d.child(
+                    link(("settings-keys-edit", i), tr!("settings-edit"), l)
+                        .on_click(cx.listener(move |this, _, _, cx| this.start_recording(id, cx))),
+                )
             })
             .when(recording, |d| {
-                d.child(link(("settings-keys-stop", i), tr!("settings-cancel"), l).on_click(cx.listener(|this, _, _, cx| {
-                    this.stop_recording(cx)
-                })))
+                d.child(link(("settings-keys-stop", i), tr!("settings-cancel"), l).on_click(cx.listener(|this, _, _, cx| this.stop_recording(cx))))
             });
         let line = div()
             .min_h(px(36.))
@@ -310,10 +301,26 @@ impl SettingsView {
                             .gap_2()
                             .child(div().min_w_0().truncate().child(command_name(c)))
                             .when(changed, |d| {
-                                d.child(div().px_1p5().rounded_sm().bg(l.picked()).text_size(px(11.)).text_color(l.accent_text()).child(tr!("settings-keys-changed")))
+                                d.child(
+                                    div()
+                                        .px_1p5()
+                                        .rounded_sm()
+                                        .bg(l.picked())
+                                        .text_size(px(11.))
+                                        .text_color(l.accent_text())
+                                        .child(tr!("settings-keys-changed")),
+                                )
                             })
                             .when(in_conflict, |d| {
-                                d.child(div().px_1p5().rounded_sm().bg(l.warning_bg()).text_size(px(11.)).text_color(l.warning()).child(tr!("settings-keys-conflict-badge")))
+                                d.child(
+                                    div()
+                                        .px_1p5()
+                                        .rounded_sm()
+                                        .bg(l.warning_bg())
+                                        .text_size(px(11.))
+                                        .text_color(l.warning())
+                                        .child(tr!("settings-keys-conflict-badge")),
+                                )
                             }),
                     )
                     .child(div().text_size(px(11.)).text_color(l.text3()).child(c.id)),
@@ -336,15 +343,17 @@ impl SettingsView {
                     .rounded(l.px(Metric::RadiusControl))
                     .bg(l.warning_bg())
                     .child(div().flex_1().child(tr!("settings-keys-taken", keys = human(&keys), name = other_name)))
-                    .child(button(("settings-keys-replace", i), tr!("settings-keys-replace"), true, l).on_click(cx.listener(
-                        move |this, _, _, cx| this.assign(id, &k1, true, cx),
-                    )))
-                    .child(link(("settings-keys-both", i), tr!("settings-keys-both"), l).on_click(cx.listener(move |this, _, _, cx| {
-                        this.assign(id, &k2, false, cx)
-                    })))
-                    .child(link(("settings-keys-cancel", i), tr!("settings-cancel"), l).on_click(cx.listener(|this, _, _, cx| {
-                        this.stop_recording(cx)
-                    }))),
+                    .child(
+                        button(("settings-keys-replace", i), tr!("settings-keys-replace"), true, l)
+                            .on_click(cx.listener(move |this, _, _, cx| this.assign(id, &k1, true, cx))),
+                    )
+                    .child(
+                        link(("settings-keys-both", i), tr!("settings-keys-both"), l)
+                            .on_click(cx.listener(move |this, _, _, cx| this.assign(id, &k2, false, cx))),
+                    )
+                    .child(
+                        link(("settings-keys-cancel", i), tr!("settings-cancel"), l).on_click(cx.listener(|this, _, _, cx| this.stop_recording(cx))),
+                    ),
             );
         }
         wrap

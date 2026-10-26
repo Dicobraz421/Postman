@@ -134,9 +134,7 @@ pub(crate) fn month_layout(events: &[Event], shown: impl Fn(usize) -> bool, week
         items.sort_by_key(|&(i, c0, c1, bar, start, len)| (!bar, c0, std::cmp::Reverse(c1), start, std::cmp::Reverse(len), i));
         let mut lanes: Vec<[bool; 7]> = Vec::new();
         for (index, col0, col1, bar, _, _) in items {
-            let lane = (0..)
-                .find(|&k| lanes.get(k).is_none_or(|l: &[bool; 7]| (col0..=col1).all(|c| !l[c])))
-                .unwrap_or(0);
+            let lane = (0..).find(|&k| lanes.get(k).is_none_or(|l: &[bool; 7]| (col0..=col1).all(|c| !l[c]))).unwrap_or(0);
             if lanes.len() <= lane {
                 lanes.resize(lane + 1, [false; 7]);
             }

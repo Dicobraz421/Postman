@@ -172,14 +172,9 @@ const DEADLINE: (Swatch, Swatch) = (sw(0xEAA300, 0xF8DEA8, 0x664700), sw(0xEAA30
 /// розовый бренда и красный безопасности (≈ 19 и 23,5; DESIGN «Цвет», строка «Исключение», PR #60).
 pub const EXEMPT: &[(&str, Reserved, f64)] = &[(PINK, Reserved::Threat, 18.0)];
 
-
 /// Имя цвета таблицы для сохранённого имени: своё, прежнее ([`LEGACY`]) или `None`.
 fn canonical(key: &str) -> Option<&'static str> {
-    PALETTE
-        .iter()
-        .find(|c| c.key == key)
-        .map(|c| c.key)
-        .or_else(|| LEGACY.iter().find(|(old, _)| *old == key).map(|(_, new)| *new))
+    PALETTE.iter().find(|c| c.key == key).map(|c| c.key).or_else(|| LEGACY.iter().find(|(old, _)| *old == key).map(|(_, new)| *new))
 }
 
 /// Цвет по сохранённому имени (своему или прежнему).
@@ -229,11 +224,7 @@ pub enum Clash {
 
 /// Наименьшая ΔE точек двух цветов категорий по темам, если она меньше [`MIN_DELTA_E`].
 fn too_close(a: &Color, b: &Color) -> Option<f64> {
-    Theme::ALL
-        .iter()
-        .map(|&t| delta_e(a.swatch(t).dot, b.swatch(t).dot))
-        .filter(|&d| d < MIN_DELTA_E)
-        .min_by(f64::total_cmp)
+    Theme::ALL.iter().map(|&t| delta_e(a.swatch(t).dot, b.swatch(t).dot)).filter(|&d| d < MIN_DELTA_E).min_by(f64::total_cmp)
 }
 
 /// Нижняя граница ΔE цвета `key` к занятому `r`.
@@ -391,8 +382,7 @@ pub fn delta_e2000(p: Lab, q: Lab) -> f64 {
         (h1 + h2 - 360.0) / 2.0
     };
     let cos = |deg: f64| deg.to_radians().cos();
-    let t = 1.0 - 0.17 * cos(h_bar - 30.0) + 0.24 * cos(2.0 * h_bar) + 0.32 * cos(3.0 * h_bar + 6.0)
-        - 0.20 * cos(4.0 * h_bar - 63.0);
+    let t = 1.0 - 0.17 * cos(h_bar - 30.0) + 0.24 * cos(2.0 * h_bar) + 0.32 * cos(3.0 * h_bar + 6.0) - 0.20 * cos(4.0 * h_bar - 63.0);
     let d_theta = 30.0 * (-((h_bar - 275.0) / 25.0).powi(2)).exp();
     let rc = 2.0 * (pow7(c_bar2) / (pow7(c_bar2) + pow7(25.0))).sqrt();
     let sl = 1.0 + 0.015 * (l_bar - 50.0).powi(2) / (20.0 + (l_bar - 50.0).powi(2)).sqrt();
@@ -525,10 +515,7 @@ mod tests {
         for (&(old, new), &(name, primary)) in LEGACY.iter().zip(FLUENT) {
             assert_eq!(old, name);
             assert!(PALETTE.iter().all(|c| c.key != old), "{old}: имя занято новой палитрой");
-            let nearest = PALETTE
-                .iter()
-                .min_by(|a, b| delta_e(primary, a.light.dot).total_cmp(&delta_e(primary, b.light.dot)))
-                .map(|c| c.key);
+            let nearest = PALETTE.iter().min_by(|a, b| delta_e(primary, a.light.dot).total_cmp(&delta_e(primary, b.light.dot))).map(|c| c.key);
             assert_eq!(Some(new), nearest, "{old}");
         }
     }

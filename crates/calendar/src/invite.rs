@@ -123,9 +123,7 @@ pub fn reply_subject(title: &str, s: Partstat) -> String {
 
 /// Ответ организатору: iCalendar METHOD:REPLY с моим PARTSTAT (RFC 5546 §3.2.3).
 pub fn imip_reply(inv: &Invitation, me: (&str, &str), status: Partstat, now: i64) -> String {
-    let utc = |t: i64| {
-        jiff::Timestamp::from_second(t).map(|t| t.strftime("%Y%m%dT%H%M%SZ").to_string()).unwrap_or_default()
-    };
+    let utc = |t: i64| jiff::Timestamp::from_second(t).map(|t| t.strftime("%Y%m%dT%H%M%SZ").to_string()).unwrap_or_default();
     let e = &inv.event;
     let org = e.organizer();
     let mut lines = vec![

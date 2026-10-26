@@ -198,10 +198,7 @@ impl crate::Mailer {
 pub(crate) const PART: crate::part::Part = crate::part::Part { name: "states", texts: TEXTS, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
-const TEXTS: &[pets_i18n::Resource] = &[
-    ("ru", include_str!("../i18n/ru/states.ftl")),
-    ("en", include_str!("../i18n/en/states.ftl")),
-];
+const TEXTS: &[pets_i18n::Resource] = &[("ru", include_str!("../i18n/ru/states.ftl")), ("en", include_str!("../i18n/en/states.ftl"))];
 
 /// Сцены `--screens` состояний ящика (ADR 0005).
 pub(crate) mod scenes {
@@ -329,10 +326,13 @@ mod tests {
     fn status_texts() {
         let (ru, problems) = pets_i18n::I18n::new(&crate::parts::texts(), "ru");
         assert!(problems.is_empty(), "{problems:?}");
-        assert_eq!(ru.fmt("states-offline-retry", &{
-            let mut a = pets_i18n::FluentArgs::new();
-            a.set("n", 25);
-            a
-        }), "Нет связи · повтор через 25 с");
+        assert_eq!(
+            ru.fmt("states-offline-retry", &{
+                let mut a = pets_i18n::FluentArgs::new();
+                a.set("n", 25);
+                a
+            }),
+            "Нет связи · повтор через 25 с"
+        );
     }
 }

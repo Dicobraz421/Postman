@@ -95,7 +95,6 @@ pub fn pkcs1_der(key: &RsaPrivateKey) -> Option<Vec<u8>> {
     key.to_pkcs1_der().ok().map(|d| d.as_bytes().to_vec())
 }
 
-
 /// Ключ PKCS#8 в DER (тесты CNG: импорт временного ключа).
 pub fn pkcs8_der(key: &RsaPrivateKey) -> Option<Vec<u8>> {
     use rsa::pkcs8::EncodePrivateKey;

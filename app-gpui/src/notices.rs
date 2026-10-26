@@ -300,13 +300,7 @@ fn bar_color(level: Level, l: &Look) -> Hsla {
 }
 
 fn shadow(l: &Look) -> Vec<BoxShadow> {
-    vec![BoxShadow {
-        color: l.c(Role::ShadowOverlay),
-        offset: point(px(0.), px(8.)),
-        blur_radius: px(24.),
-        spread_radius: px(0.),
-        inset: false,
-    }]
+    vec![BoxShadow { color: l.c(Role::ShadowOverlay), offset: point(px(0.), px(8.)), blur_radius: px(24.), spread_radius: px(0.), inset: false }]
 }
 
 fn close_button(id: impl Into<ElementId>, l: &Look) -> Stateful<Div> {
@@ -390,15 +384,7 @@ impl Notices {
                     cx.notify();
                 }
             })))
-            .child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .bottom_0()
-                    .h(px(2.))
-                    .w(relative(e.share(now)))
-                    .bg(bar_color(e.level, l)),
-            )
+            .child(div().absolute().left_0().bottom_0().h(px(2.)).w(relative(e.share(now))).bg(bar_color(e.level, l)))
             .on_click(cx.listener(move |this, _, _, cx| {
                 if this.stack.hide(id) {
                     cx.notify();
@@ -449,14 +435,7 @@ impl Notices {
                     d.strftime("%d.%m.%Y").to_string()
                 };
                 list = list.child(
-                    div()
-                        .px(px(16.))
-                        .pt(px(10.))
-                        .pb(px(4.))
-                        .text_size(px(12.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(l.text2())
-                        .child(title),
+                    div().px(px(16.)).pt(px(10.)).pb(px(4.)).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(l.text2()).child(title),
                 );
             }
             let id = e.id;
@@ -604,16 +583,7 @@ impl Render for Notices {
                     }))
             });
             let toasts: Vec<AnyElement> = shown.iter().map(|e| self.toast(e, now, &l, cx)).collect();
-            div()
-                .absolute()
-                .top(px(top))
-                .right(px(right))
-                .w(px(WIDTH))
-                .flex()
-                .flex_col()
-                .gap(px(8.))
-                .children(toasts)
-                .children(plus)
+            div().absolute().top(px(top)).right(px(right)).w(px(WIDTH)).flex().flex_col().gap(px(8.)).children(toasts).children(plus)
         });
         div().absolute().top_0().left_0().size_full().children(panel).children(stack)
     }

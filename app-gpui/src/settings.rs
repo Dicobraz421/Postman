@@ -10,10 +10,10 @@ use pets_ui::{Level as Toast, ToastAction};
 use postman_core::autoreply::{Audience, AutoReply, Text};
 use postman_core::categories;
 use postman_core::labels::Categories;
+use postman_core::model::VacationResponse;
 use postman_core::rules::{Action, Field, Rule};
 use postman_core::settings::{Area, AutoReplySave, Foreign, Reply, Request, RulesState, Usage, WARN_PERCENT};
 use postman_core::sync::{Command, Event};
-use postman_core::model::VacationResponse;
 
 use crate::Mailer;
 use crate::rules::{RulesEvent, RulesPanel};
@@ -92,14 +92,8 @@ pub(crate) const CLEANUP_QUERY: &str = "has:attachment larger:5M before:1y";
 /// Образец автоответа Postman для демо и снимка `vacation`: свои тексты коллегам и внешним.
 pub(crate) fn reply_sample() -> AutoReply {
     AutoReply {
-        internal: Text {
-            subject: tr!("vacation-sample-internal-subject"),
-            body: tr!("vacation-sample-internal-body"),
-        },
-        external: Text {
-            subject: tr!("vacation-sample-external-subject"),
-            body: tr!("vacation-sample-external-body"),
-        },
+        internal: Text { subject: tr!("vacation-sample-internal-subject"), body: tr!("vacation-sample-internal-body") },
+        external: Text { subject: tr!("vacation-sample-external-subject"), body: tr!("vacation-sample-external-body") },
         ..AutoReply::default()
     }
 }
@@ -244,8 +238,7 @@ impl Mailer {
             Section::Rules if self.settings.rules_panel.is_none() => {
                 let live = self.backend.is_live();
                 // Правила (Sieve) — своего ящика: папки общих ящиков (S4-06) в них не выбрать.
-                let mailboxes: Vec<(String, String)> =
-                    self.folders.read(cx).of(None).map(|m| (m.id.clone(), m.name.clone())).collect();
+                let mailboxes: Vec<(String, String)> = self.folders.read(cx).of(None).map(|m| (m.id.clone(), m.name.clone())).collect();
                 let state = if live { self.settings.rules.clone() } else { Some(rules_sample(&mailboxes)) };
                 if live && !self.backend.send(Command::Settings(Request::Rules)) {
                     self.sync_stopped(cx);
@@ -555,8 +548,7 @@ impl Mailer {
     /// Автоответ на сервере изменился: полоса появляется, меняет текст или уходит.
     pub(crate) fn set_vacation_state(&mut self, v: Option<VacationResponse>, cx: &mut Context<Self>) {
         let reply = self.settings.autoreply.clone();
-        let text =
-            v.as_ref().filter(|v| v.is_enabled).map(|v| vacation::bar_text(v, reply.as_ref(), &TimeZone::system()));
+        let text = v.as_ref().filter(|v| v.is_enabled).map(|v| vacation::bar_text(v, reply.as_ref(), &TimeZone::system()));
         self.settings.vacation = v;
         match (text, &self.settings.bar) {
             (Some((until, reach)), Some(bar)) => bar.update(cx, |b, cx| {
@@ -566,9 +558,7 @@ impl Mailer {
             }),
             (Some((until, reach)), None) => {
                 let bar = cx.new(|_| VacationBar { until, reach });
-                self.settings
-                    ._subscriptions
-                    .push(cx.subscribe(&bar, |this, _, BarEvent::TurnOff, cx| this.vacation_off(cx)));
+                self.settings._subscriptions.push(cx.subscribe(&bar, |this, _, BarEvent::TurnOff, cx| this.vacation_off(cx)));
                 self.settings.bar = Some(bar);
             }
             (None, _) => self.settings.bar = None,
@@ -633,7 +623,7 @@ pub(crate) fn rules_sample(mailboxes: &[(String, String)]) -> RulesState {
     RulesState {
         rules: vec![
             rule(true, Field::Subject, "Тендер", Action::Category(postman_core::labels::category_keyword("tenders"))), // i18n-ok: образец правила (S5-26, снимок `rules` — его правка)
-            rule(true, Field::Subject, "Отчёт", Action::Move { mailbox_id, name }), // i18n-ok: образец правила
+            rule(true, Field::Subject, "Отчёт", Action::Move { mailbox_id, name }),                                    // i18n-ok: образец правила
             rule(true, Field::From, "ci@corp.example", Action::MarkRead),
             rule(true, Field::To, "director@corp.example", Action::Flag),
             rule(false, Field::Subject, "Розыгрыш", Action::Discard), // i18n-ok: образец правила
@@ -641,31 +631,28 @@ pub(crate) fn rules_sample(mailboxes: &[(String, String)]) -> RulesState {
         active: true,
         foreign: vec![Foreign {
             name: "old-filters".into(),
-            text: "require \"fileinto\";\nif address :is \"from\" \"news@example.com\" {\n    fileinto \"News\";\n}"
-                .into(),
+            text: "require \"fileinto\";\nif address :is \"from\" \"news@example.com\" {\n    fileinto \"News\";\n}".into(),
             active: false,
         }],
     }
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "settings", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part =
+    crate::part::Part { name: "settings", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Обработчики команд части — на корне экрана почты (`Mailer::render`).
 fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
     root.on_action(cx.listener(|this, _: &settings::Open, window, cx| this.open_settings(None, window, cx)))
         .on_action(cx.listener(|this, _: &settings::Vacation, window, cx| this.open_vacation(window, cx)))
         .on_action(cx.listener(|this, _: &settings::Rules, window, cx| this.open_rules(window, cx)))
-        .on_action(cx.listener(|this, _: &settings::Calendar, window, cx| {
-            this.open_settings(Some(crate::settings_tab::Section::Calendar), window, cx)
-        }))
+        .on_action(
+            cx.listener(|this, _: &settings::Calendar, window, cx| this.open_settings(Some(crate::settings_tab::Section::Calendar), window, cx)),
+        )
 }
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
-const TEXTS: &[pets_i18n::Resource] = &[
-    ("ru", include_str!("../i18n/ru/settings.ftl")),
-    ("en", include_str!("../i18n/en/settings.ftl")),
-];
+const TEXTS: &[pets_i18n::Resource] = &[("ru", include_str!("../i18n/ru/settings.ftl")), ("en", include_str!("../i18n/en/settings.ftl"))];
 
 /// Вкладка «Настройки» (S5-09); автоответы и правила (S4-05, S4-07) — её разделы, в Outlook — меню «Файл».
 // Имя — область действий (`settings::…`), как в id команд: так обработчики читаются и их находит `docs/PARITY.md`.
@@ -676,7 +663,7 @@ pub(crate) mod settings {
 
 /// Команды части (`commands.rs`: контексты и `cmd`).
 const COMMANDS: &[pets_commands::Command] = {
-    use crate::commands::{cmd};
+    use crate::commands::cmd;
     &[
         // Не Outlook (там «Файл → Параметры»): Ctrl+, — как в новом Outlook и редакторах (S5-09).
         cmd("settings.open", &["ctrl-,"], None),

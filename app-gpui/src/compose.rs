@@ -161,13 +161,7 @@ pub(crate) struct Model {
 fn join(list: &[Address]) -> String {
     let mut s = list
         .iter()
-        .map(|a| {
-            if a.name.contains([',', ';', '"']) {
-                format!("\"{}\" <{}>", a.name.replace('"', ""), a.email)
-            } else {
-                a.display()
-            }
-        })
+        .map(|a| if a.name.contains([',', ';', '"']) { format!("\"{}\" <{}>", a.name.replace('"', ""), a.email) } else { a.display() })
         .collect::<Vec<_>>()
         .join("; ");
     if !s.is_empty() {
@@ -380,9 +374,7 @@ impl Model {
                 self.status = Status::Busy(purpose);
                 let (draft, replace) = (Box::new(d), self.server_id.clone());
                 Some(match purpose {
-                    Purpose::Send => {
-                        Command::Send { draft, replace, ticket, release: Release::After(send_later::UNDO_HOLD_SECS) }
-                    }
+                    Purpose::Send => Command::Send { draft, replace, ticket, release: Release::After(send_later::UNDO_HOLD_SECS) },
                     Purpose::SendLater(at) => Command::Send { draft, replace, ticket, release: Release::At(at) },
                     Purpose::Save | Purpose::Autosave => Command::SaveDraft { draft, replace, ticket },
                 })
@@ -454,12 +446,7 @@ impl Model {
     /// Через сколько автосохранение; `None` — не нужно (нет изменений, идёт отправка, этот текст уже не сохранился).
     pub(crate) fn autosave_wait(&self, now: Instant) -> Option<Duration> {
         let snapshot = self.snapshot();
-        if snapshot == self.saved
-            || self.pending.is_some()
-            || self.confirm_close
-            || self.confirm_delete
-            || self.autosave_failed == Some(snapshot)
-        {
+        if snapshot == self.saved || self.pending.is_some() || self.confirm_close || self.confirm_delete || self.autosave_failed == Some(snapshot) {
             return None;
         }
         Some(AUTOSAVE.saturating_sub(now.saturating_duration_since(self.last_save)))
@@ -712,11 +699,8 @@ pub(crate) fn apply_format(text: &str, sel: Range<usize>, f: Format) -> (String,
                 _ => l.starts_with(&prefix(i)),
             };
             let all = lines.iter().enumerate().all(|(i, l)| marked(i, l));
-            let block: Vec<String> = lines
-                .iter()
-                .enumerate()
-                .map(|(i, l)| if all { l[prefix(i).len()..].to_owned() } else { format!("{}{l}", prefix(i)) })
-                .collect();
+            let block: Vec<String> =
+                lines.iter().enumerate().map(|(i, l)| if all { l[prefix(i).len()..].to_owned() } else { format!("{}{l}", prefix(i)) }).collect();
             let block = block.join("\n");
             let out = format!("{}{block}{}", &text[..start], &text[end..]);
             let range = if a == b && lines.len() == 1 && lines[0].is_empty() {
@@ -931,10 +915,7 @@ impl Composers {
     /// Отправитель общего ящика `account` (ответ на письмо из него уходит от его имени), если сервер его дал.
     pub(crate) fn sender_for(&self, account: Option<&str>) -> Option<(Address, String)> {
         let account = account?;
-        self.senders
-            .iter()
-            .find(|s| s.account.as_deref() == Some(account))
-            .map(|s| (s.address.clone(), s.signature.clone()))
+        self.senders.iter().find(|s| s.account.as_deref() == Some(account)).map(|s| (s.address.clone(), s.signature.clone()))
     }
 
     pub(crate) fn get(&self, id: u64) -> Option<&Entity<Composer>> {
@@ -1198,12 +1179,14 @@ pub(crate) fn demo_senders() -> Vec<Sender> {
         signature: String::new(),
     });
     // Вторая учётная запись демо (S7-03б).
-    let second = Sender { account: Some(postman_demo::SECOND.0.to_owned()), address: Address::new("", postman_demo::SECOND.1), signature: String::new() };
+    let second =
+        Sender { account: Some(postman_demo::SECOND.0.to_owned()), address: Address::new("", postman_demo::SECOND.1), signature: String::new() };
     std::iter::once(own).chain(shared).chain(std::iter::once(second)).collect()
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "compose", texts: TEXTS, commands: COMMANDS, scenes: scenes::SCENES, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part =
+    crate::part::Part { name: "compose", texts: TEXTS, commands: COMMANDS, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
 const TEXTS: &[pets_i18n::Resource] = &[
@@ -1219,10 +1202,7 @@ const TEXTS: &[pets_i18n::Resource] = &[
 // Имя — область действий (`compose::…`), как в id команд: так обработчики читаются и их находит `docs/PARITY.md`.
 #[allow(clippy::module_inception)]
 pub(crate) mod compose {
-    gpui_kit::actions!(
-        compose,
-        [Send, Attach, Close, Bold, Italic, Underline, Bullets, Numbers, Link, Quote, Expand, Discard]
-    );
+    gpui_kit::actions!(compose, [Send, Attach, Close, Bold, Italic, Underline, Bullets, Numbers, Link, Quote, Expand, Discard]);
 }
 
 /// Команды части (`commands.rs`: контексты и `cmd`).
@@ -1363,9 +1343,8 @@ pub(crate) mod scenes {
 mod tests {
     // Не `use super::*`: вместе с gpui пришёл бы атрибут `gpui::test`, он перекрывает `#[test]`.
     use super::{
-        AUTOSAVE, Address, Attachment, Check, CloseAnswer, CloseStep, Command, Draft, Field, Format, Instant, Model,
-        Purpose, Release, Status, accept_suggestion, apply_format, compose_field, current_token, own_end, segments,
-        send_later, swap_signature,
+        AUTOSAVE, Address, Attachment, Check, CloseAnswer, CloseStep, Command, Draft, Field, Format, Instant, Model, Purpose, Release, Status,
+        accept_suggestion, apply_format, compose_field, current_token, own_end, segments, send_later, swap_signature,
     };
     use postman_core::contacts::{AddressBook, Source};
 
@@ -1402,9 +1381,7 @@ mod tests {
     fn send_and_save_go_through_tickets() {
         let mut m = model();
         fill(&mut m);
-        let Some(Command::Send { ticket: 7, replace: None, .. }) = m.begin(Purpose::Send, 7, Instant::now()) else {
-            panic!("send command expected")
-        };
+        let Some(Command::Send { ticket: 7, replace: None, .. }) = m.begin(Purpose::Send, 7, Instant::now()) else { panic!("send command expected") };
         assert!(m.busy());
         assert!(!m.on_sent(8), "чужой тикет");
         assert!(m.on_sent(7));
@@ -1422,8 +1399,7 @@ mod tests {
         assert!(!m.sending_later());
         assert!(m.on_sent(1));
         m.set_server_id("draft-1".into());
-        let Some(Command::Send { release, replace, .. }) = m.begin(Purpose::SendLater(1_792_562_400), 2, Instant::now())
-        else {
+        let Some(Command::Send { release, replace, .. }) = m.begin(Purpose::SendLater(1_792_562_400), 2, Instant::now()) else {
             panic!("send later")
         };
         assert_eq!((release, replace.as_deref()), (Release::At(1_792_562_400), Some("draft-1")));
@@ -1442,14 +1418,10 @@ mod tests {
         m.set(Field::Subject, "Тема".into());
         assert!(m.is_dirty());
         // Сохранено на сервере — снова чистое, следующее сохранение заменит эту версию.
-        let Some(Command::SaveDraft { .. }) = m.begin(Purpose::Save, 1, Instant::now()) else {
-            panic!("save expected")
-        };
+        let Some(Command::SaveDraft { .. }) = m.begin(Purpose::Save, 1, Instant::now()) else { panic!("save expected") };
         assert!(!m.on_saved(1, "draft-1".into(), "12:00".into()) && !m.is_dirty());
         m.set(Field::Body, "текст".into());
-        let Some(Command::SaveDraft { replace: Some(id), .. }) = m.begin(Purpose::Save, 2, Instant::now()) else {
-            panic!("save expected")
-        };
+        let Some(Command::SaveDraft { replace: Some(id), .. }) = m.begin(Purpose::Save, 2, Instant::now()) else { panic!("save expected") };
         assert_eq!(id, "draft-1");
         // Демо: сервера нет — текст остаётся, письмо грязное.
         m.refused();
@@ -1458,13 +1430,7 @@ mod tests {
         assert_eq!(m.body, "текст");
         // Вложение — тоже изменение; метка письма — тоже.
         let mut m = model();
-        m.add_attachment(Attachment {
-            name: "a.txt".into(),
-            mime: "text/plain".into(),
-            data: b"x".to_vec(),
-            inline_cid: None,
-            blob_id: None,
-        });
+        m.add_attachment(Attachment { name: "a.txt".into(), mime: "text/plain".into(), data: b"x".to_vec(), inline_cid: None, blob_id: None });
         assert!(m.is_dirty());
         m.remove_attachment(0);
         assert!(!m.is_dirty());
@@ -1601,10 +1567,7 @@ mod tests {
     fn suggestion_replaces_the_typed_address() {
         assert_eq!(current_token("anna@x.ru; ив"), "ив");
         assert_eq!(current_token("ив"), "ив");
-        assert_eq!(
-            accept_suggestion("anna@x.ru; ив", "Иван <ivan@corp.example>"),
-            "anna@x.ru; Иван <ivan@corp.example>; "
-        );
+        assert_eq!(accept_suggestion("anna@x.ru; ив", "Иван <ivan@corp.example>"), "anna@x.ru; Иван <ivan@corp.example>; ");
         assert_eq!(accept_suggestion("ив", "Иван <ivan@corp.example>"), "Иван <ivan@corp.example>; ");
     }
 
@@ -1620,12 +1583,8 @@ mod tests {
         assert_eq!(m.keywords(today), ["pm.cat.clients", "pm.conf", "pm.wait", "pm.wait.2026-10-24"]);
         let d = m.draft(false).unwrap();
         assert_eq!(d.keywords.len(), 4);
-        let back = Model::new(
-            Draft { keywords: [d.keywords.clone(), vec!["$label9".into(), "other".into()]].concat(), ..d },
-            None,
-            "",
-            Instant::now(),
-        );
+        let back =
+            Model::new(Draft { keywords: [d.keywords.clone(), vec!["$label9".into(), "other".into()]].concat(), ..d }, None, "", Instant::now());
         assert!(back.confidential);
         assert_eq!((back.wait, back.category.as_deref()), (Some(3), Some("pm.cat.clients")));
         assert!(back.keywords(today).contains(&"other".to_string()), "чужие слова сохраняются");

@@ -19,10 +19,20 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 pub const MAX_IMAGE_SIDE: u32 = 1600;
 
 pub enum Rendered {
-    Body { id: String, doc: Document, level: Level },
-    Image { key: String, result: Result<Rgba, String> },
+    Body {
+        id: String,
+        doc: Document,
+        level: Level,
+    },
+    Image {
+        key: String,
+        result: Result<Rgba, String>,
+    },
     /// Приглашение из вложения: `key` — письмо, к которому оно относится.
-    Invite { key: String, result: Result<Box<Invitation>, String> },
+    Invite {
+        key: String,
+        result: Result<Box<Invitation>, String>,
+    },
 }
 
 enum Job {
@@ -42,51 +52,47 @@ impl Renderer {
         let (done, rx) = mpsc::channel();
         // Поток не запустился — письма показываются без разбора (заглушкой ожидания), без падения.
         // В журнал — с S2-06 (pets-shell); пока stderr.
-        let started = std::thread::Builder::new()
-            .name("render".into())
-            .spawn(move || {
-                let mut client = Client::new(Client::default_exe(), TIMEOUT);
-                // Изоляция не полная — в журнал один раз, с причиной (отказ AppContainer).
-                let mut warned = false;
-                while let Ok(first) = jobs.recv() {
-                    // При быстром листании важно только последнее тело; картинки — все по порядку.
-                    let mut body = None;
-                    let mut images = Vec::new();
-                    let mut calendars = Vec::new();
-                    for job in std::iter::once(first).chain(jobs.try_iter()) {
-                        match job {
-                            Job::Body(id, b) => body = Some((id, b)),
-                            Job::Image(key, bytes) => images.push((key, bytes)),
-                            Job::Calendar(key, bytes) => calendars.push((key, bytes)),
-                        }
+        let started = std::thread::Builder::new().name("render".into()).spawn(move || {
+            let mut client = Client::new(Client::default_exe(), TIMEOUT);
+            // Изоляция не полная — в журнал один раз, с причиной (отказ AppContainer).
+            let mut warned = false;
+            while let Ok(first) = jobs.recv() {
+                // При быстром листании важно только последнее тело; картинки — все по порядку.
+                let mut body = None;
+                let mut images = Vec::new();
+                let mut calendars = Vec::new();
+                for job in std::iter::once(first).chain(jobs.try_iter()) {
+                    match job {
+                        Job::Body(id, b) => body = Some((id, b)),
+                        Job::Image(key, bytes) => images.push((key, bytes)),
+                        Job::Calendar(key, bytes) => calendars.push((key, bytes)),
                     }
-                    let mut out = Vec::new();
-                    if let Some((id, b)) = body {
-                        let doc = render(&mut client, &b);
-                        out.push(Rendered::Body { id, doc, level: client.level() });
-                        if client.level() == postman_worker::Level::Partial && !warned {
-                            warned = true;
-                            tracing::warn!(reason = client.fallback().unwrap_or("-"), "worker sandbox is partial");
-                        }
-                    }
-                    for (key, bytes) in images {
-                        let result = client.decode_image(&bytes, MAX_IMAGE_SIDE);
-                        out.push(Rendered::Image { key, result });
-                    }
-                    for (key, bytes) in calendars {
-                        let result = client
-                            .parse_calendar(&bytes)
-                            .and_then(|v| Invitation::from_worker(&v, &TimeZone::system()).map(Box::new));
-                        out.push(Rendered::Invite { key, result });
-                    }
-                    for r in out {
-                        if done.send(r).is_err() {
-                            return;
-                        }
-                    }
-                    repaint();
                 }
-            });
+                let mut out = Vec::new();
+                if let Some((id, b)) = body {
+                    let doc = render(&mut client, &b);
+                    out.push(Rendered::Body { id, doc, level: client.level() });
+                    if client.level() == postman_worker::Level::Partial && !warned {
+                        warned = true;
+                        tracing::warn!(reason = client.fallback().unwrap_or("-"), "worker sandbox is partial");
+                    }
+                }
+                for (key, bytes) in images {
+                    let result = client.decode_image(&bytes, MAX_IMAGE_SIDE);
+                    out.push(Rendered::Image { key, result });
+                }
+                for (key, bytes) in calendars {
+                    let result = client.parse_calendar(&bytes).and_then(|v| Invitation::from_worker(&v, &TimeZone::system()).map(Box::new));
+                    out.push(Rendered::Invite { key, result });
+                }
+                for r in out {
+                    if done.send(r).is_err() {
+                        return;
+                    }
+                }
+                repaint();
+            }
+        });
         if let Err(e) = started {
             eprintln!("поток рендера не запустился: {e}");
         }
@@ -128,7 +134,9 @@ fn render(client: &mut Client, body: &BodyRow) -> Document {
         None => None,
     };
     match html_err.or(text_err) {
-        Some(e) => Document { blocks: vec![notice(&format!("Не удалось безопасно показать письмо: {e}"))], ..Default::default() },
+        Some(e) => Document {
+            blocks: vec![notice(&format!("Не удалось безопасно показать письмо: {e}"))], ..Default::default()
+        },
         None => Document::default(),
     }
 }

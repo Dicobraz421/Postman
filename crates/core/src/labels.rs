@@ -86,8 +86,7 @@ pub fn category_keyword(id: &str) -> String {
 
 /// Допустимое ключевое слово JMAP: 1–255 знаков `%x21-7E` без `( ) { ] % * " \`, без заглавных (RFC 8621 §4.1.1).
 pub fn valid_keyword(k: &str) -> bool {
-    (1..=255).contains(&k.len())
-        && k.bytes().all(|b| (0x21..=0x7e).contains(&b) && !b"(){]%*\"\\".contains(&b) && !b.is_ascii_uppercase())
+    (1..=255).contains(&k.len()) && k.bytes().all(|b| (0x21..=0x7e).contains(&b) && !b"(){]%*\"\\".contains(&b) && !b.is_ascii_uppercase())
 }
 
 /// Ключевое слово в виде, в котором его хранит JMAP (нижний регистр).
@@ -226,10 +225,7 @@ impl Categories {
     /// не получат одно слово; свободное в таблице (и среди удалённых).
     pub fn new_keyword(&self, now: i64) -> String {
         let start = u64::try_from(now).unwrap_or(0);
-        (start..)
-            .map(|n| category_keyword(&format!("c{}", base36(n))))
-            .find(|k| self.find(k).is_none())
-            .unwrap_or_default()
+        (start..).map(|n| category_keyword(&format!("c{}", base36(n)))).find(|k| self.find(k).is_none()).unwrap_or_default()
     }
 
     /// Таблица годится: ключевые слова JMAP без повторов, у видимых — клавиши 1–9 без повторов и цвета различимы
@@ -295,12 +291,7 @@ impl Categories {
 
     /// Цвета видимых категорий, кроме `except`.
     fn used_colors(&self, except: Option<usize>) -> Vec<&str> {
-        self.list
-            .iter()
-            .enumerate()
-            .filter(|&(i, c)| !c.hidden && Some(i) != except)
-            .map(|(_, c)| c.shown_color())
-            .collect()
+        self.list.iter().enumerate().filter(|&(i, c)| !c.hidden && Some(i) != except).map(|(_, c)| c.shown_color()).collect()
     }
 
     fn check_name(&self, name: &str, except: Option<usize>) -> Result<String, Problem> {
@@ -308,11 +299,7 @@ impl Categories {
         if name.is_empty() || name.chars().count() > NAME_MAX {
             return Err(Problem::BadName);
         }
-        let taken = self
-            .list
-            .iter()
-            .enumerate()
-            .any(|(i, c)| !c.hidden && Some(i) != except && c.name.trim().to_lowercase() == name.to_lowercase());
+        let taken = self.list.iter().enumerate().any(|(i, c)| !c.hidden && Some(i) != except && c.name.trim().to_lowercase() == name.to_lowercase());
         if taken {
             return Err(Problem::DuplicateName(name.to_owned()));
         }
@@ -422,8 +409,7 @@ impl Categories {
         list.extend(self.list.iter().filter(|m| theirs.find(&m.keyword).is_none()).cloned());
         for k in 1..=9u8 {
             let holders: Vec<usize> = (0..list.len()).filter(|&i| !list[i].hidden && list[i].key == Some(k)).collect();
-            if let Some(&keep) = holders.iter().max_by(|&&a, &&b| list[a].changed.cmp(&list[b].changed).then(b.cmp(&a)))
-            {
+            if let Some(&keep) = holders.iter().max_by(|&&a, &&b| list[a].changed.cmp(&list[b].changed).then(b.cmp(&a))) {
                 for &i in holders.iter().filter(|&&i| i != keep) {
                     list[i].key = None;
                 }
@@ -518,12 +504,7 @@ impl Book {
     /// Таблица с сервера при входе или после правки на другом клиенте (`categories::Reply::Loaded`; `None` — файла
     /// на сервере нет, берётся `defaults`). Своя правка ещё не дошла до сервера — таблица не заменяется, а ответ —
     /// своя таблица, которую надо отправить (`Request::Save` сведёт её с серверной).
-    pub fn loaded(
-        &mut self,
-        account: Option<&str>,
-        table: Option<Categories>,
-        defaults: impl FnOnce() -> Categories,
-    ) -> Option<Categories> {
+    pub fn loaded(&mut self, account: Option<&str>, table: Option<Categories>, defaults: impl FnOnce() -> Categories) -> Option<Categories> {
         let key = Book::key(account);
         if self.pending.contains(&key)
             && let Some(mine) = self.accounts.get(&key)
@@ -677,8 +658,7 @@ mod tests {
         // Шестая категория прежним цветом `royalBlue` — это графит, как у «Пентеста».
         let mut t = defaults();
         let keyword = t.new_keyword(1);
-        let c =
-            Category { keyword, name: "x".into(), color: "royalBlue".into(), key: Some(6), changed: 1, hidden: false };
+        let c = Category { keyword, name: "x".into(), color: "royalBlue".into(), key: Some(6), changed: 1, hidden: false };
         t.list.push(c);
         assert!(matches!(t.check(), Err(Problem::Colour { .. })));
         // Удалённая не мешает ни клавишей, ни цветом.
@@ -706,14 +686,7 @@ mod tests {
         assert!(t.labels(&kws(&["$seen", "$flagged"])).is_empty());
         // Метка Thunderbird, взятая в таблицу, — категория с цветом.
         let mut t = t;
-        let work = Category {
-            keyword: "$label2".into(),
-            name: "Work".into(),
-            color: "navy".into(),
-            key: None,
-            changed: 1,
-            hidden: false,
-        };
+        let work = Category { keyword: "$label2".into(), name: "Work".into(), color: "navy".into(), key: None, changed: 1, hidden: false };
         t.list.insert(0, work);
         assert_eq!(t.labels(&row)[0], Label::Category(&t.list[0]));
         assert_eq!(t.labels(&row).len(), 3);
@@ -766,14 +739,8 @@ mod tests {
     fn editing_api() {
         let mut t = defaults();
         // Свободных цветов нет: синий занят «Клиентами», прежнее имя Fluent — тот же синий, неизвестный — отказ.
-        assert!(matches!(
-            t.add("Partners", palette::BLUE, None, 10),
-            Err(Problem::Colour { clash: palette::Clash::Color(palette::BLUE), .. })
-        ));
-        assert!(matches!(
-            t.add("Partners", "cornflower", None, 10),
-            Err(Problem::Colour { clash: palette::Clash::Color(palette::BLUE), .. })
-        ));
+        assert!(matches!(t.add("Partners", palette::BLUE, None, 10), Err(Problem::Colour { clash: palette::Clash::Color(palette::BLUE), .. })));
+        assert!(matches!(t.add("Partners", "cornflower", None, 10), Err(Problem::Colour { clash: palette::Clash::Color(palette::BLUE), .. })));
         assert!(matches!(t.add("Partners", "chartreuse", None, 10), Err(Problem::Colour { clash: palette::Clash::Unknown, .. })));
         // Серый освобождается удалением «Сервисов».
         assert_eq!(t.delete("pm.cat.services", 9), Ok(()));
@@ -822,10 +789,7 @@ mod tests {
         assert_eq!(t.adopt("pm.cat.clients", "[clients]", palette::BLUE, Some(9), 23), Ok(()));
         assert_eq!(t.by_key(9).map(|c| c.keyword.as_str()), Some("pm.cat.clients"));
         assert_eq!(t.list.len(), 6);
-        assert_eq!(
-            t.adopt("pm.cat.clients", "y", "steel", None, 24),
-            Err(Problem::DuplicateKeyword("pm.cat.clients".into()))
-        );
+        assert_eq!(t.adopt("pm.cat.clients", "y", "steel", None, 24), Err(Problem::DuplicateKeyword("pm.cat.clients".into())));
         // Метка Thunderbird в таблицу — со своим словом; свободных цветов нет — сначала освободить.
         assert!(matches!(t.adopt("$label3", "Personal", "plum", None, 25), Err(Problem::Colour { .. })));
         assert_eq!(t.delete(&k, 25), Ok(()));

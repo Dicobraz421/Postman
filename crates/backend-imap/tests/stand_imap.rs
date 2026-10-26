@@ -12,9 +12,9 @@
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
+use postman_backend_imap::{self as imap, ImapAccount};
 use postman_cache::{Cache, EmailRow};
 use postman_compose::{Address, Attachment, Draft};
-use postman_backend_imap::{self as imap, ImapAccount};
 use postman_core::model::Release;
 use postman_core::sync::{Command, Event, Status, UnboundedSender};
 
@@ -118,7 +118,13 @@ fn imap_account_round_trip() {
         to: vec![Address::new("", &live.me)],
         subject: subject.clone(),
         markdown: "Проверка **IMAP** в Postman.".into(),
-        attachments: vec![Attachment { name: "note.txt".into(), mime: "text/plain".into(), data: b"hello".to_vec(), inline_cid: None, blob_id: None }],
+        attachments: vec![Attachment {
+            name: "note.txt".into(),
+            mime: "text/plain".into(),
+            data: b"hello".to_vec(),
+            inline_cid: None,
+            blob_id: None,
+        }],
         ..Default::default()
     };
     live.commands.send(Command::Send { draft: Box::new(draft), replace: None, ticket: 7, release: Release::Now }).unwrap();
@@ -167,7 +173,9 @@ fn imap_draft_replace() {
     live.commands.send(Command::SaveDraft { draft: Box::new(draft("первая")), replace: None, ticket: 1 }).unwrap();
     let Event::DraftSaved { id: first, .. } = live.wait("DraftSaved 1", |e| matches!(e, Event::DraftSaved { ticket: 1, .. })) else { unreachable!() };
     live.commands.send(Command::SaveDraft { draft: Box::new(draft("вторая")), replace: Some(first.clone()), ticket: 2 }).unwrap();
-    let Event::DraftSaved { id: second, .. } = live.wait("DraftSaved 2", |e| matches!(e, Event::DraftSaved { ticket: 2, .. })) else { unreachable!() };
+    let Event::DraftSaved { id: second, .. } = live.wait("DraftSaved 2", |e| matches!(e, Event::DraftSaved { ticket: 2, .. })) else {
+        unreachable!()
+    };
     assert_ne!(first, second);
     let drafts = live.folder("drafts");
     let same: Vec<EmailRow> = live.cache.page(&drafts, 0, 1000).unwrap().into_iter().filter(|r| r.subject == subject).collect();
@@ -199,7 +207,9 @@ fn imap_undo_send() {
     let arrived = live.letter("inbox", &gone);
     std::thread::sleep(Duration::from_secs(3));
     live.commands.send(Command::Search { query: kept.clone(), mailbox: None, ticket: 14 }).unwrap();
-    let Event::SearchResults { ids, .. } = live.wait("SearchResults", |e| matches!(e, Event::SearchResults { ticket: 14, .. })) else { unreachable!() };
+    let Event::SearchResults { ids, .. } = live.wait("SearchResults", |e| matches!(e, Event::SearchResults { ticket: 14, .. })) else {
+        unreachable!()
+    };
     assert!(ids.is_empty(), "отменённое письмо ушло");
     let sent = live.letter("sent", &gone);
     live.commands.send(Command::Destroy(arrived.id)).unwrap();
@@ -237,9 +247,17 @@ fn imap_thread_and_filters() {
 
     let filter = Filter::Subject(subject.clone());
     live.commands.send(Command::Query { filter: filter.clone(), mailbox: Some(live.folder("inbox")), ticket: 23 }).unwrap();
-    let Event::SearchResults { ids, .. } = live.wait("SearchResults", |e| matches!(e, Event::SearchResults { ticket: 23, .. })) else { unreachable!() };
+    let Event::SearchResults { ids, .. } = live.wait("SearchResults", |e| matches!(e, Event::SearchResults { ticket: 23, .. })) else {
+        unreachable!()
+    };
     assert!(ids.contains(&first.id) && ids.contains(&second.id), "{ids:?}");
-    live.commands.send(Command::Counts { filters: vec![filter, Filter::Subject(format!("{subject} нет такого"))], mailbox: Some(live.folder("inbox")), ticket: 24 }).unwrap();
+    live.commands
+        .send(Command::Counts {
+            filters: vec![filter, Filter::Subject(format!("{subject} нет такого"))],
+            mailbox: Some(live.folder("inbox")),
+            ticket: 24,
+        })
+        .unwrap();
     let Event::Counts { counts, .. } = live.wait("Counts", |e| matches!(e, Event::Counts { ticket: 24, .. })) else { unreachable!() };
     assert_eq!(counts, Some(vec![2, 0]));
 

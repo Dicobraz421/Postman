@@ -275,7 +275,9 @@ fn exchange_calendar_and_people() {
 
     let other = account("2").map_or(a.email.clone(), |b| b.email);
     live.send(Command::Availability { ticket: 3, emails: vec![other], from: now(), to: now() + 7 * 86_400, sender: None });
-    let Event::Availability { people, error, .. } = live.wait("Availability", |e| matches!(e, Event::Availability { ticket: 3, .. })) else { unreachable!() };
+    let Event::Availability { people, error, .. } = live.wait("Availability", |e| matches!(e, Event::Availability { ticket: 3, .. })) else {
+        unreachable!()
+    };
     assert_eq!(error, None);
     assert!(people[0].1.is_some(), "занятость тестовой учётки известна");
     rt().block_on(cleanup(&a));
@@ -353,7 +355,9 @@ fn exchange_meeting_cycle() {
         from: None,
     };
     la.send(Command::CreateMeeting { meeting: Box::new(meeting), ticket: 5 });
-    let Event::MeetingCreated { uid, .. } = la.wait("MeetingCreated", |e| matches!(e, Event::MeetingCreated { ticket: 5, .. })) else { unreachable!() };
+    let Event::MeetingCreated { uid, .. } = la.wait("MeetingCreated", |e| matches!(e, Event::MeetingCreated { ticket: 5, .. })) else {
+        unreachable!()
+    };
     assert!(!uid.is_empty(), "UID — от сервера");
 
     // У user2: письмо-приглашение и встреча в календаре с тем же UID.
@@ -364,7 +368,9 @@ fn exchange_meeting_cycle() {
     assert_eq!(status_of(in_calendar, &b.email), Some(postman_calendar::Partstat::NeedsAction), "у user2 — ждёт ответа");
     let smtp = in_calendar.participants.iter().all(|p| p.email.contains('@'));
     let organizer_uid = in_calendar.uid.eq_ignore_ascii_case(&uid);
-    println!("UID письма = UID организатора: {same_uid}; UID встречи у участника = UID организатора: {organizer_uid}; адреса участников SMTP: {smtp}");
+    println!(
+        "UID письма = UID организатора: {same_uid}; UID встречи у участника = UID организатора: {organizer_uid}; адреса участников SMTP: {smtp}"
+    );
     assert!(same_uid, "UID приглашения в письме ≠ UID встречи: карточка письма не найдёт встречу");
 
     // «Принять» из карточки письма: ответ — сервером (по встрече с этим UID), не письмом.
@@ -378,7 +384,8 @@ fn exchange_meeting_cycle() {
     };
     assert_eq!(delivery, postman_core::invite::Delivery::Server);
     let peer = b.email.clone();
-    let accepted = |e: &[postman_calendar::Event]| e.iter().any(|x| x.title == title && status_of(x, &peer) == Some(postman_calendar::Partstat::Accepted));
+    let accepted =
+        |e: &[postman_calendar::Event]| e.iter().any(|x| x.title == title && status_of(x, &peer) == Some(postman_calendar::Partstat::Accepted));
     let mine = la.events_until(from, to, "ответ у организатора", accepted);
     let event = mine.into_iter().find(|x| x.title == title).unwrap();
 
@@ -484,7 +491,8 @@ fn exchange_recurring_in_week() {
     let second = series[1].clone();
     let later = postman_calendar::Span::new(second.span.start + 7200, second.span.end + 7200);
     assert!(rt1.block_on(ar.reschedule(&second, &postman_backend_ews::areas::moved(later, "Europe/Moscow"), false)).unwrap());
-    let week = live.events_until(from, to, "исключение на новом месте", |e| ours(e).iter().any(|x| x.span.start == later.start));
+    let week =
+        live.events_until(from, to, "исключение на новом месте", |e| ours(e).iter().any(|x| x.span.start == later.start));
     assert_eq!(ours(&week).len(), 3, "перенос экземпляра — не новая встреча");
     let third = ours(&week).into_iter().find(|x| x.span.start == start + 2 * 86_400).unwrap();
     assert!(rt1.block_on(ar.cancel(&third, false)).unwrap());
@@ -586,7 +594,10 @@ fn exchange_meeting_edit_through_commands() {
         free_busy: postman_calendar::FreeBusy::Busy,
         required: vec![postman_ews::Attendee { name: String::new(), email: peer.clone() }],
         optional: vec![],
-        recurrence: Some(postman_ews::Recurrence { pattern: postman_ews::Pattern::Daily { interval: 1 }, range: postman_ews::Range::Numbered { start: day, count: 3 } }),
+        recurrence: Some(postman_ews::Recurrence {
+            pattern: postman_ews::Pattern::Daily { interval: 1 },
+            range: postman_ews::Range::Numbered { start: day, count: 3 },
+        }),
     };
     rt0.block_on(c1.create(None, &item, postman_ews::Notify::All)).unwrap();
     let ours = |e: &[postman_calendar::Event]| {

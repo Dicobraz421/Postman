@@ -18,8 +18,8 @@ use std::time::Duration;
 
 use postman_ir::Document;
 use postman_smime::envelope::{Envelope, OpenError, Opened};
-use zeroize::Zeroizing;
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 pub use preview::{Entry, Listing, OfficeFormat, OfficeScan, Preview, PreviewKind};
 pub use sandbox::Level;
@@ -39,7 +39,9 @@ pub enum Request {
     /// Письмо целиком (RFC 5322) в бинарной части → тело и вложения (S7-04б, IMAP: MIME разбирает Postman).
     Mime,
     /// Байты вложения `index` письма из бинарной части → в бинарной части ответа.
-    MimePart { index: u32 },
+    MimePart {
+        index: u32,
+    },
     Html(String),
     Text(String),
     /// Приглашение iCalendar (.ics) в бинарной части; ответ — METHOD и JSCalendar (JSON).
@@ -47,7 +49,9 @@ pub enum Request {
     /// Карточки vCard (.vcf, одна или несколько) в бинарной части; ответ — JSContact (JSON) каждой (S7-05б, CardDAV).
     Contacts,
     /// Картинка (PNG/JPEG/GIF/WebP) в бинарной части; ответ — RGBA не больше `max_side` по стороне.
-    Image { max_side: u32 },
+    Image {
+        max_side: u32,
+    },
     /// Встроенный просмотр вложения (S5-07): файл в бинарной части; `page` — страница PDF с нуля; ответ —
     /// [`Preview`], пиксели картинки и страницы — RGBA в бинарной части; `width` — ширина страницы PDF (0 — по
     /// `max_side`).
@@ -61,20 +65,31 @@ pub enum Request {
     /// Проверка подписи S/MIME (S5-12 Ф1): в бинарной части — якоря доверия и письмо целиком
     /// (`postman_smime::wire`); `now` — Unix-время проверки. Ответ — [`postman_smime::Report`], тело письма с
     /// подписью внутри (`signed-data`) — IR, DER цепочки — в бинарной части.
-    SmimeVerify { now: u64 },
+    SmimeVerify {
+        now: u64,
+    },
     /// Получатели и шифр шифрованного письма S/MIME (S5-12 Ф2): письмо — в бинарной части. Ничего не
     /// расшифровывает; ответ — [`postman_smime::envelope::Envelope`] (поля для ядра, решение владельца №1).
     SmimeEnvelope,
     /// Расшифровка (Ф2): в бинарной части — ключ содержимого, якоря и письмо (`postman_smime::wire::encode_open`).
     /// `part` — `None`: тело (IR), вложения и подпись внутри, DER её цепочки — в бинарной части ответа; номер —
     /// байты этого вложения в бинарной части ответа.
-    SmimeOpen { now: u64, part: Option<u32> },
+    SmimeOpen {
+        now: u64,
+        part: Option<u32>,
+    },
     /// Письмо, расшифрованное в ядре СКЗИ (ГОСТ): в бинарной части — якоря и внутреннее письмо
     /// (`postman_smime::wire::encode_request`); `from` — «От» внешнего письма. Ответ — как у `SmimeOpen`.
-    SmimeInner { now: u64, from: String, part: Option<u32> },
+    SmimeInner {
+        now: u64,
+        from: String,
+        part: Option<u32>,
+    },
     /// Подготовить сертификаты получателей к шифрованию (S5-12 Ф4): в бинарной части — якоря и сертификаты
     /// (`postman_smime::wire::encode_prepare`). Ответ — на каждый сертификат значения ключа или причина отказа.
-    SmimePrepare { now: u64 },
+    SmimePrepare {
+        now: u64,
+    },
     /// Проверки песочницы для тестов: попытка открыть файл / сокет / зависнуть.
     #[cfg(debug_assertions)]
     #[doc(hidden)]
@@ -197,16 +212,25 @@ enum Response {
     Ok(Document),
     Mime(Box<mime::Mime>),
     /// RGBA8 в бинарной части.
-    Image { width: u32, height: u32 },
+    Image {
+        width: u32,
+        height: u32,
+    },
     Calendar(serde_json::Value),
     Contacts(Vec<serde_json::Value>),
     Preview(Preview),
     /// Итог проверки подписи; DER цепочки — в бинарной части.
-    Smime { report: Box<postman_smime::Report>, doc: Option<Document> },
+    Smime {
+        report: Box<postman_smime::Report>,
+        doc: Option<Document>,
+    },
     /// Получатели и шифр (Ф2).
     Envelope(Result<postman_smime::envelope::Envelope, postman_smime::envelope::OpenError>),
     /// Итог расшифровки; DER цепочки подписи внутри — в бинарной части.
-    Opened { opened: Box<Result<postman_smime::envelope::Opened, postman_smime::envelope::OpenError>>, doc: Option<Document> },
+    Opened {
+        opened: Box<Result<postman_smime::envelope::Opened, postman_smime::envelope::OpenError>>,
+        doc: Option<Document>,
+    },
     /// Байты вложения расшифрованного письма — в бинарной части.
     Part,
     /// Подготовленные получатели (Ф4) — по порядку сертификатов запроса.
@@ -268,11 +292,7 @@ pub fn parse_calendar(bytes: &[u8]) -> Result<serde_json::Value, String> {
         return Err("приглашение слишком большое".into());
     }
     let text = std::str::from_utf8(bytes).map_err(|_| "приглашение не в UTF-8".to_string())?;
-    let method = text
-        .lines()
-        .find_map(|l| l.trim().strip_prefix("METHOD:"))
-        .map(|m| m.trim().to_ascii_uppercase())
-        .unwrap_or_default();
+    let method = text.lines().find_map(|l| l.trim().strip_prefix("METHOD:")).map(|m| m.trim().to_ascii_uppercase()).unwrap_or_default();
     let ical = match calcard::Parser::new(text).entry() {
         calcard::Entry::ICalendar(c) => c,
         _ => return Err("не iCalendar".into()),
@@ -423,10 +443,14 @@ pub fn serve() -> ! {
             }
             Ok(Request::SmimePrepare { now }) => match postman_smime::wire::decode_prepare(&bin) {
                 Some((trust, certs)) => Response::Prepared(
-                    certs.iter().enumerate().map(|(i, c)| {
-                        let others: Vec<Vec<u8>> = certs.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, d)| d.clone()).collect();
-                        postman_smime::prepare::prepare(c, &others, &trust, now)
-                    }).collect(),
+                    certs
+                        .iter()
+                        .enumerate()
+                        .map(|(i, c)| {
+                            let others: Vec<Vec<u8>> = certs.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, d)| d.clone()).collect();
+                            postman_smime::prepare::prepare(c, &others, &trust, now)
+                        })
+                        .collect(),
                 ),
                 None => Response::Err("запрос подготовки повреждён".into()),
             },
@@ -511,10 +535,7 @@ impl Client {
     /// Рядом с основным исполняемым файлом.
     pub fn default_exe() -> PathBuf {
         let name = if cfg!(windows) { "postman-worker.exe" } else { "postman-worker" };
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join(name)))
-            .unwrap_or_else(|| PathBuf::from(name))
+        std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join(name))).unwrap_or_else(|| PathBuf::from(name))
     }
 
     /// Насколько изолирован текущий процесс (после первого запроса).
@@ -548,9 +569,7 @@ impl Client {
     /// Декодировать картинку из письма в песочнице.
     pub fn decode_image(&mut self, bytes: &[u8], max_side: u32) -> Result<Rgba, String> {
         match self.call(&Request::Image { max_side }, bytes)? {
-            (Response::Image { width, height }, pixels) if pixels.len() == width as usize * height as usize * 4 => {
-                Ok(Rgba { width, height, pixels })
-            }
+            (Response::Image { width, height }, pixels) if pixels.len() == width as usize * height as usize * 4 => Ok(Rgba { width, height, pixels }),
             (Response::Err(e), _) => Err(e),
             _ => Err("неожиданный ответ".into()),
         }
@@ -578,7 +597,12 @@ impl Client {
 
     /// Проверить подпись S/MIME письма `raw` (RFC 5322 целиком) к якорям `trust` в песочнице (S5-12 Ф1). DER цепочки
     /// — в `Report::chain`; тело письма с подписью внутри — IR.
-    pub fn smime_verify(&mut self, raw: &[u8], trust: &postman_smime::Trust, now: u64) -> Result<(postman_smime::Report, Option<Document>), SmimeFailure> {
+    pub fn smime_verify(
+        &mut self,
+        raw: &[u8],
+        trust: &postman_smime::Trust,
+        now: u64,
+    ) -> Result<(postman_smime::Report, Option<Document>), SmimeFailure> {
         if raw.len() > postman_smime::MAX_MESSAGE {
             return Err(SmimeFailure::TooLarge);
         }
@@ -614,7 +638,13 @@ impl Client {
 
     /// Расшифровать письмо `raw` ключом `cek` (Ф2): тело (IR), вложения, подпись внутри (DER цепочки — в
     /// `Opened::inner.chain`).
-    pub fn smime_open(&mut self, raw: &[u8], cek: &[u8], trust: &postman_smime::Trust, now: u64) -> Result<Result<(Opened, Option<Document>), OpenError>, SmimeFailure> {
+    pub fn smime_open(
+        &mut self,
+        raw: &[u8],
+        cek: &[u8],
+        trust: &postman_smime::Trust,
+        now: u64,
+    ) -> Result<Result<(Opened, Option<Document>), OpenError>, SmimeFailure> {
         let bin = open_request(raw, cek, trust)?;
         let timeout = self.timeout.max(SMIME_TIMEOUT);
         match self.call_for(&Request::SmimeOpen { now, part: None }, &bin, timeout).map_err(SmimeFailure::Worker)? {
@@ -632,7 +662,14 @@ impl Client {
     }
 
     /// Письмо, расшифрованное СКЗИ в ядре (ГОСТ): тело, вложения, подпись внутри; `part` — байты вложения.
-    pub fn smime_inner(&mut self, inner: &[u8], from: &str, trust: &postman_smime::Trust, now: u64, part: Option<u32>) -> Result<Result<Inner, OpenError>, SmimeFailure> {
+    pub fn smime_inner(
+        &mut self,
+        inner: &[u8],
+        from: &str,
+        trust: &postman_smime::Trust,
+        now: u64,
+        part: Option<u32>,
+    ) -> Result<Result<Inner, OpenError>, SmimeFailure> {
         if inner.len() > postman_smime::MAX_MESSAGE {
             return Err(SmimeFailure::TooLarge);
         }
@@ -655,7 +692,12 @@ impl Client {
 
     /// Подготовить сертификаты получателей (Ф4): проверка цепочки к якорям `trust`, назначения и срока — в
     /// песочнице; ответ — значения ключей по порядку `certs`.
-    pub fn smime_prepare(&mut self, certs: &[Vec<u8>], trust: &postman_smime::Trust, now: u64) -> Result<Vec<Result<postman_smime::prepare::Prepared, String>>, SmimeFailure> {
+    pub fn smime_prepare(
+        &mut self,
+        certs: &[Vec<u8>],
+        trust: &postman_smime::Trust,
+        now: u64,
+    ) -> Result<Vec<Result<postman_smime::prepare::Prepared, String>>, SmimeFailure> {
         let bin = postman_smime::wire::encode_prepare(trust, certs);
         if bin.len() > MAX_FRAME {
             return Err(SmimeFailure::TooLarge);

@@ -13,8 +13,8 @@
 //! - **Снять категорию с писем** — только явным выбором при удалении (`Request::Purge`).
 
 use postman_cache::{Cache, scoped};
-pub use postman_core::categories::{Reply, Request};
 use postman_core::categories::{ATTEMPTS, Error as FileError, FILE, FOLDER, Scope, decode, encode};
+pub use postman_core::categories::{Reply, Request};
 use postman_core::labels::Categories;
 use postman_jmap::{Client, FILENODE, Filter, Written};
 
@@ -92,8 +92,7 @@ pub async fn save(client: &Client, acc: &str, mine: &Categories) -> Result<Categ
             },
         };
         let blob = client.upload(acc, encode(&merged)?, MIME).await?;
-        let written =
-            client.write_file(acc, &folder, remote.file.as_deref(), FILE, &blob, MIME, state.as_deref()).await?;
+        let written = client.write_file(acc, &folder, remote.file.as_deref(), FILE, &blob, MIME, state.as_deref()).await?;
         match written {
             Written::Done { .. } => return Ok(merged),
             Written::Stale | Written::Exists(_) => continue,
@@ -146,12 +145,7 @@ pub async fn handle(client: &Client, own: &str, cache: Option<&Cache>, request: 
 }
 
 /// Снять слово со всех писем почтового аккаунта клиента `mail` (во всех папках): страницами, пока находится.
-async fn purge(
-    mail: &Client,
-    scope: Option<&str>,
-    cache: Option<&Cache>,
-    keyword: &str,
-) -> postman_jmap::Result<usize> {
+async fn purge(mail: &Client, scope: Option<&str>, cache: Option<&Cache>, keyword: &str) -> postman_jmap::Result<usize> {
     let kw = vec![postman_core::labels::normalize(keyword)];
     let mut count = 0;
     for _ in 0..PURGE_ROUNDS {

@@ -323,15 +323,11 @@ impl MailList {
             .justify_center()
             .cursor_pointer()
             .child(
-                div()
-                    .size(px(18.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(4.))
-                    .bg(l.accent())
-                    .text_color(l.on_accent())
-                    .child(if all { icon(glyph::CHECK, 12.) } else { div().w(px(8.)).h(px(2.)).bg(l.on_accent()) }),
+                div().size(px(18.)).flex().items_center().justify_center().rounded(px(4.)).bg(l.accent()).text_color(l.on_accent()).child(if all {
+                    icon(glyph::CHECK, 12.)
+                } else {
+                    div().w(px(8.)).h(px(2.)).bg(l.on_accent())
+                }),
             )
             .tooltip({
                 let tip = crate::keytips::with_key(tr!("bulk-select-all"), crate::keytips::key("mail.select_all", cx));
@@ -422,10 +418,7 @@ impl MailList {
             .pb(px(4.))
             .child(button("bulk-seen", glyph::READ, seen, false, false).on_click(ask(Ask::Seen(None))))
             .child(button("bulk-flag", glyph::FLAG, flag, false, false).on_click(ask(Ask::Flag(None))))
-            .child(
-                button("bulk-cat", glyph::TAG, tr!("bulk-category-plain"), open == Some(Drop::Category), true)
-                    .on_click(drop(Drop::Category)),
-            )
+            .child(button("bulk-cat", glyph::TAG, tr!("bulk-category-plain"), open == Some(Drop::Category), true).on_click(drop(Drop::Category)))
             .child(button("bulk-due", glyph::CLOCK, tr!("bulk-due-plain"), false, true).on_click(ask(Ask::Lifecycle(Kind::Due))))
             .child(button("bulk-move", glyph::MOVE, tr!("bulk-move-plain"), open == Some(Drop::Folder), true).on_click(drop(Drop::Folder)))
             .child(button("bulk-archive", glyph::ARCHIVE, tr!("bulk-archive"), false, false).on_click(ask(Ask::Archive)))
@@ -523,7 +516,8 @@ impl MailList {
     /// Полоса над списком без связи (макет «Состояния»): что видно и что будет с правками, «Повторить сейчас», «×».
     pub(crate) fn offline_banner(&self, l: &Look, cx: &mut Context<Self>) -> Option<Div> {
         let (host, queued) = self.offline.as_ref().filter(|_| !self.offline_hidden)?;
-        let text = if *queued > 0 { tr!("states-banner-queued", host = host.clone(), n = *queued) } else { tr!("states-banner", host = host.clone()) };
+        let text =
+            if *queued > 0 { tr!("states-banner-queued", host = host.clone(), n = *queued) } else { tr!("states-banner", host = host.clone()) };
         Some(
             div()
                 .flex()
@@ -541,23 +535,16 @@ impl MailList {
                 .text_color(l.text2())
                 .child(icon(glyph::OFFLINE, 14.).mt(px(2.)).text_color(l.text3()))
                 .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .items_start()
-                        .child(div().w_full().child(text))
-                        .child(
-                            div()
-                                .id("offline-retry")
-                                .text_color(l.accent_text())
-                                .underline()
-                                .whitespace_nowrap()
-                                .cursor_pointer()
-                                .child(tr!("states-retry"))
-                                .on_click(cx.listener(|_, _, _, cx| cx.emit(RetryNow))),
-                        ),
+                    div().flex_1().min_w_0().flex().flex_col().items_start().child(div().w_full().child(text)).child(
+                        div()
+                            .id("offline-retry")
+                            .text_color(l.accent_text())
+                            .underline()
+                            .whitespace_nowrap()
+                            .cursor_pointer()
+                            .child(tr!("states-retry"))
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(RetryNow))),
+                    ),
                 )
                 .child(
                     div()
@@ -623,25 +610,19 @@ pub(crate) fn mask(size: f32, l: &Look, behind: Hsla) -> Div {
             .rounded_full()
             .bg(behind)
     };
-    div()
-        .size(px(size))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(
-            div()
-                .relative()
-                .w(px(w))
-                .h(px(h))
-                .rounded_tl(px(h * 0.35))
-                .rounded_tr(px(h * 0.35))
-                .rounded_bl(px(h * 0.6))
-                .rounded_br(px(h * 0.6))
-                .bg(l.pm(Pm::Phish))
-                .child(eye(true))
-                .child(eye(false)),
-        )
+    div().size(px(size)).flex_none().flex().items_center().justify_center().child(
+        div()
+            .relative()
+            .w(px(w))
+            .h(px(h))
+            .rounded_tl(px(h * 0.35))
+            .rounded_tr(px(h * 0.35))
+            .rounded_bl(px(h * 0.6))
+            .rounded_br(px(h * 0.6))
+            .bg(l.pm(Pm::Phish))
+            .child(eye(true))
+            .child(eye(false)),
+    )
 }
 
 // --- действия экрана ---
@@ -991,8 +972,7 @@ pub(crate) fn size_text(bytes: u64) -> String {
 
 /// Отправители: «Пётр (2), Анна и ещё 3».
 fn senders_text(s: &Summary) -> String {
-    let named: Vec<String> =
-        s.senders.iter().take(2).map(|(w, n)| if *n > 1 { format!("{w} ({n})") } else { w.clone() }).collect();
+    let named: Vec<String> = s.senders.iter().take(2).map(|(w, n)| if *n > 1 { format!("{w} ({n})") } else { w.clone() }).collect();
     let rest = s.senders.len().saturating_sub(2);
     let head = named.join(", ");
     if rest > 0 { tr!("bulk-senders-more", who = head, n = plural_n(rest)) } else { head }
@@ -1014,19 +994,14 @@ impl Render for SummaryView {
             .bg(l.picked())
             .text_color(l.accent_text())
             .child(icon(glyph::MULTI, 22.));
-        let head = div()
-            .flex()
-            .items_center()
-            .gap(px(14.))
-            .child(tile)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .line_height(px(22.))
-                    .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child(tr!("bulk-summary-title", n = plural_n(n))))
-                    .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("bulk-summary-hint"))),
-            );
+        let head = div().flex().items_center().gap(px(14.)).child(tile).child(
+            div()
+                .flex()
+                .flex_col()
+                .line_height(px(22.))
+                .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child(tr!("bulk-summary-title", n = plural_n(n))))
+                .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("bulk-summary-hint"))),
+        );
         let facts = (s.count > 0).then(|| {
             let mut parts = vec![tr!("bulk-summary-from", who = senders_text(s)), size_text(s.size)];
             if s.unread > 0 {
@@ -1070,7 +1045,16 @@ impl Render for SummaryView {
         }
         let more = n.saturating_sub(data.first.len());
         if more > 0 {
-            picked = picked.child(div().h(px(32.)).px(px(12.)).flex().items_center().text_size(px(12.)).text_color(l.text2()).child(tr!("bulk-summary-more", n = plural_n(more))));
+            picked = picked.child(
+                div()
+                    .h(px(32.))
+                    .px(px(12.))
+                    .flex()
+                    .items_center()
+                    .text_size(px(12.))
+                    .text_color(l.text2())
+                    .child(tr!("bulk-summary-more", n = plural_n(more))),
+            );
         }
         let unread = s.unread > 0 || s.count == 0;
         let flag_on = s.flagged < s.count || s.count == 0;
@@ -1103,24 +1087,16 @@ impl Render for SummaryView {
             .child(cell("summary-delete", Some(glyph::DELETE), tr!("bulk-delete"), "mail.delete").on_click(ask(Ask::Trash)))
             .child(cell("summary-move", Some(glyph::MOVE), tr!("bulk-move-plain"), "mail.move").on_click(sub(crate::menu::Sub::Move)))
             .child(cell("summary-cat", Some(glyph::TAG), tr!("bulk-category-plain"), "mail.categorize").on_click(sub(crate::menu::Sub::Category)))
-            .child(cell("summary-seen", Some(glyph::READ), seen, if unread { "mail.mark_read" } else { "mail.mark_unread" }).on_click(ask(Ask::Seen(None))))
+            .child(
+                cell("summary-seen", Some(glyph::READ), seen, if unread { "mail.mark_read" } else { "mail.mark_unread" })
+                    .on_click(ask(Ask::Seen(None))),
+            )
             .child(cell("summary-due", Some(glyph::CLOCK), tr!("bulk-due-plain"), "mail.due").on_click(ask(Ask::Lifecycle(Kind::Due))))
             .child(cell("summary-flag", Some(glyph::FLAG), flag, "mail.toggle_flag").on_click(ask(Ask::Flag(None))))
             .child(phish);
-        let foot = div()
-            .flex()
-            .items_center()
-            .gap(px(6.))
-            .text_size(px(12.))
-            .text_color(l.text2())
-            .child(div().flex_1())
-            .child(
-                div()
-                    .id("summary-clear")
-                    .text_color(l.accent_text())
-                    .cursor_pointer()
-                    .child(tr!("bulk-summary-clear"))
-                    .on_click(ask(Ask::Clear)),
+        let foot =
+            div().flex().items_center().gap(px(6.)).text_size(px(12.)).text_color(l.text2()).child(div().flex_1()).child(
+                div().id("summary-clear").text_color(l.accent_text()).cursor_pointer().child(tr!("bulk-summary-clear")).on_click(ask(Ask::Clear)),
             );
         div()
             .size_full()
@@ -1138,10 +1114,7 @@ impl Render for SummaryView {
 pub(crate) const PART: crate::part::Part = crate::part::Part { name: "bulk", texts: TEXTS, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
-const TEXTS: &[pets_i18n::Resource] = &[
-    ("ru", include_str!("../i18n/ru/bulk.ftl")),
-    ("en", include_str!("../i18n/en/bulk.ftl")),
-];
+const TEXTS: &[pets_i18n::Resource] = &[("ru", include_str!("../i18n/ru/bulk.ftl")), ("en", include_str!("../i18n/en/bulk.ftl"))];
 
 /// Сцены `--screens` выделения и контекстного меню (ADR 0005).
 pub(crate) mod scenes {

@@ -84,7 +84,13 @@ type Events = std::sync::mpsc::Receiver<Event>;
 fn sync_user3() -> (sync::UnboundedSender<Command>, Events, Cache) {
     let cache = Cache::open_in_memory().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
-    let commands = postman_backend_jmap::spawn(Account { url: env("POSTMAN_STAND_URL"), auth: postman_backend_jmap::convert::FromJmap::from_jmap(auth()) }, cache.clone(), None, tx, || {});
+    let commands = postman_backend_jmap::spawn(
+        Account { url: env("POSTMAN_STAND_URL"), auth: postman_backend_jmap::convert::FromJmap::from_jmap(auth()) },
+        cache.clone(),
+        None,
+        tx,
+        || {},
+    );
     (commands, rx, cache)
 }
 
@@ -133,9 +139,7 @@ async fn shared_inbox_is_synced_read_and_flagged() {
     let inbox = role(&theirs, "inbox").await;
 
     let (commands, rx, cache) = sync_user3();
-    wait_for(&rx, "первая синхронизация", |e| {
-        matches!(e, Event::Status(Status::Synced)).then_some(())
-    });
+    wait_for(&rx, "первая синхронизация", |e| matches!(e, Event::Status(Status::Synced)).then_some(()));
     // Ящик группы — в кэше: аккаунт, папки с префиксом.
     assert!(cache.accounts().unwrap().iter().any(|a| a.id == group.id && a.name == GROUP));
     let key = scoped(Some(&group.id), &inbox);
@@ -191,17 +195,13 @@ async fn mail_is_sent_as_the_shared_mailbox() {
         Event::Senders(s) => Some(s.clone()),
         _ => None,
     });
-    let shared_sender = senders
-        .iter()
-        .find(|s| s.address.email.eq_ignore_ascii_case(GROUP))
-        .unwrap_or_else(|| panic!("нет отправителя {GROUP}: {senders:?}"));
+    let shared_sender =
+        senders.iter().find(|s| s.address.email.eq_ignore_ascii_case(GROUP)).unwrap_or_else(|| panic!("нет отправителя {GROUP}: {senders:?}"));
     assert_eq!(shared_sender.account.as_deref(), Some(group.id.as_str()), "адрес группы — из её аккаунта");
     assert_eq!(senders.first().map(|s| s.address.email.as_str()), Some(me.as_str()), "свой адрес — первым");
     // Ящик только для чтения (не мой) — не отправитель.
     assert!(!senders.iter().any(|s| s.address.email.eq_ignore_ascii_case(READ_ONLY)));
-    wait_for(&rx, "первая синхронизация", |e| {
-        matches!(e, Event::Status(Status::Synced)).then_some(())
-    });
+    wait_for(&rx, "первая синхронизация", |e| matches!(e, Event::Status(Status::Synced)).then_some(()));
 
     let subject = format!("Postman send-as {}", stamp());
     let draft = Draft {
@@ -263,8 +263,7 @@ async fn read_only_share_has_rights_but_no_identity() {
 async fn colleague() -> (Client, String, SharedAccount) {
     let mut tried = Vec::new();
     for n in ["1", "2"] {
-        let (Ok(user), Ok(password)) = (std::env::var(format!("POSTMAN_STAND_USER{n}")), std::env::var(format!("POSTMAN_STAND_PASSWORD{n}")))
-        else {
+        let (Ok(user), Ok(password)) = (std::env::var(format!("POSTMAN_STAND_USER{n}")), std::env::var(format!("POSTMAN_STAND_PASSWORD{n}"))) else {
             continue;
         };
         let c = Client::connect(&env("POSTMAN_STAND_URL"), Auth::Basic { user: user.clone(), password })

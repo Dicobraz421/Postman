@@ -194,18 +194,7 @@ impl Mailer {
         cx: &mut Context<Self>,
     ) {
         let cursor = sub.and_then(|s| items().position(|it| it.sub() == Some(s))).unwrap_or(0);
-        let mut menu = Menu {
-            at,
-            ids,
-            row,
-            unread,
-            unflagged,
-            cursor,
-            sub,
-            sub_cursor: 0,
-            focus: cx.focus_handle(),
-            focus_pending: true,
-        };
+        let mut menu = Menu { at, ids, row, unread, unflagged, cursor, sub, sub_cursor: 0, focus: cx.focus_handle(), focus_pending: true };
         if !menu.item().is_some_and(|it| menu.enabled(it)) {
             menu.step(1);
         }

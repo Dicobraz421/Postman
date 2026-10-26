@@ -17,18 +17,8 @@ pub struct EventSource {
 impl Client {
     /// Подписка на все типы; сервер шлёт `ping` раз в `ping_secs`, чтобы обрыв был заметен.
     pub async fn event_source(&self, ping_secs: u32) -> Result<EventSource> {
-        let url = self
-            .session()
-            .event_source_url
-            .replace("{types}", "*")
-            .replace("{closeafter}", "no")
-            .replace("{ping}", &ping_secs.to_string());
-        let resp = self
-            .authorized(self.http().get(url))
-            .header(reqwest::header::ACCEPT, "text/event-stream")
-            .send()
-            .await?
-            .error_for_status()?;
+        let url = self.session().event_source_url.replace("{types}", "*").replace("{closeafter}", "no").replace("{ping}", &ping_secs.to_string());
+        let resp = self.authorized(self.http().get(url)).header(reqwest::header::ACCEPT, "text/event-stream").send().await?.error_for_status()?;
         Ok(EventSource { resp, buf: Vec::new() })
     }
 }

@@ -62,10 +62,5 @@ unsafe impl GlobalAlloc for Counting {
 /// Поля строки бенча: живые байты кучи Rust, пик, число живых блоков.
 pub fn fields() -> String {
     let mb = |b: usize| b as f64 / 1_048_576.0;
-    format!(
-        "heap_live_mb={:.1} heap_peak_mb={:.1} heap_blocks={}",
-        mb(LIVE.load(Relaxed)),
-        mb(PEAK.load(Relaxed)),
-        COUNT.load(Relaxed)
-    )
+    format!("heap_live_mb={:.1} heap_peak_mb={:.1} heap_blocks={}", mb(LIVE.load(Relaxed)), mb(PEAK.load(Relaxed)), COUNT.load(Relaxed))
 }

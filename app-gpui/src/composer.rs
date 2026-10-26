@@ -12,8 +12,7 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use gpui_kit::component::input::{
-    Backspace, Editor, EditorState, Enter, IndentInline, Input, InputEvent, InputState, MoveDown, MoveUp,
-    TextDecoration, TextDecorationCollection,
+    Backspace, Editor, EditorState, Enter, IndentInline, Input, InputEvent, InputState, MoveDown, MoveUp, TextDecoration, TextDecorationCollection,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -26,14 +25,14 @@ use postman_core::prefs::AccountPrefs;
 use postman_core::send_later::{self, Choice, Reject};
 use postman_core::sync::{Command, Event, Sender};
 
+use crate::Mailer;
 use crate::chrome::{glyph, icon};
 use crate::compose::compose;
 use crate::compose::{
-    Book, CloseAnswer, CloseStep, Field, Format, Model, Purpose, SentDraft, Status, accept_suggestion, apply_format,
-    compose_field, current_token, next_ticket, segments, size_text,
+    Book, CloseAnswer, CloseStep, Field, Format, Model, Purpose, SentDraft, Status, accept_suggestion, apply_format, compose_field, current_token,
+    next_ticket, segments, size_text,
 };
 use crate::roles::{Look, Pm};
-use crate::Mailer;
 
 /// Подсказок адреса под полем.
 const SUGGESTIONS: usize = 6;
@@ -164,8 +163,7 @@ static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new
 
 /// Свои домены: домены адресов «От».
 fn own_domains(senders: &[Sender], me: Option<&Address>) -> Vec<String> {
-    let mut out: Vec<String> =
-        senders.iter().map(|s| &s.address).chain(me).filter_map(|a| checks::domain(&a.email)).collect();
+    let mut out: Vec<String> = senders.iter().map(|s| &s.address).chain(me).filter_map(|a| checks::domain(&a.email)).collect();
     out.sort();
     out.dedup();
     out
@@ -400,8 +398,7 @@ impl Composer {
             return;
         }
         let now = jiff::Timestamp::now().as_second();
-        self.suggest.items =
-            self.book.borrow().suggest(token, SUGGESTIONS, now).into_iter().map(|e| e.display()).collect();
+        self.suggest.items = self.book.borrow().suggest(token, SUGGESTIONS, now).into_iter().map(|e| e.display()).collect();
     }
 
     fn suggesting(&self, f: Field) -> bool {
@@ -641,8 +638,7 @@ impl Composer {
     }
 
     fn pick_files(&mut self, cx: &mut Context<Self>) {
-        let paths =
-            cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: None });
+        let paths = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: None });
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = paths.await {
                 let _ = this.update(cx, |c, cx| c.attach(paths, cx));
@@ -858,17 +854,7 @@ fn quiet(id: impl Into<ElementId>, l: &Look) -> Stateful<Div> {
 /// Тихая кнопка без подложки при наведении (поле «От»). Стиль наведения у элемента задаётся один раз: второй
 /// `.hover` поверх `quiet` в отладочной сборке gpui — паника «hover style already set».
 pub(crate) fn quiet_plain(id: impl Into<ElementId>, l: &Look) -> Stateful<Div> {
-    div()
-        .id(id)
-        .h(px(30.))
-        .px(px(8.))
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap(px(6.))
-        .rounded(px(4.))
-        .cursor_pointer()
-        .active(|d| d.bg(l.pressed()))
+    div().id(id).h(px(30.)).px(px(8.)).flex().flex_none().items_center().gap(px(6.)).rounded(px(4.)).cursor_pointer().active(|d| d.bg(l.pressed()))
 }
 
 pub(crate) fn menu_box(id: &'static str, l: &Look) -> Stateful<Div> {
@@ -906,15 +892,7 @@ pub(crate) fn menu_item(id: ElementId, l: &Look, on: bool) -> Stateful<Div> {
 }
 
 fn card(l: &Look) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .p(px(14.))
-        .px(px(16.))
-        .rounded(l.px(Metric::RadiusOverlay))
-        .border_1()
-        .border_color(l.c(Role::StrokeCard))
-        .bg(l.panel())
+    div().flex().flex_col().p(px(14.)).px(px(16.)).rounded(l.px(Metric::RadiusOverlay)).border_1().border_color(l.c(Role::StrokeCard)).bg(l.panel())
 }
 
 fn card_title(text: String) -> Div {
@@ -945,9 +923,7 @@ impl Composer {
             Status::NoServer(Purpose::Send | Purpose::SendLater(_)) => (tr!("compose-no-server-send"), true),
             Status::NoServer(_) => (tr!("compose-no-server-save"), true),
             Status::Failed(e) => (failed_text(e), true),
-            Status::Attach { name, error } => {
-                (tr!("compose-attach-failed", name = name.clone(), error = error.clone()), true)
-            }
+            Status::Attach { name, error } => (tr!("compose-attach-failed", name = name.clone(), error = error.clone()), true),
             Status::Large(total) => (tr!("compose-large", size = size_text(*total)), true),
         };
         // Окно «Отменить» после отправки — если сервер держит письма.
@@ -963,12 +939,7 @@ impl Composer {
     }
 
     fn label(&self, key: &str, bad: bool, l: &Look) -> Div {
-        div()
-            .w(px(LABEL_W))
-            .flex_none()
-            .text_size(px(13.))
-            .text_color(if bad { l.error() } else { l.pm(Pm::LabelAccent) })
-            .child(tr!(key))
+        div().w(px(LABEL_W)).flex_none().text_size(px(13.)).text_color(if bad { l.error() } else { l.pm(Pm::LabelAccent) }).child(tr!(key))
     }
 
     fn row(&self, l: &Look) -> Div {
@@ -996,9 +967,7 @@ impl Composer {
                     _ => s.address.display(),
                 };
                 // Ответ на письмо общего ящика (S5-28, макет): под адресом — куда уйдёт копия и кого увидит клиент.
-                let hint = self.shared.as_ref().map(|r| {
-                    div().text_size(px(11.)).text_color(l.text2()).child(r.hint(&s.address.email))
-                });
+                let hint = self.shared.as_ref().map(|r| div().text_size(px(11.)).text_color(l.text2()).child(r.hint(&s.address.email)));
                 let text = div().flex().flex_col().child(text).children(hint);
                 menu_item(ElementId::NamedInteger("from-item".into(), i as u64), l, s.address.email.to_lowercase() == current)
                     .when(self.shared.is_some(), |d| d.h_auto().py(px(6.)))
@@ -1010,19 +979,13 @@ impl Composer {
                         cx.notify();
                     }))
             });
-            deferred(menu_box("from-menu", l).left(px(LABEL_W + 12.)).children(items).on_mouse_down_out(cx.listener(
-                |this, _, _, cx| {
-                    this.menu = Menu::None;
-                    cx.notify();
-                },
-            )))
+            deferred(menu_box("from-menu", l).left(px(LABEL_W + 12.)).children(items).on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.menu = Menu::None;
+                cx.notify();
+            })))
             .with_priority(1)
         });
-        self.row(l)
-            .relative()
-            .child(self.label("shared-compose-from", false, l))
-            .child(div().text_size(px(13.)).child(button))
-            .children(menu)
+        self.row(l).relative().child(self.label("shared-compose-from", false, l)).child(div().text_size(px(13.)).child(button)).children(menu)
     }
 
     /// Чип адресата: инициалы, имя (или адрес), «Внешний», «×»; нераспознанный — красной рамкой.
@@ -1067,12 +1030,10 @@ impl Composer {
             )
             .child(div().max_w(px(220.)).truncate().child(name))
             // «Конфиденциально» (S5-12 Ф4): замок — сертификат есть, знак — нет.
-            .when(self.model.confidential && !bad, |d| {
-                match crate::smime_seal::lock(&self.certs).families(&email) {
-                    Some(f) if !f.is_empty() => d.child(icon(glyph::LOCK, 12.).text_color(l.text2())),
-                    Some(_) => d.child(icon(glyph::WARNING, 12.).text_color(l.pm(Pm::ThreatFg))),
-                    None => d,
-                }
+            .when(self.model.confidential && !bad, |d| match crate::smime_seal::lock(&self.certs).families(&email) {
+                Some(f) if !f.is_empty() => d.child(icon(glyph::LOCK, 12.).text_color(l.text2())),
+                Some(_) => d.child(icon(glyph::WARNING, 12.).text_color(l.pm(Pm::ThreatFg))),
+                None => d,
             })
             .when(external, |d| {
                 d.child(
@@ -1100,9 +1061,7 @@ impl Composer {
                     .child(icon(glyph::CLOSE, 8.))
                     .on_click(cx.listener(move |this, _, window, cx| this.remove_chip(f, i, window, cx))),
             )
-            .when(!email.is_empty(), |d| {
-                d.tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(email.clone()).build(window, cx))
-            })
+            .when(!email.is_empty(), |d| d.tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(email.clone()).build(window, cx)))
             .into_any_element()
     }
 
@@ -1163,14 +1122,7 @@ impl Composer {
                     cx.notify();
                 }))
         };
-        let mut row = self
-            .row(l)
-            .flex_wrap()
-            .gap(px(6.))
-            .py(px(4.))
-            .child(self.label(label, bad, l).mr(px(6.)))
-            .children(chips)
-            .child(field);
+        let mut row = self.row(l).flex_wrap().gap(px(6.)).py(px(4.)).child(self.label(label, bad, l).mr(px(6.))).children(chips).child(field);
         if f == Field::To {
             row = row
                 .when(!self.show_cc, |d| d.child(link("show-cc", "compose-cc", cx, |c| c.show_cc = true)))
@@ -1182,18 +1134,14 @@ impl Composer {
                     .child(s.clone())
                     .on_click(cx.listener(move |this, _, window, cx| this.accept(f, i, window, cx)))
             });
-            deferred(menu_box("suggest-menu", l).top(px(ROW_H)).left(px(LABEL_W + 12.)).min_w(px(320.)).children(items))
-                .with_priority(1)
+            deferred(menu_box("suggest-menu", l).top(px(ROW_H)).left(px(LABEL_W + 12.)).min_w(px(320.)).children(items)).with_priority(1)
         });
         div().relative().child(row).children(suggestions).into_any_element()
     }
 
     fn subject_row(&self, l: &Look) -> Div {
         self.row(l).child(self.label("compose-subject", false, l)).child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .child(Input::new(&self.subject).appearance(false).px_0().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD)),
+            div().flex_1().min_w_0().child(Input::new(&self.subject).appearance(false).px_0().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD)),
         )
     }
 
@@ -1209,11 +1157,7 @@ impl Composer {
                 .on_click(cx.listener(move |this, _, window, cx| this.format(f, window, cx)))
         };
         let sep = || div().w_px().h(px(18.)).mx(px(6.)).bg(l.stroke());
-        let signature = if self.model.signature.is_empty() {
-            tr!("compose-signature-none")
-        } else {
-            signature_title(&self.model.signature)
-        };
+        let signature = if self.model.signature.is_empty() { tr!("compose-signature-none") } else { signature_title(&self.model.signature) };
         let mark = if self.model.confidential { tr!("compose-mark-confidential") } else { tr!("compose-mark-none") };
         let menu = |m: Menu| self.menu == m;
         // Ответ в области чтения уже вкладки: шаблон и подпись — во вкладке («Развернуть»), метка — значком.
@@ -1244,24 +1188,34 @@ impl Composer {
                     .child(tr!("compose-attach"))
                     .on_click(cx.listener(|this, _, _, cx| this.pick_files(cx))),
             )
-            .when(wide, |d| d.child(
-                div().relative().child(
-                    quiet("tb-template", l)
-                        .when(menu(Menu::Template), |d| d.bg(l.hover()))
-                        .child(tr!("compose-template"))
-                        .child(icon(glyph::CHEVRON, 10.))
-                        .on_click(cx.listener(|this, _, _, cx| this.set_menu(Menu::Template, cx))),
-                ).children(menu(Menu::Template).then(|| self.template_menu(l, cx))),
-            ))
-            .when(wide, |d| d.child(
-                div().relative().child(
-                    quiet("tb-signature", l)
-                        .when(menu(Menu::Signature), |d| d.bg(l.hover()))
-                        .child(div().max_w(px(180.)).truncate().child(tr!("compose-signature", name = signature)))
-                        .child(icon(glyph::CHEVRON, 10.))
-                        .on_click(cx.listener(|this, _, _, cx| this.set_menu(Menu::Signature, cx))),
-                ).children(menu(Menu::Signature).then(|| self.signature_menu(l, cx))),
-            ))
+            .when(wide, |d| {
+                d.child(
+                    div()
+                        .relative()
+                        .child(
+                            quiet("tb-template", l)
+                                .when(menu(Menu::Template), |d| d.bg(l.hover()))
+                                .child(tr!("compose-template"))
+                                .child(icon(glyph::CHEVRON, 10.))
+                                .on_click(cx.listener(|this, _, _, cx| this.set_menu(Menu::Template, cx))),
+                        )
+                        .children(menu(Menu::Template).then(|| self.template_menu(l, cx))),
+                )
+            })
+            .when(wide, |d| {
+                d.child(
+                    div()
+                        .relative()
+                        .child(
+                            quiet("tb-signature", l)
+                                .when(menu(Menu::Signature), |d| d.bg(l.hover()))
+                                .child(div().max_w(px(180.)).truncate().child(tr!("compose-signature", name = signature)))
+                                .child(icon(glyph::CHEVRON, 10.))
+                                .on_click(cx.listener(|this, _, _, cx| this.set_menu(Menu::Signature, cx))),
+                        )
+                        .children(menu(Menu::Signature).then(|| self.signature_menu(l, cx))),
+                )
+            })
             .child(div().flex_1())
             // «Подписать» (S5-12 Ф3): S/MIME при отправке сертификатом адреса «От».
             .child({
@@ -1276,19 +1230,24 @@ impl Composer {
                         this.model.sign = !this.model.sign;
                         cx.notify();
                     }));
-                b.tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tr!(if on { "compose-sign-on" } else { "compose-sign-off" })).build(window, cx))
+                b.tooltip(move |window, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new(tr!(if on { "compose-sign-on" } else { "compose-sign-off" })).build(window, cx)
+                })
             })
             .child(
-                div().relative().child(
-                    quiet("tb-mark", l)
-                        .border_1()
-                        .border_color(if self.model.confidential || wide { l.stroke() } else { l.none() })
-                        .when(menu(Menu::Mark), |d| d.bg(l.hover()))
-                        .child(icon(glyph::LOCK, 14.))
-                        .when(wide || self.model.confidential, |d| d.child(mark))
-                        .child(icon(glyph::CHEVRON, 10.))
-                        .on_click(cx.listener(|this, _, _, cx| this.set_menu(Menu::Mark, cx))),
-                ).children(menu(Menu::Mark).then(|| self.mark_menu(l, cx))),
+                div()
+                    .relative()
+                    .child(
+                        quiet("tb-mark", l)
+                            .border_1()
+                            .border_color(if self.model.confidential || wide { l.stroke() } else { l.none() })
+                            .when(menu(Menu::Mark), |d| d.bg(l.hover()))
+                            .child(icon(glyph::LOCK, 14.))
+                            .when(wide || self.model.confidential, |d| d.child(mark))
+                            .child(icon(glyph::CHEVRON, 10.))
+                            .on_click(cx.listener(|this, _, _, cx| this.set_menu(Menu::Mark, cx))),
+                    )
+                    .children(menu(Menu::Mark).then(|| self.mark_menu(l, cx))),
             )
     }
 
@@ -1301,8 +1260,7 @@ impl Composer {
 
     /// «Шаблон»: шаблоны появятся в настройках (S5-09) — пока пустой список.
     fn template_menu(&self, l: &Look, cx: &mut Context<Self>) -> AnyElement {
-        let menu = menu_box("template-menu", l)
-            .child(div().px(px(10.)).py(px(6.)).text_color(l.text2()).child(tr!("compose-template-empty")));
+        let menu = menu_box("template-menu", l).child(div().px(px(10.)).py(px(6.)).text_color(l.text2()).child(tr!("compose-template-empty")));
         deferred(self.close_menu_out(menu, cx)).with_priority(1).into_any_element()
     }
 
@@ -1372,9 +1330,7 @@ impl Composer {
 
     /// Строки вопросов в письме: «Сохранить черновик?» и «Удалить черновик?».
     fn confirm_lines(&self, l: &Look, cx: &mut Context<Self>) -> Option<Div> {
-        let line = || {
-            div().flex().items_center().gap_2().px(px(20.)).py(px(6.)).bg(l.warning_bg()).border_t_1().border_color(l.border())
-        };
+        let line = || div().flex().items_center().gap_2().px(px(20.)).py(px(6.)).bg(l.warning_bg()).border_t_1().border_color(l.border());
         if self.model.confirm_close {
             return Some(
                 line()
@@ -1401,12 +1357,10 @@ impl Composer {
                         crate::buttons::button("delete-yes", tr!("compose-confirm-yes"), true, l)
                             .on_click(cx.listener(|this, _, _, cx| this.discard(cx))),
                     )
-                    .child(crate::buttons::button("delete-no", tr!("compose-confirm-no"), false, l).on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.model.confirm_delete = false;
-                            cx.notify();
-                        },
-                    ))),
+                    .child(crate::buttons::button("delete-no", tr!("compose-confirm-no"), false, l).on_click(cx.listener(|this, _, _, cx| {
+                        this.model.confirm_delete = false;
+                        cx.notify();
+                    }))),
             );
         }
         None
@@ -1530,11 +1484,9 @@ impl Composer {
                 crate::buttons::button("later-schedule", tr!("send-later-schedule"), true, l)
                     .on_click(cx.listener(|this, _, window, cx| this.schedule_picked(window, cx))),
             )
-            .child(crate::buttons::button("later-cancel", tr!("send-later-cancel"), false, l).on_click(cx.listener(
-                |this, _, _, cx| {
-                    this.close_later(cx);
-                },
-            )))
+            .child(crate::buttons::button("later-cancel", tr!("send-later-cancel"), false, l).on_click(cx.listener(|this, _, _, cx| {
+                this.close_later(cx);
+            })))
             .children(error.map(|e| div().text_color(l.error()).child(e)));
         Some(row.into_any_element())
     }
@@ -1551,23 +1503,16 @@ impl Composer {
             .rounded(px(8.))
             .when(on, |d| d.bg(l.accent()))
             .when(!on, |d| d.border_1().border_color(l.text2()))
-            .child(
-                div()
-                    .absolute()
-                    .top(px(if on { 3. } else { 2. }))
-                    .left(px(if on { 15. } else { 3. }))
-                    .size(px(10.))
-                    .rounded_full()
-                    .bg(if on { l.on_accent() } else { l.text2() }),
-            );
-        let toggle = quiet("wait", l)
-            .child(knob)
-            .child(tr!("compose-wait"))
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.model.wait = if this.model.wait.is_some() { None } else { Some(crate::lifecycle::wait_default(cx)) };
-                this.schedule_autosave(cx);
-                cx.notify();
+            .child(div().absolute().top(px(if on { 3. } else { 2. })).left(px(if on { 15. } else { 3. })).size(px(10.)).rounded_full().bg(if on {
+                l.on_accent()
+            } else {
+                l.text2()
             }));
+        let toggle = quiet("wait", l).child(knob).child(tr!("compose-wait")).on_click(cx.listener(|this, _, _, cx| {
+            this.model.wait = if this.model.wait.is_some() { None } else { Some(crate::lifecycle::wait_default(cx)) };
+            this.schedule_autosave(cx);
+            cx.notify();
+        }));
         let count = quiet("wait-days", l)
             .px(px(4.))
             .when(!on, |d| d.text_color(l.text3()))
@@ -1602,9 +1547,7 @@ impl Composer {
             .text_size(px(12.))
             .when(self.menu == Menu::Category, |d| d.bg(l.hover()))
             .map(|d| match current {
-                Some((_, name, color)) => d
-                    .child(div().size(px(8.)).rounded(px(2.)).bg(l.cat(color).dot))
-                    .child(name.clone()),
+                Some((_, name, color)) => d.child(div().size(px(8.)).rounded(px(2.)).bg(l.cat(color).dot)).child(name.clone()),
                 None => d.text_color(l.text2()).child(icon(glyph::TAG, 12.)).child(tr!("compose-category")),
             })
             .on_click(cx.listener(|this, _, _, cx| this.set_menu(Menu::Category, cx)));
@@ -1701,12 +1644,9 @@ impl Composer {
                 tr!("checks-mask"),
                 tr!("checks-not-secret"),
             ),
-            Check::MissingAttachment { word } => (
-                tr!("checks-attachment", word = word.clone()),
-                tr!("checks-attachment-detail"),
-                tr!("checks-attach"),
-                tr!("checks-ignore"),
-            ),
+            Check::MissingAttachment { word } => {
+                (tr!("checks-attachment", word = word.clone()), tr!("checks-attachment-detail"), tr!("checks-attach"), tr!("checks-ignore"))
+            }
             Check::External { count, domains } => (
                 tr!("checks-external", n = *count, domains = domains.join(", ")),
                 tr!("checks-external-detail"),
@@ -1719,12 +1659,7 @@ impl Composer {
                 tr!("checks-no-cert-remove"),
                 if self.confirm_unmark { tr!("checks-no-cert-unmark-confirm") } else { tr!("checks-no-cert-unmark") },
             ),
-            Check::Split { gost } => (
-                tr!("checks-split", names = gost.join(", ")),
-                tr!("checks-split-detail"),
-                tr!("checks-ok"),
-                tr!("checks-ok"),
-            ),
+            Check::Split { gost } => (tr!("checks-split", names = gost.join(", ")), tr!("checks-split-detail"), tr!("checks-ok"), tr!("checks-ok")),
             Check::Moved { name, from, to, last } => (
                 tr!("checks-moved", name = name.clone()),
                 tr!("checks-moved-detail", from = from.clone(), to = to.clone(), when = ago(*last)),
@@ -1758,12 +1693,13 @@ impl Composer {
                 .child(text)
                 .on_click(cx.listener(move |this, _, window, cx| this.check_action(c.clone(), primary, window, cx)))
         };
-        let actions = div()
-            .flex()
-            .gap(px(12.))
-            .text_size(px(12.))
-            .child(action(i as u64, a1, true, c.clone(), cx))
-            .child(action(i as u64, a2, false, c.clone(), cx));
+        let actions = div().flex().gap(px(12.)).text_size(px(12.)).child(action(i as u64, a1, true, c.clone(), cx)).child(action(
+            i as u64,
+            a2,
+            false,
+            c.clone(),
+            cx,
+        ));
         let text = div()
             .flex_1()
             .min_w_0()
@@ -1912,17 +1848,17 @@ impl Composer {
                         ),
                 )
             })
-            .when(empty && !missing, |d| {
-                d.child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("compose-attachments-empty")))
-            })
+            .when(empty && !missing, |d| d.child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("compose-attachments-empty"))))
     }
 
     /// Карточка «Отправить позже» (если сервер держит письма).
     fn later_card(&self, l: &Look, cx: &mut Context<Self>) -> Option<Div> {
         (self.later.max_delay > 0).then(|| {
-            card(l).gap(px(2.)).text_size(px(13.)).child(card_title(tr!("send-later-menu")).pb(px(4.))).children(
-                self.later_items(l, "later-side", cx).into_iter().map(|e| div().mx(px(-10.)).child(e)),
-            )
+            card(l)
+                .gap(px(2.))
+                .text_size(px(13.))
+                .child(card_title(tr!("send-later-menu")).pb(px(4.)))
+                .children(self.later_items(l, "later-side", cx).into_iter().map(|e| div().mx(px(-10.)).child(e)))
         })
     }
 
@@ -1983,8 +1919,7 @@ impl Composer {
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(ComposerEvent::Expand))),
             )
             .child(
-                button("inline-close", glyph::CLOSE, "cmd-compose-close")
-                    .on_click(cx.listener(|this, _, window, cx| this.close_or_ask(window, cx))),
+                button("inline-close", glyph::CLOSE, "cmd-compose-close").on_click(cx.listener(|this, _, window, cx| this.close_or_ask(window, cx))),
             )
     }
 
@@ -2063,9 +1998,7 @@ impl Render for Composer {
             .child(self.content(window))
             .when(inline, |d| d.children(self.inline_checks(&l, cx)))
             // Ответ на письмо общего ящика (S5-28): «От» — свой адрес или письмо у коллеги.
-            .children(self.shared.as_ref().and_then(|r| r.note(&self.model.from().email)).map(|t| {
-                crate::shared::note_line(t, &l).my(px(6.))
-            }))
+            .children(self.shared.as_ref().and_then(|r| r.note(&self.model.from().email)).map(|t| crate::shared::note_line(t, &l).my(px(6.))))
             .children(self.confirm_lines(&l, cx))
             .child(self.bottom_row(&l, cx));
         let root = div()
@@ -2173,7 +2106,7 @@ pub(crate) mod scenes {
     pub(crate) fn confidential_draft() -> Draft {
         Draft {
             to: vec![Address::new("Петров Иван", "i.petrov@corp.example")], // i18n-ok: образец письма
-            subject: "Условия сделки — для согласования".into(), // i18n-ok: образец письма
+            subject: "Условия сделки — для согласования".into(),            // i18n-ok: образец письма
             markdown: "Иван, добрый день!\n\nНаправляю условия сделки. Письмо зашифровано.\n\nАнна".into(), // i18n-ok: образец письма
             keywords: vec![marks::CONFIDENTIAL.into()],
             ..Default::default()

@@ -18,8 +18,8 @@ use postman_core::link::{Connection, Link};
 use postman_core::model::{ContactCard, Filter, Principal, Release};
 use postman_core::send_later::{self, Scheduled};
 use postman_core::sync::{
-    Account, Command, Debounce, ErrorKind, Event, Index, Sender, Session, Stage, Status, SyncError, UnboundedSender, owned_by,
-    retry_at, supervise, went_down,
+    Account, Command, Debounce, ErrorKind, Event, Index, Sender, Session, Stage, Status, SyncError, UnboundedSender, owned_by, retry_at, supervise,
+    went_down,
 };
 use postman_core::tasks;
 use postman_jmap::{Client, EmailAddress, EmailBody, EmailSummary, Envelope, Identity, Mailbox, utc_to_unix};
@@ -252,11 +252,8 @@ struct SendAs {
 /// `profile` — учётная запись профиля (S7-03б): аккаунт отправителя — с её префиксом.
 fn senders(own: &[Identity], shared: &[(String, Vec<Identity>)], profile: Option<&str>) -> Vec<SendAs> {
     let theirs = |email: &str| shared.iter().any(|(_, l)| l.iter().any(|i| i.email.eq_ignore_ascii_case(email)));
-    let mut out: Vec<SendAs> = own
-        .iter()
-        .filter(|i| !theirs(&i.email))
-        .map(|i| SendAs { scope: in_profile(profile, None), identity: i.clone() })
-        .collect();
+    let mut out: Vec<SendAs> =
+        own.iter().filter(|i| !theirs(&i.email)).map(|i| SendAs { scope: in_profile(profile, None), identity: i.clone() }).collect();
     for (account, list) in shared {
         out.extend(list.iter().map(|i| SendAs { scope: in_profile(profile, Some(account)), identity: i.clone() }));
     }
@@ -301,10 +298,9 @@ async fn run(
     if let Some(i) = identities.first().filter(|_| main) {
         notify(Event::Me { address: Address::new(&i.name, &i.email), signature: i.text_signature.clone() });
     }
-    let me = identities.first().map(|i| postman_calendar::Owner {
-        email: i.email.clone(),
-        name: if i.name.trim().is_empty() { i.email.clone() } else { i.name.clone() },
-    });
+    let me = identities
+        .first()
+        .map(|i| postman_calendar::Owner { email: i.email.clone(), name: if i.name.trim().is_empty() { i.email.clone() } else { i.name.clone() } });
     let mut theirs = Vec::new();
     for a in shared.iter().filter(|a| a.can_submit && !a.is_read_only) {
         // Ящик открыт, но не мой (Stalwart: `forbidden`, «not an owner») — отправлять от него нельзя, это не ошибка.
@@ -344,8 +340,7 @@ async fn run(
         profile: profile.clone(),
         me: me.filter(|_| !main),
     };
-    accounts.own.state =
-        Some(start_state(&accounts.own, &mut cache, &index, notify).await.map_err(|e| sync_error(Stage::Load, &e))?);
+    accounts.own.state = Some(start_state(&accounts.own, &mut cache, &index, notify).await.map_err(|e| sync_error(Stage::Load, &e))?);
     for acc in &mut accounts.shared {
         match start_state(acc, &mut cache, &index, notify).await {
             Ok(s) => acc.state = Some(s),
@@ -747,12 +742,7 @@ async fn load_mailboxes(acc: &MailAccount, cache: &Cache) -> postman_jmap::Resul
 
 /// Состояние почты аккаунта при запуске. Кэш уже синхронизирован (есть состояние `Email`) — папки и дельта с
 /// прошлого раза; сервер дельту не считает (`cannotCalculateChanges`) или кэш пуст — первые страницы папок.
-async fn start_state(
-    acc: &MailAccount,
-    cache: &mut Cache,
-    index: &Index,
-    notify: &impl Fn(Event),
-) -> postman_jmap::Result<String> {
+async fn start_state(acc: &MailAccount, cache: &mut Cache, index: &Index, notify: &impl Fn(Event)) -> postman_jmap::Result<String> {
     if let Some(since) = cache.state(&acc.state_key()).map_err(db_err)? {
         load_mailboxes(acc, cache).await?;
         notify(Event::MailboxesChanged);
@@ -769,12 +759,7 @@ async fn start_state(
     initial_load(acc, cache, index, notify).await
 }
 
-async fn initial_load(
-    acc: &MailAccount,
-    cache: &mut Cache,
-    index: &Index,
-    notify: &impl Fn(Event),
-) -> postman_jmap::Result<String> {
+async fn initial_load(acc: &MailAccount, cache: &mut Cache, index: &Index, notify: &impl Fn(Event)) -> postman_jmap::Result<String> {
     let mailboxes = load_mailboxes(acc, cache).await?;
     notify(Event::MailboxesChanged);
 
@@ -1154,12 +1139,7 @@ async fn handle(
 
 /// Имя вложения `.eml` из темы письма: без знаков, которые Windows не пускает в имя файла; пустая — «message».
 fn eml_name(subject: Option<&str>) -> String {
-    let clean: String = subject
-        .unwrap_or("")
-        .chars()
-        .map(|c| if c.is_control() || r#"\/:*?"<>|"#.contains(c) { '_' } else { c })
-        .take(80)
-        .collect();
+    let clean: String = subject.unwrap_or("").chars().map(|c| if c.is_control() || r#"\/:*?"<>|"#.contains(c) { '_' } else { c }).take(80).collect();
     let clean = clean.trim().trim_end_matches('.');
     format!("{}.eml", if clean.is_empty() { "message" } else { clean })
 }
@@ -1180,13 +1160,7 @@ async fn report_phishing(
         .find(|s| s.scope.is_none())
         .or(send_as.first())
         .ok_or_else(|| postman_jmap::Error::Protocol("no Identity on the server to send from".into()))?;
-    let mut draft = Draft {
-        from: Address::new(&me.identity.name, &me.identity.email),
-        to: vec![to],
-        subject,
-        markdown: text,
-        ..Default::default()
-    };
+    let mut draft = Draft { from: Address::new(&me.identity.name, &me.identity.email), to: vec![to], subject, markdown: text, ..Default::default() };
     for (scope, keys) in by_account(keys) {
         let Some(acc) = accounts.by_scope(scope) else { continue };
         let ids: Vec<String> = keys.iter().map(|k| unscoped(k).1.to_owned()).collect();
@@ -1295,13 +1269,7 @@ async fn patch(
 
 /// `Command::Newsletters`: письма «Входящих» с `List-Id` или `List-Unsubscribe` (сырые заголовки — у сервера) →
 /// [`lifecycle::newsletter_sweep`] → в «Архив». Ответ — сколько перенесено.
-async fn newsletters(
-    acc: &MailAccount,
-    cache: &mut Cache,
-    cutoff: i64,
-    archive_name: &str,
-    notify: &impl Fn(Event),
-) -> postman_jmap::Result<usize> {
+async fn newsletters(acc: &MailAccount, cache: &mut Cache, cutoff: i64, archive_name: &str, notify: &impl Fn(Event)) -> postman_jmap::Result<usize> {
     let mailboxes = cache.mailboxes().map_err(db_err)?;
     let roles = lifecycle::Roles::of(&mailboxes, acc.scope());
     let Some(inbox_key) = roles.inbox else { return Ok(0) };
@@ -1326,19 +1294,13 @@ async fn newsletters(
         return Ok(0);
     }
     let archive = ensure_archive(acc, cache, archive_name, notify).await?;
-    let patches: Vec<(String, postman_jmap::EmailPatch)> = ids
-        .iter()
-        .map(|id| (id.clone(), postman_jmap::EmailPatch::default().mailbox(&inbox, false).mailbox(&archive, true)))
-        .collect();
+    let patches: Vec<(String, postman_jmap::EmailPatch)> =
+        ids.iter().map(|id| (id.clone(), postman_jmap::EmailPatch::default().mailbox(&inbox, false).mailbox(&archive, true))).collect();
     let failed = acc.client.patch_emails(&patches).await?;
     let moved: Vec<lifecycle::Patch> = ids
         .iter()
         .filter(|id| !failed.iter().any(|(f, _)| f == *id))
-        .map(|id| lifecycle::Patch {
-            id: acc.key(id),
-            keywords: Vec::new(),
-            mailboxes: vec![(inbox_key.clone(), false), (acc.key(&archive), true)],
-        })
+        .map(|id| lifecycle::Patch { id: acc.key(id), keywords: Vec::new(), mailboxes: vec![(inbox_key.clone(), false), (acc.key(&archive), true)] })
         .collect();
     cache.patch_emails(&moved).map_err(db_err)?;
     Ok(moved.len())
@@ -1406,13 +1368,7 @@ async fn load_thread(
 }
 
 /// Следующая страница папки (ключ `mailbox`) после самого старого письма в кэше; сколько писем пришло.
-async fn load_more(
-    acc: &MailAccount,
-    cache: &mut Cache,
-    index: &Index,
-    mailbox: &str,
-    notify: &impl Fn(Event),
-) -> postman_jmap::Result<usize> {
+async fn load_more(acc: &MailAccount, cache: &mut Cache, index: &Index, mailbox: &str, notify: &impl Fn(Event)) -> postman_jmap::Result<usize> {
     let mb = unscoped(mailbox).1;
     let page = match cache.oldest(mailbox).map_err(db_err)? {
         Some(anchor) => acc.client.email_page_after(mb, unscoped(&anchor).1, PAGE).await,
@@ -1583,13 +1539,8 @@ async fn send(
     fill_attachments(accounts, cache, &mut draft).await?;
     let draft = &draft;
     let sender = sender_of(send_as, draft)?;
-    let acc = accounts
-        .by_scope(sender.scope.as_deref())
-        .ok_or_else(|| postman_jmap::Error::Protocol("the sender's account is gone".into()))?;
-    let envelope = Envelope {
-        mail_from: sender.identity.email.clone(),
-        rcpt_to: draft.recipients().map(|a| a.email.clone()).collect(),
-    };
+    let acc = accounts.by_scope(sender.scope.as_deref()).ok_or_else(|| postman_jmap::Error::Protocol("the sender's account is gone".into()))?;
+    let envelope = Envelope { mail_from: sender.identity.email.clone(), rcpt_to: draft.recipients().map(|a| a.email.clone()).collect() };
     let (drafts, sent) = (mailbox_by_role(cache, acc.scope(), "drafts")?, mailbox_by_role(cache, acc.scope(), "sent")?);
     // Без FUTURERELEASE окна «Отменить» нет — письмо уходит сразу; «Отправить позже» — ошибка, а не отправка.
     let release = match release {
@@ -1642,14 +1593,15 @@ async fn unsend(accounts: &Accounts, cache: &Cache, s: &Scheduled) -> Result<(),
 /// Отложенные отправки своего аккаунта и общих ящиков, от которых можно отправлять → `Event::Scheduled`.
 async fn notify_scheduled(accounts: &Accounts, send_as: &[SendAs], notify: &impl Fn(Event)) {
     let mut list = Vec::new();
-    let sending = std::iter::once(&accounts.own)
-        .chain(accounts.shared.iter().filter(|a| send_as.iter().any(|f| f.scope.as_deref() == a.scope())));
+    let sending = std::iter::once(&accounts.own).chain(accounts.shared.iter().filter(|a| send_as.iter().any(|f| f.scope.as_deref() == a.scope())));
     for acc in sending {
         // Не прочиталось — списка этого аккаунта нет; письма всё равно уйдут в срок (их держит сервер).
         let Ok(pending) = acc.client.pending_submissions().await else { continue };
-        list.extend(pending.into_iter().filter_map(|p| {
-            Some(Scheduled { send_at: p.send_at_unix()?, submission: acc.key(&p.id), email: acc.key(&p.email_id) })
-        }));
+        list.extend(
+            pending
+                .into_iter()
+                .filter_map(|p| Some(Scheduled { send_at: p.send_at_unix()?, submission: acc.key(&p.id), email: acc.key(&p.email_id) })),
+        );
     }
     list.sort_by_key(|s| s.send_at);
     notify(Event::Scheduled { list, max_delay: send_later::max_delay(accounts.own.client.max_delayed_send()) });
@@ -1685,13 +1637,7 @@ async fn respond_invite(
 }
 
 /// Черновик — в «Черновики» аккаунта отправителя; id — ключ кэша.
-async fn save_draft(
-    accounts: &Accounts,
-    cache: &Cache,
-    send_as: &[SendAs],
-    draft: &Draft,
-    replace: Option<&str>,
-) -> postman_jmap::Result<String> {
+async fn save_draft(accounts: &Accounts, cache: &Cache, send_as: &[SendAs], draft: &Draft, replace: Option<&str>) -> postman_jmap::Result<String> {
     let mut draft = draft.clone();
     fill_attachments(accounts, cache, &mut draft).await?;
     let draft = &draft;
@@ -1719,8 +1665,7 @@ async fn save_draft(
 fn save(cache: &mut Cache, index: &Index, rows: Vec<EmailRow>, notify: &impl Fn(Event)) -> postman_jmap::Result<()> {
     cache.upsert_emails(&rows).map_err(db_err)?;
     if let Some(i) = index {
-        let (full, brief): (Vec<EmailRow>, Vec<EmailRow>) =
-            rows.into_iter().partition(|r| cache.body(&r.id).ok().flatten().is_some());
+        let (full, brief): (Vec<EmailRow>, Vec<EmailRow>) = rows.into_iter().partition(|r| cache.body(&r.id).ok().flatten().is_some());
         postman_core::indexer::rows(i, &brief);
         if !full.is_empty() {
             notify(Event::BodiesStored(full.into_iter().map(|r| r.id).collect()));
@@ -1744,9 +1689,7 @@ fn save_summaries(
 
 /// Адреса To и Cc письма в нижнем регистре.
 fn recipients(e: &EmailSummary) -> Recipients {
-    let list = |a: &Option<Vec<EmailAddress>>| {
-        a.iter().flatten().filter_map(|a| a.email.as_deref()).map(str::to_lowercase).collect::<Vec<_>>()
-    };
+    let list = |a: &Option<Vec<EmailAddress>>| a.iter().flatten().filter_map(|a| a.email.as_deref()).map(str::to_lowercase).collect::<Vec<_>>();
     Recipients { to: list(&e.to), cc: list(&e.cc) }
 }
 
@@ -1779,9 +1722,7 @@ fn body_row(b: EmailBody, scope: Option<&str>) -> BodyRow {
 }
 
 fn addresses(list: &[EmailAddress]) -> Vec<Addr> {
-    list.iter()
-        .filter_map(|a| Some(Addr { name: a.name.clone().unwrap_or_default(), email: a.email.clone()? }))
-        .collect()
+    list.iter().filter_map(|a| Some(Addr { name: a.name.clone().unwrap_or_default(), email: a.email.clone()? })).collect()
 }
 
 fn rights(r: &MailboxRights) -> Rights {
@@ -1959,7 +1900,7 @@ mod tests {
         let enc: EmailSummary = serde_json::from_value(serde_json::json!({
             "id": "m2", "threadId": "t", "mailboxIds": { "a": true }, "receivedAt": "2026-10-20T18:00:58Z",
             "header:Content-Type": " application/pkcs7-mime; smime-type=enveloped-data;
- name=\"smime.p7m\""
+        name=\"smime.p7m\""
         }))
         .unwrap();
         assert_eq!(email_row(&enc, None).keywords, [postman_cache::ENCRYPTED]);
@@ -1974,5 +1915,4 @@ mod tests {
         assert_eq!(in_mailbox(None, f.clone()), f);
         assert_eq!(in_mailbox(Some("x"), f.clone()), Filter::And(vec![Filter::InMailbox("x".into()), f]));
     }
-
 }

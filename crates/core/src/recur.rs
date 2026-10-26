@@ -423,7 +423,10 @@ mod tests {
         assert_eq!(p.next, Some(at(15, 41)));
         let p = plan(&tasks, &snoozed, at(15, 35), at(15, 45), &tz);
         assert_eq!(p.fire.len(), 1);
-        assert_eq!(snooze_until(Snooze::Tomorrow, at(15, 45), jiff::civil::Time::constant(9, 0, 0, 0), &tz), date(2026, 10, 22).at(9, 0, 0, 0).to_zoned(tz.clone()).unwrap().timestamp().as_second());
+        assert_eq!(
+            snooze_until(Snooze::Tomorrow, at(15, 45), jiff::civil::Time::constant(9, 0, 0, 0), &tz),
+            date(2026, 10, 22).at(9, 0, 0, 0).to_zoned(tz.clone()).unwrap().timestamp().as_second()
+        );
         assert_eq!(snooze_until(Snooze::Hour, 100, jiff::civil::Time::midnight(), &tz), 3700);
     }
 }

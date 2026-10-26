@@ -12,8 +12,8 @@ use pets_i18n::tr;
 use pets_ui::theme::Metric;
 use postman_core::prefs::{AccountPrefs, Signature, Template, Writer};
 
-use crate::roles::Look;
 use crate::buttons::button;
+use crate::roles::Look;
 use crate::settings_tab::{SettingsView, group, link, now_ms, seg, seg_group};
 
 /// Правка подписи или шаблона на месте.
@@ -98,15 +98,12 @@ impl SettingsView {
             let s = p.signatures.iter().find(|s| s.id == id);
             (s.map(|s| s.name.clone()), None, s.map(|s| s.text.clone()), s.and_then(|s| s.identity.clone()))
         };
-        let name = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(tr!("settings-sign-name-placeholder")).default_value(name.unwrap_or_default())
-        });
-        let subject = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(tr!("settings-tpl-subject-placeholder")).default_value(subject.unwrap_or_default())
-        });
-        let text = cx.new(|cx| {
-            TextareaState::new(window, cx).placeholder(tr!("settings-sign-text-placeholder")).default_value(text.unwrap_or_default())
-        });
+        let name =
+            cx.new(|cx| InputState::new(window, cx).placeholder(tr!("settings-sign-name-placeholder")).default_value(name.unwrap_or_default()));
+        let subject =
+            cx.new(|cx| InputState::new(window, cx).placeholder(tr!("settings-tpl-subject-placeholder")).default_value(subject.unwrap_or_default()));
+        let text =
+            cx.new(|cx| TextareaState::new(window, cx).placeholder(tr!("settings-sign-text-placeholder")).default_value(text.unwrap_or_default()));
         name.update(cx, |s, cx| s.focus(window, cx));
         self.sign.edit = Some(SignEdit { id, template, name, subject, text, identity });
         cx.notify();
@@ -165,14 +162,13 @@ impl SettingsView {
 
     fn sign_editor(&self, e: &SignEdit, l: &Look, cx: &mut Context<Self>) -> Div {
         let label = |t: String| div().w(px(110.)).flex_none().pt_1().text_color(l.text2()).child(t);
-        let mut ids = vec![seg("settings-sign-any", tr!("settings-sign-any"), e.identity.is_none(), true, l).on_click(cx.listener(
-            |this, _, _, cx| {
+        let mut ids =
+            vec![seg("settings-sign-any", tr!("settings-sign-any"), e.identity.is_none(), true, l).on_click(cx.listener(|this, _, _, cx| {
                 if let Some(e) = &mut this.sign.edit {
                     e.identity = None;
                 }
                 cx.notify();
-            },
-        ))];
+            }))];
         for (i, addr) in self.info.identities.iter().enumerate() {
             let on = e.identity.as_deref() == Some(addr.as_str());
             let a = addr.clone();
@@ -183,11 +179,8 @@ impl SettingsView {
                 cx.notify();
             })));
         }
-        let exists = if e.template {
-            self.sign.prefs.templates.iter().any(|t| t.id == e.id)
-        } else {
-            self.sign.prefs.signatures.iter().any(|s| s.id == e.id)
-        };
+        let exists =
+            if e.template { self.sign.prefs.templates.iter().any(|t| t.id == e.id) } else { self.sign.prefs.signatures.iter().any(|s| s.id == e.id) };
         div()
             .my_2()
             .p_4()
@@ -200,7 +193,9 @@ impl SettingsView {
             .border_color(l.border())
             .child(div().flex().gap_4().child(label(tr!("settings-sign-name"))).child(div().w(px(320.)).child(Input::new(&e.name))))
             .when(!e.template, |d| d.child(div().flex().gap_4().child(label(tr!("settings-sign-identity"))).child(seg_group(ids, l))))
-            .when(e.template, |d| d.child(div().flex().gap_4().child(label(tr!("settings-tpl-subject"))).child(div().flex_1().child(Input::new(&e.subject)))))
+            .when(e.template, |d| {
+                d.child(div().flex().gap_4().child(label(tr!("settings-tpl-subject"))).child(div().flex_1().child(Input::new(&e.subject))))
+            })
             .child(
                 div()
                     .flex()
@@ -219,7 +214,9 @@ impl SettingsView {
                         cx.notify();
                     })))
                     .when(exists, |d| {
-                        d.child(div().flex_1()).child(link("settings-sign-delete", tr!("settings-delete"), l).on_click(cx.listener(|this, _, _, cx| this.sign_delete(cx))))
+                        d.child(div().flex_1()).child(
+                            link("settings-sign-delete", tr!("settings-delete"), l).on_click(cx.listener(|this, _, _, cx| this.sign_delete(cx))),
+                        )
                     }),
             )
     }
@@ -280,9 +277,8 @@ impl SettingsView {
                     .map(|(oi, (id, name))| {
                         let (id, a) = (id.clone(), addr.clone());
                         let on = current == id;
-                        seg(("settings-sign-default", (ai * 2 + usize::from(reply)) * 64 + oi), name.clone(), on, true, l).on_click(
-                            cx.listener(move |this, _, _, cx| this.set_default(a.clone(), reply, id.clone(), cx)),
-                        )
+                        seg(("settings-sign-default", (ai * 2 + usize::from(reply)) * 64 + oi), name.clone(), on, true, l)
+                            .on_click(cx.listener(move |this, _, _, cx| this.set_default(a.clone(), reply, id.clone(), cx)))
                     })
                     .collect();
                 seg_group(items, l)
@@ -298,8 +294,22 @@ impl SettingsView {
                     .border_b_1()
                     .border_color(l.border())
                     .child(div().font_weight(FontWeight::SEMIBOLD).child(addr.clone()))
-                    .child(div().flex().items_center().gap_3().child(div().w(px(150.)).text_color(l.text2()).child(tr!("settings-sign-new"))).child(new_line))
-                    .child(div().flex().items_center().gap_3().child(div().w(px(150.)).text_color(l.text2()).child(tr!("settings-sign-reply"))).child(reply_line)),
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(div().w(px(150.)).text_color(l.text2()).child(tr!("settings-sign-new")))
+                            .child(new_line),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(div().w(px(150.)).text_color(l.text2()).child(tr!("settings-sign-reply")))
+                            .child(reply_line),
+                    ),
             );
         }
         if self.info.identities.is_empty() {
@@ -340,9 +350,12 @@ impl SettingsView {
             tpls = tpls.child(self.sign_editor(e, l, cx));
         }
         let head = |title: String, id: &'static str, label: String, template: bool, cx: &mut Context<Self>| {
-            div().flex().items_end().gap_3().child(div().flex_1().child(group(title, l))).child(
-                link(id, format!("+ {label}"), l).on_click(cx.listener(move |this, _, window, cx| this.sign_add(template, window, cx))),
-            )
+            div()
+                .flex()
+                .items_end()
+                .gap_3()
+                .child(div().flex_1().child(group(title, l)))
+                .child(link(id, format!("+ {label}"), l).on_click(cx.listener(move |this, _, window, cx| this.sign_add(template, window, cx))))
         };
         let sig_head = head(tr!("settings-sign-group"), "settings-sign-add", tr!("settings-sign-add"), false, cx);
         let tpl_head = head(tr!("settings-tpl-group"), "settings-tpl-add", tr!("settings-tpl-add"), true, cx);
@@ -373,8 +386,8 @@ pub(crate) fn screen_sample(identities: &[String]) -> AccountPrefs {
     p.signatures.push(Signature { id: "s2".into(), name: "Короткая".into(), identity: None, text: "— Иван".into() }); // i18n-ok: образец
     p.templates.push(Template {
         id: "t1".into(),
-        name: "Коммерческое предложение".into(), // i18n-ok: образец шаблона
-        subject: "Предложение".into(), // i18n-ok: образец
+        name: "Коммерческое предложение".into(),                       // i18n-ok: образец шаблона
+        subject: "Предложение".into(),                                 // i18n-ok: образец
         body: "Добрый день! Направляю предложение по проекту.".into(), // i18n-ok: образец
     });
     if let Some(me) = identities.first() {

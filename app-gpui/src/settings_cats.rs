@@ -12,8 +12,8 @@ use pets_ui::theme::Metric;
 use postman_core::labels::{Categories, Category, Problem};
 use postman_core::palette::{self, Clash, Reserved};
 
-use crate::roles::Look;
 use crate::buttons::button;
+use crate::roles::Look;
 use crate::settings_tab::{SettingsEvent, SettingsView, aside_card, link, now_ms};
 
 /// Правка категории на месте.
@@ -330,19 +330,26 @@ impl SettingsView {
                     .border_color(l.border())
                     .child(Self::swatch(l, c.shown_color(), 14.))
                     .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD).child(c.name.clone()))
-                    .child(div().w(px(70.)).flex().child(c.key.map_or_else(|| div().text_color(l.text3()).child("—"), |k| crate::settings_tab::keycap(k.to_string(), l))))
+                    .child(
+                        div()
+                            .w(px(70.))
+                            .flex()
+                            .child(c.key.map_or_else(|| div().text_color(l.text3()).child("—"), |k| crate::settings_tab::keycap(k.to_string(), l))),
+                    )
                     .child(
                         div()
                             .w(px(170.))
                             .flex()
                             .justify_end()
                             .gap_1()
-                            .child(link(("settings-cat-edit", i), tr!("settings-edit"), l).on_click(cx.listener(move |this, _, window, cx| {
-                                this.edit_category(Some(&edit_c), window, cx)
-                            })))
-                            .child(link(("settings-cat-delete", i), tr!("settings-delete"), l).on_click(cx.listener(move |this, _, _, cx| {
-                                this.delete_category(kw.clone(), cx)
-                            }))),
+                            .child(
+                                link(("settings-cat-edit", i), tr!("settings-edit"), l)
+                                    .on_click(cx.listener(move |this, _, window, cx| this.edit_category(Some(&edit_c), window, cx))),
+                            )
+                            .child(
+                                link(("settings-cat-delete", i), tr!("settings-delete"), l)
+                                    .on_click(cx.listener(move |this, _, _, cx| this.delete_category(kw.clone(), cx))),
+                            ),
                     ),
             );
             if editing.as_ref().is_some_and(|k| k.as_deref() == Some(c.keyword.as_str()))
@@ -371,13 +378,16 @@ impl SettingsView {
                 .child(Self::swatch(l, c.shown_color(), 12.).opacity(0.5))
                 .child(div().flex_1().min_w_0().truncate().text_color(l.text2()).child(c.name.clone()))
                 .when(!confirm, |d| {
-                    d.child(link(("settings-cat-restore", i), tr!("settings-cat-restore"), l).on_click(cx.listener(move |this, _, window, cx| {
-                        this.restore_category(restore.clone(), window, cx)
-                    })))
-                    .child(link(("settings-cat-purge", i), tr!("settings-cat-purge"), l).on_click(cx.listener(move |this, _, _, cx| {
-                        this.cat_purge = Some(purge.clone());
-                        cx.notify();
-                    })))
+                    d.child(
+                        link(("settings-cat-restore", i), tr!("settings-cat-restore"), l)
+                            .on_click(cx.listener(move |this, _, window, cx| this.restore_category(restore.clone(), window, cx))),
+                    )
+                    .child(link(("settings-cat-purge", i), tr!("settings-cat-purge"), l).on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            this.cat_purge = Some(purge.clone());
+                            cx.notify();
+                        },
+                    )))
                 })
                 .when(confirm, |d| {
                     d.child(div().text_color(l.warning()).child(tr!("settings-cat-purge-confirm", name = c.name.clone())))

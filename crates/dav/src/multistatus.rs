@@ -44,7 +44,8 @@ pub fn parse(body: &[u8]) -> Result<Multistatus, XmlError> {
     if !root.is(DAV, "multistatus") {
         return Err(XmlError(format!("expected DAV:multistatus, got {}", root.name)));
     }
-    let mut out = Multistatus { sync_token: root.child(DAV, "sync-token").map(|t| t.value().to_owned()).filter(|t| !t.is_empty()), ..Default::default() };
+    let mut out =
+        Multistatus { sync_token: root.child(DAV, "sync-token").map(|t| t.value().to_owned()).filter(|t| !t.is_empty()), ..Default::default() };
     for r in root.all(DAV, "response") {
         let Some(href) = r.href() else { continue };
         let status = r.child(DAV, "status").and_then(|s| status_code(s.value()));

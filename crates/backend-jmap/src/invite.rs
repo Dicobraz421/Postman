@@ -2,9 +2,9 @@
 //! меняем свой статус там, ответ организатору шлёт сервер; принятое/«под вопросом» письмом — в свой календарь без
 //! рассылки. Письмо-ответ и состояние карточки — `postman_core::invite`.
 
-use postman_calendar::{Invitation, Partstat, partstat_json, participant_id};
-pub use postman_core::invite::reply_draft;
+use postman_calendar::{Invitation, Partstat, participant_id, partstat_json};
 use postman_core::invite::import_event;
+pub use postman_core::invite::reply_draft;
 use postman_jmap::Client;
 
 /// Попробовать ответить через календарь сервера. `None` — события там нет (или меня в нём нет).

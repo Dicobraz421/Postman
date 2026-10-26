@@ -54,8 +54,7 @@ pub struct SearchIndex {
 fn schema() -> (Schema, Fields) {
     let mut b = Schema::builder();
     let text = |tok: &str| {
-        TextOptions::default()
-            .set_indexing_options(TextFieldIndexing::default().set_tokenizer(tok).set_index_option(IndexRecordOption::WithFreqs))
+        TextOptions::default().set_indexing_options(TextFieldIndexing::default().set_tokenizer(tok).set_index_option(IndexRecordOption::WithFreqs))
     };
     let f = Fields {
         id: b.add_text_field("id", STRING | STORED),
@@ -206,17 +205,13 @@ impl SearchIndex {
 
     /// id писем по убыванию релевантности.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<String>> {
-        let words: Vec<String> = normalize(query)
-            .split(|c: char| !c.is_alphanumeric() && !"[];',.`".contains(c))
-            .filter(|w| !w.is_empty())
-            .map(str::to_string)
-            .collect();
+        let words: Vec<String> =
+            normalize(query).split(|c: char| !c.is_alphanumeric() && !"[];',.`".contains(c)).filter(|w| !w.is_empty()).map(str::to_string).collect();
         if words.is_empty() {
             return Ok(Vec::new());
         }
         let last = words.len() - 1;
-        let clauses: Vec<(Occur, Box<dyn Query>)> =
-            words.iter().enumerate().map(|(i, w)| (Occur::Must, self.word_query(w, i == last))).collect();
+        let clauses: Vec<(Occur, Box<dyn Query>)> = words.iter().enumerate().map(|(i, w)| (Occur::Must, self.word_query(w, i == last))).collect();
         let searcher = self.reader.searcher();
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
         let collector = TopDocs::with_limit(limit).tweak_score(move |seg: &SegmentReader| {
