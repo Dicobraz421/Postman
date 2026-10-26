@@ -238,6 +238,53 @@ pub fn confirm_with_root(chain: &[Vec<u8>], root: &[u8], crls: &[Vec<u8>]) -> Re
     confirm_inner(chain, Some(root), crls)
 }
 
+/// Скачать CRL ГОСТ (12.1д) по адресу `url` из сертификата доверенной цепочки: `CryptRetrieveObjectByUrlW` без OID
+/// объекта — сырые байты, Crypt32 их **не** разбирает (CRL проверяет воркер); только сеть (`CRYPT_WIRE_ONLY_RETRIEVAL`,
+/// свой кэш — в ядре), без учётных данных Windows (`CRYPT_NO_AUTH_RETRIEVAL`).
+pub(super) fn fetch_crl(url: &str, timeout: std::time::Duration) -> Result<Vec<u8>, String> {
+    let lower = url.to_ascii_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        return Err("only http and https".into());
+    }
+    let wurl = wide(url);
+    let ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX).max(1);
+    let mut obj: *mut core::ffi::c_void = ptr::null_mut();
+    // SAFETY: строка — с нулём на конце; `obj` получает CRYPT_BLOB_ARRAY, освобождается CryptMemFree ниже.
+    let ok = unsafe {
+        CryptRetrieveObjectByUrlW(
+            wurl.as_ptr(),
+            ptr::null(),
+            CRYPT_WIRE_ONLY_RETRIEVAL | CRYPT_NO_AUTH_RETRIEVAL | CRYPT_DONT_CACHE_RESULT,
+            ms,
+            &mut obj,
+            0,
+            ptr::null(),
+            ptr::null(),
+            ptr::null_mut(),
+        )
+    };
+    if ok == 0 || obj.is_null() {
+        // SAFETY: код ошибки потока сразу после вызова.
+        let e = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+        return Err(format!("CryptRetrieveObjectByUrlW: {e:#x}"));
+    }
+    let blobs = obj as *const CRYPT_BLOB_ARRAY;
+    // SAFETY: успешный вызов без OID объекта отдаёт CRYPT_BLOB_ARRAY; берём первый блоб и копируем байты.
+    let out = unsafe {
+        let a = &*blobs;
+        if a.cBlob == 0 || a.rgBlob.is_null() {
+            None
+        } else {
+            let b = &*a.rgBlob;
+            let n = b.cbData as usize;
+            (n <= postman_smime::crl::MAX_CRL && !b.pbData.is_null()).then(|| std::slice::from_raw_parts(b.pbData, n).to_vec())
+        }
+    };
+    // SAFETY: память выделила CryptRetrieveObjectByUrlW.
+    unsafe { CryptMemFree(obj) };
+    out.ok_or_else(|| "empty or too large CRL".into())
+}
+
 /// Провайдер CryptoAPI с ГОСТ Р 34.10-2012 (КриптоПро CSP, ViPNet CSP) — имя первого найденного.
 pub(super) fn gost_provider() -> Option<String> {
     for index in 0..256u32 {
@@ -304,6 +351,16 @@ mod tests {
         let chain = |c: &postman_smime::testkit::Issued| vec![c.der.clone(), root.der.clone()];
         assert_eq!(confirm_with_root(&chain(&revoked), &root.der, std::slice::from_ref(&crl)), Revocation::Revoked);
         assert_eq!(confirm_with_root(&chain(&good), &root.der, &[crl]), Revocation::Good);
+    }
+
+    /// Загрузка CRL: только http/https; закрытый порт на этой машине — ошибка с тайм-аутом, не зависание.
+    #[test]
+    fn crl_download_fails_fast() {
+        assert!(fetch_crl("file:///C:/Windows/win.ini", std::time::Duration::from_secs(1)).is_err());
+        assert!(fetch_crl("ldap://ca/cn=crl", std::time::Duration::from_secs(1)).is_err());
+        let t = std::time::Instant::now();
+        assert!(fetch_crl("http://127.0.0.1:9/postman-test.crl", std::time::Duration::from_millis(500)).is_err());
+        assert!(t.elapsed() < std::time::Duration::from_secs(5), "{:?}", t.elapsed());
     }
 
     /// Поиск СКЗИ не падает; на стенде без КриптоПро — `None` [проверить с КриптоПро CSP].
