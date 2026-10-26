@@ -2671,6 +2671,8 @@ const TEXTS: &[pets_i18n::Resource] = &[
     ("en", include_str!("../i18n/en/calendar.ftl")),
 ];
 
+// Имя — область действий (`calendar::…`), как в id команд: так обработчики читаются и их находит `docs/PARITY.md`.
+#[allow(clippy::module_inception)]
 pub(crate) mod calendar {
     gpui_kit::actions!(calendar, [NewMeeting, PrevWeek, NextWeek, Today, ViewDay, ViewWorkWeek, ViewWeek, ViewMonth]);
 }

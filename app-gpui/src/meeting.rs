@@ -2244,6 +2244,8 @@ impl Render for MeetingView {
 pub(crate) const PART: crate::part::Part = crate::part::Part { name: "meeting", commands: COMMANDS, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Вкладка встречи (S3-05, вкладкой — S5-11).
+// Имя — область действий (`meeting::…`), как в id команд: так обработчики читаются и их находит `docs/PARITY.md`.
+#[allow(clippy::module_inception)]
 pub(crate) mod meeting {
     gpui_kit::actions!(
         meeting,

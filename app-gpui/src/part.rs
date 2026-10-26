@@ -8,6 +8,9 @@ use gpui_kit::*;
 use crate::Mailer;
 use crate::screens::Scene;
 
+/// Сброс своего состояния перед сценой (`Part::reset`).
+pub(crate) type Reset = fn(&Scene, &mut Mailer, &mut Window, &mut Context<Mailer>);
+
 pub(crate) struct Part {
     /// Для журналов и тестов.
     pub name: &'static str,
@@ -21,7 +24,7 @@ pub(crate) struct Part {
     /// Свои сцены `--screens`, в порядке съёмки (`screens::Scene`).
     pub scenes: &'static [Scene],
     /// Перед каждой сценой (любой части): вернуть своё состояние, которое нужно только своим сценам.
-    pub reset: Option<fn(&Scene, &mut Mailer, &mut Window, &mut Context<Mailer>)>,
+    pub reset: Option<Reset>,
 }
 
 impl Part {

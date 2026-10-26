@@ -668,6 +668,8 @@ const TEXTS: &[pets_i18n::Resource] = &[
 ];
 
 /// Вкладка «Настройки» (S5-09); автоответы и правила (S4-05, S4-07) — её разделы, в Outlook — меню «Файл».
+// Имя — область действий (`settings::…`), как в id команд: так обработчики читаются и их находит `docs/PARITY.md`.
+#[allow(clippy::module_inception)]
 pub(crate) mod settings {
     gpui_kit::actions!(settings, [Open, Vacation, Rules, Calendar]);
 }

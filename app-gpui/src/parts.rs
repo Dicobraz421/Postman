@@ -36,3 +36,36 @@ pub(crate) const PARTS: &[Part] = &[
 pub(crate) fn texts() -> Vec<&'static [pets_i18n::Resource]> {
     PARTS.iter().map(|p| p.texts).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::PARTS;
+
+    /// Описи частей согласованы (ADR 0005): имена частей и сцен уникальны, тексты части — на RU и EN, сцена,
+    /// продолжающая прошлую, не открывает часть, `after` называет сцену другой части.
+    #[test]
+    fn parts_are_consistent() {
+        let mut parts = HashSet::new();
+        let mut scenes = HashSet::new();
+        for p in PARTS {
+            assert!(parts.insert(p.name), "часть {} — дважды", p.name);
+            let count = |lang: &str| p.texts.iter().filter(|(l, _)| *l == lang).count();
+            assert_eq!(count("ru"), count("en"), "{}: тексты RU и EN — разное число файлов", p.name);
+            assert_eq!(count("ru") + count("en"), p.texts.len(), "{}: тексты не на RU и EN", p.name);
+            for (i, s) in p.scenes.iter().enumerate() {
+                assert!(scenes.insert(s.name), "сцена {} — дважды", s.name);
+                assert!(!s.continues || (i > 0 && s.after.is_none()), "{}: продолжает прошлую, но открывает часть", s.name);
+                if let Some(a) = s.after {
+                    assert!(!p.scenes.iter().any(|x| x.name == a), "{}: after — сцена своей части", s.name);
+                }
+            }
+        }
+        for s in PARTS.iter().flat_map(|p| p.scenes) {
+            if let Some(a) = s.after {
+                assert!(scenes.contains(a), "{}: after — нет сцены {a}", s.name);
+            }
+        }
+    }
+}

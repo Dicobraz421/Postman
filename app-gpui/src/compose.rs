@@ -1216,6 +1216,8 @@ const TEXTS: &[pets_i18n::Resource] = &[
 ];
 
 /// Письмо — вкладка или ответ в области чтения (S3-01, S5-06б): отправка, разметка, «Развернуть», удалить черновик.
+// Имя — область действий (`compose::…`), как в id команд: так обработчики читаются и их находит `docs/PARITY.md`.
+#[allow(clippy::module_inception)]
 pub(crate) mod compose {
     gpui_kit::actions!(
         compose,

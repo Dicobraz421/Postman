@@ -1857,6 +1857,8 @@ const TEXTS: &[pets_i18n::Resource] = &[
 ];
 
 /// Контакты (S5-11): новый, изменить, удалить, написать, встреча, копировать адрес.
+// Имя — область действий (`contacts::…`), как в id команд: так обработчики читаются и их находит `docs/PARITY.md`.
+#[allow(clippy::module_inception)]
 pub(crate) mod contacts {
     gpui_kit::actions!(contacts, [New, Edit, Delete, Write, Meeting, CopyAddress]);
 }

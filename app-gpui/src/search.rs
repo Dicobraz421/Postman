@@ -565,6 +565,8 @@ const TEXTS: &[pets_i18n::Resource] = &[
 
 /// Поиск в командной строке (S5-10): охват «Везде | Текущая папка» и уточнения — как чипы «Уточнить»; по
 /// совпадениям в открытом письме (S5-14).
+// Имя — область действий (`search::…`), как в id команд: так обработчики читаются и их находит `docs/PARITY.md`.
+#[allow(clippy::module_inception)]
 pub(crate) mod search {
     gpui_kit::actions!(search, [Focus, Clear, All, Folder, Attachments, Unread, Recent, NextMatch, PrevMatch]);
 }
