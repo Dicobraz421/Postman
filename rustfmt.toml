@@ -1,0 +1,6 @@
+# Стиль rustfmt (решение владельца 2026-10-26): ближе всего к коду до переформатирования — широкие строки,
+# короткие вызовы и цепочки в одну строку. Проверка — `cargo fmt --all --check` в CI (job `test`).
+edition = "2024"
+style_edition = "2024"
+max_width = 150
+use_small_heuristics = "Max"
