@@ -169,6 +169,16 @@ fn kind_key(kind: Kind) -> &'static str {
     }
 }
 
+/// Команда реестра срока.
+fn command(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Due => "mail.due",
+        Kind::Remind => "mail.remind",
+        Kind::Wait => "mail.wait",
+        Kind::Expire => "mail.expire",
+    }
+}
+
 fn action(kind: Kind) -> Box<dyn Action> {
     match kind {
         Kind::Due => Box::new(mail::Due),
@@ -200,22 +210,12 @@ pub(crate) fn header_row(row: &EmailRow, l: &Look, cx: &App) -> Div {
             .when(kind == Kind::Remind, |d| d.child(icon(glyph::RINGER, 12.)))
             .child(tr!(kind_key(kind)))
             .on_click(move |_, window, cx| window.dispatch_action(action(kind), cx));
-        let command = match kind {
-            Kind::Due => "mail.due",
-            Kind::Remind => "mail.remind",
-            Kind::Wait => "mail.wait",
-            Kind::Expire => "mail.expire",
-        };
-        crate::keytips::command(b, command, Some(tr!(kind_key(kind))), l, cx)
+        crate::keytips::command(b, command(kind), Some(tr!(kind_key(kind))), l, cx)
     };
-    div()
-        .flex()
-        .flex_wrap()
-        .items_center()
-        .gap(px(6.))
-        .children(badges.iter().map(|b| chip(b, l)))
-        .child(div().flex_1())
-        .children([Kind::Due, Kind::Remind, Kind::Wait, Kind::Expire].into_iter().map(button))
+    // Нет ключевых слов у сервера учётки — нет и кнопок сроков (S7, «Нет у сервера — нет на экране»).
+    let features = crate::features::get(cx);
+    let kinds = [Kind::Due, Kind::Remind, Kind::Wait, Kind::Expire].into_iter().filter(|&k| crate::features::available(command(k), features));
+    div().flex().flex_wrap().items_center().gap(px(6.)).children(badges.iter().map(|b| chip(b, l))).child(div().flex_1()).children(kinds.map(button))
 }
 
 pub(crate) fn pick_text(p: Pick, kind: Kind) -> String {

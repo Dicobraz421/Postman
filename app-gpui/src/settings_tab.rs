@@ -43,6 +43,8 @@ impl Section {
             Section::Rules => Some("settings.rules"),
             Section::Vacation => Some("settings.vacation"),
             Section::Calendar => Some("settings.calendar"),
+            // Категории писем — ключевые слова на сервере (у Exchange их нет).
+            Section::Categories => Some("mail.categorize"),
             _ => None,
         }
     }
@@ -919,8 +921,9 @@ mod tests {
         let mail = Features::NONE;
         let shown = found("", mail);
         assert!(!shown.contains(&Section::Rules) && !shown.contains(&Section::Vacation) && !shown.contains(&Section::Calendar));
-        assert!(shown.contains(&Section::Accounts) && shown.contains(&Section::Categories));
+        assert!(shown.contains(&Section::Accounts) && !shown.contains(&Section::Categories));
         assert!(found("", mail.with(Feature::Rules, true)).contains(&Section::Rules));
+        assert!(found("", mail.with(Feature::Keywords, true)).contains(&Section::Categories));
     }
 
     /// У каждого раздела — название и ключевые слова в обоих языках (`settings.ftl`).

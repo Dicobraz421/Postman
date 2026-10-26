@@ -1585,6 +1585,7 @@ impl Composer {
         let (status, error) = self.status_text();
         // Ответ в области чтения уже: подсказка клавиши и категория — во вкладке.
         let wide = self.place == Place::Tab;
+        let keywords = crate::features::available("mail.wait", crate::features::get(cx));
         div()
             .flex()
             .items_center()
@@ -1594,9 +1595,12 @@ impl Composer {
             .border_t_1()
             .border_color(l.border())
             .child(self.send_group(l, cx))
-            .when(wide, |d| d.child(div().w_px().h(px(20.)).mx(px(6.)).bg(l.stroke())))
-            .child(self.wait_toggle(l, cx))
-            .when(wide, |d| d.child(self.category_chip(l, cx)))
+            // «Ждать ответа» и категория — ключевые слова на сервере учётки: нет их — нет и этих кнопок (S7).
+            .when(keywords, |d| {
+                d.when(wide, |d| d.child(div().w_px().h(px(20.)).mx(px(6.)).bg(l.stroke())))
+                    .child(self.wait_toggle(l, cx))
+                    .when(wide, |d| d.child(self.category_chip(l, cx)))
+            })
             // Состояние — справа, длинное обрезается (строка не переносится).
             .child(
                 div()
