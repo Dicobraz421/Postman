@@ -813,7 +813,17 @@ impl crate::Mailer {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "filters", texts: TEXTS, commands: COMMANDS, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "filters", texts: TEXTS, commands: COMMANDS, handlers, ..crate::part::Part::NONE };
+
+/// Обработчики команд части — на корне экрана почты (`Mailer::render`).
+fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
+    root.on_action(cx.listener(|this, _: &view::Filters, _, cx| this.toggle_filter_panel(cx)))
+        .on_action(cx.listener(|this, _: &view::QuickFilters, _, cx| this.toggle_quick_filters(cx)))
+        .on_action(cx.listener(|this, _: &view::SortByDate, _, cx| this.sort_by(postman_core::filters::Sort::Date, cx)))
+        .on_action(cx.listener(|this, _: &view::SortBySender, _, cx| this.sort_by(postman_core::filters::Sort::Sender, cx)))
+        .on_action(cx.listener(|this, _: &view::SortBySize, _, cx| this.sort_by(postman_core::filters::Sort::Size, cx)))
+        .on_action(cx.listener(|this, _: &filters::Reset, _, cx| this.reset_filters(cx)))
+}
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
 const TEXTS: &[pets_i18n::Resource] = &[

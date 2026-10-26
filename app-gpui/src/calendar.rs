@@ -2649,7 +2649,21 @@ fn dotted(size: f32, color: Hsla) -> Div {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "calendar", texts: TEXTS, commands: COMMANDS, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "calendar", texts: TEXTS, commands: COMMANDS, handlers, ..crate::part::Part::NONE };
+
+/// Обработчики команд части — на корне экрана почты (`Mailer::render`).
+fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
+    root.on_action(cx.listener(|this, _: &calendar::NewMeeting, _, cx| {
+            this.open_meeting(None, cx);
+        }))
+        .on_action(cx.listener(|this, _: &calendar::PrevWeek, _, cx| this.calendar_week(Some(-1), cx)))
+        .on_action(cx.listener(|this, _: &calendar::NextWeek, _, cx| this.calendar_week(Some(1), cx)))
+        .on_action(cx.listener(|this, _: &calendar::Today, _, cx| this.calendar_week(None, cx)))
+        .on_action(cx.listener(|this, _: &calendar::ViewDay, _, cx| this.calendar_view(postman_core::prefs::CalendarView::Day, cx)))
+        .on_action(cx.listener(|this, _: &calendar::ViewWorkWeek, _, cx| this.calendar_view(postman_core::prefs::CalendarView::WorkWeek, cx)))
+        .on_action(cx.listener(|this, _: &calendar::ViewWeek, _, cx| this.calendar_view(postman_core::prefs::CalendarView::Week, cx)))
+        .on_action(cx.listener(|this, _: &calendar::ViewMonth, _, cx| this.calendar_view(postman_core::prefs::CalendarView::Month, cx)))
+}
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
 const TEXTS: &[pets_i18n::Resource] = &[

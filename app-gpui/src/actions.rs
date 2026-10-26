@@ -41,6 +41,43 @@ pub(crate) fn handlers(root: Div, cx: &mut Context<Mailer>) -> Div {
         .on_action(cx.listener(|this, _: &mail::ReplyAll, _, cx| this.respond(Mode::ReplyAll, cx)))
         .on_action(cx.listener(|this, _: &mail::Forward, _, cx| this.respond(Mode::Forward, cx)))
         .on_action(cx.listener(|this, _: &mail::Delete, _, cx| this.delete_selected(cx)))
+        .on_action(cx.listener(|this, _: &mail::Next, _, cx| this.step(|_| 1, cx)))
+        .on_action(cx.listener(|this, _: &mail::Prev, _, cx| this.step(|_| -1, cx)))
+        .on_action(cx.listener(|this, _: &mail::First, _, cx| this.step(|l| -(l.count as isize), cx)))
+        .on_action(cx.listener(|this, _: &mail::Last, _, cx| this.step(|l| l.count as isize, cx)))
+        .on_action(cx.listener(|this, _: &mail::PageDown, _, cx| this.step(crate::list::MailList::page, cx)))
+        .on_action(cx.listener(|this, _: &mail::PageUp, _, cx| this.step(|l| -l.page(), cx)))
+        .on_action(cx.listener(|this, _: &mail::MarkRead, _, cx| this.mark(Some(true), cx)))
+        .on_action(cx.listener(|this, _: &mail::MarkUnread, _, cx| this.mark(Some(false), cx)))
+        .on_action(cx.listener(|this, _: &mail::ToggleFlag, _, cx| this.toggle_flag(cx)))
+        .on_action(cx.listener(|this, a: &mail::Categorize, _, cx| this.categorize(a.key, cx)))
+        // Выделение и массовые действия (S5-08).
+        .on_action(cx.listener(|this, _: &mail::SelectAll, _, cx| this.list.update(cx, |l, cx| l.select_all(cx))))
+        .on_action(cx.listener(|this, _: &mail::ClearSelection, _, cx| {
+            this.list.update(cx, |l, cx| {
+                l.clear_selection(cx);
+            })
+        }))
+        .on_action(cx.listener(|this, _: &mail::SelectDown, _, cx| this.list.update(cx, |l, cx| l.extend(1, cx))))
+        .on_action(cx.listener(|this, _: &mail::SelectUp, _, cx| this.list.update(cx, |l, cx| l.extend(-1, cx))))
+        .on_action(cx.listener(|this, _: &mail::ContextMenu, _, cx| this.context_menu_key(cx)))
+        .on_action(cx.listener(|this, _: &mail::Move, _, cx| this.move_key(cx)))
+        .on_action(cx.listener(|this, _: &mail::Archive, _, cx| {
+            let ids = this.targets(cx);
+            this.ask(ids, crate::bulk::Ask::Archive, cx);
+        }))
+        .on_action(cx.listener(|this, _: &mail::ReportPhishing, _, cx| {
+            let ids = this.targets(cx);
+            this.ask(ids, crate::bulk::Ask::Phishing, cx);
+        }))
+        .on_action(cx.listener(|this, _: &mail::Take, _, cx| this.take(cx)))
+        .on_action(cx.listener(|this, _: &mail::Due, _, cx| this.open_picker(postman_core::marks::Kind::Due, cx)))
+        .on_action(cx.listener(|this, _: &mail::Remind, _, cx| this.open_picker(postman_core::marks::Kind::Remind, cx)))
+        .on_action(cx.listener(|this, _: &mail::Wait, _, cx| this.open_picker(postman_core::marks::Kind::Wait, cx)))
+        .on_action(cx.listener(|this, _: &mail::Expire, _, cx| this.open_picker(postman_core::marks::Kind::Expire, cx)))
+        .on_action(cx.listener(|this, _: &mail::New, _, cx| {
+            this.open_compose(Default::default(), cx);
+        }))
 }
 
 /// «Да» в строке «Удалить навсегда?» — подписка экрана на список.
@@ -280,7 +317,7 @@ impl Mailer {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "mail", texts: TEXTS, commands: COMMANDS, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "mail", texts: TEXTS, commands: COMMANDS, handlers, ..crate::part::Part::NONE };
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
 const TEXTS: &[pets_i18n::Resource] = &[

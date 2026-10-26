@@ -2728,7 +2728,31 @@ pub(crate) fn demo(now: i64, tz: &TimeZone) -> Vec<Task> {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "tasks", texts: TEXTS, commands: COMMANDS, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "tasks", texts: TEXTS, commands: COMMANDS, handlers, ..crate::part::Part::NONE };
+
+/// Обработчики команд части — на корне экрана почты (`Mailer::render`).
+fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
+    root.on_action(cx.listener(|this, _: &task::New, window, cx| {
+            if this.section != crate::Section::Tasks {
+                this.set_section(crate::Section::Tasks, cx);
+            }
+            this.tasks.update(cx, |t, cx| t.new_task(window, cx));
+        }))
+        .on_action(cx.listener(|this, _: &task::Complete, _, cx| this.tasks.update(cx, |t, cx| t.toggle_done(cx))))
+        .on_action(cx.listener(|this, _: &task::Due, window, cx| this.tasks.update(cx, |t, cx| t.toggle_due(window, cx))))
+        .on_action(cx.listener(|this, _: &task::Delegate, window, cx| this.tasks.update(cx, |t, cx| t.delegate(window, cx))))
+        .on_action(cx.listener(|this, _: &task::Remind, _, cx| this.tasks.update(cx, |t, cx| t.remind(cx))))
+        .on_action(cx.listener(|this, _: &task::RemindAll, _, cx| this.tasks.update(cx, |t, cx| t.remind_all(cx))))
+        .on_action(cx.listener(|this, _: &task::Revoke, _, cx| this.tasks.update(cx, |t, cx| t.revoke(cx))))
+        .on_action(cx.listener(|this, _: &task::Edit, window, cx| this.tasks.update(cx, |t, cx| t.rename(window, cx))))
+        .on_action(cx.listener(|this, _: &task::Delete, _, cx| this.tasks.update(cx, |t, cx| t.delete(cx))))
+        .on_action(cx.listener(|this, _: &task::Open, _, cx| this.tasks.update(cx, |t, cx| t.open_letter(cx))))
+        .on_action(cx.listener(|this, _: &task::Next, _, cx| this.tasks.update(cx, |t, cx| t.step(1, cx))))
+        .on_action(cx.listener(|this, _: &task::Prev, _, cx| this.tasks.update(cx, |t, cx| t.step(-1, cx))))
+        .on_action(cx.listener(|this, _: &task::SlotNext, _, cx| this.tasks.update(cx, |t, cx| t.step_slot(1, cx))))
+        .on_action(cx.listener(|this, _: &task::SlotPrev, _, cx| this.tasks.update(cx, |t, cx| t.step_slot(-1, cx))))
+        .on_action(cx.listener(|this, _: &task::Block, _, cx| this.tasks.update(cx, |t, cx| t.place_block(cx))))
+}
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
 const TEXTS: &[pets_i18n::Resource] = &[

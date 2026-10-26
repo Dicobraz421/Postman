@@ -1030,7 +1030,16 @@ fn demo_day(date: jiff::civil::Date, tz: &TimeZone) -> Vec<Event> {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "invite", commands: COMMANDS, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "invite", commands: COMMANDS, handlers, ..crate::part::Part::NONE };
+
+/// Обработчики команд части — на корне экрана почты (`Mailer::render`).
+fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
+    root.on_action(cx.listener(|this, _: &invite::Accept, _, cx| this.invite_key(postman_calendar::Partstat::Accepted, cx)))
+        .on_action(cx.listener(|this, _: &invite::Tentative, _, cx| {
+            this.invite_key(postman_calendar::Partstat::Tentative, cx)
+        }))
+        .on_action(cx.listener(|this, _: &invite::Decline, _, cx| this.invite_key(postman_calendar::Partstat::Declined, cx)))
+}
 
 /// Ответ на приглашение в письме (S5-11): кнопки карточки; клавиши A / T / N — только в схеме «Одиночные клавиши»
 /// (S5-17).

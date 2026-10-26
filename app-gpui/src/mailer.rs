@@ -11,15 +11,11 @@ use pets_ui::Level as Toast;
 use crate::notices::Notices;
 use postman_cache::Cache;
 use postman_core::bench::{self, Bench, Step};
-use postman_core::prefs::CalendarView as CalView;
 use postman_worker::Level;
 
 use crate::*;
 use crate::backend::Backend;
 use crate::bar::*;
-use crate::actions::mail;
-use crate::chrome::view;
-use crate::search::search;
 use crate::folders::*;
 use crate::list::*;
 use crate::reading::*;
@@ -454,7 +450,7 @@ impl Mailer {
     }
 
     /// «Нет у сервера этой учётной записи» — клавиша команды, которой у сервера нет (`features::Unavailable`).
-    fn unavailable(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn unavailable(&mut self, cx: &mut Context<Self>) {
         self.toasts.update(cx, |t, cx| t.push(Toast::Info, tr!("feature-unavailable"), cx));
     }
 
@@ -558,215 +554,11 @@ impl Render for Mailer {
             Section::Contacts => "Mailer ContactsView",
             Section::Tasks => "Mailer TasksView",
         };
-        let root = crate::attachments::handlers(crate::actions::handlers(div(), cx), cx)
+        let root = crate::parts::PARTS.iter().fold(div(), |root, p| (p.handlers)(root, cx))
             .key_context(context)
             .track_focus(&self.focus)
             // KeyTips (S5-18): удержание одного Ctrl.
             .on_modifiers_changed(cx.listener(|this, ev: &ModifiersChangedEvent, _, cx| this.keytips_modifiers(ev.modifiers, cx)))
-            .on_action(cx.listener(|this, _: &mail::Next, _, cx| this.step(|_| 1, cx)))
-            .on_action(cx.listener(|this, _: &mail::Prev, _, cx| this.step(|_| -1, cx)))
-            .on_action(cx.listener(|this, _: &mail::First, _, cx| this.step(|l| -(l.count as isize), cx)))
-            .on_action(cx.listener(|this, _: &mail::Last, _, cx| this.step(|l| l.count as isize, cx)))
-            .on_action(cx.listener(|this, _: &mail::PageDown, _, cx| this.step(MailList::page, cx)))
-            .on_action(cx.listener(|this, _: &mail::PageUp, _, cx| this.step(|l| -l.page(), cx)))
-            .on_action(cx.listener(|this, _: &mail::MarkRead, _, cx| this.mark(Some(true), cx)))
-            .on_action(cx.listener(|this, _: &mail::MarkUnread, _, cx| this.mark(Some(false), cx)))
-            .on_action(cx.listener(|this, _: &mail::ToggleFlag, _, cx| this.toggle_flag(cx)))
-            .on_action(cx.listener(|this, a: &mail::Categorize, _, cx| this.categorize(a.key, cx)))
-            // Выделение и массовые действия (S5-08).
-            .on_action(cx.listener(|this, _: &mail::SelectAll, _, cx| this.list.update(cx, |l, cx| l.select_all(cx))))
-            .on_action(cx.listener(|this, _: &mail::ClearSelection, _, cx| {
-                this.list.update(cx, |l, cx| {
-                    l.clear_selection(cx);
-                })
-            }))
-            .on_action(cx.listener(|this, _: &mail::SelectDown, _, cx| this.list.update(cx, |l, cx| l.extend(1, cx))))
-            .on_action(cx.listener(|this, _: &mail::SelectUp, _, cx| this.list.update(cx, |l, cx| l.extend(-1, cx))))
-            .on_action(cx.listener(|this, _: &mail::ContextMenu, _, cx| this.context_menu_key(cx)))
-            .on_action(cx.listener(|this, _: &mail::Move, _, cx| this.move_key(cx)))
-            .on_action(cx.listener(|this, _: &mail::Archive, _, cx| {
-                let ids = this.targets(cx);
-                this.ask(ids, crate::bulk::Ask::Archive, cx);
-            }))
-            .on_action(cx.listener(|this, _: &mail::ReportPhishing, _, cx| {
-                let ids = this.targets(cx);
-                this.ask(ids, crate::bulk::Ask::Phishing, cx);
-            }))
-            .on_action(cx.listener(|this, _: &mail::Take, _, cx| this.take(cx)))
-            .on_action(cx.listener(|this, _: &mail::Due, _, cx| this.open_picker(postman_core::marks::Kind::Due, cx)))
-            .on_action(cx.listener(|this, _: &mail::Remind, _, cx| this.open_picker(postman_core::marks::Kind::Remind, cx)))
-            .on_action(cx.listener(|this, _: &mail::Wait, _, cx| this.open_picker(postman_core::marks::Kind::Wait, cx)))
-            .on_action(cx.listener(|this, _: &mail::Expire, _, cx| this.open_picker(postman_core::marks::Kind::Expire, cx)))
-            .on_action(cx.listener(|this, _: &crate::thread::thread::Next, _, cx| this.thread_step(1, cx)))
-            .on_action(cx.listener(|this, _: &crate::thread::thread::Prev, _, cx| this.thread_step(-1, cx)))
-            .on_action(cx.listener(|this, _: &crate::thread::thread::Toggle, _, cx| this.reading.update(cx, |r, cx| r.toggle_feed(cx))))
-            .on_action(cx.listener(|this, _: &crate::thread::thread::Quotes, _, cx| this.reading.update(cx, |r, cx| r.quotes_key(cx))))
-            .on_action(cx.listener(|this, _: &crate::thread::thread::Fold, _, cx| this.thread_fold(crate::outline::Fold::Toggle, cx)))
-            .on_action(cx.listener(|this, _: &crate::thread::thread::Expand, _, cx| this.thread_fold(crate::outline::Fold::Expand, cx)))
-            .on_action(cx.listener(|this, _: &crate::thread::thread::Collapse, _, cx| {
-                this.thread_fold(crate::outline::Fold::Collapse, cx)
-            }))
-            .on_action(cx.listener(|this, _: &mail::New, _, cx| {
-                this.open_compose(Default::default(), cx);
-            }))
-            .on_action(cx.listener(|this, _: &crate::features::Unavailable, _, cx| this.unavailable(cx)))
-            .on_action(cx.listener(|this, _: &view::Mail, _, cx| this.set_section(Section::Mail, cx)))
-            .on_action(cx.listener(|this, _: &view::Calendar, _, cx| this.set_section(Section::Calendar, cx)))
-            .on_action(cx.listener(|this, _: &view::Contacts, _, cx| this.set_section(Section::Contacts, cx)))
-            .on_action(cx.listener(|this, _: &view::Tasks, _, cx| this.set_section(Section::Tasks, cx)))
-            .on_action(cx.listener(|this, _: &crate::tasks::task::New, window, cx| {
-                if this.section != Section::Tasks {
-                    this.set_section(Section::Tasks, cx);
-                }
-                this.tasks.update(cx, |t, cx| t.new_task(window, cx));
-            }))
-            .on_action(cx.listener(|this, _: &crate::tasks::task::Complete, _, cx| this.tasks.update(cx, |t, cx| t.toggle_done(cx))))
-            .on_action(cx.listener(|this, _: &crate::tasks::task::Due, window, cx| this.tasks.update(cx, |t, cx| t.toggle_due(window, cx))))
-            .on_action(cx.listener(|this, _: &crate::tasks::task::Delegate, window, cx| this.tasks.update(cx, |t, cx| t.delegate(window, cx))))
-            .on_action(cx.listener(|this, _: &crate::tasks::task::Remind, _, cx| this.tasks.update(cx, |t, cx| t.remind(cx))))
-            .on_action(cx.listener(|this, _: &crate::tasks::task::RemindAll, _, cx| this.tasks.update(cx, |t, cx| t.remind_all(cx))))
-            .on_action(cx.listener(|this, _: &crate::tasks::task::Revoke, _, cx| this.tasks.update(cx, |t, cx| t.revoke(cx))))
-            .on_action(cx.listener(|this, _: &crate::tasks::task::Edit, window, cx| this.tasks.update(cx, |t, cx| t.rename(window, cx))))
-            .on_action(cx.listener(|this, _: &crate::tasks::task::Delete, _, cx| this.tasks.update(cx, |t, cx| t.delete(cx))))
-            .on_action(cx.listener(|this, _: &crate::tasks::task::Open, _, cx| this.tasks.update(cx, |t, cx| t.open_letter(cx))))
-            .on_action(cx.listener(|this, _: &crate::tasks::task::Next, _, cx| this.tasks.update(cx, |t, cx| t.step(1, cx))))
-            .on_action(cx.listener(|this, _: &crate::tasks::task::Prev, _, cx| this.tasks.update(cx, |t, cx| t.step(-1, cx))))
-            .on_action(cx.listener(|this, _: &crate::tasks::task::SlotNext, _, cx| this.tasks.update(cx, |t, cx| t.step_slot(1, cx))))
-            .on_action(cx.listener(|this, _: &crate::tasks::task::SlotPrev, _, cx| this.tasks.update(cx, |t, cx| t.step_slot(-1, cx))))
-            .on_action(cx.listener(|this, _: &crate::tasks::task::Block, _, cx| this.tasks.update(cx, |t, cx| t.place_block(cx))))
-            .on_action(cx.listener(|this, _: &crate::calendar::calendar::NewMeeting, _, cx| {
-                this.open_meeting(None, cx);
-            }))
-            .on_action(cx.listener(|this, _: &crate::calendar::calendar::PrevWeek, _, cx| this.calendar_week(Some(-1), cx)))
-            .on_action(cx.listener(|this, _: &crate::calendar::calendar::NextWeek, _, cx| this.calendar_week(Some(1), cx)))
-            .on_action(cx.listener(|this, _: &crate::calendar::calendar::Today, _, cx| this.calendar_week(None, cx)))
-            .on_action(cx.listener(|this, _: &crate::calendar::calendar::ViewDay, _, cx| this.calendar_view(CalView::Day, cx)))
-            .on_action(cx.listener(|this, _: &crate::calendar::calendar::ViewWorkWeek, _, cx| this.calendar_view(CalView::WorkWeek, cx)))
-            .on_action(cx.listener(|this, _: &crate::calendar::calendar::ViewWeek, _, cx| this.calendar_view(CalView::Week, cx)))
-            .on_action(cx.listener(|this, _: &crate::calendar::calendar::ViewMonth, _, cx| this.calendar_view(CalView::Month, cx)))
-            .on_action(cx.listener(|this, _: &crate::contacts::contacts::New, window, cx| {
-                this.contacts.update(cx, |c, cx| c.new_contact(window, cx));
-            }))
-            .on_action(cx.listener(|this, _: &crate::contacts::contacts::Edit, window, cx| {
-                this.contacts.update(cx, |c, cx| c.edit(window, cx));
-            }))
-            .on_action(cx.listener(|this, _: &crate::contacts::contacts::Delete, _, cx| this.contacts.update(cx, |c, cx| c.ask_delete(cx))))
-            .on_action(cx.listener(|this, _: &crate::contacts::contacts::Write, _, cx| this.contacts.update(cx, |c, cx| c.write(cx))))
-            .on_action(cx.listener(|this, _: &crate::contacts::contacts::Meeting, _, cx| this.contacts.update(cx, |c, cx| c.meet(cx))))
-            .on_action(cx.listener(|this, _: &crate::contacts::contacts::CopyAddress, _, cx| {
-                this.contacts.update(cx, |c, cx| c.copy_address(cx));
-            }))
-            .on_action(cx.listener(|this, _: &crate::invite_card::invite::Accept, _, cx| this.invite_key(postman_calendar::Partstat::Accepted, cx)))
-            .on_action(cx.listener(|this, _: &crate::invite_card::invite::Tentative, _, cx| {
-                this.invite_key(postman_calendar::Partstat::Tentative, cx)
-            }))
-            .on_action(cx.listener(|this, _: &crate::invite_card::invite::Decline, _, cx| this.invite_key(postman_calendar::Partstat::Declined, cx)))
-            .on_action(cx.listener(|this, _: &search::Focus, window, cx| {
-                if this.section == Section::Contacts {
-                    return this.contacts.update(cx, |c, cx| c.focus_search(window, cx));
-                }
-                if this.section == Section::Calendar {
-                    return this.cal.update(cx, |c, cx| c.focus_search(window, cx));
-                }
-                if this.section == Section::Tasks {
-                    return this.tasks.update(cx, |t, cx| t.focus_search(window, cx));
-                }
-                this.search.update(cx, |s, cx| s.focus(window, cx));
-            }))
-            // Поиск (S5-10): охват и уточнения командами — как переключатель и чипы.
-            .on_action(cx.listener(|this, _: &search::All, _, cx| this.set_scope(crate::bar::Scope::All, cx)))
-            .on_action(cx.listener(|this, _: &search::Folder, _, cx| this.set_scope(crate::bar::Scope::Folder, cx)))
-            .on_action(cx.listener(|this, _: &search::Attachments, window, cx| {
-                this.refine(&postman_core::query::Refine::Attachment, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &search::Unread, window, cx| this.refine(&postman_core::query::Refine::Unread, window, cx)))
-            .on_action(cx.listener(|this, _: &search::Recent, window, cx| {
-                this.refine(&postman_core::query::Refine::Within(30), window, cx)
-            }))
-            // По совпадениям в открытом письме (S5-14).
-            .on_action(cx.listener(|this, _: &search::NextMatch, _, cx| this.reading.update(cx, |r, cx| r.step_hit(1, cx))))
-            .on_action(cx.listener(|this, _: &search::PrevMatch, _, cx| this.reading.update(cx, |r, cx| r.step_hit(-1, cx))))
-            .on_action(cx.listener(|this, _: &crate::palette::palette::Open, window, cx| this.toggle_palette(window, cx)))
-            .on_action(cx.listener(|this, _: &crate::settings::settings::Open, window, cx| this.open_settings(None, window, cx)))
-            .on_action(cx.listener(|this, _: &crate::settings::settings::Vacation, window, cx| this.open_vacation(window, cx)))
-            .on_action(cx.listener(|this, _: &crate::settings::settings::Rules, window, cx| this.open_rules(window, cx)))
-            .on_action(cx.listener(|this, _: &crate::settings::settings::Calendar, window, cx| {
-                this.open_settings(Some(crate::settings_tab::Section::Calendar), window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &crate::chrome::tab::New, window, cx| this.new_mail_tab(window, cx)))
-            .on_action(cx.listener(|this, _: &crate::chrome::tab::Next, window, cx| this.step_tab(1, window, cx)))
-            .on_action(cx.listener(|this, _: &crate::chrome::tab::Prev, window, cx| this.step_tab(-1, window, cx)))
-            .on_action(cx.listener(|this, _: &crate::chrome::tab::Close, window, cx| {
-                let id = this.tabs.active().id;
-                this.close_tab(id, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &crate::filters::view::Filters, _, cx| this.toggle_filter_panel(cx)))
-            .on_action(cx.listener(|this, _: &crate::filters::view::QuickFilters, _, cx| this.toggle_quick_filters(cx)))
-            .on_action(cx.listener(|this, _: &crate::filters::view::SortByDate, _, cx| this.sort_by(postman_core::filters::Sort::Date, cx)))
-            .on_action(cx.listener(|this, _: &crate::filters::view::SortBySender, _, cx| this.sort_by(postman_core::filters::Sort::Sender, cx)))
-            .on_action(cx.listener(|this, _: &crate::filters::view::SortBySize, _, cx| this.sort_by(postman_core::filters::Sort::Size, cx)))
-            .on_action(cx.listener(|this, _: &crate::filters::filters::Reset, _, cx| this.reset_filters(cx)))
-            .on_action(cx.listener(|this, _: &view::Notifications, _, cx| {
-                this.toasts.update(cx, |t, cx| t.toggle_history(cx));
-            }))
-            .on_action(cx.listener(|this, _: &search::Clear, window, cx| {
-                // Esc сначала закрывает контекстное меню письма (S5-08) или папки (S5-05б)…
-                if this.close_menu(cx) || this.close_folder_menu(cx) {
-                    return;
-                }
-                // …затем историю уведомлений.
-                if this.toasts.read(cx).is_history_open() {
-                    this.toasts.update(cx, |t, cx| t.toggle_history(cx));
-                    return;
-                }
-                // …затем меню «…» и панель выбора срока.
-                if this.close_more(cx) || this.close_picker(cx) {
-                    return;
-                }
-                // …затем просмотр вложения (S5-07).
-                if this.section == Section::Mail && this.reading.update(cx, |r, cx| r.close_preview(cx)) {
-                    return;
-                }
-                // …затем панель фильтров (S5-03) — назад к папкам.
-                if this.filters.read(cx).panel {
-                    return this.toggle_filter_panel(cx);
-                }
-                // …затем строку «Удалить навсегда?».
-                if this.cancel_purge(cx) {
-                    return;
-                }
-                // …затем выделение писем (S5-08).
-                if this.section == Section::Mail && this.list.update(cx, |l, cx| l.clear_selection(cx)) {
-                    return;
-                }
-                // …затем запись клавиши и правку на месте в настройках, затем саму вкладку.
-                if this.settings_escape(cx) {
-                    return;
-                }
-                if this.tabs.is_active(crate::tabs::TabKind::Settings) && this.close_settings(window, cx) {
-                    return;
-                }
-                // Панель чтения скрыта (Настройки → Чтение): письмо на месте списка — назад к списку.
-                if this.section == Section::Mail && this.reading_instead_of_list(cx) {
-                    this.reading.update(cx, |r, cx| r.clear(cx));
-                    return;
-                }
-                // В календаре — поиск над панелью события (S5-21).
-                if this.section == Section::Calendar && this.cal.update(cx, |c, cx| c.escape(window, cx)) {
-                    window.focus(&this.focus, cx);
-                    return;
-                }
-                // В контактах — строка «Удалить контакт?», форма, поиск контактов.
-                if this.section == Section::Contacts && this.contacts.update(cx, |c, cx| c.escape(window, cx)) {
-                    return;
-                }
-                if this.section == Section::Tasks && this.tasks.update(cx, |t, cx| t.escape(window, cx)) {
-                    return;
-                }
-                this.search.update(cx, |s, cx| s.set_value("", window, cx));
-                this.run_search("", cx);
-                window.focus(&this.focus, cx);
-            }))
             .size_full()
             .relative()
             .flex()
@@ -921,7 +713,7 @@ impl Mailer {
     }
 
     /// Клавиши A / T / N: ответ на приглашение открытого письма (в «Почте»).
-    fn invite_key(&mut self, status: postman_calendar::Partstat, cx: &mut Context<Self>) {
+    pub(crate) fn invite_key(&mut self, status: postman_calendar::Partstat, cx: &mut Context<Self>) {
         if self.section == Section::Mail {
             self.reading.update(cx, |r, cx| r.invite_hotkey(status, cx));
         }
