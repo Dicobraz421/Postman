@@ -76,6 +76,10 @@ pub fn ensure(path: &Path, n: usize) -> postman_cache::Result<()> {
         if cache.rows_by_ids(&[delegations::letter_id(1)])?.is_empty() {
             delegations::letters(&cache, jiff::Timestamp::now().as_second())?;
         }
+        // …и учёток «стандарты» и Exchange (S7-09а).
+        if !cache.accounts()?.iter().any(|a| Some(a.id.as_str()) == EXCHANGE.profile) {
+            extra_accounts(&cache, jiff::Timestamp::now().as_second())?;
+        }
         return Ok(());
     }
     let mb = |id: &str, name: &str, order| MailboxRow {
@@ -163,7 +167,7 @@ pub fn ensure(path: &Path, n: usize) -> postman_cache::Result<()> {
     cache.upsert_emails(&batch)?;
     cache.set_recipients(&to)?;
     shared(&cache, now)?;
-    second(&cache, now)?;
+    extra_accounts(&cache, now)?;
     chain(&cache, now)?;
     delegations::letters(&cache, now)
 }
@@ -311,50 +315,182 @@ const CHAIN_4: &str = "Подтверждаю, до встречи.
 >> Алексей, добрый день!
 ";
 
-/// Вторая учётная запись профиля демо (S7-03б): префикс ключей и адрес — группа в дереве папок, «От» письма и
-/// встречи, свой календарь в «Моих календарях».
-pub const SECOND: (&str, &str) = ("@2", "a.smirnova@second.example");
+/// Вид сервера учётной записи демо (S7-09а): каким путём она ходит на сервер.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// Stalwart по JMAP — основная учётка.
+    Jmap,
+    /// «Стандарты»: IMAP и SMTP, CalDAV и CardDAV.
+    Standards,
+    /// Exchange on-prem: почта по IMAP, календарь, занятость и справочник по EWS.
+    Exchange,
+}
 
-/// Темы писем второй учётной записи демо.
-const SECOND_SUBJECTS: &[&str] = &["Договор с партнёром", "Re: График поставок", "Счёт № 3415", "Приглашение на выставку"];
+/// Что дал сервер учётной записи демо — те же функции, что `postman_core::model::Feature` (демо от ядра не
+/// зависит, слои): интерфейс переводит их в `Features` один к одному. `keywords` — сервер хранит ключевые слова
+/// (категории, сроки, «Ждём»; у IMAP — `PERMANENTFLAGS \*`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Has {
+    pub calendar: bool,
+    pub tasks: bool,
+    pub contacts: bool,
+    pub directory: bool,
+    pub free_busy: bool,
+    pub rules: bool,
+    pub autoreply: bool,
+    pub quota: bool,
+    pub keywords: bool,
+}
 
-fn second(cache: &Cache, now: i64) -> postman_cache::Result<()> {
-    let (profile, email) = SECOND;
-    let scope = Some(profile);
-    cache.replace_accounts_of(scope, &[AccountRow { id: profile.into(), name: email.into(), is_personal: true, read_only: false }])?;
-    let mb = |id: &str, name: &str, order| MailboxRow {
-        id: scoped(scope, id),
-        parent_id: None,
-        name: name.into(),
-        role: Some(id.into()),
-        sort_order: order,
-        total: 0,
-        unread: 0,
-        rights: Rights::ALL,
-    };
-    let boxes = vec![mb("inbox", "Входящие", 1), mb("drafts", "Черновики", 2), mb("sent", "Отправленные", 3), mb("trash", "Удалённые", 4)];
-    cache.replace_mailboxes(scope, &boxes)?;
-    let rows: Vec<EmailRow> = (0..8)
-        .map(|i| {
-            let (name, addr) = SENDERS[(i + 3) % SENDERS.len()];
-            EmailRow {
-                id: scoped(scope, &format!("demo{}", 500 + i)),
-                thread_id: scoped(scope, &format!("t{i}")),
-                mailbox_ids: vec![scoped(scope, "inbox")],
-                received_at: now - (i as i64 + 1) * 7200 - 1800,
-                subject: format!("{} {}", SECOND_SUBJECTS[i % SECOND_SUBJECTS.len()], 200 + i),
-                from_name: name.into(),
-                from_addr: addr.into(),
-                preview: PREVIEW.into(),
-                seen: i > 1,
-                flagged: false,
-                has_attachment: i % 3 == 0,
-                size: 8192,
-                keywords: Vec::new(),
-            }
-        })
-        .collect();
-    cache.upsert_emails(&rows)
+/// Учётная запись демо: префикс ключей в кэше (`None` — основная), адрес, вид и узел сервера, функции.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Account {
+    pub profile: Option<&'static str>,
+    pub email: &'static str,
+    pub kind: Kind,
+    pub host: &'static str,
+    pub has: Has,
+}
+
+/// Основная учётная запись демо — Stalwart, всё есть.
+pub const MAIN: Account = Account {
+    profile: None,
+    email: ME,
+    kind: Kind::Jmap,
+    host: "mail.corp.example",
+    has: Has {
+        calendar: true,
+        tasks: true,
+        contacts: true,
+        directory: true,
+        free_busy: true,
+        rules: true,
+        autoreply: true,
+        quota: true,
+        keywords: true,
+    },
+};
+
+/// Учётка «стандарты» (S7-09а): IMAP + CalDAV/CardDAV — календарь со scheduling, задачи VTODO, контакты; справочника,
+/// правил, автоответа и квоты нет (таблица S7 «Нет у сервера — нет на экране»).
+pub const STANDARDS: Account = Account {
+    profile: Some("@2"),
+    email: "anna.smirnova@example.test",
+    kind: Kind::Standards,
+    host: "mail.example.test",
+    has: Has {
+        calendar: true,
+        tasks: true,
+        contacts: true,
+        directory: false,
+        free_busy: true,
+        rules: false,
+        autoreply: false,
+        quota: false,
+        keywords: true,
+    },
+};
+
+/// Учётка Exchange (S7-09а; демо-учётка Exchange для снимков, не сделанная в S7-06г): почта, календарь, занятость,
+/// справочник; без задач, контактов, правил, автоответа, квоты и категорий (ключевые слова не хранит).
+pub const EXCHANGE: Account = Account {
+    profile: Some("@3"),
+    email: "a.smirnova@exchange.example.test",
+    kind: Kind::Exchange,
+    host: "exchange.example.test",
+    has: Has {
+        calendar: true,
+        tasks: false,
+        contacts: false,
+        directory: true,
+        free_busy: true,
+        rules: false,
+        autoreply: false,
+        quota: false,
+        keywords: false,
+    },
+};
+
+/// Все учётные записи демо — в порядке дерева папок: основная, «стандарты», Exchange.
+pub const ACCOUNTS: [Account; 3] = [MAIN, STANDARDS, EXCHANGE];
+
+/// Учётная запись демо по префиксу ключей (`None` — основная).
+pub fn account(profile: Option<&str>) -> Option<&'static Account> {
+    ACCOUNTS.iter().find(|a| a.profile == profile)
+}
+
+/// Вторая учётная запись профиля демо (S7-03б) — она же «стандарты» ([`STANDARDS`]): префикс ключей и адрес — группа
+/// в дереве папок, «От» письма и встречи, свой календарь в «Моих календарях».
+pub const SECOND: (&str, &str) = ("@2", STANDARDS.email);
+
+/// Папки дополнительной учётки: роль и имя у сервера — как их отдают такие серверы.
+fn folders(kind: Kind) -> &'static [(&'static str, &'static str)] {
+    match kind {
+        Kind::Exchange => &[
+            ("inbox", "Входящие"),
+            ("drafts", "Черновики"),
+            ("sent", "Отправленные"),
+            ("trash", "Удалённые"),
+            ("junk", "Нежелательная почта"),
+        ],
+        _ => &[("inbox", "Входящие"), ("drafts", "Черновики"), ("sent", "Отправленные"), ("trash", "Корзина"), ("junk", "Спам")],
+    }
+}
+
+/// Темы писем дополнительной учётки.
+fn subjects(kind: Kind) -> &'static [&'static str] {
+    match kind {
+        Kind::Exchange => &["Согласование бюджета", "Re: Пропуск на объект", "Отчёт о командировке", "Обновление VPN"],
+        _ => &["Договор с партнёром", "Re: График поставок", "Счёт № 3415", "Приглашение на выставку"],
+    }
+}
+
+/// Папки и письма дополнительных учёток демо (`@2` «стандарты», `@3` Exchange) — каждая группой в дереве папок.
+fn extra_accounts(cache: &Cache, now: i64) -> postman_cache::Result<()> {
+    for (n, a) in ACCOUNTS.iter().enumerate() {
+        let Some(profile) = a.profile else { continue };
+        let scope = Some(profile);
+        cache.replace_accounts_of(scope, &[AccountRow { id: profile.into(), name: a.email.into(), is_personal: true, read_only: false }])?;
+        let boxes: Vec<MailboxRow> = folders(a.kind)
+            .iter()
+            .zip(1..)
+            .map(|(&(role, name), order)| MailboxRow {
+                id: scoped(scope, role),
+                parent_id: None,
+                name: name.into(),
+                role: Some(role.into()),
+                sort_order: order,
+                total: 0,
+                unread: 0,
+                rights: Rights::ALL,
+            })
+            .collect();
+        cache.replace_mailboxes(scope, &boxes)?;
+        let subjects = subjects(a.kind);
+        let rows: Vec<EmailRow> = (0..8)
+            .map(|i| {
+                let (name, addr) = SENDERS[(i + 3 * n) % SENDERS.len()];
+                EmailRow {
+                    id: scoped(scope, &format!("demo{}", 500 + i)),
+                    thread_id: scoped(scope, &format!("t{i}")),
+                    mailbox_ids: vec![scoped(scope, "inbox")],
+                    received_at: now - (i as i64 + 1) * 7200 - 600 * n as i64,
+                    subject: format!("{} {}", subjects[i % subjects.len()], 100 * n + i),
+                    from_name: name.into(),
+                    from_addr: addr.into(),
+                    preview: PREVIEW.into(),
+                    seen: i > 1,
+                    flagged: false,
+                    has_attachment: i % 3 == 0,
+                    size: 8192,
+                    // Нет ключевых слов у сервера — нет и категорий у его писем.
+                    keywords: if a.has.keywords { demo_keywords(i) } else { Vec::new() },
+                }
+            })
+            .collect();
+        cache.upsert_emails(&rows)?;
+    }
+    Ok(())
 }
 
 /// Общие ящики демо (S4-06): ящик отдела, где можно всё, и ящик руководителя, открытый только для чтения.
@@ -764,20 +900,53 @@ pub mod calendar {
         v
     }
 
-    /// Календарь второй учётной записи демо (S7-03б): владелец — она сама, как у календарей коллег.
-    pub fn second_calendar() -> Owner {
-        Owner { email: crate::SECOND.1.into(), name: crate::SECOND.1.into() }
+    /// Календарь дополнительной учётной записи демо (S7-03б): владелец — она сама, как у календарей коллег; подпись —
+    /// адрес учётки.
+    fn of_account(a: &crate::Account) -> Owner {
+        Owner { email: a.email.into(), name: a.email.into() }
     }
 
-    /// События второй учётной записи демо-недели.
+    /// Календарь второй учётной записи демо («стандарты», CalDAV).
+    pub fn second_calendar() -> Owner {
+        of_account(&crate::STANDARDS)
+    }
+
+    /// Календари дополнительных учёток демо (S7-09а), где календарь есть, — в «Моих календарях», по порядку дерева.
+    pub fn account_calendars() -> Vec<Owner> {
+        crate::ACCOUNTS.iter().filter(|a| a.profile.is_some() && a.has.calendar).map(of_account).collect()
+    }
+
+    /// Событие календаря дополнительной учётки: моя встреча, календарь — её.
+    fn account_event(a: &crate::Account, calendar: &str, (id, title): (&str, &str), day: i64, at: (i64, i64), mins: i64, place: &str) -> Event {
+        let mut e = event(id, title, day, at, mins, place, false, Me::Owner, "");
+        e.calendar_ids = vec![calendar.into()];
+        e.owner = Some(of_account(a));
+        e
+    }
+
+    /// События второй учётной записи демо-недели («стандарты»).
     pub fn second_events() -> Vec<Event> {
-        let of = |id: &str, title: &str, day: i64, at: (i64, i64), mins: i64, place: &str| {
-            let mut e = event(id, title, day, at, mins, place, false, Me::Owner, "");
-            e.calendar_ids = vec!["s".into()];
-            e.owner = Some(second_calendar());
-            e
-        };
-        vec![of("s1", "Созвон с партнёром", 1, (16, 0), 60, "Teams"), of("s2", "Выставка: стенд", 4, (11, 0), 120, "Экспоцентр")]
+        let a = &crate::STANDARDS;
+        vec![
+            account_event(a, "s", ("s1", "Созвон с партнёром"), 1, (16, 0), 60, "Teams"),
+            account_event(a, "s", ("s2", "Выставка: стенд"), 4, (11, 0), 120, "Экспоцентр"),
+        ]
+    }
+
+    /// События учётки Exchange демо-недели (EWS).
+    pub fn exchange_events() -> Vec<Event> {
+        let a = &crate::EXCHANGE;
+        vec![
+            account_event(a, "x", ("x1", "Комитет по бюджету"), 0, (15, 0), 60, "Зал совета"),
+            account_event(a, "x", ("x2", "Инструктаж по пропускам"), 3, (16, 30), 30, "Проходная"),
+        ]
+    }
+
+    /// События всех дополнительных учёток демо-недели (S7-09а).
+    pub fn account_events() -> Vec<Event> {
+        let mut v = second_events();
+        v.extend(exchange_events());
+        v
     }
 
     /// Коллеги, открывшие мне календарь (S5-22): события их календарей — [`colleague_events`].
@@ -1278,6 +1447,38 @@ mod tests {
         assert_eq!(b.attachments[0].size, data.len() as u64);
         let info = png::Decoder::new(std::io::Cursor::new(data)).read_info().unwrap();
         assert_eq!((info.info().width, info.info().height), CHART_SIZE);
+    }
+
+    /// Три учётки демо (S7-09а): основная JMAP, «стандарты», Exchange — у каждой свои функции, адреса вымышленные.
+    #[test]
+    fn three_accounts_with_their_features() {
+        assert_eq!(ACCOUNTS.map(|a| a.kind), [Kind::Jmap, Kind::Standards, Kind::Exchange]);
+        assert_eq!(account(Some(SECOND.0)).map(|a| a.email), Some(SECOND.1));
+        assert!(ACCOUNTS[1..].iter().all(|a| a.email.ends_with(".test") && a.host.ends_with("example.test")));
+        // Функции разные: у каждой дополнительной учётки чего-то нет, и наборы не совпадают.
+        assert!(ACCOUNTS[1..].iter().all(|a| a.has != MAIN.has) && STANDARDS.has != EXCHANGE.has);
+        let owners: Vec<String> = calendar::account_calendars().into_iter().map(|o| o.email).collect();
+        assert_eq!(owners, [STANDARDS.email, EXCHANGE.email]);
+        assert!(calendar::account_events().iter().all(|e| e.owner.as_ref().is_some_and(|o| owners.contains(&o.email))));
+    }
+
+    /// Демо-ящик: группы учёток с их папками и письмами; у Exchange — без категорий.
+    #[test]
+    fn mailbox_has_extra_accounts() {
+        let dir = std::env::temp_dir().join(format!("postman-demo-accounts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("demo.redb");
+        ensure(&path, 50).unwrap();
+        let cache = Cache::open(&path).unwrap();
+        let ids: Vec<String> = cache.accounts().unwrap().into_iter().map(|a| a.id).collect();
+        assert!(ids.iter().any(|id| id == "@2") && ids.iter().any(|id| id == "@3"));
+        let boxes = cache.mailboxes().unwrap();
+        assert!(boxes.iter().any(|b| b.id == scoped(Some("@3"), "junk") && b.name == "Нежелательная почта"));
+        let mail = cache.rows_by_ids(&[scoped(Some("@3"), "demo500"), scoped(Some("@2"), "demo500")]).unwrap();
+        assert_eq!(mail.len(), 2);
+        assert!(mail.iter().any(|m| m.id.starts_with("@3") && m.keywords.is_empty()));
+        drop(cache);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Приглашение демо — на завтра, тот же размер файла; фиксированной даты в нём нет.
