@@ -10,6 +10,7 @@ use pets_ui::theme::{Metric, Role};
 use postman_cache::EmailRow;
 use postman_compose::Mode;
 use postman_core::marks::Kind;
+use postman_core::model::Features;
 
 use crate::Mailer;
 use crate::bulk::{Ask, key_hint, mask, menu_line, separator};
@@ -59,8 +60,14 @@ const GROUPS: &[&[Item]] = &[
     &[Item::Phishing],
 ];
 
-fn items() -> impl Iterator<Item = Item> {
-    GROUPS.iter().flat_map(|g| g.iter().copied())
+/// Пункты группами без функций, которых нет у сервера учётной записи (S7, «Нет у сервера — нет на экране»: у
+/// Exchange — без категорий и сроков); опустевшая группа — без разделителя.
+fn groups(features: Features) -> Vec<Vec<Item>> {
+    GROUPS.iter().map(|g| g.iter().copied().filter(|it| it.shown(features)).collect::<Vec<_>>()).filter(|g| !g.is_empty()).collect()
+}
+
+fn items(features: Features) -> impl Iterator<Item = Item> {
+    groups(features).into_iter().flatten()
 }
 
 impl Item {
@@ -70,6 +77,12 @@ impl Item {
             Item::Move => Some(Sub::Move),
             _ => None,
         }
+    }
+
+    /// Есть у сервера учётки: категория — по `mail.categorize`, остальное — по своей команде.
+    fn shown(self, features: Features) -> bool {
+        let id = if self == Item::Category { Some("mail.categorize") } else { self.command(true) };
+        id.is_none_or(|id| crate::features::available(id, features))
     }
 
     /// Ответить можно одному письму.
@@ -132,6 +145,8 @@ pub(crate) struct Menu {
     cursor: usize,
     sub: Option<Sub>,
     sub_cursor: usize,
+    /// Что умеет сервер учётки на момент открытия: пункты без этих функций не показываются.
+    features: Features,
     focus: FocusHandle,
     /// Фокус — меню (на следующем кадре: ему нужно окно).
     focus_pending: bool,
@@ -139,7 +154,7 @@ pub(crate) struct Menu {
 
 impl Menu {
     fn item(&self) -> Option<Item> {
-        items().nth(self.cursor)
+        items(self.features).nth(self.cursor)
     }
 
     fn enabled(&self, it: Item) -> bool {
@@ -147,11 +162,11 @@ impl Menu {
     }
 
     fn step(&mut self, delta: isize) {
-        let n = items().count() as isize;
+        let n = items(self.features).count() as isize;
         let mut c = self.cursor as isize;
         for _ in 0..n {
             c = (c + delta).rem_euclid(n);
-            if items().nth(c as usize).is_some_and(|it| self.enabled(it)) {
+            if items(self.features).nth(c as usize).is_some_and(|it| self.enabled(it)) {
                 break;
             }
         }
@@ -193,8 +208,9 @@ impl Mailer {
         sub: Option<Sub>,
         cx: &mut Context<Self>,
     ) {
-        let cursor = sub.and_then(|s| items().position(|it| it.sub() == Some(s))).unwrap_or(0);
-        let mut menu = Menu { at, ids, row, unread, unflagged, cursor, sub, sub_cursor: 0, focus: cx.focus_handle(), focus_pending: true };
+        let features = crate::features::get(cx);
+        let cursor = sub.and_then(|s| items(features).position(|it| it.sub() == Some(s))).unwrap_or(0);
+        let mut menu = Menu { at, ids, row, unread, unflagged, cursor, sub, sub_cursor: 0, features, focus: cx.focus_handle(), focus_pending: true };
         if !menu.item().is_some_and(|it| menu.enabled(it)) {
             menu.step(1);
         }
@@ -218,7 +234,7 @@ impl Mailer {
         self.context_menu_key(cx);
         if let Some(m) = &mut self.menu {
             m.sub = Some(Sub::Move);
-            m.cursor = items().position(|it| it == Item::Move).unwrap_or(0);
+            m.cursor = items(m.features).position(|it| it == Item::Move).unwrap_or(0);
             m.sub_cursor = 0;
         }
     }
@@ -227,7 +243,7 @@ impl Mailer {
     pub(crate) fn screen_menu_sub(&mut self, sub: Sub) {
         if let Some(m) = &mut self.menu {
             m.sub = Some(sub);
-            m.cursor = items().position(|it| it.sub() == Some(sub)).unwrap_or(0);
+            m.cursor = items(m.features).position(|it| it.sub() == Some(sub)).unwrap_or(0);
             m.sub_cursor = 0;
         }
     }
@@ -235,7 +251,7 @@ impl Mailer {
     /// Снимки: курсор — на последнем пункте («Сообщить о фишинге»).
     pub(crate) fn screen_menu_last(&mut self) {
         if let Some(m) = &mut self.menu {
-            m.cursor = items().count() - 1;
+            m.cursor = items(m.features).count() - 1;
             m.sub = None;
         }
     }
@@ -262,7 +278,7 @@ impl Mailer {
             if let Some(m) = &mut self.menu {
                 m.sub = if m.sub == Some(s) { None } else { Some(s) };
                 m.sub_cursor = 0;
-                m.cursor = items().position(|x| x == it).unwrap_or(m.cursor);
+                m.cursor = items(m.features).position(|x| x == it).unwrap_or(m.cursor);
             }
             return cx.notify();
         }
@@ -338,7 +354,7 @@ impl Mailer {
             "down" => m.step(1),
             "up" => m.step(-1),
             "home" => {
-                m.cursor = items().count() - 1;
+                m.cursor = items(m.features).count() - 1;
                 m.step(1);
             }
             "end" => {
@@ -377,7 +393,8 @@ impl Mailer {
         let viewport = window.viewport_size();
         // Над выделением — строка «Выбрано N писем» сверху.
         let title_h = if m.ids.len() > 1 { TITLE_H } else { 0. };
-        let height = items().count() as f32 * ITEM_H + (GROUPS.len() - 1) as f32 * SEP_H + 8. + title_h;
+        let groups = groups(m.features);
+        let height = groups.iter().map(Vec::len).sum::<usize>() as f32 * ITEM_H + (groups.len() - 1) as f32 * SEP_H + 8. + title_h;
         let (vw, vh) = (f32::from(viewport.width), f32::from(viewport.height));
         let x = f32::from(m.at.x).min(vw - WIDTH - 8.).max(8.);
         let y = f32::from(m.at.y).min(vh - height - 8.).max(8.);
@@ -391,7 +408,7 @@ impl Mailer {
         let mut index = 0usize;
         let mut top = 4. + title_h;
         let mut sub_top = None;
-        for (g, group) in GROUPS.iter().enumerate() {
+        for (g, group) in groups.iter().enumerate() {
             if g > 0 {
                 col = col.child(separator(l));
                 top += SEP_H;

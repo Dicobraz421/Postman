@@ -6,7 +6,7 @@
 //!
 //! Пока сервер не ответил — всё есть: на время входа разделы не прячутся. В демо — функции учётной записи открытой
 //! папки ([`of_demo_folder`], S7-09б): у «стандартов» нет справочника, правил и автоответа, у Exchange — задач,
-//! контактов, правил и автоответа.
+//! контактов, правил, автоответа и ключевых слов (категорий, сроков, «Ждём»).
 
 use gpui_kit::*;
 use postman_core::model::{Feature, Features};
@@ -68,6 +68,8 @@ pub(crate) fn needs(id: &str) -> &'static [Feature] {
         "contacts.new" | "contacts.edit" | "contacts.delete" => &[Feature::Contacts],
         "settings.rules" => &[Feature::Rules],
         "settings.vacation" => &[Feature::Autoreply],
+        // Категории, сроки, «Напомнить», «Ждать ответа», «Исчезнет» — ключевые слова письма на сервере.
+        "mail.categorize" | "mail.due" | "mail.remind" | "mail.wait" | "mail.expire" => &[Feature::Keywords],
         _ => &[],
     }
 }
@@ -96,8 +98,11 @@ pub(crate) mod scenes {
         Scene::new("features-mail-only", mail_only, mail_only_ready),
         // То же — «Настройки»: без «Календаря», «Правил» и «Автоответа».
         Scene::new("features-mail-only-settings", settings, settings_ready),
-        // Демо, выбрана папка учётки Exchange (S7-09б): функции — её сервера; в рейле нет «Задач».
+        // Демо, выбрана папка учётки Exchange (S7-09б): функции — её сервера; в рейле нет «Задач», в закладках быстрых
+        // фильтров — «Срок», «Ждём», «Истекают» (ключевых слов у Exchange нет).
         Scene::new("features-exchange", exchange, exchange_ready),
+        // То же, письмо открыто: в шапке нет кнопок сроков.
+        Scene::new("features-exchange-letter", exchange_letter, exchange_letter_ready).continues(),
     ];
 
     /// Входящие учётки Exchange демо.
@@ -111,7 +116,23 @@ pub(crate) mod scenes {
     }
 
     fn exchange_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
-        m.folders.read(cx).current.as_deref() == Some(exchange_inbox().as_str()) && super::get(cx) == super::of_demo(postman_demo::EXCHANGE.has)
+        screens::rows_loaded(m.list.read(cx))
+            && m.folders.read(cx).current.as_deref() == Some(exchange_inbox().as_str())
+            && super::get(cx) == super::of_demo(postman_demo::EXCHANGE.has)
+    }
+
+    fn exchange_letter(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.list.update(cx, |l, cx| l.select(0, cx));
+        Ok(())
+    }
+
+    fn exchange_letter_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let list = m.list.read(cx);
+        let first = list.row(0).map(|r| r.id.as_str());
+        list.selected == Some(0)
+            && first.is_some()
+            && screens::reading(m, cx).is_some_and(|r| r.doc.is_some() && Some(r.row.id.as_str()) == first)
+            && super::get(cx) == super::of_demo(postman_demo::EXCHANGE.has)
     }
 
     /// Сервер умеет всё — кроме своих сцен (S7-03).
@@ -121,26 +142,31 @@ pub(crate) mod scenes {
         }
     }
 
+    /// Сервер только с почтой — JMAP без календаря, контактов, Sieve: ключевые слова у почты JMAP есть.
+    fn mail() -> Features {
+        Features::NONE.with(postman_core::model::Feature::Keywords, true)
+    }
+
     fn mail_only(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
         // Открыт календарь — сервер без него возвращает в «Почту».
         m.close_settings(window, cx);
         m.set_section(Section::Calendar, cx);
-        m.set_features(Features::NONE, cx);
+        m.set_features(mail(), cx);
         Ok(())
     }
 
     fn mail_only_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
-        !m.tabs.is_active(crate::tabs::TabKind::Settings) && m.section == Section::Mail && super::get(cx) == Features::NONE
+        !m.tabs.is_active(crate::tabs::TabKind::Settings) && m.section == Section::Mail && super::get(cx) == mail()
     }
 
     fn settings(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
-        m.set_features(Features::NONE, cx);
+        m.set_features(mail(), cx);
         m.open_settings(Some(SettingsSection::General), window, cx);
         Ok(())
     }
 
     fn settings_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
-        screens::settings_on(m, SettingsSection::General, cx) && super::get(cx) == Features::NONE
+        screens::settings_on(m, SettingsSection::General, cx) && super::get(cx) == mail()
     }
 }
 
@@ -157,7 +183,7 @@ mod tests {
     #[test]
     fn mail_stays_without_anything_else() {
         let mail = Features::NONE;
-        for id in ["mail.reply", "mail.new", "mail.due", "search.focus", "settings.open", "view.mail", "invite.accept"] {
+        for id in ["mail.reply", "mail.new", "search.focus", "settings.open", "view.mail", "invite.accept"] {
             assert!(available(id, mail), "{id}");
         }
         for id in [
@@ -172,9 +198,13 @@ mod tests {
             "settings.rules",
             "settings.vacation",
             "settings.calendar",
+            "mail.due",
+            "mail.wait",
+            "mail.categorize",
         ] {
             assert!(!available(id, mail), "{id}");
         }
+        assert!(available("mail.due", mail.with(Feature::Keywords, true)));
     }
 
     #[test]
@@ -194,7 +224,7 @@ mod tests {
         assert!(!available("settings.rules", standards) && !available("settings.vacation", standards));
         let exchange = of_demo(postman_demo::EXCHANGE.has);
         assert!(available("view.calendar", exchange) && available("view.contacts", exchange));
-        for id in ["view.tasks", "task.new", "contacts.new", "settings.rules", "settings.vacation"] {
+        for id in ["view.tasks", "task.new", "contacts.new", "settings.rules", "settings.vacation", "mail.categorize", "mail.due", "mail.wait"] {
             assert!(!available(id, exchange), "{id}");
         }
         // Папка — учётки, чей префикс у её ключа; основная — без префикса.
@@ -207,9 +237,10 @@ mod tests {
 
     #[test]
     fn every_feature_rule_names_a_real_command() {
-        // Правило по префиксу (`calendar.`, `meeting.`, `task.`) не должно задевать команды других разделов.
+        // Правило по префиксу (`calendar.`, `meeting.`, `task.`) не должно задевать команды других разделов; у почты —
+        // только ключевые слова.
         for c in crate::commands::all() {
-            let need = needs(c.id);
+            let need: Vec<Feature> = needs(c.id).iter().copied().filter(|&f| f != Feature::Keywords).collect();
             let section = c.id.split('.').next().unwrap_or_default();
             if ["mail", "thread", "attach", "filters", "tab", "search", "palette", "compose", "invite"].contains(&section) {
                 assert!(need.is_empty(), "{}", c.id);

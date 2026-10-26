@@ -188,7 +188,12 @@ impl Render for Folders {
         let l = look(cx);
         // Режим фильтров: белая карточка с фильтрами на месте дерева.
         if let Some(f) = self.filters.as_ref().filter(|f| f.read(cx).panel) {
-            return div().size_full().pt(px(4.)).pr(px(8.)).text_color(l.text()).child(crate::filters::panel(f, f.read(cx), &l));
+            return div().size_full().pt(px(4.)).pr(px(8.)).text_color(l.text()).child(crate::filters::panel(
+                f,
+                f.read(cx),
+                crate::features::available("mail.categorize", crate::features::get(cx)),
+                &l,
+            ));
         }
         let mut col = div().flex().flex_col().size_full().pt(px(4.)).pr(px(8.)).pl(px(4.)).text_color(l.text());
         if let Some(n) = self.results {

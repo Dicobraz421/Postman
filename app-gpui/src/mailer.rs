@@ -447,6 +447,8 @@ impl Mailer {
     /// Что умеет сервер (S7-03, `features.rs`): открыт модуль, которого у сервера нет, — назад в «Почту».
     pub(crate) fn set_features(&mut self, features: postman_core::model::Features, cx: &mut Context<Self>) {
         crate::features::set(features, cx);
+        // Закладка быстрого фильтра пропала (нет ключевых слов) — её фильтр снимается.
+        self.prune_quick(cx);
         if !crate::features::available(self.section.command(), features) {
             self.set_section(Section::Mail, cx);
         }

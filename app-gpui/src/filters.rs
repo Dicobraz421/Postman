@@ -126,6 +126,11 @@ pub(crate) fn quick_keys(q: Quick) -> (&'static str, &'static str) {
     }
 }
 
+/// Закладка по ключевым словам писем (сроки, «Ждём», «Исчезнет»), а не по заголовкам.
+fn needs_keywords(q: Quick) -> bool {
+    matches!(q, Quick::Due | Quick::Waiting | Quick::Expiring)
+}
+
 /// Цвет закладки: красный — только угрозы, янтарный — только сроки (DESIGN «Цвет»); остальные — из палитры.
 pub(crate) fn quick_color(q: Quick, l: &Look) -> Hsla {
     match q {
@@ -362,7 +367,8 @@ fn caption(text: String, l: &Look) -> Div {
 }
 
 /// Панель фильтров на месте дерева папок: «Где искать», Состояние, Отправитель, Категория.
-pub(crate) fn panel(model: &Entity<FilterModel>, m: &FilterModel, l: &Look) -> Stateful<Div> {
+/// `keywords` — сервер учётки хранит ключевые слова: нет — нет и группы «Категория» (S7).
+pub(crate) fn panel(model: &Entity<FilterModel>, m: &FilterModel, keywords: bool, l: &Look) -> Stateful<Div> {
     let c = &m.query.criteria;
     let toggle = |f: fn(&mut Query)| {
         let model = model.clone();
@@ -465,7 +471,7 @@ pub(crate) fn panel(model: &Entity<FilterModel>, m: &FilterModel, l: &Look) -> S
         .children([Check::Unread, Check::Mentions, Check::Attachments, Check::Flagged].map(check))
         .child(caption(tr!("filters-group-sender"), l))
         .child(check(Check::External))
-        .when(!m.categories.is_empty(), |d| d.child(caption(tr!("filters-group-category"), l)).children(categories))
+        .when(keywords && !m.categories.is_empty(), |d| d.child(caption(tr!("filters-group-category"), l)).children(categories))
         .child(div().h(px(12.)).flex_none())
 }
 
@@ -740,9 +746,11 @@ impl crate::Mailer {
         }
     }
 
-    /// Закладки в списке по настройкам: показанные, по порядку; полоса скрыта — нет.
+    /// Закладки в списке по настройкам: показанные, по порядку; полоса скрыта — нет. «Срок», «Ждём», «Истекают» —
+    /// ключевые слова на сервере учётки: нет их — нет и закладок (S7, «Нет у сервера — нет на экране»).
     pub(crate) fn quick_tabs(cx: &App) -> Vec<Quick> {
-        crate::prefs::get(cx).quick.tabs().map(Quick::from).collect()
+        let keywords = crate::features::available("mail.due", crate::features::get(cx));
+        crate::prefs::get(cx).quick.tabs().map(Quick::from).filter(|&q| keywords || !needs_keywords(q)).collect()
     }
 
     /// Настройки изменились: закладка скрыта (или все) — её фильтр снимается, невидимых условий нет.

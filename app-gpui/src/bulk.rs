@@ -409,6 +409,8 @@ impl MailList {
         };
         let seen = if unread { tr!("bulk-read") } else { tr!("bulk-unread") };
         let flag = if unflagged { tr!("bulk-flag") } else { tr!("bulk-unflag") };
+        // Категории и сроки — ключевые слова на сервере учётки: нет их — нет и кнопок (S7).
+        let keywords = crate::features::available("mail.due", crate::features::get(cx));
         let actions = div()
             .h(px(48.))
             .flex()
@@ -418,8 +420,10 @@ impl MailList {
             .pb(px(4.))
             .child(button("bulk-seen", glyph::READ, seen, false, false).on_click(ask(Ask::Seen(None))))
             .child(button("bulk-flag", glyph::FLAG, flag, false, false).on_click(ask(Ask::Flag(None))))
-            .child(button("bulk-cat", glyph::TAG, tr!("bulk-category-plain"), open == Some(Drop::Category), true).on_click(drop(Drop::Category)))
-            .child(button("bulk-due", glyph::CLOCK, tr!("bulk-due-plain"), false, true).on_click(ask(Ask::Lifecycle(Kind::Due))))
+            .when(keywords, |d| {
+                d.child(button("bulk-cat", glyph::TAG, tr!("bulk-category-plain"), open == Some(Drop::Category), true).on_click(drop(Drop::Category)))
+                    .child(button("bulk-due", glyph::CLOCK, tr!("bulk-due-plain"), false, true).on_click(ask(Ask::Lifecycle(Kind::Due))))
+            })
             .child(button("bulk-move", glyph::MOVE, tr!("bulk-move-plain"), open == Some(Drop::Folder), true).on_click(drop(Drop::Folder)))
             .child(button("bulk-archive", glyph::ARCHIVE, tr!("bulk-archive"), false, false).on_click(ask(Ask::Archive)))
             .child(button("bulk-delete", glyph::DELETE, tr!("bulk-delete"), false, false).on_click(ask(Ask::Trash)));
@@ -1079,6 +1083,7 @@ impl Render for SummaryView {
             .child(mask(16., &l, l.pm(Pm::Secondary)))
             .child(div().flex_1().min_w_0().truncate().child(tr!("bulk-phishing")))
             .on_click(ask(Ask::Phishing));
+        let keywords = crate::features::available("mail.due", crate::features::get(cx));
         let grid = div()
             .grid()
             .grid_cols(2)
@@ -1086,12 +1091,18 @@ impl Render for SummaryView {
             .child(cell("summary-archive", Some(glyph::ARCHIVE), tr!("bulk-archive"), "mail.archive").on_click(ask(Ask::Archive)))
             .child(cell("summary-delete", Some(glyph::DELETE), tr!("bulk-delete"), "mail.delete").on_click(ask(Ask::Trash)))
             .child(cell("summary-move", Some(glyph::MOVE), tr!("bulk-move-plain"), "mail.move").on_click(sub(crate::menu::Sub::Move)))
-            .child(cell("summary-cat", Some(glyph::TAG), tr!("bulk-category-plain"), "mail.categorize").on_click(sub(crate::menu::Sub::Category)))
+            .when(keywords, |d| {
+                d.child(
+                    cell("summary-cat", Some(glyph::TAG), tr!("bulk-category-plain"), "mail.categorize").on_click(sub(crate::menu::Sub::Category)),
+                )
+            })
             .child(
                 cell("summary-seen", Some(glyph::READ), seen, if unread { "mail.mark_read" } else { "mail.mark_unread" })
                     .on_click(ask(Ask::Seen(None))),
             )
-            .child(cell("summary-due", Some(glyph::CLOCK), tr!("bulk-due-plain"), "mail.due").on_click(ask(Ask::Lifecycle(Kind::Due))))
+            .when(keywords, |d| {
+                d.child(cell("summary-due", Some(glyph::CLOCK), tr!("bulk-due-plain"), "mail.due").on_click(ask(Ask::Lifecycle(Kind::Due))))
+            })
             .child(cell("summary-flag", Some(glyph::FLAG), flag, "mail.toggle_flag").on_click(ask(Ask::Flag(None))))
             .child(phish);
         let foot =
