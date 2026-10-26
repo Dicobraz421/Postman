@@ -43,6 +43,7 @@ pub(crate) fn of_demo(has: postman_demo::Has) -> Features {
         (Feature::Rules, has.rules),
         (Feature::Autoreply, has.autoreply),
         (Feature::Quota, has.quota),
+        (Feature::Keywords, has.keywords),
     ]
     .into_iter()
     .fold(Features::NONE, |f, (feature, on)| f.with(feature, on))

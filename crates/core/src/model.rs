@@ -259,10 +259,12 @@ pub enum Feature {
     Autoreply,
     /// Квота ящика.
     Quota,
+    /// Сервер хранит ключевые слова писем: категории, сроки, «Ждём» (JMAP — всегда; IMAP — `PERMANENTFLAGS \*`).
+    Keywords,
 }
 
 impl Feature {
-    pub const ALL: [Feature; 8] = [
+    pub const ALL: [Feature; 9] = [
         Feature::Calendar,
         Feature::Tasks,
         Feature::Contacts,
@@ -271,6 +273,7 @@ impl Feature {
         Feature::Rules,
         Feature::Autoreply,
         Feature::Quota,
+        Feature::Keywords,
     ];
 
     const fn bit(self) -> u16 {
