@@ -419,6 +419,10 @@ impl Mailer {
         if postman_cache::account_of(&id).is_some() {
             self.load_address_book(cx);
         }
+        // Демо (S7-09б): функции — учётки открытой папки, как ответ её сервера.
+        if !self.backend.is_live() {
+            self.set_features(crate::features::of_demo_folder(&id), cx);
+        }
         self.folders.update(cx, |f, cx| {
             f.current = Some(id.clone());
             f.results = None;

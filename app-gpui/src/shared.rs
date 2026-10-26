@@ -44,9 +44,15 @@ pub(crate) fn name(email: &str, cx: &App) -> String {
         .unwrap_or_else(|| email.to_owned())
 }
 
-/// Письмо общего ящика (ключ кэша с префиксом аккаунта).
+/// Письмо общего ящика (ключ кэша с префиксом аккаунта). Своя дополнительная учётная запись (`@2`, S7-03б) — не
+/// общий ящик: её письма в работу не берут.
 pub(crate) fn is_shared(row: &EmailRow) -> bool {
-    account_of(&row.id).is_some()
+    in_shared(&row.id)
+}
+
+/// Ключ кэша (письмо, папка) — общего ящика, а не своей учётной записи.
+fn in_shared(key: &str) -> bool {
+    account_of(key).is_some_and(|a| postman_cache::profile_of(Some(a)) != Some(a))
 }
 
 /// Кто держит письмо общего ящика; своё письмо — никто.
@@ -319,8 +325,7 @@ impl Mailer {
     /// подпись — по письму («Вернуть в очередь» — у моего).
     pub(crate) fn take_button(&self, cx: &App) -> Option<Act> {
         let list = self.list.read(cx);
-        let folder = list.mailbox.as_deref()?;
-        account_of(folder)?;
+        let folder = list.mailbox.as_deref().filter(|f| in_shared(f))?;
         if list.rights.get(folder).is_some_and(|r| !r.keywords) {
             return None;
         }
@@ -453,6 +458,8 @@ mod tests {
         assert_eq!(Act::of(&row("s/1", &["pm.taken", other]), Some(me)), Act::Steal);
         assert_eq!(Act::of(&row("s/1", &["pm.taken", mine]), Some(me)), Act::Release);
         assert_eq!(Act::of(&row("1", &["pm.taken", mine]), Some(me)), Act::Take, "своё письмо — не общий ящик");
+        let extra = postman_cache::scoped(postman_demo::EXCHANGE.profile, "1");
+        assert!(!super::is_shared(&row(&extra, &[])), "своя дополнительная учётка — не общий ящик");
 
         let r = row("s/1", &["pm.taken", other, "pm.cat.team"]);
         let p = patch(&r, Act::Steal, me, now).unwrap();

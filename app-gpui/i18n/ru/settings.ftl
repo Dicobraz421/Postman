@@ -403,8 +403,11 @@ settings-account-password-stored = Пароль — в Диспетчере уч
 settings-account-password-none = Пароль не хранится — спросим при запуске
 settings-account-remove = Удалить
 settings-account-remove-confirm = Удалить аккаунт { $user }? Адрес, логин и пароль забудутся; письма на сервере останутся.
-settings-account-demo = Демо-ящик
-settings-account-demo-hint = Без сервера: письма — синтетические, изменения не уходят на сервер.
+settings-account-kind = { $kind ->
+    [standards] IMAP, CalDAV, CardDAV
+    [exchange] Exchange (EWS)
+   *[jmap] JMAP (Stalwart)
+}
 settings-account-shared = общий ящик
 settings-account-one = Каждая учётная запись — группой в дереве папок, как общие ящики; «От» в письме выбирает, с какой отправить. Первая — основная: контакты, задачи, правила и автоответ — её.
 settings-account-exists = Эта учётная запись уже подключена.

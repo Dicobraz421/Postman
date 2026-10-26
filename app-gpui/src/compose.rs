@@ -1170,18 +1170,18 @@ impl Mailer {
     }
 }
 
-/// Демо: свой адрес и общий ящик отдела (`postman_demo::SHARED`) — выбор «От» виден и без сервера.
+/// Демо: свои адреса всех учётных записей (`postman_demo::ACCOUNTS`, S7-09б) и общий ящик отдела
+/// (`postman_demo::SHARED`) — выбор «От» виден и без сервера; основная — первой, общий ящик — за ней, как в дереве.
 pub(crate) fn demo_senders() -> Vec<Sender> {
-    let own = Sender { account: None, address: Address::new("", postman_demo::ME), signature: String::new() };
-    let shared = postman_demo::SHARED.iter().filter(|(_, _, read_only)| !read_only).map(|(id, email, _)| Sender {
-        account: Some((*id).to_owned()),
-        address: Address::new("", *email),
+    let sender = |account: Option<&str>, email: &str| Sender {
+        account: account.map(str::to_owned),
+        address: Address::new("", email),
         signature: String::new(),
-    });
-    // Вторая учётная запись демо (S7-03б).
-    let second =
-        Sender { account: Some(postman_demo::SECOND.0.to_owned()), address: Address::new("", postman_demo::SECOND.1), signature: String::new() };
-    std::iter::once(own).chain(shared).chain(std::iter::once(second)).collect()
+    };
+    let mut accounts = postman_demo::ACCOUNTS.iter().map(|a| sender(a.profile, a.email));
+    let own = accounts.next();
+    let shared = postman_demo::SHARED.iter().filter(|(_, _, read_only)| !read_only).map(|&(id, email, _)| sender(Some(id), email));
+    own.into_iter().chain(shared).chain(accounts).collect()
 }
 
 /// Опись части (ADR 0005, `parts.rs`).

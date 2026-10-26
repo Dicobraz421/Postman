@@ -116,6 +116,7 @@ impl Folders {
         let total: u32 = if open { 0 } else { self.of(Some(&a.id)).map(|m| m.unread).sum() };
         let id = a.id.clone();
         let hint = crate::shared::rights_hint(self.read_only(a), self.of(Some(&a.id)).map(|m| &m.rights));
+        let own = postman_cache::profile_of(Some(&a.id)) == Some(a.id.as_str());
         div()
             .id(SharedString::from(format!("acc-{}", a.id)))
             .mt(px(10.))
@@ -133,14 +134,12 @@ impl Folders {
             .child(div().w(px(12.)).child(if open { "▾" } else { "▸" }))
             // Значок «общий» и права в подсказке (S5-28, макет `SharedMailboxes`); другая моя учётная запись (S7-03б) —
             // значок почты.
-            .child(crate::chrome::icon(
-                if postman_cache::profile_of(Some(&a.id)) == Some(a.id.as_str()) { crate::chrome::glyph::MAIL } else { crate::chrome::glyph::PEOPLE },
-                14.,
-            ))
+            .child(crate::chrome::icon(if own { crate::chrome::glyph::MAIL } else { crate::chrome::glyph::PEOPLE }, 14.))
             .child(div().flex_1().min_w_0().truncate().child(a.name.clone()))
             .when(self.read_only(a), |d| d.child(div().flex_none().text_size(px(11.)).child(tr!("shared-read-only"))))
             .when(total > 0, |d| unread(d, total, l))
-            .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(hint.clone()).build(window, cx))
+            // Подсказка «Общий ящик · доступ» — только у общих ящиков (S7-09б).
+            .when(!own, |d| d.tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(hint.clone()).build(window, cx)))
             .on_click(cx.listener(move |this, _, _, cx| this.toggle(&id, cx)))
             .into_any_element()
     }
