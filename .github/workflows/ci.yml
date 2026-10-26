@@ -52,7 +52,7 @@ jobs:
           HEAD_REF: ${{ github.head_ref }}
         run: |
           if [ -z "$BASE" ]; then echo rust=true >> "$GITHUB_OUTPUT"; exit 0; fi
-          git diff --name-only "$BASE" HEAD > changed.txt
+          git -c core.quotepath=off diff --name-only "$BASE" HEAD > changed.txt
           # Полосы: PR правит одну полосу (x/* — межполосный PR класса B).
           if [ -f lanes.toml ] && [ "$EVENT" = pull_request ]; then
             python3 .github/lane_check.py lanes.toml changed.txt "$HEAD_REF"
