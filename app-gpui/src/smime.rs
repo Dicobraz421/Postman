@@ -512,6 +512,7 @@ mod tests {
     /// Итоги образцов демо → тон значка: красный — только изменённое письмо; ГОСТ — алгоритм словами.
     #[test]
     fn demo_samples_map_to_badges() {
+        let _ = pets_i18n::init(&[crate::TEXTS], "ru");
         use postman_core::smime::{Revocation, Verdict};
         let trust = postman_smime::Trust {
             roots: postman_demo::smime::anchors().into_iter().map(|(der, corporate)| postman_smime::Anchor { der, corporate }).collect(),
