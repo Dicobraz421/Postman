@@ -305,7 +305,9 @@ fn statuses(lines: &[String]) -> Vec<(String, String)> {
     lines
         .iter()
         .filter_map(|l| split(l).filter(|(h, _)| is(h, "ATTENDEE")))
-        .map(|(h, v)| (v.trim().to_ascii_lowercase().trim_start_matches("mailto:").to_owned(), param(h, "PARTSTAT").unwrap_or("NEEDS-ACTION").to_owned()))
+        .map(|(h, v)| {
+            (v.trim().to_ascii_lowercase().trim_start_matches("mailto:").to_owned(), param(h, "PARTSTAT").unwrap_or("NEEDS-ACTION").to_owned())
+        })
         .collect()
 }
 
@@ -437,7 +439,8 @@ pub fn instance_rid(ics: &str, rid: &str) -> String {
     if r.events.iter().any(|c| c.rid.as_deref() == Some(want.as_str())) {
         return want;
     }
-    let moved = r.events.iter().find(|c| c.rid.is_some() && value_of(&c.lines, "DTSTART").map(|(h, v)| instant(h, v)).as_deref() == Some(want.as_str()));
+    let moved =
+        r.events.iter().find(|c| c.rid.is_some() && value_of(&c.lines, "DTSTART").map(|(h, v)| instant(h, v)).as_deref() == Some(want.as_str()));
     moved.and_then(|c| c.rid.clone()).unwrap_or(want)
 }
 
@@ -551,7 +554,10 @@ mod tests {
 
         let later = edited(SERIES, &ev, Edit::Whole { shift: 3600 }, 0).unwrap();
         let lines = unfold(&later);
-        assert!(lines.contains(&"DTSTART;TZID=Europe/Moscow:20261102T110000".to_string()) && lines.contains(&"DTEND;TZID=Europe/Moscow:20261102T120000".to_string()));
+        assert!(
+            lines.contains(&"DTSTART;TZID=Europe/Moscow:20261102T110000".to_string())
+                && lines.contains(&"DTEND;TZID=Europe/Moscow:20261102T120000".to_string())
+        );
         assert!(lines.iter().any(|l| l.contains("PARTSTAT=NEEDS-ACTION;RSVP=TRUE") && l.ends_with("user2@itt.test")), "перенос — ответы заново");
         assert!(!lines.iter().any(|l| l.starts_with("RECURRENCE-ID")), "исключения сдвинутой серии — уходят");
     }

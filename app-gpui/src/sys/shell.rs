@@ -8,8 +8,8 @@ use std::path::Path;
 use windows_sys::Win32::Foundation::{ERROR_SUCCESS, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, SetStdHandle};
 use windows_sys::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ, RRF_RT_REG_SZ, RegCloseKey,
-    RegCreateKeyExW, RegDeleteKeyValueW, RegGetValueW, RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ, RRF_RT_REG_SZ, RegCloseKey, RegCreateKeyExW,
+    RegDeleteKeyValueW, RegGetValueW, RegSetValueExW,
 };
 
 /// Имя значения в Run и приложения в RegisteredApplications.
@@ -49,16 +49,7 @@ fn set_string(path: &str, name: Option<&str>, value: &str) -> Result<(), String>
     let data = wide(value);
     let bytes = u32::try_from(data.len() * 2).map_err(|_| "value is too long".to_owned())?;
     // SAFETY: ключ открыт выше; данные — UTF-16 с нулём, размер в байтах.
-    let rc = unsafe {
-        RegSetValueExW(
-            key,
-            wname.as_ref().map_or(std::ptr::null(), |n| n.as_ptr()),
-            0,
-            REG_SZ,
-            data.as_ptr().cast(),
-            bytes,
-        )
-    };
+    let rc = unsafe { RegSetValueExW(key, wname.as_ref().map_or(std::ptr::null(), |n| n.as_ptr()), 0, REG_SZ, data.as_ptr().cast(), bytes) };
     // SAFETY: ключ открыт выше и больше не нужен.
     unsafe { RegCloseKey(key) };
     if rc == ERROR_SUCCESS { Ok(()) } else { Err(format!("RegSetValueExW {path}: {rc}")) }
@@ -123,11 +114,8 @@ pub fn notify(title: &str, body: &str) -> Result<(), String> {
     const AUMID: &str = "Pets.Postman";
     set_string(&format!(r"Software\Classes\AppUserModelId\{AUMID}"), Some("DisplayName"), APP)?;
     let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
-    let xml = format!(
-        "<toast><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual></toast>",
-        esc(title),
-        esc(body)
-    );
+    let xml =
+        format!("<toast><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual></toast>", esc(title), esc(body));
     let run = || -> windows::core::Result<()> {
         let doc = XmlDocument::new()?;
         doc.LoadXml(&HSTRING::from(xml.as_str()))?;
@@ -200,11 +188,7 @@ pub fn open(target: &str) -> Result<(), String> {
 
 /// Показать файл в Проводнике.
 pub fn reveal(path: &Path) -> Result<(), String> {
-    std::process::Command::new("explorer.exe")
-        .arg(format!("/select,{}", path.display()))
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("explorer: {e}"))
+    std::process::Command::new("explorer.exe").arg(format!("/select,{}", path.display())).spawn().map(|_| ()).map_err(|e| format!("explorer: {e}"))
 }
 
 #[cfg(test)]
@@ -215,4 +199,3 @@ mod tests {
         assert_eq!(super::get_string(r"Software\Postman-test-nothing-here", Some("x")), None);
     }
 }
-

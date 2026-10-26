@@ -39,12 +39,7 @@ impl Meeting {
     }
 
     /// Событие для `CalendarEvent/set`; `attendees` — из [`Meeting::attendee_refs`].
-    pub fn new_event<'a>(
-        &'a self,
-        calendar_id: &'a str,
-        organizer: (&'a str, &'a str),
-        attendees: &'a [(&'a str, &'a str, bool)],
-    ) -> NewEvent<'a> {
+    pub fn new_event<'a>(&'a self, calendar_id: &'a str, organizer: (&'a str, &'a str), attendees: &'a [(&'a str, &'a str, bool)]) -> NewEvent<'a> {
         NewEvent {
             uid: &self.uid,
             calendar_id,
@@ -84,11 +79,7 @@ pub fn utc(ts: i64) -> String {
 /// События недели: разобранные, без отменённых, по времени начала. Неразборчивое событие пропускается —
 /// неделя показывается без него.
 pub fn parse_events(values: &[Value], tz: &TimeZone) -> Vec<Event> {
-    let mut out: Vec<Event> = values
-        .iter()
-        .filter_map(|v| Event::from_jmap(v, tz).ok())
-        .filter(|e| e.status != EventStatus::Cancelled)
-        .collect();
+    let mut out: Vec<Event> = values.iter().filter_map(|v| Event::from_jmap(v, tz).ok()).filter(|e| e.status != EventStatus::Cancelled).collect();
     out.sort_by(|a, b| (a.span.start, a.span.end, &a.title).cmp(&(b.span.start, b.span.end, &b.title)));
     out
 }
@@ -98,10 +89,7 @@ pub fn busy_from_events(events: &[Event]) -> Vec<Busy> {
     events
         .iter()
         .filter(|e| e.free_busy == FreeBusy::Busy && e.status != EventStatus::Cancelled)
-        .map(|e| Busy {
-            span: e.span,
-            kind: if e.status == EventStatus::Tentative { BusyKind::Tentative } else { BusyKind::Busy },
-        })
+        .map(|e| Busy { span: e.span, kind: if e.status == EventStatus::Tentative { BusyKind::Tentative } else { BusyKind::Busy } })
         .collect()
 }
 
@@ -134,18 +122,10 @@ mod tests {
         assert!(week[0].recurring);
         let busy = busy_from_events(&week);
         assert_eq!(busy[0].kind, BusyKind::Tentative);
-        assert_eq!(
-            busy[1],
-            Busy {
-                span: postman_calendar::Span::new(at("2026-10-20T12:00:00Z"), at("2026-10-20T13:00:00Z")),
-                kind: BusyKind::Busy
-            }
-        );
+        assert_eq!(busy[1], Busy { span: postman_calendar::Span::new(at("2026-10-20T12:00:00Z"), at("2026-10-20T13:00:00Z")), kind: BusyKind::Busy });
         // «Свободно» в событии — не занятость.
         let free = parse_events(
-            &[
-                json!({ "utcStart": "2026-10-20T12:00:00Z", "utcEnd": "2026-10-20T13:00:00Z", "freeBusyStatus": "free" }),
-            ],
+            &[json!({ "utcStart": "2026-10-20T12:00:00Z", "utcEnd": "2026-10-20T13:00:00Z", "freeBusyStatus": "free" })],
             &TimeZone::UTC,
         );
         assert!(busy_from_events(&free).is_empty());
@@ -176,5 +156,4 @@ mod tests {
         assert_eq!(v["locations"]["l1"]["name"], "Переговорная 1");
         assert_eq!(utc(at("2026-10-21T08:00:00Z")), "2026-10-21T08:00:00Z");
     }
-
 }

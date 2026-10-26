@@ -17,7 +17,10 @@ pub const MAX_QUEUE: usize = 10_000;
 pub enum Connection {
     Online,
     /// Сервер не отвечает: следующая попытка через `retry_in` секунд; правок ждёт отправки — `queued`.
-    Offline { retry_in: u64, queued: usize },
+    Offline {
+        retry_in: u64,
+        queued: usize,
+    },
 }
 
 /// Пауза перед попыткой номер `attempt` (с нуля): 5, 10, 20, 40, 60, 60… с.
@@ -85,11 +88,7 @@ impl<T> Link<T> {
 
     /// Что показать: связь есть или до повтора `retry_in`.
     pub fn connection(&self, retry_in: Duration) -> Connection {
-        if self.down {
-            Connection::Offline { retry_in: retry_in.as_secs(), queued: self.queue.len() }
-        } else {
-            Connection::Online
-        }
+        if self.down { Connection::Offline { retry_in: retry_in.as_secs(), queued: self.queue.len() } } else { Connection::Online }
     }
 }
 

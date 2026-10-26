@@ -88,13 +88,16 @@ pub fn ensure(path: &Path, n: usize) -> postman_cache::Result<()> {
         unread: 0,
         rights: Rights::ALL,
     };
-    cache.replace_mailboxes(None, &[
-        mb("inbox", "Входящие", 1),
-        mb("drafts", "Черновики", 2),
-        mb("sent", "Отправленные", 3),
-        mb("trash", "Удалённые", 4),
-        mb("archive", "Архив", 5),
-    ])?;
+    cache.replace_mailboxes(
+        None,
+        &[
+            mb("inbox", "Входящие", 1),
+            mb("drafts", "Черновики", 2),
+            mb("sent", "Отправленные", 3),
+            mb("trash", "Удалённые", 4),
+            mb("archive", "Архив", 5),
+        ],
+    )?;
     let mut rng = 0x9E37_79B9_7F4A_7C15u64;
     let mut next = move || {
         rng ^= rng << 13;
@@ -206,11 +209,7 @@ fn demo_keywords(i: usize) -> Vec<String> {
 
 /// Получатели демо-письма `i`: чаще мне, иногда — рассылке отдела (а мне копия).
 fn demo_recipients(i: usize) -> Recipients {
-    if i % 3 == 1 {
-        Recipients { to: vec![TEAM.into()], cc: vec![ME.into()] }
-    } else {
-        Recipients { to: vec![ME.into()], cc: Vec::new() }
-    }
+    if i % 3 == 1 { Recipients { to: vec![TEAM.into()], cc: vec![ME.into()] } } else { Recipients { to: vec![ME.into()], cc: Vec::new() } }
 }
 
 /// Ключевые слова фильтров (`postman_core::filters`): демо от ядра не зависит (слои), слова — те же.
@@ -333,8 +332,7 @@ fn second(cache: &Cache, now: i64) -> postman_cache::Result<()> {
         unread: 0,
         rights: Rights::ALL,
     };
-    let boxes =
-        vec![mb("inbox", "Входящие", 1), mb("drafts", "Черновики", 2), mb("sent", "Отправленные", 3), mb("trash", "Удалённые", 4)];
+    let boxes = vec![mb("inbox", "Входящие", 1), mb("drafts", "Черновики", 2), mb("sent", "Отправленные", 3), mb("trash", "Удалённые", 4)];
     cache.replace_mailboxes(scope, &boxes)?;
     let rows: Vec<EmailRow> = (0..8)
         .map(|i| {
@@ -490,20 +488,26 @@ pub fn body(id: &str) -> BodyRow {
     } else if n.is_multiple_of(10) {
         (INVITE_HTML, vec![att("ics", "invite.ics", "text/calendar", INVITE.len() as u64, None)])
     } else if n.is_multiple_of(2) {
-        (OUTLOOK, vec![
-            att("logo", "logo.png", "image/png", LOGO.len() as u64, Some("logo@corp")),
-            // Встроенный просмотр (S5-07): PDF, архив с опасными файлами, книга с макросами, фото.
-            att("pdf", "Отчёт за квартал.pdf", "application/pdf", REPORT.len() as u64, None),
-            att("zip", "Снимки экрана.zip", "application/zip", SCREENS.len() as u64, None),
-            att("xlsm", "Бюджет.xlsm", "application/vnd.ms-excel.sheet.macroEnabled.12", BUDGET.len() as u64, None),
-            att("xlsx", "Итоги Q3.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 18_432, None),
-            att("photo", "Фото стенда.jpg", "image/jpeg", PHOTO.len() as u64, None),
-        ])
+        (
+            OUTLOOK,
+            vec![
+                att("logo", "logo.png", "image/png", LOGO.len() as u64, Some("logo@corp")),
+                // Встроенный просмотр (S5-07): PDF, архив с опасными файлами, книга с макросами, фото.
+                att("pdf", "Отчёт за квартал.pdf", "application/pdf", REPORT.len() as u64, None),
+                att("zip", "Снимки экрана.zip", "application/zip", SCREENS.len() as u64, None),
+                att("xlsm", "Бюджет.xlsm", "application/vnd.ms-excel.sheet.macroEnabled.12", BUDGET.len() as u64, None),
+                att("xlsx", "Итоги Q3.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 18_432, None),
+                att("photo", "Фото стенда.jpg", "image/jpeg", PHOTO.len() as u64, None),
+            ],
+        )
     } else {
-        (HOSTILE, vec![
-            att("exe", "invoice.pdf.exe", "application/octet-stream", 73_728, None),
-            att("rtlo", "счёт\u{202e}fdp.exe", "application/octet-stream", 73_728, None),
-        ])
+        (
+            HOSTILE,
+            vec![
+                att("exe", "invoice.pdf.exe", "application/octet-stream", 73_728, None),
+                att("rtlo", "счёт\u{202e}fdp.exe", "application/octet-stream", 73_728, None),
+            ],
+        )
     };
     BodyRow {
         to: vec![Addr { name: "Команда проекта".into(), email: "team@corp.example".into() }],
@@ -661,10 +665,31 @@ pub mod calendar {
         let participants = match me {
             Me::Owner => vec![Participant { owner: true, ..mine(Partstat::Accepted) }],
             Me::Invited(status) => vec![
-                Participant { name: "Петров Алексей".into(), email: "a.petrov@corp.example".into(), owner: true, attendee: true, optional: false, status: Partstat::Accepted },
+                Participant {
+                    name: "Петров Алексей".into(),
+                    email: "a.petrov@corp.example".into(),
+                    owner: true,
+                    attendee: true,
+                    optional: false,
+                    status: Partstat::Accepted,
+                },
                 mine(status),
-                Participant { name: "Иванова Мария".into(), email: "m.ivanova@corp.example".into(), owner: false, attendee: true, optional: false, status: Partstat::Accepted },
-                Participant { name: "Сидоров Игорь".into(), email: "i.sidorov@corp.example".into(), owner: false, attendee: true, optional: true, status: Partstat::NeedsAction },
+                Participant {
+                    name: "Иванова Мария".into(),
+                    email: "m.ivanova@corp.example".into(),
+                    owner: false,
+                    attendee: true,
+                    optional: false,
+                    status: Partstat::Accepted,
+                },
+                Participant {
+                    name: "Сидоров Игорь".into(),
+                    email: "i.sidorov@corp.example".into(),
+                    owner: false,
+                    attendee: true,
+                    optional: true,
+                    status: Partstat::NeedsAction,
+                },
             ],
         };
         Event {
@@ -713,8 +738,22 @@ pub mod calendar {
         let mut results = event("e12", "Итоги недели", 4, (16, 0), 60, "Переговорная 1", false, Owner, "");
         results.recurring = true;
         results.participants.extend([
-            Participant { name: "Иванова Мария".into(), email: "m.ivanova@corp.example".into(), owner: false, attendee: true, optional: false, status: Accepted },
-            Participant { name: "Сидоров Игорь".into(), email: "i.sidorov@corp.example".into(), owner: false, attendee: true, optional: false, status: NeedsAction },
+            Participant {
+                name: "Иванова Мария".into(),
+                email: "m.ivanova@corp.example".into(),
+                owner: false,
+                attendee: true,
+                optional: false,
+                status: Accepted,
+            },
+            Participant {
+                name: "Сидоров Игорь".into(),
+                email: "i.sidorov@corp.example".into(),
+                owner: false,
+                attendee: true,
+                optional: false,
+                status: NeedsAction,
+            },
         ]);
         v.push(results);
         // На весь день, два дня: четверг и пятница.
@@ -755,7 +794,14 @@ pub mod calendar {
         let of = |n: usize, id: &str, title: &str, day: i64, at: (i64, i64), mins: i64, place: &str| {
             let o = owners[n].clone();
             let mut e = event(id, title, day, at, mins, place, false, Me::Owner, "");
-            e.participants = vec![Participant { name: o.name.clone(), email: o.email.clone(), owner: true, attendee: true, optional: false, status: Partstat::Accepted }];
+            e.participants = vec![Participant {
+                name: o.name.clone(),
+                email: o.email.clone(),
+                owner: true,
+                attendee: true,
+                optional: false,
+                status: Partstat::Accepted,
+            }];
             e.calendar_ids = vec!["c".into()];
             e.owner = Some(o);
             e
@@ -796,8 +842,16 @@ pub mod calendar {
         let b = |day, (h, m): (i64, i64), mins: i64, kind| Busy { span: Span::new(at(day, h, m), at(day, h, m) + mins * 60), kind };
         use BusyKind::{Busy as B, Tentative as T, Unavailable as U};
         vec![
-            ("Иванова Мария", "m.ivanova@corp.example", vec![b(0, (10, 0), 120, B), b(1, (9, 0), 240, B), b(2, (14, 0), 60, T), b(3, (9, 0), 540, U)]),
-            ("Петров Алексей", "a.petrov@corp.example", vec![b(0, (9, 0), 60, B), b(0, (15, 0), 120, B), b(1, (13, 0), 120, B), b(2, (10, 0), 90, B), b(4, (11, 0), 60, T)]),
+            (
+                "Иванова Мария",
+                "m.ivanova@corp.example",
+                vec![b(0, (10, 0), 120, B), b(1, (9, 0), 240, B), b(2, (14, 0), 60, T), b(3, (9, 0), 540, U)],
+            ),
+            (
+                "Петров Алексей",
+                "a.petrov@corp.example",
+                vec![b(0, (9, 0), 60, B), b(0, (15, 0), 120, B), b(1, (13, 0), 120, B), b(2, (10, 0), 90, B), b(4, (11, 0), 60, T)],
+            ),
             ("Сидоров Игорь", "i.sidorov@corp.example", vec![b(0, (12, 0), 60, B), b(1, (10, 0), 60, B), b(2, (9, 0), 180, B), b(4, (9, 0), 120, B)]),
             ("Переговорная 3", "room3@corp.example", vec![b(1, (14, 0), 120, B), b(2, (11, 0), 60, B), b(3, (15, 0), 60, B)]),
         ]
@@ -852,10 +906,8 @@ pub mod tasks {
     /// «Когда-нибудь».
     pub const SOMEDAY: &str = "Идея: шаблон отчёта для клиентов";
     /// Выполненные: название, категория, проект, сколько часов назад.
-    pub const DONE: &[(&str, Option<&str>, Option<&str>, i64)] = &[
-        ("Выгрузить журнал событий за квартал", Some("services"), None, 1),
-        ("Согласовать план обучения", Some("team"), Some("План IV кв."), 26),
-    ];
+    pub const DONE: &[(&str, Option<&str>, Option<&str>, i64)] =
+        &[("Выгрузить журнал событий за квартал", Some("services"), None, 1), ("Согласовать план обучения", Some("team"), Some("План IV кв."), 26)];
 
     pub const OPEN: &[Task] = &[
         t(MAIN, Some("clients"), Some("Договор «Север»"), Some((0, Some(16))), true),
@@ -950,45 +1002,94 @@ pub mod delegations {
         let me = me();
         let proposed = day(today, 6, 18);
         let mut out = vec![
-            task(1, REVIEW, me, PETROV, P::Completed, (1, 18), today, now, &[
-                (72, me, K::Assigned, "Нужен к пятнице, с выводами для руководства"),
-                (71, PETROV, K::Accepted, ""),
-                (48, PETROV, K::Started, ""),
-                (1, PETROV, K::Finished, "Отчёт готов: добавил раздел о сегментации сети. Посмотри выводы — заказчик прочтёт их первыми."),
-            ]),
-            task(2, "Ресурсный план группы на ноябрь", me, IVANOVA, P::InProcess, (2, 12), today, now, &[
-                (30, me, K::Assigned, ""),
-                (29, IVANOVA, K::Accepted, ""),
-                (5, IVANOVA, K::Started, ""),
-            ]),
+            task(
+                1,
+                REVIEW,
+                me,
+                PETROV,
+                P::Completed,
+                (1, 18),
+                today,
+                now,
+                &[
+                    (72, me, K::Assigned, "Нужен к пятнице, с выводами для руководства"),
+                    (71, PETROV, K::Accepted, ""),
+                    (48, PETROV, K::Started, ""),
+                    (1, PETROV, K::Finished, "Отчёт готов: добавил раздел о сегментации сети. Посмотри выводы — заказчик прочтёт их первыми."),
+                ],
+            ),
+            task(
+                2,
+                "Ресурсный план группы на ноябрь",
+                me,
+                IVANOVA,
+                P::InProcess,
+                (2, 12),
+                today,
+                now,
+                &[(30, me, K::Assigned, ""), (29, IVANOVA, K::Accepted, ""), (5, IVANOVA, K::Started, "")],
+            ),
             task(3, "Расчёт коммерческого предложения", me, VOLKOV, P::NeedsAction, (3, 18), today, now, &[(20, me, K::Assigned, "")]),
             task(4, "Требования к мониторингу для ТЗ", me, KUZNETSOVA, P::NeedsAction, (1, 12), today, now, &[(26, me, K::Assigned, "")]),
-            task(5, "Заказать пропуска для аудиторов", me, VOLKOV, P::Declined, (1, 10), today, now, &[
-                (22, me, K::Assigned, ""),
-                (4, VOLKOV, K::Declined, "Пропуска оформляет хозяйственный отдел, у нас нет доступа к их системе."),
-            ]),
-            task(6, INCOMING, IVANOVA, me, P::NeedsAction, (1, 15), today, now, &[(1, IVANOVA, K::Assigned, "Посмотри, пожалуйста, до созвона — особенно п. 3.")]),
-            task(7, "Комментарии к статусу проектов", PETROV, me, P::Accepted, (3, 15), today, now, &[
-                (20, PETROV, K::Assigned, ""),
-                (18, me, K::Accepted, ""),
-            ]),
-            watched(task(8, WATCHED, PETROV, VOLKOV, P::InProcess, (6, 18), today, now, &[
-                (30, PETROV, K::Assigned, ""),
-                (28, VOLKOV, K::Accepted, ""),
-                (3, VOLKOV, K::Started, ""),
-            ])),
+            task(
+                5,
+                "Заказать пропуска для аудиторов",
+                me,
+                VOLKOV,
+                P::Declined,
+                (1, 10),
+                today,
+                now,
+                &[(22, me, K::Assigned, ""), (4, VOLKOV, K::Declined, "Пропуска оформляет хозяйственный отдел, у нас нет доступа к их системе.")],
+            ),
+            task(
+                6,
+                INCOMING,
+                IVANOVA,
+                me,
+                P::NeedsAction,
+                (1, 15),
+                today,
+                now,
+                &[(1, IVANOVA, K::Assigned, "Посмотри, пожалуйста, до созвона — особенно п. 3.")],
+            ),
+            task(
+                7,
+                "Комментарии к статусу проектов",
+                PETROV,
+                me,
+                P::Accepted,
+                (3, 15),
+                today,
+                now,
+                &[(20, PETROV, K::Assigned, ""), (18, me, K::Accepted, "")],
+            ),
+            watched(task(
+                8,
+                WATCHED,
+                PETROV,
+                VOLKOV,
+                P::InProcess,
+                (6, 18),
+                today,
+                now,
+                &[(30, PETROV, K::Assigned, ""), (28, VOLKOV, K::Accepted, ""), (3, VOLKOV, K::Started, "")],
+            )),
             letter_task(today),
         ];
         // Предложенный срок — через неделю, с комментарием.
         if let Some(t) = out.iter_mut().find(|t| t.uid == "demo-deleg-4@postman") {
             assign::set_proposed(t, Some(&Moment::new(proposed, None)));
-            assign::push_step(t, Step {
-                at: now - 2 * HOUR,
-                who: KUZNETSOVA.1.into(),
-                kind: K::Proposed,
-                comment: "Жду ответа заказчика на разъяснения — раньше понедельника не соберу.".into(),
-                due: Some(proposed.strftime("%Y-%m-%dT%H:%M:%S").to_string()),
-            });
+            assign::push_step(
+                t,
+                Step {
+                    at: now - 2 * HOUR,
+                    who: KUZNETSOVA.1.into(),
+                    kind: K::Proposed,
+                    comment: "Жду ответа заказчика на разъяснения — раньше понедельника не соберу.".into(),
+                    due: Some(proposed.strftime("%Y-%m-%dT%H:%M:%S").to_string()),
+                },
+            );
         }
         out
     }
@@ -1048,7 +1149,10 @@ pub mod delegations {
         let mut t = Task::new("demo-deleg-mail@postman", "demo", LETTER);
         t.notes = "Сроки поставки, требования к мониторингу, лицензии и SLA.".into();
         t.due = Some(Moment::new(day(today, 1, 12), None));
-        t.participants = vec![person("owner", IVANOVA, Role::Owner, TaskPartstat::NeedsAction), person("assignee", me(), Role::Assignee, TaskPartstat::NeedsAction)];
+        t.participants = vec![
+            person("owner", IVANOVA, Role::Owner, TaskPartstat::NeedsAction),
+            person("assignee", me(), Role::Assignee, TaskPartstat::NeedsAction),
+        ];
         t
     }
 
@@ -1099,7 +1203,13 @@ pub mod contacts {
     }
 
     const MINE: &[Card] = &[
-        card("Белова Ольга", &["o.belova@partner.example", "olga.belova@mail.example"], &["+7 495 123-45-67", "+7 916 555-01-02"], "ООО «Партнёр»", "Руководитель отдела закупок"),
+        card(
+            "Белова Ольга",
+            &["o.belova@partner.example", "olga.belova@mail.example"],
+            &["+7 495 123-45-67", "+7 916 555-01-02"],
+            "ООО «Партнёр»",
+            "Руководитель отдела закупок",
+        ),
         card("Гусев Дмитрий", &["d.gusev@integrator.example"], &["+7 903 222-33-44"], "АО «Интегратор»", "Архитектор решений"),
         card("Курьерская служба", &["orders@courier.example"], &["+7 495 777-00-11"], "", ""),
         card("Лебедева Анна", &["anna.lebedeva@law.example"], &[], "Юридическая фирма «Лебедева и партнёры»", "Партнёр"),

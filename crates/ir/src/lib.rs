@@ -59,10 +59,19 @@ pub enum Align {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Block {
-    Paragraph { align: Align, content: Vec<Inline> },
-    Heading { level: u8, content: Vec<Inline> },
+    Paragraph {
+        align: Align,
+        content: Vec<Inline>,
+    },
+    Heading {
+        level: u8,
+        content: Vec<Inline>,
+    },
     Quote(Vec<Block>),
-    List { ordered: bool, items: Vec<Vec<Block>> },
+    List {
+        ordered: bool,
+        items: Vec<Vec<Block>>,
+    },
     Code(String),
     Rule,
     /// Строки -> ячейки -> инлайны. Только простая сетка без вложенности.
@@ -80,7 +89,10 @@ pub struct Marks {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Inline {
-    Text { text: String, marks: Marks },
+    Text {
+        text: String,
+        marks: Marks,
+    },
     Link {
         /// Нормализованный URL (IDN уже в punycode).
         href: String,
@@ -91,7 +103,10 @@ pub enum Inline {
         content: Vec<Inline>,
     },
     /// Картинка из вложения письма (`cid:`); показывается только по явному разрешению.
-    Image { cid: String, alt: String },
+    Image {
+        cid: String,
+        alt: String,
+    },
     LineBreak,
 }
 

@@ -76,9 +76,7 @@ async fn reply(c: &Client, me: &str, e: &EmailSummary, text: &str) -> Draft {
         (None, Some(t)) => postman_ir::from_plain(t),
         _ => Document::default(),
     };
-    let addr = |a: &postman_jmap::EmailAddress| {
-        Address::new(a.name.as_deref().unwrap_or(""), a.email.as_deref().unwrap_or(""))
-    };
+    let addr = |a: &postman_jmap::EmailAddress| Address::new(a.name.as_deref().unwrap_or(""), a.email.as_deref().unwrap_or(""));
     let at = jiff::Timestamp::from_second(postman_jmap::utc_to_unix(&e.received_at).unwrap()).unwrap();
     let orig = Original {
         message_id: body.message_id.clone(),
@@ -160,18 +158,17 @@ async fn reply_chain_is_one_thread_with_new_text_only() {
     // Синхронизация user3 на кэше в памяти.
     let cache = Cache::open_in_memory().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
-    let commands =
-        postman_backend_jmap::spawn(Account { url: env("POSTMAN_STAND_URL"), auth: postman_backend_jmap::convert::FromJmap::from_jmap(auth(3)) }, cache.clone(), None, tx, || {});
-    wait_for(&rx, "первая синхронизация", |e| {
-        matches!(e, Event::Status(Status::Synced)).then_some(())
-    });
+    let commands = postman_backend_jmap::spawn(
+        Account { url: env("POSTMAN_STAND_URL"), auth: postman_backend_jmap::convert::FromJmap::from_jmap(auth(3)) },
+        cache.clone(),
+        None,
+        tx,
+        || {},
+    );
+    wait_for(&rx, "первая синхронизация", |e| matches!(e, Event::Status(Status::Synced)).then_some(()));
     let inbox = role(&c3, "inbox").await;
-    let last: EmailRow = cache
-        .page(&inbox, 0, 200)
-        .unwrap()
-        .into_iter()
-        .find(|r| r.subject == reply_subject)
-        .expect("третьего письма нет в кэше после синхронизации");
+    let last: EmailRow =
+        cache.page(&inbox, 0, 200).unwrap().into_iter().find(|r| r.subject == reply_subject).expect("третьего письма нет в кэше после синхронизации");
 
     // Беседа с сервера: три письма из «Входящих» и «Отправленных», тела — в кэше.
     commands.send(Command::Thread(last.thread_id.clone())).unwrap();
@@ -181,18 +178,13 @@ async fn reply_chain_is_one_thread_with_new_text_only() {
     });
     assert_eq!(ids.len(), 3, "в беседе не три письма: {ids:?}");
     let rows = cache.thread(&last.thread_id).unwrap();
-    assert_eq!(
-        rows.iter().map(|r| &r.id).collect::<Vec<_>>(),
-        ids.iter().collect::<Vec<_>>(),
-        "порядок кэша и сервера"
-    );
+    assert_eq!(rows.iter().map(|r| &r.id).collect::<Vec<_>>(), ids.iter().collect::<Vec<_>>(), "порядок кэша и сервера");
     let sent = role(&c3, "sent").await;
     assert_eq!(rows.iter().filter(|r| r.mailbox_ids.contains(&sent)).count(), 1, "своё письмо из «Отправленных»");
 
     let conv = Conversation::assemble(&last.thread_id, rows, std::slice::from_ref(&me3), &jiff::tz::TimeZone::UTC);
     assert_eq!(conv.messages.iter().map(|m| m.mine).collect::<Vec<_>>(), [false, true, false]);
-    let order: Vec<(&str, bool)> =
-        conv.messages.iter().map(|m| (m.row.subject.as_str(), m.row.mailbox_ids.contains(&sent))).collect();
+    let order: Vec<(&str, bool)> = conv.messages.iter().map(|m| (m.row.subject.as_str(), m.row.mailbox_ids.contains(&sent))).collect();
     assert_eq!(order, [(subject.as_str(), false), (reply_subject.as_str(), true), (reply_subject.as_str(), false)]);
 
     // Только новый текст: в каждом письме — его строки, без цитат прошлых.
@@ -210,16 +202,8 @@ async fn reply_chain_is_one_thread_with_new_text_only() {
         .collect();
     let fresh: Vec<String> = docs.iter().map(|d| text(d.new_text())).collect();
     assert!(fresh[0].contains("Первое письмо") && fresh[0].contains("пятница"), "{}", fresh[0]);
-    assert!(
-        fresh[1].contains("Ответ user3") && !fresh[1].contains("Первое письмо") && !fresh[1].contains("пишет"),
-        "{}",
-        fresh[1]
-    );
-    assert!(
-        fresh[2].contains("Третье письмо") && !fresh[2].contains("Ответ user3") && !fresh[2].contains("Первое письмо"),
-        "{}",
-        fresh[2]
-    );
+    assert!(fresh[1].contains("Ответ user3") && !fresh[1].contains("Первое письмо") && !fresh[1].contains("пишет"), "{}", fresh[1]);
+    assert!(fresh[2].contains("Третье письмо") && !fresh[2].contains("Ответ user3") && !fresh[2].contains("Первое письмо"), "{}", fresh[2]);
     // Полный IR — с историей (переключатель «показать цитаты»).
     assert!(text(&docs[2].blocks).contains("Ответ user3") && text(&docs[2].blocks).contains("Первое письмо"));
 

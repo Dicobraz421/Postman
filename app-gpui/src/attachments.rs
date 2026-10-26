@@ -82,12 +82,7 @@ pub(crate) struct Item {
 
 /// Вложения для ленты под шапкой: картинки, показанные в тексте (`cid:`), и приглашение, показанное карточкой, —
 /// не дублируются (как в Outlook). `scans` — проверки Office в воркере по `blob_id`.
-pub(crate) fn listed(
-    all: &[AttachmentRow],
-    shown_cids: &HashSet<String>,
-    invite_card: bool,
-    scans: &HashMap<String, OfficeScan>,
-) -> Vec<Item> {
+pub(crate) fn listed(all: &[AttachmentRow], shown_cids: &HashSet<String>, invite_card: bool, scans: &HashMap<String, OfficeScan>) -> Vec<Item> {
     all.iter()
         .filter(|a| a.cid.as_ref().is_none_or(|c| !shown_cids.contains(c)))
         .filter(|a| !(invite_card && is_invite(a)))
@@ -113,7 +108,10 @@ pub(crate) fn items(r: &Reading) -> Vec<Item> {
     let card = r.invite.as_ref().is_some_and(|c| c.invitation().is_some()) || r.task_mail.is_some();
     // Подпись S/MIME (S5-12): `smime.p7s` — значком в шапке, не вложением; `smime.p7m` с подписью внутри — телом.
     // Шифрованное (Ф2): `smime.p7m` — не вложение, а само письмо (до расшифровки — строка, после — его вложения).
-    let opaque = r.smime.as_ref().is_some_and(|s| s.lock.is_some() || matches!(&s.seal, crate::smime::Seal::Done(v) if v.report.kind == postman_smime::Kind::Opaque));
+    let opaque = r
+        .smime
+        .as_ref()
+        .is_some_and(|s| s.lock.is_some() || matches!(&s.seal, crate::smime::Seal::Done(v) if v.report.kind == postman_smime::Kind::Opaque));
     let all: Vec<AttachmentRow> = body.attachments.iter().filter(|a| !crate::smime::hidden(a, opaque)).cloned().collect();
     listed(&all, &shown, card, &r.scans)
 }
@@ -182,11 +180,7 @@ pub(crate) fn size_text(n: u64) -> String {
 
 /// Сколько карточек показать в свёрнутой ленте: всё, что влезает в ряд; не влезает — ряд без последней и «+N».
 pub(crate) fn visible(total: usize, expanded: bool) -> (usize, usize) {
-    if expanded || total <= PER_ROW {
-        (total, 0)
-    } else {
-        (PER_ROW - 1, total - (PER_ROW - 1))
-    }
+    if expanded || total <= PER_ROW { (total, 0) } else { (PER_ROW - 1, total - (PER_ROW - 1)) }
 }
 
 /// Команды вложений — на корне экрана почты (`Mailer::render`). ← / → без открытого просмотра — беседе в списке
@@ -348,34 +342,27 @@ impl ReadingPane {
             .group_hover(group.clone(), |s| s.opacity(1.));
         if item.viewer != Viewer::None || danger {
             let b = blob.clone();
-            actions = actions.child(
-                act_button(("att-pv", n), glyph::PREVIEW, l)
-                    .tooltip(tip(tr!("att-preview")))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.toggle_preview(Some(b.clone()), cx);
-                    })),
-            );
+            actions = actions.child(act_button(("att-pv", n), glyph::PREVIEW, l).tooltip(tip(tr!("att-preview"))).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.toggle_preview(Some(b.clone()), cx);
+                },
+            )));
         }
         if item.can_open {
             let r = row.clone();
-            actions = actions.child(
-                act_button(("att-open", n), glyph::OPEN, l)
-                    .tooltip(tip(tr!("att-open")))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.file_action(r.clone(), FileAct::Open, cx);
-                    })),
-            );
-        }
-        actions = actions.child(
-            act_button(("att-save", n), glyph::SAVE, l)
-                .tooltip(tip(tr!("att-save")))
-                .on_click(cx.listener(move |this, _, _, cx| {
+            actions = actions.child(act_button(("att-open", n), glyph::OPEN, l).tooltip(tip(tr!("att-open"))).on_click(cx.listener(
+                move |this, _, _, cx| {
                     cx.stop_propagation();
-                    this.file_action(row.clone(), FileAct::SaveAs, cx);
-                })),
-        );
+                    this.file_action(r.clone(), FileAct::Open, cx);
+                },
+            )));
+        }
+        actions =
+            actions.child(act_button(("att-save", n), glyph::SAVE, l).tooltip(tip(tr!("att-save"))).on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                this.file_action(row.clone(), FileAct::SaveAs, cx);
+            })));
         let mut card = div()
             .id(("att-card", n))
             .group(group)
@@ -398,14 +385,7 @@ impl ReadingPane {
             .child(tile)
             .child(text);
         if let Some((text, g)) = status {
-            card = card.child(
-                div()
-                    .id(("att-risk", n))
-                    .flex_none()
-                    .text_color(l.pm(Pm::ThreatFg))
-                    .tooltip(tip(text))
-                    .child(icon(g, 14.)),
-            );
+            card = card.child(div().id(("att-risk", n)).flex_none().text_color(l.pm(Pm::ThreatFg)).tooltip(tip(text)).child(icon(g, 14.)));
         }
         if danger {
             // Тонкая красная полоса слева (DESIGN «Вложения»).
@@ -416,13 +396,11 @@ impl ReadingPane {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "attach", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part =
+    crate::part::Part { name: "attach", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
-const TEXTS: &[pets_i18n::Resource] = &[
-    ("ru", include_str!("../i18n/ru/attachments.ftl")),
-    ("en", include_str!("../i18n/en/attachments.ftl")),
-];
+const TEXTS: &[pets_i18n::Resource] = &[("ru", include_str!("../i18n/ru/attachments.ftl")), ("en", include_str!("../i18n/en/attachments.ftl"))];
 
 /// Вложения открытого письма (S5-07): встроенный просмотр, «Сохранить все», по вложениям в просмотре.
 pub(crate) mod attach {
@@ -476,9 +454,7 @@ pub(crate) mod scenes {
 
     fn letter_ready(s: &Scene, m: &Mailer, cx: &App) -> bool {
         let target = screens::demo_id(m.list.read(cx), wanted(s));
-        target.is_some()
-            && screens::reading(m, cx)
-                .is_some_and(|r| Some(r.row.id.as_str()) == target && r.doc.is_some() && !r.images.is_empty())
+        target.is_some() && screens::reading(m, cx).is_some_and(|r| Some(r.row.id.as_str()) == target && r.doc.is_some() && !r.images.is_empty())
     }
 
     /// Вложение демо-письма для сцены просмотра (`postman_demo::blob`).
@@ -539,14 +515,7 @@ mod tests {
     use super::{Item, Kind, is_invite, kind, listed, size_parts, tile_label, visible};
 
     fn att(name: &str, mime: &str, cid: Option<&str>) -> AttachmentRow {
-        AttachmentRow {
-            blob_id: name.into(),
-            name: name.into(),
-            mime: mime.into(),
-            size: 10,
-            cid: cid.map(Into::into),
-            inline: cid.is_some(),
-        }
+        AttachmentRow { blob_id: name.into(), name: name.into(), mime: mime.into(), size: 10, cid: cid.map(Into::into), inline: cid.is_some() }
     }
 
     #[test]

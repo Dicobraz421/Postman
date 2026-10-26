@@ -22,21 +22,19 @@ impl Extractor {
         let (tx, rx) = mpsc::channel::<Vec<String>>();
         // Поток не запустился — очередь никто не читает, текст писем просто не индексируется.
         // В журнал — с S2-06 (pets-shell); пока stderr.
-        let started = std::thread::Builder::new()
-            .name("extract".into())
-            .spawn(move || {
-                let mut worker = Client::new(Client::default_exe(), Duration::from_secs(5));
-                while let Ok(first) = rx.recv() {
-                    let ids: Vec<String> = std::iter::once(first).chain(rx.try_iter()).flatten().collect();
-                    for (n, id) in ids.iter().enumerate() {
-                        extract_one(&cache, &index, &mut worker, id);
-                        if (n + 1) % COMMIT_EVERY == 0 {
-                            let _ = index.commit();
-                        }
+        let started = std::thread::Builder::new().name("extract".into()).spawn(move || {
+            let mut worker = Client::new(Client::default_exe(), Duration::from_secs(5));
+            while let Ok(first) = rx.recv() {
+                let ids: Vec<String> = std::iter::once(first).chain(rx.try_iter()).flatten().collect();
+                for (n, id) in ids.iter().enumerate() {
+                    extract_one(&cache, &index, &mut worker, id);
+                    if (n + 1) % COMMIT_EVERY == 0 {
+                        let _ = index.commit();
                     }
-                    let _ = index.commit();
                 }
-            });
+                let _ = index.commit();
+            }
+        });
         if let Err(e) = started {
             eprintln!("поток извлечения текста не запустился: {e}");
         }

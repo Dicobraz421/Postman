@@ -210,8 +210,7 @@ impl ReadingPane {
             f.again = true;
             return;
         }
-        let ids: Vec<String> =
-            f.conv.messages.iter().map(|m| m.row.id.clone()).filter(|id| !f.docs.contains_key(id)).collect();
+        let ids: Vec<String> = f.conv.messages.iter().map(|m| m.row.id.clone()).filter(|id| !f.docs.contains_key(id)).collect();
         if ids.is_empty() {
             return;
         }
@@ -273,10 +272,7 @@ impl ReadingPane {
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_feed(cx))),
             )
             .when(self.feed_on, |d| {
-                d.child(
-                    button("thread-quotes", quotes, self.quotes)
-                        .on_click(cx.listener(|this, _, _, cx| this.toggle_quotes(cx))),
-                )
+                d.child(button("thread-quotes", quotes, self.quotes).on_click(cx.listener(|this, _, _, cx| this.toggle_quotes(cx))))
             })
             .when(f.waiting, |d| d.child(div().text_color(l.text2()).child(tr!("thread-loading"))))
             .child(div().flex_1());
@@ -325,9 +321,7 @@ impl ReadingPane {
                                 .flex_col()
                                 .gap_1()
                                 .children(ir_view::blocks(blocks, &format!("feed{n}"), &images, cx))
-                                .when(hidden, |d| {
-                                    d.child(div().text_color(l.text2()).child(tr!("thread-quotes-hidden")))
-                                })
+                                .when(hidden, |d| d.child(div().text_color(l.text2()).child(tr!("thread-quotes-hidden"))))
                                 .into_any_element()
                         }
                     };
@@ -520,13 +514,7 @@ impl ReadingPane {
                     .child(div().w(px(128.)).flex_none().truncate().font_weight(FontWeight::SEMIBOLD).child(who))
                     .child(div().flex_1().min_w_0().truncate().text_color(l.text2()).child(text))
                     .when(m.row.has_attachment, |d| d.child(icon(glyph::ATTACH, 13.).text_color(l.text3())))
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(l.px(Metric::TypeCaption))
-                            .text_color(l.text2())
-                            .child(crate::format_date(m.row.received_at)),
-                    )
+                    .child(div().flex_none().text_size(l.px(Metric::TypeCaption)).text_color(l.text2()).child(crate::format_date(m.row.received_at)))
                     .on_click(cx.listener(move |this, _, _, cx| this.stack_click(&click, cx)))
                     .into_any_element()
             } else {
@@ -607,22 +595,10 @@ impl ReadingPane {
                                     .child(div().min_w_0().truncate().text_color(l.text2()).child(format!("<{}>", m.row.from_addr))),
                             )
                             .when(!to.is_empty(), |d| {
-                                d.child(
-                                    div()
-                                        .truncate()
-                                        .text_size(l.px(Metric::TypeCaption))
-                                        .text_color(l.text2())
-                                        .child(tr!("thread-to", to = to)),
-                                )
+                                d.child(div().truncate().text_size(l.px(Metric::TypeCaption)).text_color(l.text2()).child(tr!("thread-to", to = to)))
                             }),
                     )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(l.px(Metric::TypeCaption))
-                            .text_color(l.text2())
-                            .child(crate::format_date(m.row.received_at)),
-                    )
+                    .child(div().flex_none().text_size(l.px(Metric::TypeCaption)).text_color(l.text2()).child(crate::format_date(m.row.received_at)))
                     .on_click(cx.listener(move |this, _, _, cx| this.stack_click(&click, cx))),
             )
             .child(action("thread-reply", glyph::REPLY, Mode::Reply, m.row.clone(), cx))
@@ -760,7 +736,8 @@ impl Mailer {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "thread", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part =
+    crate::part::Part { name: "thread", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Обработчики команд части — на корне экрана почты (`Mailer::render`).
 fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
@@ -770,16 +747,11 @@ fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
         .on_action(cx.listener(|this, _: &thread::Quotes, _, cx| this.reading.update(cx, |r, cx| r.quotes_key(cx))))
         .on_action(cx.listener(|this, _: &thread::Fold, _, cx| this.thread_fold(crate::outline::Fold::Toggle, cx)))
         .on_action(cx.listener(|this, _: &thread::Expand, _, cx| this.thread_fold(crate::outline::Fold::Expand, cx)))
-        .on_action(cx.listener(|this, _: &thread::Collapse, _, cx| {
-            this.thread_fold(crate::outline::Fold::Collapse, cx)
-        }))
+        .on_action(cx.listener(|this, _: &thread::Collapse, _, cx| this.thread_fold(crate::outline::Fold::Collapse, cx)))
 }
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
-const TEXTS: &[pets_i18n::Resource] = &[
-    ("ru", include_str!("../i18n/ru/threads.ftl")),
-    ("en", include_str!("../i18n/en/threads.ftl")),
-];
+const TEXTS: &[pets_i18n::Resource] = &[("ru", include_str!("../i18n/ru/threads.ftl")), ("en", include_str!("../i18n/en/threads.ftl"))];
 
 /// Беседа в области чтения (S5-05).
 // Имя — область действий (`thread::…`), как в id команд: так обработчики читаются и их находит `docs/PARITY.md`.

@@ -289,12 +289,9 @@ impl Palette {
             };
             let picked: Vec<Row> = if kind == Kind::Letter {
                 // Письма уже найдены поиском: тема — с подсветкой совпадений.
-                pool.iter()
-                    .map(|i| Row::Item { item: Box::new((*i).clone()), label: Vec::new(), extra: term_spans(&i.extra, &marks) })
-                    .collect()
+                pool.iter().map(|i| Row::Item { item: Box::new((*i).clone()), label: Vec::new(), extra: term_spans(&i.extra, &marks) }).collect()
             } else {
-                let cands: Vec<Candidate<'_>> =
-                    pool.iter().map(|i| Candidate { key: &i.key, text: &i.label, extra: &i.extra }).collect();
+                let cands: Vec<Candidate<'_>> = pool.iter().map(|i| Candidate { key: &i.key, text: &i.label, extra: &i.extra }).collect();
                 rank(&q, &cands, &self.recent)
                     .into_iter()
                     .take(kind.limit(empty))
@@ -443,16 +440,7 @@ impl Render for Palette {
                             .cursor_pointer()
                             .when(on, |d| d.bg(l.pressed()))
                             .when(!on, |d| d.hover(|d| d.bg(l.hover())))
-                            .child(
-                                div()
-                                    .absolute()
-                                    .left_0()
-                                    .top(px(7.))
-                                    .bottom(px(7.))
-                                    .w(px(3.))
-                                    .rounded(px(2.))
-                                    .when(on, |d| d.bg(l.accent())),
-                            )
+                            .child(div().absolute().left_0().top(px(7.)).bottom(px(7.)).w(px(3.)).rounded(px(2.)).when(on, |d| d.bg(l.accent())))
                             .child(div().size(px(16.)).flex_none().flex().items_center().justify_center().child(mark))
                             .child(
                                 div()
@@ -464,15 +452,11 @@ impl Render for Palette {
                                     .when(!item.path.is_empty(), |d| d.child(div().flex_none().text_color(l.text2()).child(item.path.clone())))
                                     .child(div().min_w_0().truncate().child(spans_text(&item.label, label, bold))),
                             )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(l.px(Metric::TypeCaption))
-                                    .text_color(l.text2())
-                                    .child(spans_text(&item.extra, extra, if letter { amber } else { bold })),
-                            )
+                            .child(div().flex_1().min_w_0().truncate().text_size(l.px(Metric::TypeCaption)).text_color(l.text2()).child(spans_text(
+                                &item.extra,
+                                extra,
+                                if letter { amber } else { bold },
+                            )))
                             .when(!item.meta.is_empty(), |d| {
                                 d.child(div().flex_none().text_size(l.px(Metric::TypeCaption)).text_color(l.text2()).child(item.meta.clone()))
                             })
@@ -672,8 +656,7 @@ impl Mailer {
         let f = self.folders.read(cx);
         let name = |id: &str| f.mailboxes.iter().find(|m| m.id == id).map(|m| m.name.clone());
         // Как в дереве: свои папки, затем общие ящики.
-        let tree: Vec<&postman_cache::MailboxRow> =
-            f.of(None).chain(f.accounts.iter().flat_map(|a| f.of(Some(a.id.as_str())))).collect();
+        let tree: Vec<&postman_cache::MailboxRow> = f.of(None).chain(f.accounts.iter().flat_map(|a| f.of(Some(a.id.as_str())))).collect();
         tree.into_iter()
             .map(|m| {
                 let mut path = Vec::new();
@@ -684,10 +667,8 @@ impl Mailer {
                     parent = row.and_then(|r| r.parent_id.clone());
                 }
                 let path = if path.is_empty() { String::new() } else { format!("{} ›", path.join(" › ")) };
-                let account = postman_cache::account_of(&m.id)
-                    .and_then(|a| f.accounts.iter().find(|x| x.id == a))
-                    .map(|a| a.name.clone())
-                    .unwrap_or_default();
+                let account =
+                    postman_cache::account_of(&m.id).and_then(|a| f.accounts.iter().find(|x| x.id == a)).map(|a| a.name.clone()).unwrap_or_default();
                 let meta = if m.total > 0 { m.total.to_string() } else { String::new() };
                 Item::folder(m.id.clone(), m.name.clone(), path, account, meta, crate::folders::folder_glyph(m.role.as_deref()))
             })
@@ -773,7 +754,8 @@ impl Mailer {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "palette", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part =
+    crate::part::Part { name: "palette", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Обработчики команд части — на корне экрана почты (`Mailer::render`).
 fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
@@ -781,10 +763,7 @@ fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
 }
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
-const TEXTS: &[pets_i18n::Resource] = &[
-    ("ru", include_str!("../i18n/ru/palette.ftl")),
-    ("en", include_str!("../i18n/en/palette.ftl")),
-];
+const TEXTS: &[pets_i18n::Resource] = &[("ru", include_str!("../i18n/ru/palette.ftl")), ("en", include_str!("../i18n/en/palette.ftl"))];
 
 /// Палитра команд (S5-10): открыть, по строкам, выполнить, закрыть.
 // Имя — область действий (`palette::…`), как в id команд: так обработчики читаются и их находит `docs/PARITY.md`.

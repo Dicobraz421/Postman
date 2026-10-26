@@ -23,8 +23,8 @@ use std::time::{Duration, Instant};
 use futures::FutureExt as _;
 use postman_calendar::{FreeBusy, Partstat, Span};
 use postman_ews::{
-    Attendee, Auth, Changes, Client, DayOfWeek, DeleteMode, FolderRef, ItemKind, MailRole, NewItem, Notify, Pattern, Range,
-    Recurrence, Reply, Source, WellKnown, discover,
+    Attendee, Auth, Changes, Client, DayOfWeek, DeleteMode, FolderRef, ItemKind, MailRole, NewItem, Notify, Pattern, Range, Recurrence, Reply,
+    Source, WellKnown, discover,
 };
 
 struct Account {
@@ -310,9 +310,8 @@ fn ews_meeting_cycle() {
             let id = c1.create(None, &item, Notify::All).await.unwrap();
 
             // У второй учётки встреча появляется в календаре (сервер кладёт её при доставке приглашения).
-            let invited = poll!("приглашение у user2",
-                c2.find_by_subject(WellKnown::Calendar, &tag, 5).await.ok().and_then(|v| v.into_iter().next())
-            );
+            let invited =
+                poll!("приглашение у user2", c2.find_by_subject(WellKnown::Calendar, &tag, 5).await.ok().and_then(|v| v.into_iter().next()));
             let got = c2.get_items(std::slice::from_ref(&invited)).await.unwrap().pop().unwrap();
             assert!(got.is_meeting && !got.is_organizer);
             assert_eq!(got.my_response, Partstat::NeedsAction);

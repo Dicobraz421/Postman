@@ -228,7 +228,10 @@ fn check_signer(si: &Tlv<'_>, certs: &[(Vec<u8>, Option<Certificate>)], content:
         as_set = attrs.to_der().map_err(|_| malformed("signedAttrs"))?;
     }
     let mut signed_ok = algs::verify(&key, scheme, &as_set, &s.signature);
-    if !signed_ok && let Ok(resorted) = attrs.to_der() && resorted != as_set {
+    if !signed_ok
+        && let Ok(resorted) = attrs.to_der()
+        && resorted != as_set
+    {
         signed_ok = algs::verify(&key, scheme, &resorted, &s.signature);
     }
     out.valid = types_ok && digest_ok && signed_ok;

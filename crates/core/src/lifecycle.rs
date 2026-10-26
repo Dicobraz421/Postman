@@ -26,8 +26,8 @@ use std::time::Duration;
 use jiff::civil::{Date, Time, Weekday};
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, Zoned};
-use postman_cache::{Cache, EmailRow, MailboxRow, Recipients, Scan, all_folders};
 pub use postman_cache::Patch;
+use postman_cache::{Cache, EmailRow, MailboxRow, Recipients, Scan, all_folders};
 
 use crate::filters::Me;
 use crate::marks::{self, Kind, When};
@@ -204,9 +204,7 @@ pub fn badges(keywords: &[String], now: &Zoned) -> Vec<Badge> {
 
 /// Срок письма прошёл.
 pub fn overdue(keywords: &[String], now: &Zoned) -> bool {
-    marks::find(keywords, Kind::Due)
-        .and_then(|w| moment(Kind::Due, w, now.time_zone()))
-        .is_some_and(|m| m <= now.timestamp())
+    marks::find(keywords, Kind::Due).and_then(|w| moment(Kind::Due, w, now.time_zone())).is_some_and(|m| m <= now.timestamp())
 }
 
 /// Напоминание сработало, письмо ещё не прочитано: общее слово `pm.remind` без срока.
@@ -234,10 +232,7 @@ impl Roles {
     /// Папки аккаунта `account` (`None` — свой).
     pub fn of(mailboxes: &[MailboxRow], account: Option<&str>) -> Roles {
         let find = |role: &str| {
-            mailboxes
-                .iter()
-                .find(|m| m.role.as_deref() == Some(role) && postman_cache::account_of(&m.id) == account)
-                .map(|m| m.id.clone())
+            mailboxes.iter().find(|m| m.role.as_deref() == Some(role) && postman_cache::account_of(&m.id) == account).map(|m| m.id.clone())
         };
         Roles { inbox: find("inbox"), archive: find("archive"), trash: find("trash"), sent: find("sent") }
     }
@@ -355,11 +350,7 @@ impl Pick {
                 let ts = now.timestamp().as_second() + LATER_HOURS * HOUR;
                 let up = (ts + HOUR - 1) / HOUR * HOUR;
                 let w = when_at(up, tz)?;
-                if w.date != today || w.time.is_some_and(|t| t.hour() > LATE_EVENING) {
-                    When::at(today.tomorrow().ok()?, morning())
-                } else {
-                    w
-                }
+                if w.date != today || w.time.is_some_and(|t| t.hour() > LATE_EVENING) { When::at(today.tomorrow().ok()?, morning()) } else { w }
             }
             Pick::Days(n) => match kind {
                 Kind::Expire => when_at(now.timestamp().as_second() + i64::from(n) * DAY, tz)?,
@@ -506,10 +497,7 @@ pub fn plan(input: &Input, roles: &Roles, rules: &Lifecycle, me: &Me, now: &Zone
         match marks::find(&row.keywords, Kind::Remind) {
             Some(w) if at(Kind::Remind, w) <= ts => {
                 p.keywords.extend(
-                    row.keywords
-                        .iter()
-                        .filter(|k| Kind::Remind.owns(k) && !k.eq_ignore_ascii_case(marks::REMIND))
-                        .map(|k| (k.clone(), false)),
+                    row.keywords.iter().filter(|k| Kind::Remind.owns(k) && !k.eq_ignore_ascii_case(marks::REMIND)).map(|k| (k.clone(), false)),
                 );
                 p.keywords.push((marks::REMIND.to_owned(), true));
                 p.keywords.push((postman_cache::SEEN.to_owned(), false));
@@ -917,10 +905,7 @@ mod tests {
         let patch = &p.patches[0];
         assert_eq!(patch.id, "a");
         assert_eq!(patch.mailboxes, [("in".into(), true), ("arch".into(), false)]);
-        assert_eq!(
-            patch.keywords,
-            [("pm.remind.2026-10-22t0900".into(), false), ("pm.remind".into(), true), ("$seen".into(), false)]
-        );
+        assert_eq!(patch.keywords, [("pm.remind.2026-10-22t0900".into(), false), ("pm.remind".into(), true), ("$seen".into(), false)]);
         assert_eq!(p.notices, [Notice::Reminded { id: "a".into(), subject: "s-a".into() }]);
         assert_eq!(p.next, Some(zoned("2026-10-22T16:30:00+00:00[UTC]").timestamp().as_second()), "ближайший — 16:30");
         // Применили — «напомнило»: наверху; прочитали — общее слово снимается следующим проходом.

@@ -181,7 +181,10 @@ mod tests {
 
     #[test]
     fn tree_without_prefixes() {
-        let doc = parse(br#"<?xml version="1.0"?><s:Envelope xmlns:s="x"><s:Body><m:R a="1 &amp; 2"><t:V>a &lt; b&#33;</t:V><t:E/></m:R></s:Body></s:Envelope>"#).unwrap();
+        let doc = parse(
+            br#"<?xml version="1.0"?><s:Envelope xmlns:s="x"><s:Body><m:R a="1 &amp; 2"><t:V>a &lt; b&#33;</t:V><t:E/></m:R></s:Body></s:Envelope>"#,
+        )
+        .unwrap();
         assert_eq!(doc.name, "Envelope");
         let r = doc.at(&["Body", "R"]).unwrap();
         assert_eq!(r.attr("a"), Some("1 & 2"));

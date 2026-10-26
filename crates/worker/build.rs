@@ -11,12 +11,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let v = env::var("CARGO_PKG_VERSION")?;
     let n = |k: &str| env::var(k).map_err(|e| format!("{k}: {e}"));
-    let comma = format!(
-        "{},{},{},0",
-        n("CARGO_PKG_VERSION_MAJOR")?,
-        n("CARGO_PKG_VERSION_MINOR")?,
-        n("CARGO_PKG_VERSION_PATCH")?
-    );
+    let comma = format!("{},{},{},0", n("CARGO_PKG_VERSION_MAJOR")?, n("CARGO_PKG_VERSION_MINOR")?, n("CARGO_PKG_VERSION_PATCH")?);
     let license = env::var("CARGO_PKG_LICENSE").unwrap_or_default();
     let rc = Path::new(&env::var("OUT_DIR")?).join("postman-worker.rc");
     fs::write(

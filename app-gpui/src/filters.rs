@@ -64,14 +64,7 @@ impl EventEmitter<Changed> for FilterModel {}
 
 impl FilterModel {
     pub(crate) fn new() -> Self {
-        Self {
-            query: Query::default(),
-            panel: false,
-            quick_open: false,
-            counts: Counts::default(),
-            categories: Vec::new(),
-            folder: String::new(),
-        }
+        Self { query: Query::default(), panel: false, quick_open: false, counts: Counts::default(), categories: Vec::new(), folder: String::new() }
     }
 
     /// Изменить условия: изменились — `Changed` (пересчёт); перерисовка — всегда.
@@ -277,11 +270,12 @@ impl Layout {
 
     /// Письма, видимые в элементах `items` (окно чтения из кэша).
     pub(crate) fn rows_in(&self, items: Range<usize>) -> Range<usize> {
-        let rows: Vec<usize> = items.filter_map(|i| match self.slot(i) {
-            Some(Slot::Row(r)) => Some(r),
-            _ => None,
-        })
-        .collect();
+        let rows: Vec<usize> = items
+            .filter_map(|i| match self.slot(i) {
+                Some(Slot::Row(r)) => Some(r),
+                _ => None,
+            })
+            .collect();
         match (rows.first(), rows.last()) {
             (Some(&a), Some(&b)) => a..b + 1,
             _ => {
@@ -629,8 +623,7 @@ pub(crate) fn quick(model: &Entity<FilterModel>, m: &FilterModel, tabs: &[Quick]
                 .cursor_pointer()
                 .relative()
                 .when(active, |d| {
-                    d.bg(l.fill())
-                        .child(div().absolute().bottom_0().left_0().right_0().h(px(3.)).rounded_b(px(6.)).bg(quick_color(q, l)))
+                    d.bg(l.fill()).child(div().absolute().bottom_0().left_0().right_0().h(px(3.)).rounded_b(px(6.)).bg(quick_color(q, l)))
                 })
                 .when(!active, |d| d.border_1().border_color(l.border()).hover(|d| d.bg(l.hover())))
                 .child(
@@ -664,21 +657,15 @@ pub(crate) fn quick(model: &Entity<FilterModel>, m: &FilterModel, tabs: &[Quick]
             .children(cells)
     });
     let model = model.clone();
-    div()
-        .id("quick-zone")
-        .flex()
-        .flex_col()
-        .children(panel)
-        .child(strip)
-        .on_hover(move |hovered, _, cx| {
-            if !*hovered {
-                model.update(cx, |m, cx| {
-                    if m.quick_open {
-                        m.set(cx, |m| m.quick_open = false);
-                    }
-                });
-            }
-        })
+    div().id("quick-zone").flex().flex_col().children(panel).child(strip).on_hover(move |hovered, _, cx| {
+        if !*hovered {
+            model.update(cx, |m, cx| {
+                if m.quick_open {
+                    m.set(cx, |m| m.quick_open = false);
+                }
+            });
+        }
+    })
 }
 
 /// Меню сортировки под кнопкой над списком; галочка — у текущего порядка.
@@ -813,7 +800,8 @@ impl crate::Mailer {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "filters", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part =
+    crate::part::Part { name: "filters", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Обработчики команд части — на корне экрана почты (`Mailer::render`).
 fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
@@ -826,10 +814,7 @@ fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
 }
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
-const TEXTS: &[pets_i18n::Resource] = &[
-    ("ru", include_str!("../i18n/ru/filters.ftl")),
-    ("en", include_str!("../i18n/en/filters.ftl")),
-];
+const TEXTS: &[pets_i18n::Resource] = &[("ru", include_str!("../i18n/ru/filters.ftl")), ("en", include_str!("../i18n/en/filters.ftl"))];
 
 /// Вид списка (S5-03): панель фильтров, быстрые фильтры, сортировка.
 pub(crate) mod view {

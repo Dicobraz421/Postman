@@ -245,7 +245,11 @@ fn oaep(params: Option<&der::Any>) -> Wrap {
             },
             (0xA1, Some(a)) => {
                 let Some(alg) = alg_of(&a) else { return Wrap::Unsupported("RSA-OAEP MGF".into()) };
-                let h = alg.parameters.as_ref().and_then(|p| AlgorithmIdentifierOwned::from_der(&p.to_der().ok()?).ok()).and_then(|a| hash_by_oid(&a.oid));
+                let h = alg
+                    .parameters
+                    .as_ref()
+                    .and_then(|p| AlgorithmIdentifierOwned::from_der(&p.to_der().ok()?).ok())
+                    .and_then(|a| hash_by_oid(&a.oid));
                 match (alg.oid == oid::MGF1, h) {
                     (true, Some(h)) => mgf = h,
                     _ => return Wrap::Unsupported("RSA-OAEP MGF".into()),
@@ -464,7 +468,12 @@ fn parse(cms: &[u8]) -> Result<Parsed, OpenError> {
         oid::AUTH_ENVELOPED_DATA => true,
         _ => return Err(OpenError::NotEncrypted),
     };
-    let ed = ci.get(1).filter(|t| t.tag == 0xA0).and_then(|t| t.children()).and_then(|k| k.into_iter().next()).ok_or_else(|| malformed("EnvelopedData"))?;
+    let ed = ci
+        .get(1)
+        .filter(|t| t.tag == 0xA0)
+        .and_then(|t| t.children())
+        .and_then(|k| k.into_iter().next())
+        .ok_or_else(|| malformed("EnvelopedData"))?;
     let parts = ed.children().ok_or_else(|| malformed("EnvelopedData"))?;
     // version, originatorInfo [0]?, recipientInfos SET, (auth)encryptedContentInfo, …
     let mut i = 1;
@@ -477,8 +486,18 @@ fn parse(cms: &[u8]) -> Result<Parsed, OpenError> {
         match ri.tag {
             0x30 => recipients.push(ktri(ri).ok_or_else(|| malformed("KeyTransRecipientInfo"))?),
             0xA1 => recipients.extend(kari(ri).ok_or_else(|| malformed("KeyAgreeRecipientInfo"))?),
-            0xA2 => recipients.push(Recipient { rid: Rid::Ski(Vec::new()), wrap: Wrap::Unsupported("KEKRecipientInfo".into()), encrypted_key: Vec::new(), label: String::new() }),
-            0xA3 => recipients.push(Recipient { rid: Rid::Ski(Vec::new()), wrap: Wrap::Unsupported("PasswordRecipientInfo".into()), encrypted_key: Vec::new(), label: String::new() }),
+            0xA2 => recipients.push(Recipient {
+                rid: Rid::Ski(Vec::new()),
+                wrap: Wrap::Unsupported("KEKRecipientInfo".into()),
+                encrypted_key: Vec::new(),
+                label: String::new(),
+            }),
+            0xA3 => recipients.push(Recipient {
+                rid: Rid::Ski(Vec::new()),
+                wrap: Wrap::Unsupported("PasswordRecipientInfo".into()),
+                encrypted_key: Vec::new(),
+                label: String::new(),
+            }),
             _ => {}
         }
     }
@@ -559,10 +578,22 @@ fn decrypt(c: &Content, cek: &[u8]) -> Result<Zeroizing<Vec<u8>>, OpenError> {
     }
     let damaged = |_| OpenError::Damaged;
     let out = match cipher {
-        Cipher::AesCbc(128) => cbc::Decryptor::<aes::Aes128>::new_from_slices(cek, &c.iv).map_err(|_| OpenError::Damaged)?.decrypt_padded_vec_mut::<Pkcs7>(&c.data).map_err(damaged)?,
-        Cipher::AesCbc(192) => cbc::Decryptor::<aes::Aes192>::new_from_slices(cek, &c.iv).map_err(|_| OpenError::Damaged)?.decrypt_padded_vec_mut::<Pkcs7>(&c.data).map_err(damaged)?,
-        Cipher::AesCbc(_) => cbc::Decryptor::<aes::Aes256>::new_from_slices(cek, &c.iv).map_err(|_| OpenError::Damaged)?.decrypt_padded_vec_mut::<Pkcs7>(&c.data).map_err(damaged)?,
-        Cipher::Des3 => cbc::Decryptor::<des::TdesEde3>::new_from_slices(cek, &c.iv).map_err(|_| OpenError::Damaged)?.decrypt_padded_vec_mut::<Pkcs7>(&c.data).map_err(damaged)?,
+        Cipher::AesCbc(128) => cbc::Decryptor::<aes::Aes128>::new_from_slices(cek, &c.iv)
+            .map_err(|_| OpenError::Damaged)?
+            .decrypt_padded_vec_mut::<Pkcs7>(&c.data)
+            .map_err(damaged)?,
+        Cipher::AesCbc(192) => cbc::Decryptor::<aes::Aes192>::new_from_slices(cek, &c.iv)
+            .map_err(|_| OpenError::Damaged)?
+            .decrypt_padded_vec_mut::<Pkcs7>(&c.data)
+            .map_err(damaged)?,
+        Cipher::AesCbc(_) => cbc::Decryptor::<aes::Aes256>::new_from_slices(cek, &c.iv)
+            .map_err(|_| OpenError::Damaged)?
+            .decrypt_padded_vec_mut::<Pkcs7>(&c.data)
+            .map_err(damaged)?,
+        Cipher::Des3 => cbc::Decryptor::<des::TdesEde3>::new_from_slices(cek, &c.iv)
+            .map_err(|_| OpenError::Damaged)?
+            .decrypt_padded_vec_mut::<Pkcs7>(&c.data)
+            .map_err(damaged)?,
         Cipher::AesGcm(bits) => gcm(bits, cek, c)?,
         // Ключ ГОСТ из СКЗИ не выходит: содержимое расшифровывает ядро (`open_inner`).
         Cipher::Gost28147 => return Err(OpenError::Unsupported("ГОСТ 28147-89: нужно СКЗИ".into())),
@@ -638,7 +669,8 @@ fn inner_layers(inner: &[u8], from: &str, trust: &Trust, now: u64) -> Result<(Ve
     let mut report = crate::verify(inner, trust, now);
     // Внутренняя часть без заголовков письма: «От» — внешнего письма (его и показывает список).
     if report.from.is_empty() {
-        report.address_ok = report.status.signature_ok() && report.certs.first().is_some_and(|c| c.emails.iter().any(|e| e.eq_ignore_ascii_case(from)));
+        report.address_ok =
+            report.status.signature_ok() && report.certs.first().is_some_and(|c| c.emails.iter().any(|e| e.eq_ignore_ascii_case(from)));
         report.from = from.to_owned();
     }
     // Подпись внутри (`signed-data`): тело — подписанное содержимое; иначе — само внутреннее письмо.
@@ -684,7 +716,10 @@ fn parts_of(msg: &mail_parser::Message<'_>) -> Vec<Part> {
         .into_iter()
         .enumerate()
         .map(|(i, a)| {
-            let mime = a.content_type().map(|c| format!("{}/{}", c.ctype(), c.subtype().unwrap_or("octet-stream"))).unwrap_or_else(|| "application/octet-stream".into());
+            let mime = a
+                .content_type()
+                .map(|c| format!("{}/{}", c.ctype(), c.subtype().unwrap_or("octet-stream")))
+                .unwrap_or_else(|| "application/octet-stream".into());
             let cid = a.content_id().map(|c| c.trim_matches(['<', '>']).to_string());
             let inline = a.content_disposition().is_some_and(|d| d.is_inline());
             Part {
@@ -835,7 +870,10 @@ pub fn wrap_key(kek: &[u8], key: &[u8]) -> Option<Vec<u8>> {
 
 /// AES Key Unwrap (RFC 3394); неверная проверка целостности — `None`.
 pub fn unwrap_key(kek: &[u8], wrapped: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
-    fn run<C: BlockDecrypt + KeyInit + aes::cipher::BlockSizeUser<BlockSize = aes::cipher::consts::U16>>(kek: &[u8], wrapped: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
+    fn run<C: BlockDecrypt + KeyInit + aes::cipher::BlockSizeUser<BlockSize = aes::cipher::consts::U16>>(
+        kek: &[u8],
+        wrapped: &[u8],
+    ) -> Option<Zeroizing<Vec<u8>>> {
         let cipher = C::new_from_slice(kek).ok()?;
         let n = wrapped.len() / 8 - 1;
         let mut a: [u8; 8] = wrapped[..8].try_into().ok()?;

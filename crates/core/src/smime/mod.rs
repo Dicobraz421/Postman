@@ -14,12 +14,12 @@
 //! Обнаружение СКЗИ — за трейтом [`GostProvider`], тесты подменяют оба режима.
 
 #[cfg(windows)]
+mod cng;
+pub mod keys;
+#[cfg(windows)]
 mod seal_win;
 #[cfg(windows)]
 mod sign_win;
-#[cfg(windows)]
-mod cng;
-pub mod keys;
 pub mod skzi;
 #[cfg(windows)]
 mod windows;
@@ -192,7 +192,12 @@ impl Anchors {
                     return t.clone();
                 }
                 let t = Arc::new(sys::load_trust(&corporate_extra()));
-                tracing::info!(roots = t.roots.len(), intermediates = t.intermediates.len(), disallowed = t.disallowed.len(), "S/MIME trust anchors loaded");
+                tracing::info!(
+                    roots = t.roots.len(),
+                    intermediates = t.intermediates.len(),
+                    disallowed = t.disallowed.len(),
+                    "S/MIME trust anchors loaded"
+                );
                 *cached = Some(t.clone());
                 t
             }

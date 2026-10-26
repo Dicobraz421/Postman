@@ -98,10 +98,7 @@ async fn categories_are_set_queried_and_cleared() {
     assert_eq!(kws, want, "сервер хранит слова как есть, $seen на месте");
     assert_eq!(labels::classify(&mine), Keyword::Category(&mine["pm.cat.".len()..]));
 
-    let found = c
-        .filtered(&Filter::And(vec![Filter::InMailbox(inbox.clone()), Filter::HasKeyword(mine.clone())]), 10)
-        .await
-        .unwrap();
+    let found = c.filtered(&Filter::And(vec![Filter::InMailbox(inbox.clone()), Filter::HasKeyword(mine.clone())]), 10).await.unwrap();
     assert_eq!((found.ids.as_slice(), found.total), (std::slice::from_ref(&id), 1));
     // «Все папки» — без inMailbox.
     let everywhere = c.filtered(&Filter::HasKeyword(mine.clone()), 10).await.unwrap();
@@ -110,10 +107,7 @@ async fn categories_are_set_queried_and_cleared() {
     assert_eq!(odd_found.ids, std::slice::from_ref(&id), "слово с ~ и / ищется");
     let total = c.count(&[Filter::InMailbox(inbox.clone())]).await.unwrap()[0];
     let in_inbox = |f: Filter| Filter::And(vec![Filter::InMailbox(inbox.clone()), f]);
-    let counts = c
-        .count(&[in_inbox(Filter::HasKeyword(mine.clone())), in_inbox(Filter::NotKeyword(mine.clone()))])
-        .await
-        .unwrap();
+    let counts = c.count(&[in_inbox(Filter::HasKeyword(mine.clone())), in_inbox(Filter::NotKeyword(mine.clone()))]).await.unwrap();
     assert_eq!(counts, [1, total - 1], "«N из M»: {total} во «Входящих»");
     println!("inbox {total}, with {mine}: {}", counts[0]);
 
@@ -164,10 +158,14 @@ async fn categories_through_sync() {
 
     let cache = Cache::open_in_memory().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
-    let commands = postman_backend_jmap::spawn(Account { url: env("POSTMAN_STAND_URL"), auth: postman_backend_jmap::convert::FromJmap::from_jmap(auth()) }, cache.clone(), None, tx, || {});
-    wait_for(&rx, "первая синхронизация", |e| {
-        matches!(e, Event::Status(Status::Synced)).then_some(())
-    });
+    let commands = postman_backend_jmap::spawn(
+        Account { url: env("POSTMAN_STAND_URL"), auth: postman_backend_jmap::convert::FromJmap::from_jmap(auth()) },
+        cache.clone(),
+        None,
+        tx,
+        || {},
+    );
+    wait_for(&rx, "первая синхронизация", |e| matches!(e, Event::Status(Status::Synced)).then_some(()));
     // Свой аккаунт — ключи без префикса.
     let start = Instant::now();
     while cache.rows_by_ids(std::slice::from_ref(&id)).unwrap().is_empty() {
@@ -179,9 +177,7 @@ async fn categories_through_sync() {
     let row = cache.set_keywords(&id, std::slice::from_ref(&mine), &[]).unwrap().unwrap();
     assert!(row.has_keyword(&mine));
     assert_eq!(cache.keyword_count(&mine, &inbox).unwrap(), 1);
-    assert!(
-        commands.send(Command::SetKeywords { ids: vec![id.clone()], add: vec![mine.clone()], remove: vec![] }).is_ok()
-    );
+    assert!(commands.send(Command::SetKeywords { ids: vec![id.clone()], add: vec![mine.clone()], remove: vec![] }).is_ok());
     let start = Instant::now();
     while !keywords_on_server(&c, &id).await.contains(&mine) {
         assert!(start.elapsed() < WAIT, "метка не дошла до сервера");
@@ -209,9 +205,7 @@ async fn categories_through_sync() {
 
     // Снять — и в кэше, и на сервере; push возвращает письмо без метки.
     cache.set_keywords(&id, &[], std::slice::from_ref(&mine)).unwrap();
-    assert!(
-        commands.send(Command::SetKeywords { ids: vec![id.clone()], add: vec![], remove: vec![mine.clone()] }).is_ok()
-    );
+    assert!(commands.send(Command::SetKeywords { ids: vec![id.clone()], add: vec![], remove: vec![mine.clone()] }).is_ok());
     let start = Instant::now();
     while keywords_on_server(&c, &id).await.contains(&mine) {
         assert!(start.elapsed() < WAIT, "метка не снялась на сервере");

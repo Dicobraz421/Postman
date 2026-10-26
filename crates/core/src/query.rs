@@ -10,8 +10,8 @@
 //! `7d`, `2w`, `3m`, `1y` (`7д`, `2н`, `3м`, `1г`). Неизвестный ключ (`Re:`) — просто слово; ключ без значения
 //! (запрос ещё набирается) и непонятное значение — без условия.
 
-use postman_cache::{EmailRow, FLAGGED, Recipients, SEEN};
 use crate::model::Filter;
+use postman_cache::{EmailRow, FLAGGED, Recipients, SEEN};
 
 use crate::fuzzy::{folded, highlight_terms};
 
@@ -402,13 +402,7 @@ pub const WITHIN: [u32; 2] = [30, 7];
 /// Чипы «Уточнить» по найденному: включённые условия — всегда; остальные — если сужают найденное (подходит
 /// часть писем, но не все). Отправитель и категория — самые частые среди найденного. `categories` — таблица
 /// (ключевое слово, имя); `me` — мои адреса.
-pub fn suggest(
-    q: &Query,
-    found: &[(EmailRow, Recipients)],
-    now: &jiff::Zoned,
-    categories: &[(String, String)],
-    me: &[String],
-) -> Vec<Refine> {
+pub fn suggest(q: &Query, found: &[(EmailRow, Recipients)], now: &jiff::Zoned, categories: &[(String, String)], me: &[String]) -> Vec<Refine> {
     let n = found.len();
     let narrows = |k: usize| k > 0 && k < n;
     let count = |f: &dyn Fn(&EmailRow, &Recipients) -> bool| found.iter().filter(|(r, t)| f(r, t)).count();
@@ -442,11 +436,7 @@ pub fn suggest(
     }
     let mine: Vec<String> = me.iter().map(|a| a.to_lowercase()).collect();
     let to_me = count(&|_, t| t.to.iter().chain(&t.cc).any(|a| mine.iter().any(|m| a.eq_ignore_ascii_case(m))));
-    let simple = [
-        (Refine::ToMe, to_me),
-        (Refine::Attachment, count(&|r, _| r.has_attachment)),
-        (Refine::Unread, count(&|r, _| !r.seen)),
-    ];
+    let simple = [(Refine::ToMe, to_me), (Refine::Attachment, count(&|r, _| r.has_attachment)), (Refine::Unread, count(&|r, _| !r.seen))];
     for (r, k) in simple {
         if r.active(q) || narrows(k) {
             out.push(r);
@@ -506,7 +496,9 @@ mod tests {
 
     #[test]
     fn parses_words_and_conditions() {
-        let q = Query::parse(r#"договор from:"Ирина Смирнова" to:me subject:ИБ has:attachment is:unread after:30d before:2026-10-01 "точная фраза" category:Клиенты"#);
+        let q = Query::parse(
+            r#"договор from:"Ирина Смирнова" to:me subject:ИБ has:attachment is:unread after:30d before:2026-10-01 "точная фраза" category:Клиенты"#,
+        );
         assert_eq!(q.words, ["договор", "точная фраза"]);
         assert_eq!(q.from, ["Ирина Смирнова"]);
         assert_eq!(q.to, ["me"]);
@@ -588,21 +580,13 @@ mod tests {
         let q = Query::parse(r#"итоги квартала "точная фраза""#);
         assert_eq!(
             q.server_filter(&q.env(&now, |_| None, &[])),
-            Some(Filter::And(vec![
-                Filter::Text("ru:итоги".into()),
-                Filter::Text("ru:квартала".into()),
-                Filter::Text("ru:точная фраза".into()),
-            ]))
+            Some(Filter::And(vec![Filter::Text("ru:итоги".into()), Filter::Text("ru:квартала".into()), Filter::Text("ru:точная фраза".into()),]))
         );
         // Латиница — без языка; слово, где есть кириллица, — по-русски.
         let q = Query::parse("report subject:Q3 ИБ-2026");
         assert_eq!(
             q.server_filter(&q.env(&now, |_| None, &[])),
-            Some(Filter::And(vec![
-                Filter::Text("report".into()),
-                Filter::Text("ru:ИБ-2026".into()),
-                Filter::Subject("Q3".into()),
-            ]))
+            Some(Filter::And(vec![Filter::Text("report".into()), Filter::Text("ru:ИБ-2026".into()), Filter::Subject("Q3".into()),]))
         );
         assert_eq!(Query::parse("").server_filter(&Env::default()), None);
         // `to:me` до того, как известны мои адреса, — без условия.

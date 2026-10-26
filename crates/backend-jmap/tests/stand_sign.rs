@@ -21,7 +21,9 @@ fn env(name: &str) -> String {
 async fn user(n: u8) -> (String, Client) {
     let email = env(&format!("POSTMAN_STAND_USER{n}"));
     let password = env(&format!("POSTMAN_STAND_PASSWORD{n}"));
-    let c = Client::connect(&env("POSTMAN_STAND_URL"), Auth::Basic { user: email.clone(), password }).await.unwrap_or_else(|e| panic!("вход {email}: {e}"));
+    let c = Client::connect(&env("POSTMAN_STAND_URL"), Auth::Basic { user: email.clone(), password })
+        .await
+        .unwrap_or_else(|e| panic!("вход {email}: {e}"));
     (email, c)
 }
 
@@ -47,7 +49,13 @@ async fn signed_by_postman_is_verified() {
         to: vec![Address::new("User 3", &to)],
         subject: subject.clone(),
         markdown: "Подписанное письмо Postman — **кириллица**, длинная строка ".repeat(4),
-        attachments: vec![Attachment { name: "отчёт.txt".into(), mime: "text/plain".into(), data: "строка\n".repeat(50).into_bytes(), inline_cid: None, blob_id: None }],
+        attachments: vec![Attachment {
+            name: "отчёт.txt".into(),
+            mime: "text/plain".into(),
+            data: "строка\n".repeat(50).into_bytes(),
+            inline_cid: None,
+            blob_id: None,
+        }],
         sign: true,
         ..Default::default()
     };

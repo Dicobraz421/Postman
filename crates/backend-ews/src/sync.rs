@@ -575,7 +575,8 @@ impl Ews {
             return Ok(b);
         }
         let id = parse_key(key).ok_or_else(|| postman_ews::Error::Xml(format!("not an ews key: {key}")))?;
-        let mail = self.client.get_mail(&id).await?.ok_or_else(|| postman_ews::Error::Ews { code: "ErrorItemNotFound".into(), message: String::new() })?;
+        let mail =
+            self.client.get_mail(&id).await?.ok_or_else(|| postman_ews::Error::Ews { code: "ErrorItemNotFound".into(), message: String::new() })?;
         self.cache.put_blob(key, &mail.mime).map_err(db)?;
         Ok(mail.mime)
     }
@@ -612,7 +613,14 @@ impl Ews {
             attachments: m
                 .parts
                 .into_iter()
-                .map(|p| AttachmentRow { blob_id: format!("{key}#{}", p.index), name: p.name, mime: p.mime, size: p.size, cid: p.cid, inline: p.inline })
+                .map(|p| AttachmentRow {
+                    blob_id: format!("{key}#{}", p.index),
+                    name: p.name,
+                    mime: p.mime,
+                    size: p.size,
+                    cid: p.cid,
+                    inline: p.inline,
+                })
                 .collect(),
             blob_id: Some(key.to_owned()),
         };
@@ -668,8 +676,20 @@ impl Ews {
     /// «Прочитано» и флаг — на сервер; другие ключевые слова EWS не хранит.
     async fn set_keywords(&mut self, keys: &[String], add: &[String], remove: &[String]) -> postman_ews::Result<()> {
         let has = |v: &[String], k: &str| v.iter().any(|x| x.eq_ignore_ascii_case(k));
-        let read = if has(add, "$seen") { Some(true) } else if has(remove, "$seen") { Some(false) } else { None };
-        let flag = if has(add, "$flagged") { Some(true) } else if has(remove, "$flagged") { Some(false) } else { None };
+        let read = if has(add, "$seen") {
+            Some(true)
+        } else if has(remove, "$seen") {
+            Some(false)
+        } else {
+            None
+        };
+        let flag = if has(add, "$flagged") {
+            Some(true)
+        } else if has(remove, "$flagged") {
+            Some(false)
+        } else {
+            None
+        };
         for id in Self::ids(keys) {
             if let Some(r) = read {
                 self.client.set_read(&id, r).await?;
@@ -874,7 +894,11 @@ impl Ews {
                     let remove: Vec<String> = p.keywords.iter().filter(|(_, on)| !*on).map(|(k, _)| k.clone()).collect();
                     self.set_keywords(std::slice::from_ref(&p.id), &add, &remove).await?;
                     let to = p.mailboxes.iter().find(|(_, on)| *on).and_then(|(k, _)| {
-                        if k == postman_core::lifecycle::ARCHIVE { self.folder_by_role(MailRole::Archive).cloned() } else { self.folder_by_key(k).cloned() }
+                        if k == postman_core::lifecycle::ARCHIVE {
+                            self.folder_by_role(MailRole::Archive).cloned()
+                        } else {
+                            self.folder_by_key(k).cloned()
+                        }
                     });
                     if let Some(to) = to {
                         self.move_letters(std::slice::from_ref(&p.id), &to).await?;
@@ -980,7 +1004,13 @@ impl Ews {
     }
 
     /// Ответ на приглашение: по встрече в календаре Exchange (ответ шлёт сервер), иначе — письмом организатору.
-    async fn respond_invite(&mut self, inv: postman_calendar::Invitation, status: postman_calendar::Partstat, in_reply_to: Option<String>, notify: &impl Fn(Event)) {
+    async fn respond_invite(
+        &mut self,
+        inv: postman_calendar::Invitation,
+        status: postman_calendar::Partstat,
+        in_reply_to: Option<String>,
+        notify: &impl Fn(Event),
+    ) {
         let uid = inv.event.uid.clone();
         if let Some(a) = self.areas.as_mut() {
             match a.answer(&inv, status).await {

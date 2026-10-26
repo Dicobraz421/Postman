@@ -50,11 +50,7 @@ fn back_off(el: &El) -> u64 {
 }
 
 fn error(code: &str, message: String, el: &El) -> Error {
-    if code == "ErrorServerBusy" {
-        Error::ServerBusy { back_off_ms: back_off(el) }
-    } else {
-        Error::Ews { code: code.to_owned(), message }
-    }
+    if code == "ErrorServerBusy" { Error::ServerBusy { back_off_ms: back_off(el) } } else { Error::Ews { code: code.to_owned(), message } }
 }
 
 /// Ответ операции: первый элемент `Body`. `Fault` и `ErrorServerBusy` в любом сообщении — ошибка.

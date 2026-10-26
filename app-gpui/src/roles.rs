@@ -292,16 +292,14 @@ const CAT_PARTS: [&str; 3] = ["dot", "text", "bg"];
 
 /// Имена ролей категорий `app.cat.<цвет>.<часть>` по порядку `palette::PALETTE` — строки живут весь процесс
 /// (имя роли pets-ui — `&'static str`).
-static CAT_NAMES: LazyLock<Vec<[String; 3]>> = LazyLock::new(|| {
-    palette::PALETTE.iter().map(|c| CAT_PARTS.map(|part| format!("app.cat.{}.{part}", c.key))).collect()
-});
+static CAT_NAMES: LazyLock<Vec<[String; 3]>> =
+    LazyLock::new(|| palette::PALETTE.iter().map(|c| CAT_PARTS.map(|part| format!("app.cat.{}.{part}", c.key))).collect());
 
 /// Все роли Postman для `Themes::init`: постоянные, угроза и срок из палитры, цвета категорий (таблица DESIGN).
 pub(crate) static ROLES: LazyLock<Vec<AppRole>> = LazyLock::new(roles);
 
 fn roles() -> Vec<AppRole> {
-    let mut out: Vec<AppRole> =
-        FIXED.iter().map(|&(_, name, light, dark, hc)| AppRole { name, light, dark, hc }).collect();
+    let mut out: Vec<AppRole> = FIXED.iter().map(|&(_, name, light, dark, hc)| AppRole { name, light, dark, hc }).collect();
     let reserved = |r: Reserved| (palette::reserved(r, palette::Theme::Light), palette::reserved(r, palette::Theme::Dark));
     let (tl, td) = reserved(Reserved::Threat);
     let (dl, dd) = reserved(Reserved::Deadline);
@@ -413,10 +411,7 @@ pub(crate) struct Look {
 impl Look {
     pub(crate) fn new(theme: &Theme) -> Look {
         let pm = PMS.map(|r| theme.app(pm_name(r)));
-        let cats = CAT_NAMES
-            .iter()
-            .map(|n| Cat { dot: theme.app(&n[0]), text: theme.app(&n[1]), bg: theme.app(&n[2]) })
-            .collect();
+        let cats = CAT_NAMES.iter().map(|n| Cat { dot: theme.app(&n[0]), text: theme.app(&n[1]), bg: theme.app(&n[2]) }).collect();
         let free = FREE.map(|(_, n, _, _)| Free { line: theme.app(n[0]), bg: theme.app(n[1]), hover: theme.app(n[2]), fg: theme.app(n[3]) });
         Look { theme: theme.clone(), pm, cats, free }
     }
@@ -445,11 +440,7 @@ impl Look {
     pub(crate) fn cat(&self, key: &str) -> Cat {
         let index = |k: &str| palette::PALETTE.iter().position(|c| c.key == k);
         let i = index(palette::resolve(key)).or_else(|| index(palette::NEUTRAL));
-        i.and_then(|i| self.cats.get(i)).copied().unwrap_or(Cat {
-            dot: self.c(Role::TextTertiary),
-            text: self.text2(),
-            bg: self.c(Role::FillCursor),
-        })
+        i.and_then(|i| self.cats.get(i)).copied().unwrap_or(Cat { dot: self.c(Role::TextTertiary), text: self.text2(), bg: self.c(Role::FillCursor) })
     }
 
     pub(crate) fn px(&self, m: Metric) -> Pixels {
@@ -561,7 +552,6 @@ impl Look {
     pub(crate) fn success(&self) -> Hsla {
         self.c(Role::SuccessFg)
     }
-
 
     /// Нейтральная заливка (код, полосы таблиц, подложки чипов).
     pub(crate) fn fill(&self) -> Hsla {
@@ -698,9 +688,8 @@ fn sync_components(l: &Look, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::{Look, PMS, Pm, ROLES, base, pm_name};
-    use postman_core::prefs::Accent;
     use pets_ui::theme::{FontSizes, OsLook, ThemeSpec, resolve};
-
+    use postman_core::prefs::Accent;
 
     /// Акцент «Внешнего вида» (S5-30): заливка, текст и тонированная подложка — токены акцента; синий — по умолчанию.
     #[test]
@@ -714,7 +703,10 @@ mod tests {
             Look::new(&resolve(&ThemeSpec::default(), Some(&base(None, accent)), &os, FontSizes::default(), &ROLES))
         };
         let l = look(false, Accent::Teal);
-        assert_eq!([hex(l.accent()), hex(l.accent_text()), hex(l.picked()), hex(l.pm(Pm::SecondaryFg))], ["#00756F", "#00756F", "#E1F3F1", "#00524D"]);
+        assert_eq!(
+            [hex(l.accent()), hex(l.accent_text()), hex(l.picked()), hex(l.pm(Pm::SecondaryFg))],
+            ["#00756F", "#00756F", "#E1F3F1", "#00524D"]
+        );
         let d = look(true, Accent::Violet);
         assert_eq!([hex(d.accent()), hex(d.accent_text()), hex(d.pm(Pm::Secondary))], ["#6A4CAE", "#B39DEB", "#332A4A"]);
         assert_eq!(hex(look(false, Accent::System).accent()), "#0067C0");
@@ -867,8 +859,7 @@ mod tests {
         let code = source.split("#[cfg(test)]").next().unwrap_or(source);
         let mut out = Vec::new();
         for (i, _) in code.match_indices("0x") {
-            let digits: String =
-                code[i + 2..].chars().take_while(|c| c.is_ascii_hexdigit() || *c == '_').filter(|c| *c != '_').collect();
+            let digits: String = code[i + 2..].chars().take_while(|c| c.is_ascii_hexdigit() || *c == '_').filter(|c| *c != '_').collect();
             if matches!(digits.len(), 6 | 8) {
                 out.push(format!("#{}", digits[digits.len() - 6..].to_ascii_uppercase()));
             }

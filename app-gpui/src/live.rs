@@ -181,10 +181,7 @@ impl Profile {
 
     /// Адрес «От» → учётная запись (маршрут письма, `Backend::send`).
     pub(crate) fn sender_routes(&self) -> Vec<(String, Option<String>)> {
-        self.senders
-            .iter()
-            .flat_map(|(p, l)| l.iter().map(move |s| (s.address.email.clone(), p.clone())))
-            .collect()
+        self.senders.iter().flat_map(|(p, l)| l.iter().map(move |s| (s.address.email.clone(), p.clone()))).collect()
     }
 
     /// Дополнительная учётная запись удалена: её отправители и отложенные отправки — тоже.
@@ -636,8 +633,7 @@ impl Mailer {
         tracing::info!("sync start {profile}: {}", account.url);
         self.live.profile.names.retain(|(p, _)| *p != profile);
         self.live.profile.names.push((profile.clone(), extra.settings.clone()));
-        let commands =
-            crate::plugins::registry().spawn(account, Some(profile.clone()), self.cache.clone(), self.live.index.clone(), events, repaint);
+        let commands = crate::plugins::registry().spawn(account, Some(profile.clone()), self.cache.clone(), self.live.index.clone(), events, repaint);
         let _ = wake_tx.unbounded_send(());
         drop(wake_tx);
         self.backend.add_extra(profile.clone(), commands);
@@ -804,10 +800,7 @@ impl Mailer {
         let live = self.backend.is_live();
         let mailboxes = &self.folders.read(cx).mailboxes;
         let current = self.list.read(cx).mailbox.clone();
-        let total = current
-            .and_then(|id| mailboxes.iter().find(|b| b.id == id))
-            .map(|b| b.total as usize)
-            .filter(|_| live);
+        let total = current.and_then(|id| mailboxes.iter().find(|b| b.id == id)).map(|b| b.total as usize).filter(|_| live);
         self.list.update(cx, |l, _| l.more.set_total(total));
     }
 
@@ -960,8 +953,7 @@ impl Mailer {
     /// Папки изменились: перечитать в фоне; текущей папки больше нет (или не было) — открыть входящие.
     fn reload_folders(&mut self, cx: &mut Context<Self>) {
         let cache = self.cache.clone();
-        let task =
-            cx.background_spawn(async move { (cache.mailboxes().unwrap_or_default(), cache.accounts().unwrap_or_default()) });
+        let task = cx.background_spawn(async move { (cache.mailboxes().unwrap_or_default(), cache.accounts().unwrap_or_default()) });
         cx.spawn(async move |this, cx| {
             let (rows, accounts) = task.await;
             let _ = this.update(cx, |m, cx| {
@@ -1141,14 +1133,7 @@ impl Mailer {
     }
 
     /// Экран заново на кэше учётной записи; строка входа остаётся, пока сервер не ответит.
-    fn switch_account(
-        &mut self,
-        cache: Cache,
-        index: Index,
-        account: Account,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn switch_account(&mut self, cache: Cache, index: Index, account: Account, window: &mut Window, cx: &mut Context<Self>) {
         let panel = self.live.signin.take();
         let screens = self.screens.take();
         let store = self.live.pending_store;

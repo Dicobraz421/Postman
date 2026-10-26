@@ -11,7 +11,9 @@ use postman_smime::{Hash, Kind, Status};
 const HTML: &str = "<p>Секретный договор</p>";
 
 fn head() -> Head<'static> {
-    Head { from: "Иванов <user1@itt.test>", to: "me@itt.test", subject: "Конфиденциально", date: "Wed, 21 Oct 2026 10:00:00 +0300" }
+    Head {
+        from: "Иванов <user1@itt.test>", to: "me@itt.test", subject: "Конфиденциально", date: "Wed, 21 Oct 2026 10:00:00 +0300"
+    }
 }
 
 fn rsa_key(which: char) -> Vec<u8> {
@@ -76,7 +78,13 @@ fn ecdh_recipients() {
         let root = issue(&Spec::ca("Root"), &root_key, None);
         let user = issue(&Spec::user("Смирнова", "me@itt.test"), &key, Some((&root, &root_key)));
         let k = cek(32);
-        let cms = testkit::enveloped(&testkit::html_part(HTML), &[To { cert: &user, key: &key, alg: KeyAlg::Ecdh(Hash::Sha256, bits), ski: false }], Cipher::AesCbc(256), &k, false);
+        let cms = testkit::enveloped(
+            &testkit::html_part(HTML),
+            &[To { cert: &user, key: &key, alg: KeyAlg::Ecdh(Hash::Sha256, bits), ski: false }],
+            Cipher::AesCbc(256),
+            &k,
+            false,
+        );
         let m = letter(&cms, Cipher::AesCbc(256));
         let env = envelope::envelope(&m).unwrap();
         let r = &env.recipients[0];
@@ -168,7 +176,10 @@ fn nested_and_plain() {
     let k = cek(32);
     let to = [To { cert: &pki.user, key: &pki.user_key, alg: KeyAlg::RsaPkcs1, ski: false }];
     let inner_cms = testkit::enveloped(&testkit::html_part(HTML), &to, Cipher::AesCbc(256), &k, false);
-    let inner = format!("Content-Type: application/pkcs7-mime; smime-type=enveloped-data\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n", testkit::base64(&inner_cms));
+    let inner = format!(
+        "Content-Type: application/pkcs7-mime; smime-type=enveloped-data\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n",
+        testkit::base64(&inner_cms)
+    );
     let m = letter(&testkit::enveloped(inner.as_bytes(), &to, Cipher::AesCbc(256), &k, false), Cipher::AesCbc(256));
     let got = soft::unwrap(std::slice::from_ref(&key), &envelope::envelope(&m).unwrap()).unwrap();
     assert_eq!(envelope::open(&m, &got, &Default::default(), NOW), Err(OpenError::Nested));
@@ -207,7 +218,13 @@ fn gost_recipient_is_parsed_for_the_skzi() {
     use postman_smime::envelope::{GostKey, OpenError as E};
     use postman_smime::oid;
     let pki = Pki::build(Key::gost("root", oid::TC26_256_A), Key::gost("user", oid::TC26_256_A), "ГОСТ УЦ", "Сидоров", "me@itt.test");
-    let cms = testkit::enveloped(&testkit::html_part(HTML), &[To { cert: &pki.user, key: &pki.user_key, alg: KeyAlg::GostTransport, ski: false }], Cipher::Gost28147, &[0; 32], false);
+    let cms = testkit::enveloped(
+        &testkit::html_part(HTML),
+        &[To { cert: &pki.user, key: &pki.user_key, alg: KeyAlg::GostTransport, ski: false }],
+        Cipher::Gost28147,
+        &[0; 32],
+        false,
+    );
     let m = letter(&cms, Cipher::Gost28147);
     let env = envelope::envelope(&m).unwrap();
     assert_eq!(env.cipher, Ok(Cipher::Gost28147));

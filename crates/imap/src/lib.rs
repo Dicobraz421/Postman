@@ -296,8 +296,7 @@ impl Session {
 
     /// Все папки с ролями: `SPECIAL-USE`, иначе — по имени (ru/en).
     pub async fn folders(&mut self) -> Result<Vec<Folder>> {
-        let names: Vec<async_imap::types::Name> =
-            timed(async { Ok(self.inner.list(Some(""), Some("*")).await?.try_collect().await?) }).await?;
+        let names: Vec<async_imap::types::Name> = timed(async { Ok(self.inner.list(Some(""), Some("*")).await?.try_collect().await?) }).await?;
         Ok(names
             .iter()
             .map(|n| {
@@ -322,8 +321,7 @@ impl Session {
     /// Выбрать папку (с CONDSTORE, если он есть).
     pub async fn select(&mut self, raw: &str) -> Result<Selected> {
         let condstore = self.condstore();
-        let mb = timed(async { Ok(if condstore { self.inner.select_condstore(raw).await? } else { self.inner.select(raw).await? }) })
-            .await?;
+        let mb = timed(async { Ok(if condstore { self.inner.select_condstore(raw).await? } else { self.inner.select(raw).await? }) }).await?;
         let uid_validity = mb.uid_validity.ok_or_else(|| Error::Protocol(format!("no UIDVALIDITY for {raw}")))?;
         let keywords = mb.permanent_flags.iter().any(|f| matches!(f, async_imap::types::Flag::MayCreate));
         Ok(Selected {
@@ -340,16 +338,14 @@ impl Session {
         } else {
             "(UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (REFERENCES)])"
         };
-        let fetched: Vec<async_imap::types::Fetch> =
-            timed(async { Ok(self.inner.uid_fetch(uids, query).await?.try_collect().await?) }).await?;
+        let fetched: Vec<async_imap::types::Fetch> = timed(async { Ok(self.inner.uid_fetch(uids, query).await?.try_collect().await?) }).await?;
         Ok(fetched.iter().filter_map(header).collect())
     }
 
     /// Флаги писем, изменённых после `modseq` (CONDSTORE, RFC 7162 §3.1.4).
     pub async fn changed_since(&mut self, modseq: u64) -> Result<Vec<FlagChange>> {
         let query = format!("(UID FLAGS) (CHANGEDSINCE {modseq})");
-        let fetched: Vec<async_imap::types::Fetch> =
-            timed(async { Ok(self.inner.uid_fetch("1:*", &query).await?.try_collect().await?) }).await?;
+        let fetched: Vec<async_imap::types::Fetch> = timed(async { Ok(self.inner.uid_fetch("1:*", &query).await?.try_collect().await?) }).await?;
         Ok(fetched.iter().filter_map(|f| Some(FlagChange { uid: f.uid?, flags: fetch_flags(f) })).collect())
     }
 

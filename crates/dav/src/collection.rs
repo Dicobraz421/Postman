@@ -118,9 +118,9 @@ fn common(r: &Response) -> Collection {
         percent_encoding::percent_decode_str(last).decode_utf8_lossy().into_owned()
     };
     let writable = match r.prop(DAV, "current-user-privilege-set") {
-        Some(set) => set.all(DAV, "privilege").any(|p| {
-            p.children.iter().any(|g| g.ns == DAV && matches!(g.name.as_str(), "all" | "write" | "write-content" | "bind"))
-        }),
+        Some(set) => set
+            .all(DAV, "privilege")
+            .any(|p| p.children.iter().any(|g| g.ns == DAV && matches!(g.name.as_str(), "all" | "write" | "write-content" | "bind"))),
         None => true,
     };
     Collection {

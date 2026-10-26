@@ -62,10 +62,22 @@ pub(crate) enum PvState {
 }
 
 pub(crate) enum Shown {
-    Image { image: Arc<RenderImage>, source: (u32, u32), format: String },
-    Pdf { image: Arc<RenderImage>, page: u32, pages: u32, title: Option<String> },
+    Image {
+        image: Arc<RenderImage>,
+        source: (u32, u32),
+        format: String,
+    },
+    Pdf {
+        image: Arc<RenderImage>,
+        page: u32,
+        pages: u32,
+        title: Option<String>,
+    },
     Archive(Listing),
-    Text { text: String, truncated: bool },
+    Text {
+        text: String,
+        truncated: bool,
+    },
     Office(OfficeScan),
     /// Встроенного просмотра нет: карточка (исполняемый файл — блокировка).
     Card,
@@ -425,9 +437,8 @@ impl ReadingPane {
         let Some(s) = self.save_all.take() else { return };
         cx.notify();
         let task = cx.background_spawn(async move {
-            let mut taken: HashSet<String> = std::fs::read_dir(&s.dir)
-                .map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().to_lowercase()).collect())
-                .unwrap_or_default();
+            let mut taken: HashSet<String> =
+                std::fs::read_dir(&s.dir).map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().to_lowercase()).collect()).unwrap_or_default();
             let mut failed = s.failed;
             let mut saved = 0usize;
             for (name, data) in &s.got {
@@ -509,7 +520,12 @@ impl ReadingPane {
             ),
             PvState::Ready(Shown::Image { image, source, format }) => {
                 let bar = toolbar(&l)
-                    .child(div().px(px(6.)).text_color(l.text2()).child(tr!("att-pv-image-info", w = source.0, h = source.1, format = format.as_str())))
+                    .child(div().px(px(6.)).text_color(l.text2()).child(tr!(
+                        "att-pv-image-info",
+                        w = source.0,
+                        h = source.1,
+                        format = format.as_str()
+                    )))
                     .child(div().flex_1())
                     .children(self.file_buttons(p, &l, cx));
                 // В своём размере, не шире холста; выше — прокрутка.
@@ -517,12 +533,7 @@ impl ReadingPane {
                 let canvas = pv_canvas(&p.scroll, "pv-image", &l)
                     .gap(px(10.))
                     .child(picture(image, px(size.width.0 as f32)).justify_center())
-                    .child(
-                        div()
-                            .text_size(l.px(Metric::TypeCaption))
-                            .text_color(l.text2())
-                            .child(format!("{} · {}", p.name, size_text(p.row.size))),
-                    );
+                    .child(div().text_size(l.px(Metric::TypeCaption)).text_color(l.text2()).child(format!("{} · {}", p.name, size_text(p.row.size))));
                 div().flex_1().min_h_0().flex().flex_col().child(bar).child(canvas).into_any_element()
             }
             PvState::Ready(Shown::Pdf { image, page, pages, title }) => {
@@ -534,14 +545,11 @@ impl ReadingPane {
                 };
                 let bar = toolbar(&l)
                     .child(pager("pv-prev", glyph::PREV, -1, tr!("att-pv-prev-page"), *page > 0))
-                    .child(
-                        div()
-                            .min_w(px(56.))
-                            .flex()
-                            .justify_center()
-                            .text_color(if p.busy { l.text3() } else { l.text() })
-                            .child(tr!("att-pv-page", page = page + 1, pages = *pages)),
-                    )
+                    .child(div().min_w(px(56.)).flex().justify_center().text_color(if p.busy { l.text3() } else { l.text() }).child(tr!(
+                        "att-pv-page",
+                        page = page + 1,
+                        pages = *pages
+                    )))
                     .child(pager("pv-next", glyph::NEXT, 1, tr!("att-pv-next-page"), page + 1 < *pages))
                     .child(div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(l.border()))
                     .child(div().flex_1().min_w_0().truncate().text_color(l.text2()).child(title.clone().unwrap_or_default()))
@@ -650,12 +658,7 @@ impl ReadingPane {
                     .flex_col()
                     .min_w_0()
                     .child(div().truncate().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(title))
-                    .child(
-                        div()
-                            .text_size(l.px(Metric::TypeCaption))
-                            .text_color(if blocked { l.pm(Pm::ThreatFg) } else { l.text2() })
-                            .child(sub),
-                    ),
+                    .child(div().text_size(l.px(Metric::TypeCaption)).text_color(if blocked { l.pm(Pm::ThreatFg) } else { l.text2() }).child(sub)),
             );
         let mut card = div()
             .max_w(px(560.))
@@ -711,16 +714,7 @@ impl ReadingPane {
             let text = if scan.is_some() { tr!("att-pv-office-clean") } else { tr!("att-pv-none") };
             card = card.child(div().text_color(l.text2()).child(text)).child(div().flex().gap(px(8.)).children(self.file_buttons(p, l, cx)));
         }
-        div()
-            .id("pv-card")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .bg(l.base())
-            .px(px(16.))
-            .py(px(14.))
-            .child(card)
-            .into_any_element()
+        div().id("pv-card").flex_1().min_h_0().overflow_y_scroll().bg(l.base()).px(px(16.)).py(px(14.)).child(card).into_any_element()
     }
 }
 
@@ -756,17 +750,7 @@ fn tool_button(id: &'static str, g: char, text: String, l: &Look) -> Stateful<Di
 
 /// Холст картинки и страницы PDF: колонка по центру с прокруткой вниз.
 fn pv_canvas(scroll: &ScrollHandle, id: &'static str, l: &Look) -> Stateful<Div> {
-    div()
-        .id(id)
-        .track_scroll(scroll)
-        .flex_1()
-        .min_h_0()
-        .overflow_y_scroll()
-        .bg(l.base())
-        .p(px(CANVAS_PAD))
-        .flex()
-        .flex_col()
-        .items_center()
+    div().id(id).track_scroll(scroll).flex_1().min_h_0().overflow_y_scroll().bg(l.base()).p(px(CANVAS_PAD)).flex().flex_col().items_center()
 }
 
 /// Кадр шириной родителя, но не шире `max_w`; высота — по пропорции кадра. Высоту задаёт обёртка: у `img` без

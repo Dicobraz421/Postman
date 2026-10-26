@@ -25,9 +25,7 @@ use postman_core::backend::{AreaCtx, Areas, BoxFuture};
 use postman_core::model::{Feature, Features, Principal};
 use postman_core::schedule::{Meeting, SEARCH_LIMIT};
 use postman_core::sync::{Command, Event as SyncEvent, owned_by};
-use postman_ews::{
-    CalendarItem, Changes, Client, DeleteMode, Error, FolderRef, ItemId, ItemKind, NewItem, Notify, Reply, SyncState, WellKnown,
-};
+use postman_ews::{CalendarItem, Changes, Client, DeleteMode, Error, FolderRef, ItemId, ItemKind, NewItem, Notify, Reply, SyncState, WellKnown};
 
 /// Встреч в окне календаря — не больше (месяц с запасом).
 const VIEW_LIMIT: u32 = 1000;
@@ -129,11 +127,7 @@ pub fn matching(events: Vec<Event>, text: &str) -> Vec<Event> {
 /// ошибка у адреса (не найден, нет доступа) — `None`, «нет данных».
 pub fn split_availability(mut all: Vec<postman_ews::Availability>, emails: &[String]) -> Availability {
     let me = if all.is_empty() { Vec::new() } else { all.remove(0).busy };
-    let people = emails
-        .iter()
-        .enumerate()
-        .map(|(i, e)| (e.clone(), all.get(i).and_then(|a| a.error.is_none().then(|| a.busy.clone()))))
-        .collect();
+    let people = emails.iter().enumerate().map(|(i, e)| (e.clone(), all.get(i).and_then(|a| a.error.is_none().then(|| a.busy.clone())))).collect();
     (me, people)
 }
 
@@ -234,11 +228,8 @@ impl EwsAreas {
         if !all {
             tracing::warn!(shown = refs.len(), "exchange: calendar window truncated");
         }
-        let missing: Vec<ItemId> = refs
-            .iter()
-            .filter(|r| self.items.get(&r.id.id).is_none_or(|k| k.change_key != r.id.change_key))
-            .map(|r| r.id.clone())
-            .collect();
+        let missing: Vec<ItemId> =
+            refs.iter().filter(|r| self.items.get(&r.id.id).is_none_or(|k| k.change_key != r.id.change_key)).map(|r| r.id.clone()).collect();
         if !missing.is_empty() {
             for it in self.client.get_items(&missing).await? {
                 self.remember(it);
@@ -543,7 +534,10 @@ mod tests {
             phone: "+7 495 000-00-01".into(),
             ..Default::default()
         });
-        assert_eq!((p.id.as_str(), p.display_name(), p.email.as_deref(), p.kind.as_str()), ("anna@example.test", "Анна", Some("Anna@example.test"), "individual"));
+        assert_eq!(
+            (p.id.as_str(), p.display_name(), p.email.as_deref(), p.kind.as_str()),
+            ("anna@example.test", "Анна", Some("Anna@example.test"), "individual")
+        );
         assert_eq!((p.title.as_str(), p.department.as_str(), p.phone.as_str()), ("Инженер", "Отдел разработки", "+7 495 000-00-01"));
         let g = principal(postman_ews::Person { email: "dev@example.test".into(), group: true, ..Default::default() });
         assert_eq!((g.display_name(), g.kind.as_str()), ("dev@example.test", "group"));
@@ -553,8 +547,10 @@ mod tests {
     fn availability_is_mine_then_theirs() {
         let busy = |s| vec![Busy { span: Span::new(s, s + 60), kind: postman_calendar::BusyKind::Busy }];
         let a = |busy, error: Option<&str>| postman_ews::Availability { email: String::new(), busy, error: error.map(str::to_owned) };
-        let (me, people) =
-            split_availability(vec![a(busy(1), None), a(busy(2), None), a(Vec::new(), Some("ErrorMailRecipientNotFound"))], &["b@example.test".into(), "x@example.test".into()]);
+        let (me, people) = split_availability(
+            vec![a(busy(1), None), a(busy(2), None), a(Vec::new(), Some("ErrorMailRecipientNotFound"))],
+            &["b@example.test".into(), "x@example.test".into()],
+        );
         assert_eq!(me, busy(1));
         assert_eq!(people, [("b@example.test".to_owned(), Some(busy(2))), ("x@example.test".to_owned(), None)]);
     }
@@ -583,7 +579,14 @@ mod tests {
     #[test]
     fn invite_finds_its_meeting() {
         let (a, b, c, other) = (ev("UID-1", 1000), ev("uid-1", 5000), ev("UID-1", 9000), ev("UID-2", 5000));
-        let known = || vec![("occ-a", ItemKind::Occurrence, &a), ("exc-b", ItemKind::Exception, &b), ("occ-c", ItemKind::Occurrence, &c), ("x", ItemKind::Single, &other)];
+        let known = || {
+            vec![
+                ("occ-a", ItemKind::Occurrence, &a),
+                ("exc-b", ItemKind::Exception, &b),
+                ("occ-c", ItemKind::Occurrence, &c),
+                ("x", ItemKind::Single, &other),
+            ]
+        };
         assert_eq!(pick(known(), "", "UID-1", 8000), Some(("occ-c", ItemKind::Occurrence)), "экземпляр — ближайший ко времени");
         assert_eq!(pick(known(), "", "uid-1", 4000), Some(("exc-b", ItemKind::Exception)), "UID — без учёта регистра");
         assert_eq!(pick(known(), "occ-a", "UID-1", 9000), Some(("occ-a", ItemKind::Occurrence)), "из подробностей события — та же");
@@ -620,5 +623,4 @@ mod tests {
         let same = edit_changes(item.clone(), item.span, item.span);
         assert_eq!(same.time, Some((item.span, false)), "одиночная — новое время как есть");
     }
-
 }

@@ -22,7 +22,9 @@ fn env(name: &str) -> String {
 async fn user(n: u8) -> (String, Client) {
     let email = env(&format!("POSTMAN_STAND_USER{n}"));
     let password = env(&format!("POSTMAN_STAND_PASSWORD{n}"));
-    let c = Client::connect(&env("POSTMAN_STAND_URL"), Auth::Basic { user: email.clone(), password }).await.unwrap_or_else(|e| panic!("вход {email}: {e}"));
+    let c = Client::connect(&env("POSTMAN_STAND_URL"), Auth::Basic { user: email.clone(), password })
+        .await
+        .unwrap_or_else(|e| panic!("вход {email}: {e}"));
     (email, c)
 }
 
@@ -45,7 +47,8 @@ async fn encrypted_mail_survives_the_server() {
     let pki_from = Pki::build(Key::rsa('a'), Key::rsa('c'), "Postman Test Root (sender)", "User 1", &from);
     let subject = format!("Postman encrypted {}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
     // Подписать, затем зашифровать (себе и получателю), как Outlook: AES-256-CBC + RSA PKCS#1 v1.5.
-    let inner = testkit::signed_part(&testkit::html_part("<p>Секрет стенда</p>"), &pki_from.user, &pki_from.user_key, &[&pki_from.root], &Sign::default());
+    let inner =
+        testkit::signed_part(&testkit::html_part("<p>Секрет стенда</p>"), &pki_from.user, &pki_from.user_key, &[&pki_from.root], &Sign::default());
     let cek = [0x33u8; 32];
     let to_list = [
         To { cert: &pki_from.user, key: &pki_from.user_key, alg: KeyAlg::RsaPkcs1, ski: false },

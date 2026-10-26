@@ -146,7 +146,9 @@ fn store_certs(name: &str) -> Vec<Vec<u8>> {
 pub(crate) fn own_certs(from: &str) -> Vec<Vec<u8>> {
     store_certs("MY")
         .into_iter()
-        .filter(|der| postman_smime::sign::own_certificate(der).is_some_and(|(info, _, _)| info.emails.iter().any(|e| e.eq_ignore_ascii_case(from.trim()))))
+        .filter(|der| {
+            postman_smime::sign::own_certificate(der).is_some_and(|(info, _, _)| info.emails.iter().any(|e| e.eq_ignore_ascii_case(from.trim())))
+        })
         .collect()
 }
 

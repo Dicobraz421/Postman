@@ -50,7 +50,9 @@ impl Drop for Handle {
 fn random(len: usize) -> Cek {
     let mut out = Zeroizing::new(vec![0u8; len]);
     // SAFETY: буфер на `len` байтов; системный генератор (`BCRYPT_USE_SYSTEM_PREFERRED_RNG`).
-    unsafe { windows_sys::Win32::Security::Cryptography::BCryptGenRandom(ptr::null_mut(), out.as_mut_ptr(), len as u32, BCRYPT_USE_SYSTEM_PREFERRED_RNG) };
+    unsafe {
+        windows_sys::Win32::Security::Cryptography::BCryptGenRandom(ptr::null_mut(), out.as_mut_ptr(), len as u32, BCRYPT_USE_SYSTEM_PREFERRED_RNG)
+    };
     out
 }
 
@@ -78,7 +80,8 @@ fn rsa_decrypt(key: usize, wrap: &Wrap, data: &[u8], silent: bool, key_len: usiz
     let mut out = Zeroizing::new(vec![0u8; data.len().max(512)]);
     let mut got = 0u32;
     // SAFETY: входной и выходной буферы с длинами; заполнение живёт до конца вызова; ключ — открытый хэндл.
-    let hr = unsafe { NCryptDecrypt(key, data.as_ptr(), data.len() as u32, padding, out.as_mut_ptr(), out.len() as u32, &mut got, flags | silent_flag) };
+    let hr =
+        unsafe { NCryptDecrypt(key, data.as_ptr(), data.len() as u32, padding, out.as_mut_ptr(), out.len() as u32, &mut got, flags | silent_flag) };
     match hr {
         0 => {
             out.truncate(got as usize);
@@ -235,7 +238,8 @@ pub(crate) fn unwrap_cek(env: &Envelope, prompt: Prompt) -> Result<Cek, KeyError
                 })));
                 continue;
             }
-            let attempt = private_key(ctx, prompt).and_then(|(_owned, k)| decrypt_with(k, &r.wrap, &r.encrypted_key, prompt == Prompt::Silent, key_len));
+            let attempt =
+                private_key(ctx, prompt).and_then(|(_owned, k)| decrypt_with(k, &r.wrap, &r.encrypted_key, prompt == Prompt::Silent, key_len));
             match attempt {
                 Ok(cek) => {
                     result = Some(Ok(cek));
@@ -317,7 +321,12 @@ fn last_error(what: &str) -> KeyError {
     key_error(hr, what)
 }
 
-fn gost_with_cert(ctx: *const CERT_CONTEXT, t: &postman_smime::envelope::GostTransport, content: &postman_smime::envelope::GostContent, prompt: Prompt) -> Result<super::skzi::Plain, KeyError> {
+fn gost_with_cert(
+    ctx: *const CERT_CONTEXT,
+    t: &postman_smime::envelope::GostTransport,
+    content: &postman_smime::envelope::GostContent,
+    prompt: Prompt,
+) -> Result<super::skzi::Plain, KeyError> {
     use super::skzi;
     let mut prov: HCRYPTPROV_OR_NCRYPT_KEY_HANDLE = 0;
     let mut spec = 0u32;
@@ -398,9 +407,9 @@ impl Drop for Release {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use postman_smime::envelope::{self, Cipher};
-    use postman_smime::testkit::{self, Head, Key, KeyAlg, Pki, To, issue, Spec};
     use postman_smime::Hash;
+    use postman_smime::envelope::{self, Cipher};
+    use postman_smime::testkit::{self, Head, Key, KeyAlg, Pki, Spec, To, issue};
 
     fn open_ksp() -> Handle {
         let mut p: usize = 0;
@@ -420,7 +429,11 @@ mod tests {
 
     fn letter(to: &[To<'_>], cipher: Cipher, cek: &[u8]) -> Vec<u8> {
         let cms = testkit::enveloped(&testkit::html_part("<p>CNG</p>"), to, cipher, cek, false);
-        testkit::encrypted_letter(&Head { from: "a@itt.test", to: "me@itt.test", subject: "s", date: "Wed, 21 Oct 2026 10:00:00 +0300" }, &cms, matches!(cipher, Cipher::AesGcm(_)))
+        testkit::encrypted_letter(
+            &Head { from: "a@itt.test", to: "me@itt.test", subject: "s", date: "Wed, 21 Oct 2026 10:00:00 +0300" },
+            &cms,
+            matches!(cipher, Cipher::AesGcm(_)),
+        )
     }
 
     /// RSA PKCS#1 v1.5 и OAEP (SHA-1, SHA-256) — `NCryptDecrypt` временным ключом из PKCS#8; испорченный PKCS#1 —
@@ -501,11 +514,23 @@ mod tests {
         let pkcs8 = postman_smime::soft::pkcs8_der(k).unwrap();
         let name = wide(&format!("Postman test {}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         let ksp = open_ksp();
-        let mut buffer = BCryptBuffer { cbBuffer: (name.len() * 2) as u32, BufferType: NCRYPTBUFFER_PKCS_KEY_NAME, pvBuffer: name.as_ptr() as *mut _ };
+        let mut buffer =
+            BCryptBuffer { cbBuffer: (name.len() * 2) as u32, BufferType: NCRYPTBUFFER_PKCS_KEY_NAME, pvBuffer: name.as_ptr() as *mut _ };
         let desc = BCryptBufferDesc { ulVersion: 0, cBuffers: 1, pBuffers: &mut buffer };
         let mut key: usize = 0;
         // SAFETY: блоб PKCS#8 и имя ключа; ключ сохраняется в KSP и удаляется в конце.
-        let hr = unsafe { NCryptImportKey(ksp.0, 0, NCRYPT_PKCS8_PRIVATE_KEY_BLOB, &desc, &mut key, pkcs8.as_ptr(), pkcs8.len() as u32, NCRYPT_OVERWRITE_KEY_FLAG | NCRYPT_SILENT_FLAG) };
+        let hr = unsafe {
+            NCryptImportKey(
+                ksp.0,
+                0,
+                NCRYPT_PKCS8_PRIVATE_KEY_BLOB,
+                &desc,
+                &mut key,
+                pkcs8.as_ptr(),
+                pkcs8.len() as u32,
+                NCRYPT_OVERWRITE_KEY_FLAG | NCRYPT_SILENT_FLAG,
+            )
+        };
         assert_eq!(hr, 0, "NCryptImportKey 0x{:08X}", hr as u32);
         let my = wide("MY");
         // SAFETY: хранилище пользователя на запись; закрывается в конце.
@@ -513,11 +538,28 @@ mod tests {
         assert!(!store.is_null());
         let mut ctx: *mut CERT_CONTEXT = ptr::null_mut();
         // SAFETY: DER сертификата с длиной; контекст удаляется в конце.
-        let ok = unsafe { CertAddEncodedCertificateToStore(store, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, pki.user.der.as_ptr(), pki.user.der.len() as u32, CERT_STORE_ADD_REPLACE_EXISTING, &mut ctx) };
+        let ok = unsafe {
+            CertAddEncodedCertificateToStore(
+                store,
+                X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+                pki.user.der.as_ptr(),
+                pki.user.der.len() as u32,
+                CERT_STORE_ADD_REPLACE_EXISTING,
+                &mut ctx,
+            )
+        };
         assert!(ok != 0);
         let mut provider = wide("Microsoft Software Key Storage Provider");
         let mut container = name.clone();
-        let info = CRYPT_KEY_PROV_INFO { pwszContainerName: container.as_mut_ptr(), pwszProvName: provider.as_mut_ptr(), dwProvType: 0, dwFlags: 0, cProvParam: 0, rgProvParam: ptr::null_mut(), dwKeySpec: 0 };
+        let info = CRYPT_KEY_PROV_INFO {
+            pwszContainerName: container.as_mut_ptr(),
+            pwszProvName: provider.as_mut_ptr(),
+            dwProvType: 0,
+            dwFlags: 0,
+            cProvParam: 0,
+            rgProvParam: ptr::null_mut(),
+            dwKeySpec: 0,
+        };
         // SAFETY: свойство — структура с указателями на живые строки.
         unsafe { CertSetCertificateContextProperty(ctx, CERT_KEY_PROV_INFO_PROP_ID, 0, ptr::from_ref(&info).cast()) };
         let m = letter(&[To { cert: &pki.user, key: &pki.user_key, alg: KeyAlg::RsaOaep(Hash::Sha256), ski: false }], Cipher::AesGcm(256), &[5; 32]);

@@ -11,13 +11,25 @@ use mail_parser::{MessageParser, MimeHeaders};
 use crate::{oid, signed};
 
 pub(crate) enum Found {
-    None { from: String },
+    None {
+        from: String,
+    },
     /// Шифровано: DER CMS (`None` — тело не снялось).
-    Encrypted { cms: Option<Vec<u8>>, from: String },
+    Encrypted {
+        cms: Option<Vec<u8>>,
+        from: String,
+    },
     /// Подписанная часть (канонизированная) и DER подписи (`smime.p7s`).
-    Detached { signed: Vec<u8>, signature: Vec<u8>, from: String },
+    Detached {
+        signed: Vec<u8>,
+        signature: Vec<u8>,
+        from: String,
+    },
     /// DER `signed-data` (`smime.p7m`).
-    Opaque { cms: Vec<u8>, from: String },
+    Opaque {
+        cms: Vec<u8>,
+        from: String,
+    },
 }
 
 /// Адрес «От» корня письма, в нижнем регистре.

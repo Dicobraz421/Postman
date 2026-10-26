@@ -162,7 +162,12 @@ mod tests {
             serial: vec![1],
             ski: None,
             key: if gost {
-                RecipientKey::Gost { key: GostKey::G2012_256, point: vec![0; 64], public_param_set: "1.2.643.7.1.2.1.1.1".into(), digest_param_set: None }
+                RecipientKey::Gost {
+                    key: GostKey::G2012_256,
+                    point: vec![0; 64],
+                    public_param_set: "1.2.643.7.1.2.1.1.1".into(),
+                    digest_param_set: None,
+                }
             } else {
                 RecipientKey::Rsa { n: vec![1], e: vec![1] }
             },

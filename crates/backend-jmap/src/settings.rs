@@ -12,8 +12,8 @@
 use postman_core::autoreply::{self, AutoReply, Stored};
 use postman_core::model::VacationResponse;
 use postman_core::rules::{self, Rule, SCRIPT_NAME, Script, VACATION_SCRIPT};
-pub use postman_core::settings::{Reply, Request};
 use postman_core::settings::{Area, AutoReplySave, Foreign, RulesState, Usage, effective};
+pub use postman_core::settings::{Reply, Request};
 use postman_jmap::{Activate, CALENDARS, Client, QUOTA, Quota, SIEVE, SaveError, SieveScript, VACATION_RESPONSE};
 
 use crate::convert::{FromJmap, ToJmap};
@@ -165,10 +165,7 @@ async fn set_vacation(client: &Client, v: VacationResponse) -> postman_jmap::Res
             let on = v.is_enabled;
             put_vacation(client, &VacationResponse { is_enabled: false, ..v }).await?;
             let script = Script { rules: script.rules.clone(), vacation: on };
-            client
-                .save_sieve(Some(&ours.id), SCRIPT_NAME, &rules::generate(&script), Activate::This)
-                .await
-                .map_err(save_error)?;
+            client.save_sieve(Some(&ours.id), SCRIPT_NAME, &rules::generate(&script), Activate::This).await.map_err(save_error)?;
         }
         _ => put_vacation(client, &v).await?,
     }
@@ -185,10 +182,7 @@ fn with_stored(v: VacationResponse, stored: Option<&Stored>) -> VacationResponse
 
 /// Автоответ Postman: `VacationResponse/set` (как раньше), «Вне офиса» в календаре, затем свой скрипт `vacation`
 /// с теми же включением и периодом.
-async fn set_autoreply(
-    client: &Client,
-    save: AutoReplySave,
-) -> postman_jmap::Result<(VacationResponse, Sieve, Option<AutoReply>)> {
+async fn set_autoreply(client: &Client, save: AutoReplySave) -> postman_jmap::Result<(VacationResponse, Sieve, Option<AutoReply>)> {
     let primary = save.reply.primary();
     let text = |s: &str| Some(s.trim().to_owned()).filter(|s| !s.is_empty());
     let v = VacationResponse {
@@ -379,12 +373,8 @@ mod tests {
         // Число писем и квота без предела — не то.
         assert_eq!(mail_usage(&[q("count", 10, 100, &["Mail"]), q("octets", 5, 0, &[])]), None);
         // Квота календаря — не про почту; без типов — про всё.
-        assert_eq!(
-            mail_usage(&[q("octets", 9, 10, &["Calendar"]), q("octets", 1, 10, &[])]),
-            Some(Usage { used: 1, limit: 10 })
-        );
-        let u =
-            mail_usage(&[q("octets", 300, 1000, &["Mail"]), q("octets", 950, 1000, &["Mail", "Calendar"])]).unwrap();
+        assert_eq!(mail_usage(&[q("octets", 9, 10, &["Calendar"]), q("octets", 1, 10, &[])]), Some(Usage { used: 1, limit: 10 }));
+        let u = mail_usage(&[q("octets", 300, 1000, &["Mail"]), q("octets", 950, 1000, &["Mail", "Calendar"])]).unwrap();
         assert_eq!(u, Usage { used: 950, limit: 1000 });
         assert_eq!(u.percent(), 95);
         assert_eq!(Usage { used: 3, limit: 0 }.percent(), 0);

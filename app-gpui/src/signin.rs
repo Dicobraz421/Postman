@@ -11,8 +11,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use pets_i18n::tr;
 use pets_ui::theme::{Metric, Themes};
-use postman_core::sync::Account;
 use postman_core::model::Auth;
+use postman_core::sync::Account;
 
 use crate::account::Settings;
 use crate::settings_tab::{seg, seg_group};
@@ -77,41 +77,23 @@ impl EventEmitter<Cancel> for SignIn {}
 impl SignIn {
     pub(crate) fn new(prefill: Option<Settings>, welcome: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let prefill = prefill.unwrap_or_default();
-        let url = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(tr!("signin-url-placeholder")).default_value(prefill.url.clone())
-        });
-        let user = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(tr!("signin-user-placeholder")).default_value(prefill.user.clone())
-        });
+        let url = cx.new(|cx| InputState::new(window, cx).placeholder(tr!("signin-url-placeholder")).default_value(prefill.url.clone()));
+        let user = cx.new(|cx| InputState::new(window, cx).placeholder(tr!("signin-user-placeholder")).default_value(prefill.user.clone()));
         let password = cx.new(|cx| InputState::new(window, cx).masked(true));
         let enter = |this: &mut Self, _: &Entity<InputState>, ev: &InputEvent, window: &mut Window, cx: &mut Context<Self>| {
             if let InputEvent::PressEnter { .. } = ev {
                 this.next(window, cx);
             }
         };
-        let subscriptions = vec![
-            cx.subscribe_in(&url, window, enter),
-            cx.subscribe_in(&user, window, enter),
-            cx.subscribe_in(&password, window, enter),
-        ];
+        let subscriptions =
+            vec![cx.subscribe_in(&url, window, enter), cx.subscribe_in(&user, window, enter), cx.subscribe_in(&password, window, enter)];
         // Адрес и логин уже есть (сервер отклонил сохранённый вход) — сразу пароль.
         let step = match (prefill.url.is_empty(), prefill.user.is_empty()) {
             (true, _) => Step::Server,
             (false, true) => Step::Login,
             (false, false) => Step::Password,
         };
-        Self {
-            step,
-            url,
-            user,
-            password,
-            store: true,
-            welcome,
-            busy: false,
-            error: None,
-            focus: true,
-            _subscriptions: subscriptions,
-        }
+        Self { step, url, user, password, store: true, welcome, busy: false, error: None, focus: true, _subscriptions: subscriptions }
     }
 
     fn go(&mut self, step: Step, cx: &mut Context<Self>) {
@@ -233,10 +215,7 @@ impl SignIn {
                 .when(done || active, |d| d.bg(l.accent()).text_color(l.on_accent()))
                 .when(!done && !active, |d| d.border_1().border_color(l.stroke()).text_color(l.text2()))
                 .child(if done { "✓".to_string() } else { (i + 1).to_string() });
-            let label = div()
-                .when(active, |d| d.font_weight(FontWeight::SEMIBOLD))
-                .when(!active, |d| d.text_color(l.text2()))
-                .child(s.title());
+            let label = div().when(active, |d| d.font_weight(FontWeight::SEMIBOLD)).when(!active, |d| d.text_color(l.text2())).child(s.title());
             row = row.child(div().flex().items_center().gap_2().child(dot).child(label));
             if i + 1 < Step::ALL.len() {
                 row = row.child(div().w(px(40.)).h(px(1.)).bg(if done { l.accent() } else { l.border() }));
@@ -279,18 +258,12 @@ impl SignIn {
 
     fn radio_row(&self, l: &crate::roles::Look, id: &'static str, on: bool, label: String, cx: &mut Context<Self>) -> Stateful<Div> {
         let store = id == "signin-store-windows";
-        div()
-            .id(id)
-            .flex()
-            .items_center()
-            .gap_2()
-            .cursor_pointer()
-            .child(crate::settings_tab::radio(on, l))
-            .child(label)
-            .on_click(cx.listener(move |this, _, _, cx| {
+        div().id(id).flex().items_center().gap_2().cursor_pointer().child(crate::settings_tab::radio(on, l)).child(label).on_click(cx.listener(
+            move |this, _, _, cx| {
                 this.store = store;
                 cx.notify();
-            }))
+            },
+        ))
     }
 
     fn content(&self, l: &crate::roles::Look, cx: &mut Context<Self>) -> Div {
@@ -303,9 +276,12 @@ impl SignIn {
                 body = body.child(self.field(l, tr!("signin-url"), &self.url, Some(tr!("signin-url-hint"))));
             }
             Step::Login => {
-                body = body
-                    .child(self.summary(l, tr!("signin-url"), url, Step::Server, cx))
-                    .child(self.field(l, tr!("signin-user"), &self.user, Some(tr!("signin-user-hint"))));
+                body = body.child(self.summary(l, tr!("signin-url"), url, Step::Server, cx)).child(self.field(
+                    l,
+                    tr!("signin-user"),
+                    &self.user,
+                    Some(tr!("signin-user-hint")),
+                ));
             }
             Step::Password => {
                 let (tls, ok) = security_line();
@@ -356,30 +332,34 @@ impl SignIn {
 
     /// Тема и плотность при первом запуске — те же, что в «Настройки → Общие».
     fn first_prefs(&self, l: &crate::roles::Look, cx: &mut Context<Self>) -> Div {
-        let (choice, locked) = Themes::try_get(cx).map_or((pets_ui::theme::SYSTEM.to_owned(), false), |t| {
-            (t.state().choice().to_owned(), t.state().locked())
-        });
+        let (choice, locked) =
+            Themes::try_get(cx).map_or((pets_ui::theme::SYSTEM.to_owned(), false), |t| (t.state().choice().to_owned(), t.state().locked()));
         let row = crate::roles::look(cx).density().row();
         let themes = [pets_ui::theme::SYSTEM, pets_ui::theme::FLUENT_LIGHT, pets_ui::theme::FLUENT_DARK];
-        let theme_items = themes.iter().enumerate().map(|(i, &id)| {
-            let title = Themes::try_get(cx).map_or_else(|| id.into(), |t| pets_ui::theme::title(id, t.state()));
-            seg(("first-theme", i), title.to_string(), choice == id, !locked, l).on_click(cx.listener(move |_, _, _, cx| {
-                if let Err(e) = crate::prefs::set_theme(id, cx) {
-                    tracing::info!("theme: {e}");
-                }
-                cx.notify();
-            }))
-        }).collect::<Vec<_>>();
+        let theme_items = themes
+            .iter()
+            .enumerate()
+            .map(|(i, &id)| {
+                let title = Themes::try_get(cx).map_or_else(|| id.into(), |t| pets_ui::theme::title(id, t.state()));
+                seg(("first-theme", i), title.to_string(), choice == id, !locked, l).on_click(cx.listener(move |_, _, _, cx| {
+                    if let Err(e) = crate::prefs::set_theme(id, cx) {
+                        tracing::info!("theme: {e}");
+                    }
+                    cx.notify();
+                }))
+            })
+            .collect::<Vec<_>>();
         let densities = [(24u16, "settings-density-normal"), (20, "settings-density-compact")];
-        let density_items = densities.iter().map(|&(px_row, key)| {
-            seg(("first-density", px_row as usize), tr!(key, px = px_row), row == px_row, true, l).on_click(cx.listener(move |_, _, _, cx| {
-                crate::prefs::set_density(px_row, cx);
-                cx.notify();
-            }))
-        }).collect::<Vec<_>>();
-        let group = |label: String, items: Div| {
-            div().flex().items_center().gap_3().child(div().text_color(l.text2()).child(label)).child(items)
-        };
+        let density_items = densities
+            .iter()
+            .map(|&(px_row, key)| {
+                seg(("first-density", px_row as usize), tr!(key, px = px_row), row == px_row, true, l).on_click(cx.listener(move |_, _, _, cx| {
+                    crate::prefs::set_density(px_row, cx);
+                    cx.notify();
+                }))
+            })
+            .collect::<Vec<_>>();
+        let group = |label: String, items: Div| div().flex().items_center().gap_3().child(div().text_color(l.text2()).child(label)).child(items);
         div()
             .flex()
             .flex_wrap()
@@ -459,10 +439,7 @@ impl Render for SignIn {
 pub(crate) const PART: crate::part::Part = crate::part::Part { name: "signin", texts: TEXTS, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
-const TEXTS: &[pets_i18n::Resource] = &[
-    ("ru", include_str!("../i18n/ru/account.ftl")),
-    ("en", include_str!("../i18n/en/account.ftl")),
-];
+const TEXTS: &[pets_i18n::Resource] = &[("ru", include_str!("../i18n/ru/account.ftl")), ("en", include_str!("../i18n/en/account.ftl"))];
 
 /// Сцены `--screens` первого запуска (ADR 0005).
 pub(crate) mod scenes {

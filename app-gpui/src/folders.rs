@@ -4,8 +4,8 @@
 
 use std::collections::HashSet;
 
-use gpui_kit::*;
 use gpui_kit::prelude::*;
+use gpui_kit::*;
 use pets_i18n::tr;
 use postman_cache::{AccountRow, MailboxRow, account_of};
 
@@ -37,24 +37,17 @@ pub(crate) struct Folders {
 pub(crate) enum FolderEvent {
     Open(String),
     /// Правая кнопка по папке (S5-05б): меню папки у точки `at`.
-    Menu { id: String, at: Point<Pixels> },
+    Menu {
+        id: String,
+        at: Point<Pixels>,
+    },
 }
 
 impl EventEmitter<FolderEvent> for Folders {}
 
 impl Folders {
     pub(crate) fn new(mailboxes: Vec<MailboxRow>, accounts: Vec<AccountRow>, current: Option<String>) -> Self {
-        Self {
-            mailboxes,
-            accounts,
-            collapsed: HashSet::new(),
-            current,
-            results: None,
-            filters: None,
-            own: None,
-            offline: false,
-            _watch: None,
-        }
+        Self { mailboxes, accounts, collapsed: HashSet::new(), current, results: None, filters: None, own: None, offline: false, _watch: None }
     }
 
     /// Следить за фильтрами: панель, воронка и её счётчик перерисовываются вместе с моделью.

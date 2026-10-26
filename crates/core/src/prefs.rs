@@ -603,13 +603,7 @@ pub struct Reading {
 
 impl Default for Reading {
     fn default() -> Self {
-        Self {
-            conversation: Conversation::Feed,
-            folders: BTreeMap::new(),
-            pane: Pane::Right,
-            warn_link_mismatch: true,
-            invite_side: false,
-        }
+        Self { conversation: Conversation::Feed, folders: BTreeMap::new(), pane: Pane::Right, warn_link_mismatch: true, invite_side: false }
     }
 }
 
@@ -840,16 +834,9 @@ impl Calendar {
     pub fn work_hours(&self, tz: jiff::tz::TimeZone) -> postman_calendar::WorkHours {
         use jiff::civil::{Time, Weekday};
         let at = |m: u16| {
-            if m >= DAY_MIN {
-                Time::MAX
-            } else {
-                Time::new((m / 60) as i8, (m % 60) as i8, 0, 0).unwrap_or(Time::midnight())
-            }
+            if m >= DAY_MIN { Time::MAX } else { Time::new((m / 60) as i8, (m % 60) as i8, 0, 0).unwrap_or(Time::midnight()) }
         };
-        let days = (0..7)
-            .filter(|&i| self.work_days[i as usize])
-            .filter_map(|i| Weekday::from_monday_zero_offset(i).ok())
-            .collect();
+        let days = (0..7).filter(|&i| self.work_days[i as usize]).filter_map(|i| Weekday::from_monday_zero_offset(i).ok()).collect();
         postman_calendar::WorkHours { tz, start: at(self.work_start), end: at(self.work_end), days }
     }
 
@@ -936,9 +923,7 @@ impl AccountPrefs {
         let sigs = self.signatures.clone();
         for (identity, d) in self.defaults.iter_mut() {
             let fits = |id: &Option<String>| {
-                id.as_ref().is_none_or(|id| {
-                    sigs.iter().any(|s| &s.id == id && s.identity.as_ref().is_none_or(|i| i == identity))
-                })
+                id.as_ref().is_none_or(|id| sigs.iter().any(|s| &s.id == id && s.identity.as_ref().is_none_or(|i| i == identity)))
             };
             if !fits(&d.new) {
                 d.new = None;
@@ -1195,26 +1180,26 @@ mod tests {
         let path = d.path().join(FILE);
         let p = Prefs {
             calendar: Calendar {
-            work_days: [true, true, true, true, false, false, true],
-            work_start: 8 * 60,
-            work_end: 17 * 60,
-            week_start: WeekStart::Sunday,
-            view: CalendarView::Month,
-            step: 15,
-            zone: Some("Asia/Novosibirsk".into()),
-            second_zone_on: true,
-            second_zone: "Europe/London".into(),
-            duration: 60,
-            reminder: 0,
-            start_late: false,
-            with_optional: true,
-            free_color: FreeColor::Slate,
-            owner_colors: false,
-            owner_names: false,
-            calendar_colors: std::collections::BTreeMap::from([("a@x".to_string(), "pink".to_string())]),
-            hidden_calendars: vec!["b@x".into()],
-            tentative_invites: false,
-            delete_answered: false,
+                work_days: [true, true, true, true, false, false, true],
+                work_start: 8 * 60,
+                work_end: 17 * 60,
+                week_start: WeekStart::Sunday,
+                view: CalendarView::Month,
+                step: 15,
+                zone: Some("Asia/Novosibirsk".into()),
+                second_zone_on: true,
+                second_zone: "Europe/London".into(),
+                duration: 60,
+                reminder: 0,
+                start_late: false,
+                with_optional: true,
+                free_color: FreeColor::Slate,
+                owner_colors: false,
+                owner_names: false,
+                calendar_colors: std::collections::BTreeMap::from([("a@x".to_string(), "pink".to_string())]),
+                hidden_calendars: vec!["b@x".into()],
+                tentative_invites: false,
+                delete_answered: false,
             },
             ..Prefs::default()
         };
@@ -1223,7 +1208,16 @@ mod tests {
         assert_eq!(back, p);
         assert_eq!(back.calendar.zone().iana_name(), Some("Asia/Novosibirsk"));
         let h = back.calendar.work_hours(back.calendar.zone());
-        assert_eq!(h.days, [jiff::civil::Weekday::Monday, jiff::civil::Weekday::Tuesday, jiff::civil::Weekday::Wednesday, jiff::civil::Weekday::Thursday, jiff::civil::Weekday::Sunday]);
+        assert_eq!(
+            h.days,
+            [
+                jiff::civil::Weekday::Monday,
+                jiff::civil::Weekday::Tuesday,
+                jiff::civil::Weekday::Wednesday,
+                jiff::civil::Weekday::Thursday,
+                jiff::civil::Weekday::Sunday
+            ]
+        );
 
         // Старый файл без раздела — по умолчанию; неверное — к допустимому, остальное не теряется.
         std::fs::write(&path, r#"{"version":1,"reading":{"pane":"bottom"}}"#).unwrap();
@@ -1285,12 +1279,7 @@ mod tests {
         a.signatures.push(Signature { id: main.clone(), name: "Main".into(), identity: None, text: "--\nMe".into() });
         let short = a.new_id('s', 10);
         assert_ne!(main, short);
-        a.signatures.push(Signature {
-            id: short.clone(),
-            name: "Short".into(),
-            identity: Some("me@corp.example".into()),
-            text: "Me".into(),
-        });
+        a.signatures.push(Signature { id: short.clone(), name: "Short".into(), identity: Some("me@corp.example".into()), text: "Me".into() });
         a.templates.push(Template { id: a.new_id('t', 10), name: "Offer".into(), subject: "S".into(), body: "B".into() });
         a.defaults.insert("me@corp.example".into(), Defaults { new: Some(main.clone()), reply: Some(short.clone()) });
         // Подпись другого адреса умолчанием не станет.

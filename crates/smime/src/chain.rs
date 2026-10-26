@@ -175,15 +175,7 @@ pub(crate) fn evaluate(report: &mut Report, checked: &Checked, trust: &Trust, no
         }
     };
     let time = UnixTime::since_unix_epoch(std::time::Duration::from_secs(now));
-    let path = ee.verify_for_usage(
-        algs::chain_algs(),
-        &trust_anchors,
-        &intermediates,
-        time,
-        KeyUsage::required_if_present(EKU_EMAIL),
-        None,
-        None,
-    );
+    let path = ee.verify_for_usage(algs::chain_algs(), &trust_anchors, &intermediates, time, KeyUsage::required_if_present(EKU_EMAIL), None, None);
     let mut chain: Vec<Vec<u8>> = vec![checked.signer.clone()];
     let status = match path {
         Ok(path) => {

@@ -65,7 +65,10 @@ mod tests {
 
     #[test]
     fn addresses_and_fields() {
-        let m = parse_mailto("mailto:anna@corp.example,boris@corp.example?cc=vera@x.ru&subject=%D0%9F%D1%80%D0%B8%D0%B2%D0%B5%D1%82&body=1%2B1%0D%0A%D0%B4%D0%B0").unwrap();
+        let m = parse_mailto(
+            "mailto:anna@corp.example,boris@corp.example?cc=vera@x.ru&subject=%D0%9F%D1%80%D0%B8%D0%B2%D0%B5%D1%82&body=1%2B1%0D%0A%D0%B4%D0%B0",
+        )
+        .unwrap();
         assert_eq!(emails(&m.to), ["anna@corp.example", "boris@corp.example"]);
         assert_eq!(emails(&m.cc), ["vera@x.ru"]);
         assert_eq!(m.subject, "Привет");

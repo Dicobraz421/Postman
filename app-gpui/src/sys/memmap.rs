@@ -9,9 +9,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fmt::Write as _;
 
-use windows_sys::Win32::System::Memory::{
-    MEM_COMMIT, MEM_IMAGE, MEM_MAPPED, MEM_PRIVATE, MEMORY_BASIC_INFORMATION, PAGE_GUARD, VirtualQuery,
-};
+use windows_sys::Win32::System::Memory::{MEM_COMMIT, MEM_IMAGE, MEM_MAPPED, MEM_PRIVATE, MEMORY_BASIC_INFORMATION, PAGE_GUARD, VirtualQuery};
 use windows_sys::Win32::System::ProcessStatus::{GetMappedFileNameW, QueryWorkingSet};
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
@@ -115,23 +113,10 @@ pub fn report() -> (String, usize) {
             t.add(s);
         }
         total.add(&t);
-        let _ = writeln!(
-            out,
-            "mem {title}: commit={:.1} ws={:.1} private_ws={:.1} groups={}",
-            mb(t.commit),
-            mb(t.ws),
-            mb(t.private_ws),
-            v.len()
-        );
+        let _ = writeln!(out, "mem {title}: commit={:.1} ws={:.1} private_ws={:.1} groups={}", mb(t.commit), mb(t.ws), mb(t.private_ws), v.len());
         v.sort_by_key(|(_, s)| std::cmp::Reverse(s.ws));
         for (name, s) in v.into_iter().take(12) {
-            let _ = writeln!(
-                out,
-                "mem   {title} {name}: commit={:.1} ws={:.1} private_ws={:.1}",
-                mb(s.commit),
-                mb(s.ws),
-                mb(s.private_ws)
-            );
+            let _ = writeln!(out, "mem   {title} {name}: commit={:.1} ws={:.1} private_ws={:.1}", mb(s.commit), mb(s.ws), mb(s.private_ws));
         }
     }
     let _ = writeln!(

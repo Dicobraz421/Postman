@@ -99,9 +99,7 @@ struct Uploaded {
 impl Client {
     pub async fn identities(&self) -> Result<Vec<Identity>> {
         let acc = self.account_for(SUBMISSION)?;
-        let mut r = self
-            .call(&[CORE, MAIL, SUBMISSION], &[inv("Identity/get", json!({ "accountId": acc, "ids": null }), "i")])
-            .await?;
+        let mut r = self.call(&[CORE, MAIL, SUBMISSION], &[inv("Identity/get", json!({ "accountId": acc, "ids": null }), "i")]).await?;
         let g: GetResponse<Identity> = take(&mut r, "i")?;
         Ok(g.list)
     }
@@ -122,13 +120,7 @@ impl Client {
 
     /// Сохранить черновик с ключевыми словами `keywords` (сверх `$draft`, `$seen`); прежняя версия (`replace`)
     /// удаляется тем же запросом.
-    pub async fn save_draft(
-        &self,
-        raw: Vec<u8>,
-        drafts: &str,
-        replace: Option<&str>,
-        keywords: &[String],
-    ) -> Result<String> {
+    pub async fn save_draft(&self, raw: Vec<u8>, drafts: &str, replace: Option<&str>, keywords: &[String]) -> Result<String> {
         let acc = self.mail_account()?.to_string();
         let blob = self.upload(&acc, raw, "message/rfc822").await?;
         let mut calls = vec![import_call(&acc, &blob, drafts, keywords)];
@@ -190,10 +182,7 @@ impl Client {
         let v: Value = take(&mut r, "s")?;
         set_error(&v, "notCreated", "sub", "EmailSubmission/set")?;
         let created = &v["created"]["sub"];
-        let submission_id = created["id"]
-            .as_str()
-            .map(str::to_string)
-            .ok_or_else(|| Error::Protocol("EmailSubmission/set не вернул id".into()))?;
+        let submission_id = created["id"].as_str().map(str::to_string).ok_or_else(|| Error::Protocol("EmailSubmission/set не вернул id".into()))?;
         Ok(Submitted {
             email_id,
             submission_id,
@@ -236,13 +225,7 @@ impl Client {
 
     /// Отменить отложенную отправку и вернуть письмо из `sent` в `drafts` черновиком. Письмо уже ушло —
     /// [`UnsendError::TooLate`], письмо не трогается.
-    pub async fn unsend(
-        &self,
-        submission: &str,
-        email: &str,
-        drafts: &str,
-        sent: &str,
-    ) -> std::result::Result<(), UnsendError> {
+    pub async fn unsend(&self, submission: &str, email: &str, drafts: &str, sent: &str) -> std::result::Result<(), UnsendError> {
         self.cancel_submission(submission).await?;
         let acc = self.account_for(SUBMISSION)?.to_string();
         // Отменено — письмо снова черновик. Отдельным запросом: в одном с отменой он прошёл бы и при её отказе.
@@ -261,11 +244,7 @@ impl Client {
     /// [`UnsendError::TooLate`].
     pub async fn cancel_submission(&self, submission: &str) -> std::result::Result<(), UnsendError> {
         let acc = self.account_for(SUBMISSION)?.to_string();
-        let cancel = inv(
-            "EmailSubmission/set",
-            json!({ "accountId": acc, "update": { submission: { "undoStatus": "canceled" } } }),
-            "c",
-        );
+        let cancel = inv("EmailSubmission/set", json!({ "accountId": acc, "update": { submission: { "undoStatus": "canceled" } } }), "c");
         let mut r = self.call(&[CORE, MAIL, SUBMISSION], &[cancel]).await?;
         let v: Value = take(&mut r, "c")?;
         if v["notUpdated"][submission]["type"].as_str() == Some("cannotUnsend") {
@@ -303,8 +282,7 @@ fn import_email(blob: &str, drafts: &str, keywords: &[String]) -> Value {
     kw.insert("$draft".into(), Value::Bool(true));
     kw.insert("$seen".into(), Value::Bool(true));
     for k in keywords.iter().map(|k| k.to_ascii_lowercase()) {
-        let valid = (1..=255).contains(&k.len())
-            && k.bytes().all(|b| (0x21..=0x7e).contains(&b) && !b"(){]%*\"\\".contains(&b));
+        let valid = (1..=255).contains(&k.len()) && k.bytes().all(|b| (0x21..=0x7e).contains(&b) && !b"(){]%*\"\\".contains(&b));
         if valid {
             kw.insert(k, Value::Bool(true));
         }
@@ -315,10 +293,7 @@ fn import_email(blob: &str, drafts: &str, keywords: &[String]) -> Value {
 fn imported_id(r: &mut [crate::Invocation]) -> Result<String> {
     let v: Value = take(r, "i")?;
     set_error(&v, "notCreated", "draft", "Email/import")?;
-    v["created"]["draft"]["id"]
-        .as_str()
-        .map(str::to_string)
-        .ok_or_else(|| Error::Protocol("Email/import не вернул id".into()))
+    v["created"]["draft"]["id"].as_str().map(str::to_string).ok_or_else(|| Error::Protocol("Email/import не вернул id".into()))
 }
 
 #[cfg(test)]

@@ -23,8 +23,8 @@ use pets_ui::theme::Metric;
 use postman_calendar::{Busy, BusyKind, Span};
 use postman_compose::{Address, Draft, parse_addresses};
 use postman_core::contacts::AddressBook;
-use postman_core::sync::{Command, Event as SyncEvent};
 use postman_core::model::{ContactCard, Principal};
+use postman_core::sync::{Command, Event as SyncEvent};
 
 use crate::buttons::plain as button;
 use crate::calendar::{add_days, avatar, chip_outline, day_start, g, hm};
@@ -94,9 +94,7 @@ impl Entry {
     pub(crate) fn new(card: ContactCard, kind: Kind) -> Self {
         let mut keys = Vec::new();
         for text in [&card.name, &card.organization, &card.title] {
-            keys.extend(
-                normalize(text).split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_string),
-            );
+            keys.extend(normalize(text).split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_string));
         }
         for e in &card.emails {
             let e = normalize(e);
@@ -273,13 +271,7 @@ impl FormText {
             id: id.to_string(),
             name: self.name.trim().to_string(),
             emails: ok.into_iter().map(|a| a.email).collect(),
-            phones: self
-                .phones
-                .split([';', ','])
-                .map(str::trim)
-                .filter(|p| !p.is_empty())
-                .map(str::to_string)
-                .collect(),
+            phones: self.phones.split([';', ',']).map(str::trim).filter(|p| !p.is_empty()).map(str::to_string).collect(),
             organization: self.organization.trim().to_string(),
             title: self.title.trim().to_string(),
         };
@@ -305,13 +297,7 @@ struct Form {
 impl Form {
     fn text(&self, cx: &App) -> FormText {
         let v = |s: &Entity<InputState>| s.read(cx).value().to_string();
-        FormText {
-            name: v(&self.name),
-            emails: v(&self.emails),
-            phones: v(&self.phones),
-            organization: v(&self.organization),
-            title: v(&self.title),
-        }
+        FormText { name: v(&self.name), emails: v(&self.emails), phones: v(&self.phones), organization: v(&self.organization), title: v(&self.title) }
     }
 }
 
@@ -1057,11 +1043,7 @@ impl ContactsView {
                 Source::Frequent => "contacts-sort-frequency",
                 _ => "contacts-sort-name",
             })));
-        let list = list(
-            self.list.clone(),
-            cx.processor(|this, ix: usize, _window, cx| this.item(ix, cx)),
-        )
-        .size_full();
+        let list = list(self.list.clone(), cx.processor(|this, ix: usize, _window, cx| this.item(ix, cx))).size_full();
         let letters: Vec<(char, usize)> = self
             .items
             .iter()
@@ -1072,15 +1054,8 @@ impl ContactsView {
             })
             .collect();
         let index = (!searching && letters.len() > 1).then(|| {
-            div()
-                .w(px(24.))
-                .flex_none()
-                .flex()
-                .flex_col()
-                .py(px(6.))
-                .border_l_1()
-                .border_color(l.border())
-                .children(letters.into_iter().map(|(c, i)| {
+            div().w(px(24.)).flex_none().flex().flex_col().py(px(6.)).border_l_1().border_color(l.border()).children(letters.into_iter().map(
+                |(c, i)| {
                     div()
                         .id(("letter", i))
                         .h(px(20.))
@@ -1096,7 +1071,8 @@ impl ContactsView {
                             this.list.scroll_to(ListOffset { item_ix: i, offset_in_item: px(0.) });
                             cx.notify();
                         }))
-                }))
+                },
+            ))
         });
         crate::mailer::card(&l)
             .w(px(LIST_W))
@@ -1110,15 +1086,7 @@ impl ContactsView {
                     .flex_1()
                     .min_h_0()
                     .flex()
-                    .child(
-                        div()
-                            .relative()
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .child(list)
-                            .child(Scrollbar::vertical(&self.list).mode(ScrollbarMode::Hover)),
-                    )
+                    .child(div().relative().flex_1().min_w_0().h_full().child(list).child(Scrollbar::vertical(&self.list).mode(ScrollbarMode::Hover)))
                     .children(index),
             )
     }
@@ -1169,8 +1137,7 @@ impl ContactsView {
     /// «Внешний»: личный контакт с адресом не моего домена.
     fn external(&self, e: &Entry) -> bool {
         let Some(mine) = self.me.as_deref().and_then(|m| m.split_once('@')).map(|(_, d)| d) else { return false };
-        e.kind == Kind::Contact
-            && e.card.emails.first().and_then(|m| m.split_once('@')).is_some_and(|(_, d)| !d.eq_ignore_ascii_case(mine))
+        e.kind == Kind::Contact && e.card.emails.first().and_then(|m| m.split_once('@')).is_some_and(|(_, d)| !d.eq_ignore_ascii_case(mine))
     }
 
     // --- карточка ---
@@ -1209,18 +1176,9 @@ impl ContactsView {
                 .bg(l.warning_bg())
                 .border_b_1()
                 .border_color(l.border())
-                .child(div().flex_1().child(if busy {
-                    tr!("contacts-deleting")
-                } else {
-                    tr!("contacts-delete-confirm", name = e.name())
-                }))
+                .child(div().flex_1().child(if busy { tr!("contacts-deleting") } else { tr!("contacts-delete-confirm", name = e.name()) }))
                 .when(!busy, |d| {
-                    d.child(answer("delete-yes", tr!("contacts-yes"), true, cx)).child(answer(
-                        "delete-no",
-                        tr!("contacts-no"),
-                        false,
-                        cx,
-                    ))
+                    d.child(answer("delete-yes", tr!("contacts-yes"), true, cx)).child(answer("delete-no", tr!("contacts-no"), false, cx))
                 })
         });
         // Клавиша «Изменить» (F2) — подсказкой и KeyTips, не в тексте (S5-18).
@@ -1265,38 +1223,28 @@ impl ContactsView {
                     ),
             );
         let has_mail = !c.emails.is_empty();
-        let actions = div()
-            .flex()
-            .flex_wrap()
-            .gap(px(8.))
-            .when(has_mail, |d| {
-                d.child(
-                    crate::buttons::primary("contact-write", &l)
-                        .child(icon(g::MAIL, 14.))
-                        .child(tr!("contacts-write"))
-                        .on_click(cx.listener(|this, _, _, cx| this.write(cx))),
-                )
-                .child(
-                    crate::buttons::secondary("contact-meet", &l)
-                        .child(icon(g::CALENDAR, 14.))
-                        .child(tr!("contacts-meet"))
-                        .on_click(cx.listener(|this, _, _, cx| this.meet(cx))),
-                )
-                .child(
-                    crate::buttons::secondary("contact-copy", &l)
-                        .child(icon(g::COPY, 14.))
-                        .child(tr!("contacts-copy"))
-                        .on_click(cx.listener(|this, _, _, cx| this.copy_address(cx))),
-                )
-            });
+        let actions = div().flex().flex_wrap().gap(px(8.)).when(has_mail, |d| {
+            d.child(
+                crate::buttons::primary("contact-write", &l)
+                    .child(icon(g::MAIL, 14.))
+                    .child(tr!("contacts-write"))
+                    .on_click(cx.listener(|this, _, _, cx| this.write(cx))),
+            )
+            .child(
+                crate::buttons::secondary("contact-meet", &l)
+                    .child(icon(g::CALENDAR, 14.))
+                    .child(tr!("contacts-meet"))
+                    .on_click(cx.listener(|this, _, _, cx| this.meet(cx))),
+            )
+            .child(
+                crate::buttons::secondary("contact-copy", &l)
+                    .child(icon(g::COPY, 14.))
+                    .child(tr!("contacts-copy"))
+                    .on_click(cx.listener(|this, _, _, cx| this.copy_address(cx))),
+            )
+        });
         let cell = |label: &str, values: Vec<AnyElement>| {
-            div()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(px(2.))
-                .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!(label)))
-                .children(values)
+            div().min_w_0().flex().flex_col().gap(px(2.)).child(div().text_size(px(12.)).text_color(l.text2()).child(tr!(label))).children(values)
         };
         let plain = |s: &String| div().truncate().child(s.clone()).into_any_element();
         let dash = || div().text_color(l.text3()).child("—").into_any_element();
@@ -1392,9 +1340,7 @@ impl ContactsView {
                 )
             });
         let body: AnyElement = match &self.today.busy {
-            _ if self.today.ticket.is_some() => {
-                div().text_size(px(12.)).text_color(l.text2()).child(tr!("meeting-busy-loading")).into_any_element()
-            }
+            _ if self.today.ticket.is_some() => div().text_size(px(12.)).text_color(l.text2()).child(tr!("meeting-busy-loading")).into_any_element(),
             Some(Some(busy)) => {
                 let now = jiff::Timestamp::now().as_second();
                 let segs = busy.iter().filter(|b| b.span.overlaps(&range)).map(|b| {
@@ -1404,25 +1350,14 @@ impl ContactsView {
                         BusyKind::Tentative => l.pm(Pm::FbTentative),
                         BusyKind::Unavailable => l.pm(Pm::FbOof),
                     };
-                    div()
-                        .absolute()
-                        .top(px(3.))
-                        .bottom(px(3.))
-                        .left(relative(frac(s)))
-                        .w(relative(frac(x) - frac(s)))
-                        .rounded(px(3.))
-                        .bg(color)
+                    div().absolute().top(px(3.)).bottom(px(3.)).left(relative(frac(s))).w(relative(frac(x) - frac(s))).rounded(px(3.)).bg(color)
                 });
-                let ticks = (0..(DAY_TO - DAY_FROM)).map(|h| {
-                    div().absolute().top_0().bottom_0().w(px(1.)).left(relative(h as f32 / (DAY_TO - DAY_FROM) as f32)).bg(l.border())
-                });
+                let ticks = (0..(DAY_TO - DAY_FROM))
+                    .map(|h| div().absolute().top_0().bottom_0().w(px(1.)).left(relative(h as f32 / (DAY_TO - DAY_FROM) as f32)).bg(l.border()));
                 let now_in = (range.start..range.end).contains(&now);
-                let now_x = now_in.then(|| {
-                    div().absolute().top(px(-2.)).bottom(px(-2.)).w(px(2.)).left(relative(frac(now))).bg(l.text())
-                });
-                let past = (now > range.start).then(|| {
-                    div().absolute().top_0().bottom_0().left_0().w(relative(frac(now))).bg(l.panel().opacity(0.5))
-                });
+                let now_x = now_in.then(|| div().absolute().top(px(-2.)).bottom(px(-2.)).w(px(2.)).left(relative(frac(now))).bg(l.text()));
+                let past =
+                    (now > range.start).then(|| div().absolute().top_0().bottom_0().left_0().w(relative(frac(now))).bg(l.panel().opacity(0.5)));
                 let hours = (0..=(DAY_TO - DAY_FROM)).step_by(2).map(|h| {
                     div()
                         .absolute()
@@ -1544,17 +1479,13 @@ impl ContactsView {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .when(!busy, |d| {
-                        d.child(button("form-save", tr!("contacts-save"), true).on_click(cx.listener(|this, _, _, cx| this.save(cx))))
-                    })
+                    .when(!busy, |d| d.child(button("form-save", tr!("contacts-save"), true).on_click(cx.listener(|this, _, _, cx| this.save(cx)))))
                     .when(busy, |d| d.child(div().text_color(l.text2()).child(tr!("contacts-saving"))))
-                    .child(button("form-cancel", tr!("contacts-cancel"), false).on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.mode = Mode::View;
-                            this.pending = None;
-                            cx.notify();
-                        },
-                    ))),
+                    .child(button("form-cancel", tr!("contacts-cancel"), false).on_click(cx.listener(|this, _, _, cx| {
+                        this.mode = Mode::View;
+                        this.pending = None;
+                        cx.notify();
+                    }))),
             )
             .into_any_element()
     }
@@ -1587,9 +1518,7 @@ fn row(ix: usize, e: &Entry, selected: bool, external: bool, l: &Look, cx: &mut 
         .border_b_1()
         .border_color(l.border())
         .cursor_pointer()
-        .when(selected, |d| {
-            d.bg(l.selected()).child(div().absolute().left_0().top_0().bottom_0().w(px(3.)).bg(l.accent()))
-        })
+        .when(selected, |d| d.bg(l.selected()).child(div().absolute().left_0().top_0().bottom_0().w(px(3.)).bg(l.accent())))
         .when(!selected, |d| d.hover(|d| d.bg(l.hover())))
         .child(avatar(&name, 36., l))
         .child(
@@ -1728,17 +1657,10 @@ impl Render for ContactsBar {
                         kind.is_some(),
                         || Box::new(cmd::Edit),
                     ))
-                    .child(action("contacts-delete", g::DELETE, "contacts-delete", kind == Some(Kind::Contact), || {
-                        Box::new(cmd::Delete)
-                    }))
+                    .child(action("contacts-delete", g::DELETE, "contacts-delete", kind == Some(Kind::Contact), || Box::new(cmd::Delete)))
             })
             .child(div().flex_1())
-            .child(crate::keytips::badge(
-                div().ml(px(12.)).w(px(300.)).flex_none().child(search),
-                crate::keytips::key("search.focus", cx),
-                &l,
-                cx,
-            ))
+            .child(crate::keytips::badge(div().ml(px(12.)).w(px(300.)).flex_none().child(search), crate::keytips::key("search.focus", cx), &l, cx))
     }
 }
 
@@ -1747,9 +1669,7 @@ impl crate::Mailer {
     pub(crate) fn on_contacts(&mut self, action: &ContactsAction, cx: &mut Context<Self>) {
         let command = match action {
             ContactsAction::Load => Command::Contacts,
-            ContactsAction::Save { card, old, ticket } => {
-                Command::SaveContact { card: card.clone(), old: old.clone(), ticket: *ticket }
-            }
+            ContactsAction::Save { card, old, ticket } => Command::SaveContact { card: card.clone(), old: old.clone(), ticket: *ticket },
             ContactsAction::Delete { id, ticket } => Command::DeleteContact { id: id.clone(), ticket: *ticket },
             ContactsAction::PersonDetails(email) => Command::PersonDetails { email: email.clone() },
             ContactsAction::Availability { ticket, email, from, to } => {
@@ -1832,29 +1752,27 @@ pub(crate) fn add_demo(book: &mut AddressBook) {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "contacts", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part =
+    crate::part::Part { name: "contacts", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Обработчики команд части — на корне экрана почты (`Mailer::render`).
 fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
     root.on_action(cx.listener(|this, _: &contacts::New, window, cx| {
-            this.contacts.update(cx, |c, cx| c.new_contact(window, cx));
-        }))
-        .on_action(cx.listener(|this, _: &contacts::Edit, window, cx| {
-            this.contacts.update(cx, |c, cx| c.edit(window, cx));
-        }))
-        .on_action(cx.listener(|this, _: &contacts::Delete, _, cx| this.contacts.update(cx, |c, cx| c.ask_delete(cx))))
-        .on_action(cx.listener(|this, _: &contacts::Write, _, cx| this.contacts.update(cx, |c, cx| c.write(cx))))
-        .on_action(cx.listener(|this, _: &contacts::Meeting, _, cx| this.contacts.update(cx, |c, cx| c.meet(cx))))
-        .on_action(cx.listener(|this, _: &contacts::CopyAddress, _, cx| {
-            this.contacts.update(cx, |c, cx| c.copy_address(cx));
-        }))
+        this.contacts.update(cx, |c, cx| c.new_contact(window, cx));
+    }))
+    .on_action(cx.listener(|this, _: &contacts::Edit, window, cx| {
+        this.contacts.update(cx, |c, cx| c.edit(window, cx));
+    }))
+    .on_action(cx.listener(|this, _: &contacts::Delete, _, cx| this.contacts.update(cx, |c, cx| c.ask_delete(cx))))
+    .on_action(cx.listener(|this, _: &contacts::Write, _, cx| this.contacts.update(cx, |c, cx| c.write(cx))))
+    .on_action(cx.listener(|this, _: &contacts::Meeting, _, cx| this.contacts.update(cx, |c, cx| c.meet(cx))))
+    .on_action(cx.listener(|this, _: &contacts::CopyAddress, _, cx| {
+        this.contacts.update(cx, |c, cx| c.copy_address(cx));
+    }))
 }
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
-const TEXTS: &[pets_i18n::Resource] = &[
-    ("ru", include_str!("../i18n/ru/contacts.ftl")),
-    ("en", include_str!("../i18n/en/contacts.ftl")),
-];
+const TEXTS: &[pets_i18n::Resource] = &[("ru", include_str!("../i18n/ru/contacts.ftl")), ("en", include_str!("../i18n/en/contacts.ftl"))];
 
 /// Контакты (S5-11): новый, изменить, удалить, написать, встреча, копировать адрес.
 // Имя — область действий (`contacts::…`), как в id команд: так обработчики читаются и их находит `docs/PARITY.md`.
@@ -1865,7 +1783,7 @@ pub(crate) mod contacts {
 
 /// Команды части (`commands.rs`: контексты и `cmd`).
 const COMMANDS: &[pets_commands::Command] = {
-    use crate::commands::{CONTACTS_ANY, CONTACTS, cmd};
+    use crate::commands::{CONTACTS, CONTACTS_ANY, cmd};
     &[
         // Контакты (S5-11): Outlook — Ctrl+Shift+C новый контакт; F2 — правка, Delete — удалить (после «Да»).
         cmd("contacts.new", &["ctrl-shift-c"], CONTACTS_ANY),

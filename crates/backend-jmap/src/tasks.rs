@@ -29,8 +29,7 @@ impl<'a> JmapStore<'a> {
     }
 
     async fn call(&self, calls: Vec<(&str, Value)>) -> Result<Vec<Value>> {
-        let inv: Vec<Invocation> =
-            calls.into_iter().enumerate().map(|(i, (m, a))| Invocation(m.into(), a, format!("c{i}"))).collect();
+        let inv: Vec<Invocation> = calls.into_iter().enumerate().map(|(i, (m, a))| Invocation(m.into(), a, format!("c{i}"))).collect();
         Ok(self.client.call(USING, &inv).await?.into_iter().map(|r| r.1).collect())
     }
 
@@ -46,7 +45,9 @@ impl<'a> JmapStore<'a> {
         let mut task_ids = Vec::new();
         for chunk in ids.chunks(CHUNK) {
             let r = self.call(vec![("CalendarEvent/get", json!({ "accountId": acc, "ids": chunk, "properties": ["id", "@type"] }))]).await?;
-            task_ids.extend(r[0]["list"].as_array().into_iter().flatten().filter(|v| Task::is_task(v)).filter_map(|v| v["id"].as_str().map(str::to_owned)));
+            task_ids.extend(
+                r[0]["list"].as_array().into_iter().flatten().filter(|v| Task::is_task(v)).filter_map(|v| v["id"].as_str().map(str::to_owned)),
+            );
         }
         self.jmap_get(&task_ids).await
     }
@@ -68,9 +69,7 @@ impl JmapStore<'_> {
         let state = self.state().await?;
         let mut ids: Vec<String> = Vec::new();
         loop {
-            let r = self
-                .call(vec![("CalendarEvent/query", json!({ "accountId": acc, "position": ids.len(), "limit": CHUNK }))])
-                .await?;
+            let r = self.call(vec![("CalendarEvent/query", json!({ "accountId": acc, "position": ids.len(), "limit": CHUNK }))]).await?;
             let page: Vec<String> = r[0]["ids"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_owned)).collect();
             let got = page.len();
             ids.extend(page);
@@ -86,9 +85,7 @@ impl JmapStore<'_> {
         let mut state = since.to_owned();
         let (mut touched, mut destroyed) = (Vec::new(), Vec::new());
         loop {
-            let r = self
-                .call(vec![("CalendarEvent/changes", json!({ "accountId": acc, "sinceState": state, "maxChanges": CHUNK }))])
-                .await?;
+            let r = self.call(vec![("CalendarEvent/changes", json!({ "accountId": acc, "sinceState": state, "maxChanges": CHUNK }))]).await?;
             let ch = &r[0];
             let ids = |k: &str| ch[k].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_owned)).collect::<Vec<_>>();
             touched.extend(ids("created"));

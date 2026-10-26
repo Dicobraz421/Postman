@@ -171,7 +171,8 @@ pub fn envelope(content: &[u8], to: &[To], ops: &dyn Ops) -> Result<(Vec<u8>, Ci
         let mut nonce = [0u8; 12];
         ops.random(&mut nonce);
         let mut buf = content.to_vec();
-        let tag = Aes256Gcm::new_from_slice(&cek).map_err(failed)?.encrypt_in_place_detached(Nonce::from_slice(&nonce), &[], &mut buf).map_err(failed)?;
+        let tag =
+            Aes256Gcm::new_from_slice(&cek).map_err(failed)?.encrypt_in_place_detached(Nonce::from_slice(&nonce), &[], &mut buf).map_err(failed)?;
         let eci = seq(&[oid_der(oid::DATA), alg(oid::AES256_GCM, Some(seq(&[tlv(0x04, &nonce), tlv(0x02, &[16])]))), tlv(0x80, &buf)]);
         let body = seq(&[tlv(0x02, &[0]), tlv(0x31, &infos), eci, tlv(0x04, &tag)]);
         seq(&[oid_der(oid::AUTH_ENVELOPED_DATA), tlv(0xA0, &body)])

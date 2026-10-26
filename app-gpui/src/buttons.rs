@@ -17,16 +17,7 @@ use crate::roles::{Look, Pm};
 const H: f32 = 32.;
 
 fn shell(id: impl Into<ElementId>, l: &Look) -> Stateful<Div> {
-    div()
-        .id(id)
-        .flex_none()
-        .h(px(H))
-        .px(px(12.))
-        .flex()
-        .items_center()
-        .gap(px(6.))
-        .rounded(l.px(Metric::RadiusControl))
-        .cursor_pointer()
+    div().id(id).flex_none().h(px(H)).px(px(12.)).flex().items_center().gap(px(6.)).rounded(l.px(Metric::RadiusControl)).cursor_pointer()
 }
 
 /// Главная кнопка: заливка акцентом.
@@ -105,7 +96,8 @@ fn over_panel(c: Hsla, panel: Hsla) -> Hsla {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "buttons", scenes: scenes::SCENES, reset: Some(scenes::reset), ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part =
+    crate::part::Part { name: "buttons", scenes: scenes::SCENES, reset: Some(scenes::reset), ..crate::part::Part::NONE };
 
 /// Сцены `--screens` кнопок (ADR 0005).
 pub(crate) mod scenes {
@@ -156,7 +148,10 @@ mod tests {
     fn buttons_stand_out_and_read_well() {
         let light = theme(&OsLook::default());
         let dark = theme(&OsLook { dark: true, ..OsLook::default() });
-        assert_eq!([hex(light.pm(Pm::Secondary)), hex(light.pm(Pm::SecondaryFg)), hex(light.pm(Pm::SecondaryHover))], ["#DFF0FF", "#234E82", "#D0E6FA"]);
+        assert_eq!(
+            [hex(light.pm(Pm::Secondary)), hex(light.pm(Pm::SecondaryFg)), hex(light.pm(Pm::SecondaryHover))],
+            ["#DFF0FF", "#234E82", "#D0E6FA"]
+        );
         assert_eq!([hex(dark.pm(Pm::Secondary)), hex(dark.pm(Pm::SecondaryFg)), hex(dark.pm(Pm::SecondaryHover))], ["#23364F", "#BFDDFF", "#2C4466"]);
         for l in [&light, &dark] {
             let panel = l.panel();

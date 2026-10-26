@@ -299,7 +299,11 @@ fn invite_reply_by_uid_or_by_mail() {
     assert_eq!((delivery, uid.as_str()), (postman_core::invite::Delivery::Server, MEETING_UID));
     let sent = requests(&log, n, "CreateItem");
     assert_eq!(sent.len(), 1, "один ответ");
-    assert!(sent[0].contains("<t:AcceptItem>") && sent[0].contains(r#"<t:ReferenceItemId Id="AAMkADmeet" ChangeKey="DwAAABYAAAA7"/>"#), "{}", sent[0]);
+    assert!(
+        sent[0].contains("<t:AcceptItem>") && sent[0].contains(r#"<t:ReferenceItemId Id="AAMkADmeet" ChangeKey="DwAAABYAAAA7"/>"#),
+        "{}",
+        sent[0]
+    );
     assert!(!sent[0].contains("<t:MimeContent>"), "не письмом");
 
     let n = log.lock().unwrap().len();
@@ -476,7 +480,8 @@ fn meeting_edit_and_cancel_requests() {
     };
     let n = log.lock().unwrap().len();
     live.commands.send(Command::UpdateMeeting { event: Box::new(ev.clone()), meeting: Box::new(meeting), series: false, ticket: 21 }).unwrap();
-    let done = |e: &Event| matches!(e, Event::MeetingUpdated { ticket: 21, .. } | Event::MeetingCancelled { ticket: 22, .. } | Event::MeetingFailed { .. });
+    let done =
+        |e: &Event| matches!(e, Event::MeetingUpdated { ticket: 21, .. } | Event::MeetingCancelled { ticket: 22, .. } | Event::MeetingFailed { .. });
     let Event::MeetingUpdated { uid, .. } = live.wait("MeetingUpdated", done) else { panic!("правка не ушла") };
     assert_eq!(uid, MEETING_UID);
     let upd = requests(&log, n, "UpdateItem").pop().expect("UpdateItem");
@@ -497,5 +502,8 @@ fn meeting_edit_and_cancel_requests() {
     live.commands.send(Command::CancelMeeting { event: Box::new(ev), series: false, from: None, ticket: 22 }).unwrap();
     let Event::MeetingCancelled { .. } = live.wait("MeetingCancelled", done) else { panic!("отмена не ушла") };
     let del = requests(&log, n, "DeleteItem").pop().expect("DeleteItem");
-    assert!(del.contains(r#"DeleteType="MoveToDeletedItems" SendMeetingCancellations="SendToAllAndSaveCopy""#) && del.contains("AAMkADmeet"), "{del}");
+    assert!(
+        del.contains(r#"DeleteType="MoveToDeletedItems" SendMeetingCancellations="SendToAllAndSaveCopy""#) && del.contains("AAMkADmeet"),
+        "{del}"
+    );
 }

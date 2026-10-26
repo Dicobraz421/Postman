@@ -63,14 +63,13 @@ jobs:
             echo rust=false >> "$GITHUB_OUTPUT"
           fi
 
-  # Формат (`cargo fmt --check`) пока не проверяется: код не приведён к rustfmt — решение владельца.
   test:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - run: rustup toolchain install stable --profile minimal -c clippy --no-self-update && rustup default stable
+      - run: rustup toolchain install stable --profile minimal -c clippy,rustfmt --no-self-update && rustup default stable
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: windows
@@ -78,6 +77,10 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
+
+      # Формат — `rustfmt.toml` (решение владельца 2026-10-26); сначала: секунды, без сборки.
+      - name: Формат
+        run: cargo fmt --all --check
 
       - name: Clippy
         # Не через RUSTFLAGS: он перекрыл бы +crt-static из .cargo/config.toml.

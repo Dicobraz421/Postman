@@ -66,7 +66,8 @@ impl Client {
                 && !same_href(&other, &principal)
                 && let Ok(ms) = self.multistatus("PROPFIND", &other, Some("0"), xml::propfind(&["r:addressbook-home-set"])).await
             {
-                d.addressbook_home = ms.responses.first().and_then(|r| r.prop(CARDDAV, "addressbook-home-set")).map(|p| p.hrefs()).unwrap_or_default();
+                d.addressbook_home =
+                    ms.responses.first().and_then(|r| r.prop(CARDDAV, "addressbook-home-set")).map(|p| p.hrefs()).unwrap_or_default();
             }
         }
         tracing::debug!(

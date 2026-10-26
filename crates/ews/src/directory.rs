@@ -113,7 +113,13 @@ pub(crate) fn find_request(query: &str, max: usize) -> String {
 
 /// Первое непустое значение `ArrayOfStringAttributedValues` (`Departments`, `OfficeLocations`).
 fn first_value(list: Option<&El>) -> String {
-    list.into_iter().flat_map(|l| l.all("StringAttributedValue")).filter_map(|v| v.text_at(&["Value"])).map(str::trim).find(|v| !v.is_empty()).unwrap_or("").to_owned()
+    list.into_iter()
+        .flat_map(|l| l.all("StringAttributedValue"))
+        .filter_map(|v| v.text_at(&["Value"]))
+        .map(str::trim)
+        .find(|v| !v.is_empty())
+        .unwrap_or("")
+        .to_owned()
 }
 
 fn persona(p: &El) -> Option<Person> {

@@ -159,10 +159,7 @@ mod tests {
         ]);
         let j = postman_jmap::Filter::And(vec![
             postman_jmap::Filter::InMailbox("m1".into()),
-            postman_jmap::Filter::Or(vec![
-                postman_jmap::Filter::HasKeyword("pm.due".into()),
-                postman_jmap::Filter::NotKeyword("$seen".into()),
-            ]),
+            postman_jmap::Filter::Or(vec![postman_jmap::Filter::HasKeyword("pm.due".into()), postman_jmap::Filter::NotKeyword("$seen".into())]),
             postman_jmap::Filter::Not(vec![postman_jmap::Filter::From("@example.test".into())]),
             postman_jmap::Filter::Text("t".into()),
             postman_jmap::Filter::To("a".into()),

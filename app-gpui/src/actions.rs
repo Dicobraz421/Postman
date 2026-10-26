@@ -87,9 +87,7 @@ pub(crate) fn watch_list(list: &Entity<MailList>, cx: &mut Context<Mailer>) -> S
 
 /// Полная дата для строки цитаты: «17.10.2026 12:00».
 fn full_date(ts: i64) -> String {
-    jiff::Timestamp::from_second(ts)
-        .map(|t| t.to_zoned(jiff::tz::TimeZone::system()).strftime("%d.%m.%Y %H:%M").to_string())
-        .unwrap_or_default()
+    jiff::Timestamp::from_second(ts).map(|t| t.to_zoned(jiff::tz::TimeZone::system()).strftime("%d.%m.%Y %H:%M").to_string()).unwrap_or_default()
 }
 
 fn addresses(list: &[Addr]) -> Vec<Address> {
@@ -207,8 +205,7 @@ impl Mailer {
         let Some(r) = reading.reading.as_ref().filter(|r| r.row.id == id) else { return false };
         let (Some(body), Some(doc)) = (&r.body, &r.doc) else { return false };
         // Я — Identity сервера; в демо — владелец демо-ящика (его адрес знает область чтения).
-        let (me, signature) =
-            identity.unwrap_or_else(|| (Address::new("", reading.me.clone().unwrap_or_default()), String::new()));
+        let (me, signature) = identity.unwrap_or_else(|| (Address::new("", reading.me.clone().unwrap_or_default()), String::new()));
         let local = |blob: &str| if live { None } else { postman_demo::blob(blob) };
         let d = draft(mode, &r.row, body, doc, &me, &signature, local);
         // Ответ и пересылка — в области чтения над письмом (S5-06б); «Развернуть» — во вкладку.
@@ -228,8 +225,7 @@ impl Mailer {
             return self.toast(Toast::Info, tr!("actions-select-letter"), cx);
         };
         // Результаты поиска — из разных папок: письмо уходит из своей.
-        let from =
-            list.mailbox.clone().filter(|m| row.mailbox_ids.contains(m)).or_else(|| row.mailbox_ids.first().cloned());
+        let from = list.mailbox.clone().filter(|m| row.mailbox_ids.contains(m)).or_else(|| row.mailbox_ids.first().cloned());
         let Some(from) = from else { return };
         // Папка общего ящика, открытая только для чтения (S4-06): удалять из неё нельзя.
         if !crate::list::may(&list.rights, &row, |r| r.remove) {
@@ -245,8 +241,7 @@ impl Mailer {
     /// «Удалённых» насовсем не удаляется, из папки общего ящика без права удаления — остаётся.
     pub(crate) fn trash_answered(&mut self, row: EmailRow, cx: &mut Context<Self>) {
         let list = self.list.read(cx);
-        let from =
-            list.mailbox.clone().filter(|m| row.mailbox_ids.contains(m)).or_else(|| row.mailbox_ids.first().cloned());
+        let from = list.mailbox.clone().filter(|m| row.mailbox_ids.contains(m)).or_else(|| row.mailbox_ids.first().cloned());
         let Some(from) = from else { return };
         if !crate::list::may(&list.rights, &row, |r| r.remove) {
             return;
@@ -317,7 +312,8 @@ impl Mailer {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "mail", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part =
+    crate::part::Part { name: "mail", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
 const TEXTS: &[pets_i18n::Resource] = &[
@@ -331,9 +327,34 @@ pub(crate) mod mail {
     gpui_kit::actions!(
         mail,
         [
-            Next, Prev, First, Last, PageDown, PageUp, MarkRead, MarkUnread, ToggleFlag, New, Reply, ReplyAll, Forward, Delete,
-            Due, Remind, Wait, Expire, SelectAll, ClearSelection, SelectDown, SelectUp, ContextMenu, Move, Archive,
-            ReportPhishing, Signature, Take
+            Next,
+            Prev,
+            First,
+            Last,
+            PageDown,
+            PageUp,
+            MarkRead,
+            MarkUnread,
+            ToggleFlag,
+            New,
+            Reply,
+            ReplyAll,
+            Forward,
+            Delete,
+            Due,
+            Remind,
+            Wait,
+            Expire,
+            SelectAll,
+            ClearSelection,
+            SelectDown,
+            SelectUp,
+            ContextMenu,
+            Move,
+            Archive,
+            ReportPhishing,
+            Signature,
+            Take
         ]
     );
 
@@ -435,9 +456,7 @@ pub(crate) mod scenes {
     fn letter_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
         let list = m.list.read(cx);
         let first = list.row(0).map(|r| r.id.as_str());
-        list.selected == Some(0)
-            && first.is_some()
-            && screens::reading(m, cx).is_some_and(|r| r.doc.is_some() && Some(r.row.id.as_str()) == first)
+        list.selected == Some(0) && first.is_some() && screens::reading(m, cx).is_some_and(|r| r.doc.is_some() && Some(r.row.id.as_str()) == first)
     }
 }
 
@@ -492,10 +511,7 @@ mod tests {
             message_id: Some("orig@corp.example".into()),
             references: vec!["root@corp.example".into()],
             text: Some("текст".into()),
-            attachments: vec![
-                attachment("B-logo", "logo.png", Some("logo@corp")),
-                attachment("B-xlsx", "Итоги.xlsx", None),
-            ],
+            attachments: vec![attachment("B-logo", "logo.png", Some("logo@corp")), attachment("B-xlsx", "Итоги.xlsx", None)],
             ..Default::default()
         }
     }
@@ -528,11 +544,7 @@ mod tests {
         let d = draft(Mode::Forward, &row(), &body(), &doc, &me(), "", |_| None);
         assert_eq!(d.subject, "FW: Отчёт");
         assert!(d.to.is_empty() && d.in_reply_to.is_none());
-        let got: Vec<_> = d
-            .attachments
-            .iter()
-            .map(|a| (a.name.as_str(), a.blob_id.as_deref(), a.inline_cid.as_deref(), a.data.len()))
-            .collect();
+        let got: Vec<_> = d.attachments.iter().map(|a| (a.name.as_str(), a.blob_id.as_deref(), a.inline_cid.as_deref(), a.data.len())).collect();
         assert_eq!(got, [("logo.png", Some("B-logo"), Some("logo@corp"), 0), ("Итоги.xlsx", Some("B-xlsx"), None, 0)]);
         // Демо: байты сразу.
         let d = draft(Mode::Forward, &row(), &body(), &doc, &me(), "", |b| Some(b.as_bytes().to_vec()));

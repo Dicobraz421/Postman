@@ -15,8 +15,8 @@
 use jiff::civil::{Date, Time};
 use postman_core::labels::valid_keyword;
 use postman_core::lifecycle::{self, NewsItem, newsletter_sweep};
-use postman_core::sync;
 use postman_core::marks::{self, Kind, When};
+use postman_core::sync;
 use postman_jmap::{Auth, CORE, Client, EmailPatch, Filter, Invocation, MAIL};
 use serde_json::{Value, json};
 
@@ -186,7 +186,9 @@ async fn newsletters_and_snooze_move() {
     let older = import(&c, &inbox, &news_from, &format!("Postman lc news 1 {run}"), "2026-01-05T08:00:00Z", &list("a")).await;
     let newer = import(&c, &inbox, &news_from, &format!("Postman lc news 2 {run}"), "2026-01-10T08:00:00Z", &list("a")).await;
     let unsub_from = format!("unsub-{run}@itt.test");
-    let unsub = import(&c, &inbox, &unsub_from, &format!("Postman lc unsub {run}"), "2026-01-05T08:00:00Z", "List-Unsubscribe: <https://itt.test/u>\r\n").await;
+    let unsub =
+        import(&c, &inbox, &unsub_from, &format!("Postman lc unsub {run}"), "2026-01-05T08:00:00Z", "List-Unsubscribe: <https://itt.test/u>\r\n")
+            .await;
     let plain = create(&c, &inbox, &format!("Postman lc plain {run}"), "2026-01-05T08:00:00Z", json!({})).await;
     let now = jiff::Timestamp::now().strftime("%Y-%m-%dT%H:%M:%SZ").to_string();
     let fresh = import(&c, &inbox, &format!("fresh-{run}@itt.test"), &format!("Postman lc fresh {run}"), &now, &list("f")).await;
@@ -275,7 +277,13 @@ async fn patch_and_newsletters_through_sync() {
     let cache = postman_cache::Cache::open_in_memory().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     let auth = Auth::Basic { user: env("POSTMAN_STAND_USER1"), password: env("POSTMAN_STAND_PASSWORD1") };
-    let commands = postman_backend_jmap::spawn(sync::Account { url: env("POSTMAN_STAND_URL"), auth: postman_backend_jmap::convert::FromJmap::from_jmap(auth) }, cache.clone(), None, tx, || {});
+    let commands = postman_backend_jmap::spawn(
+        sync::Account { url: env("POSTMAN_STAND_URL"), auth: postman_backend_jmap::convert::FromJmap::from_jmap(auth) },
+        cache.clone(),
+        None,
+        tx,
+        || {},
+    );
     wait_for(&rx, "первая синхронизация", |e| matches!(e, sync::Event::Status(sync::Status::Synced)).then_some(()));
     let row = cache.rows_by_ids(std::slice::from_ref(&letter)).unwrap().pop().expect("письмо в кэше");
     let when = When::at("2026-12-01".parse().unwrap(), Time::new(9, 0, 0, 0).unwrap());

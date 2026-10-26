@@ -98,7 +98,10 @@ impl Hash {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Scheme {
     RsaPkcs1(Hash),
-    RsaPss { hash: Hash, salt: u32 },
+    RsaPss {
+        hash: Hash,
+        salt: u32,
+    },
     Ecdsa(Hash),
     /// ГОСТ Р 34.10-2012 с «Стрибогом» того же размера.
     Gost256,
@@ -122,10 +125,17 @@ impl Scheme {
 /// Открытый ключ для сводки (карточка сертификата).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KeyKind {
-    Rsa { bits: u32 },
-    Ec { curve: String },
+    Rsa {
+        bits: u32,
+    },
+    Ec {
+        curve: String,
+    },
     /// ГОСТ Р 34.10-2012: 256 или 512 бит, набор параметров.
-    Gost { bits: u32, params: String },
+    Gost {
+        bits: u32,
+        params: String,
+    },
     Other(String),
 }
 
@@ -190,9 +200,7 @@ pub(crate) fn key_kind(spki: &SubjectPublicKeyInfoOwned) -> KeyKind {
     match public_key(spki) {
         Ok(PublicKey::Rsa(k)) => KeyKind::Rsa { bits: k.n().bits_vartime() },
         Ok(PublicKey::Ec { curve, .. }) => KeyKind::Ec { curve: curve.name.into() },
-        Ok(PublicKey::Gost { key, size }) => {
-            KeyKind::Gost { bits: if size == Size::S256 { 256 } else { 512 }, params: key.curve.name.into() }
-        }
+        Ok(PublicKey::Gost { key, size }) => KeyKind::Gost { bits: if size == Size::S256 { 256 } else { 512 }, params: key.curve.name.into() },
         Err(Unsupported(e)) => KeyKind::Other(e),
     }
 }
@@ -415,7 +423,9 @@ fn build_chain_algs() -> Vec<ChainAlg> {
     static P384: Oid = oid::P384;
     for curve in [&P256, &P384] {
         let pk = alg_id(oid::EC_PUBLIC_KEY, any(curve));
-        for (sig, h) in [(oid::ECDSA_SHA1, Hash::Sha1), (oid::ECDSA_SHA256, Hash::Sha256), (oid::ECDSA_SHA384, Hash::Sha384), (oid::ECDSA_SHA512, Hash::Sha512)] {
+        for (sig, h) in
+            [(oid::ECDSA_SHA1, Hash::Sha1), (oid::ECDSA_SHA256, Hash::Sha256), (oid::ECDSA_SHA384, Hash::Sha384), (oid::ECDSA_SHA512, Hash::Sha512)]
+        {
             push(pk, alg_id(sig, None), Kind::Ecdsa(curve, h));
         }
     }
@@ -436,9 +446,7 @@ fn build_chain_algs() -> Vec<ChainAlg> {
 /// Алгоритмы подписи сертификатов для `rustls-webpki`.
 pub(crate) fn chain_algs() -> &'static [&'static dyn SignatureVerificationAlgorithm] {
     static ALGS: OnceLock<Vec<&'static dyn SignatureVerificationAlgorithm>> = OnceLock::new();
-    ALGS.get_or_init(|| {
-        build_chain_algs().into_iter().map(|a| &*Box::leak(Box::new(a)) as &'static dyn SignatureVerificationAlgorithm).collect()
-    })
+    ALGS.get_or_init(|| build_chain_algs().into_iter().map(|a| &*Box::leak(Box::new(a)) as &'static dyn SignatureVerificationAlgorithm).collect())
 }
 
 #[cfg(test)]
@@ -515,10 +523,7 @@ mod tests {
         let m1 = b"012345678901234567890123456789012345678901234567890123456789012";
         // В стандарте сообщение и хэш записаны числами; байты — в обратном порядке (little-endian).
         let h = Hash::Streebog256.digest(m1);
-        assert_eq!(
-            h.iter().map(|b| format!("{b:02x}")).collect::<String>(),
-            "9d151eefd8590b89daa6ba6cb74af9275dd051026bb149a452fd84e5e57b5500"
-        );
+        assert_eq!(h.iter().map(|b| format!("{b:02x}")).collect::<String>(), "9d151eefd8590b89daa6ba6cb74af9275dd051026bb149a452fd84e5e57b5500");
         assert_eq!(Hash::Sha256.digest(b"abc").len(), 32);
         assert!(Hash::Sha1.weak() && !Hash::Sha256.weak());
     }

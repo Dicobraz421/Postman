@@ -44,7 +44,6 @@ impl Size {
             _ => None,
         }
     }
-
 }
 
 /// `GostR3410-2012-PublicKeyParameters` (RFC 9215 §4.2).

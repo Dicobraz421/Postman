@@ -292,7 +292,8 @@ fn caldav_free_busy() {
 
         let uid = format!("postman-dav-fb-{}", stamp());
         let href = child_href(&cal2, &uid, Content::Calendar);
-        let mut guard = Cleanup(Todo { resources: vec![(2, href.clone())], shares: vec![(2, cal2.clone(), d1.principal.clone())], ..Default::default() });
+        let mut guard =
+            Cleanup(Todo { resources: vec![(2, href.clone())], shares: vec![(2, cal2.clone(), d1.principal.clone())], ..Default::default() });
         c2.put(&href, Content::Calendar, &event(&uid, "Занят", at, ""), Precondition::Create).await.unwrap();
         c2.share(&cal2, &d1.principal, &[Privilege::read(), Privilege::read_free_busy()]).await.unwrap();
         assert!(c2.acl(&cal2).await.unwrap().iter().any(|a| matches!(&a.who, postman_dav::acl::Who::Href(h) if same_href(h, &d1.principal))));

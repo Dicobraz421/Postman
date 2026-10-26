@@ -53,7 +53,8 @@ pub(crate) fn available(id: &str, features: Features) -> bool {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "features", scenes: scenes::SCENES, reset: Some(scenes::reset), ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part =
+    crate::part::Part { name: "features", scenes: scenes::SCENES, reset: Some(scenes::reset), ..crate::part::Part::NONE };
 
 /// Сцены `--screens` «Нет у сервера — нет на экране» (ADR 0005).
 pub(crate) mod scenes {
@@ -104,7 +105,7 @@ pub(crate) mod scenes {
 #[cfg(test)]
 mod tests {
     use super::{available, needs};
-        use postman_core::model::{Feature, Features};
+    use postman_core::model::{Feature, Features};
 
     #[test]
     fn everything_is_available_while_the_server_has_everything() {
@@ -117,9 +118,19 @@ mod tests {
         for id in ["mail.reply", "mail.new", "mail.due", "search.focus", "settings.open", "view.mail", "invite.accept"] {
             assert!(available(id, mail), "{id}");
         }
-        for id in ["view.calendar", "calendar.new_meeting", "meeting.send", "view.tasks", "task.new", "view.contacts",
-            "contacts.new", "contacts.meeting", "settings.rules", "settings.vacation", "settings.calendar"]
-        {
+        for id in [
+            "view.calendar",
+            "calendar.new_meeting",
+            "meeting.send",
+            "view.tasks",
+            "task.new",
+            "view.contacts",
+            "contacts.new",
+            "contacts.meeting",
+            "settings.rules",
+            "settings.vacation",
+            "settings.calendar",
+        ] {
             assert!(!available(id, mail), "{id}");
         }
     }

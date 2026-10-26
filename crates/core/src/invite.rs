@@ -9,9 +9,7 @@
 //! пересечения с моим календарём — [`conflicts`]. Чистые функции: письмо, мой запомненный ответ ([`Seen`]),
 //! копия встречи в моём календаре и «сейчас» — на входе.
 
-use postman_calendar::{
-    Busy, Event, EventStatus, FreeBusy, Invitation, Partstat, Span, imip_reply, partstat_json, reply_subject,
-};
+use postman_calendar::{Busy, Event, EventStatus, FreeBusy, Invitation, Partstat, Span, imip_reply, partstat_json, reply_subject};
 use postman_compose::{Address, CalendarPart, Draft};
 use serde_json::{Value, json};
 
@@ -35,10 +33,7 @@ pub fn reply_draft(inv: &Invitation, me: &Address, status: Partstat, in_reply_to
         subject,
         references: in_reply_to.iter().cloned().collect(),
         in_reply_to,
-        calendar: Some(CalendarPart {
-            method: "REPLY".into(),
-            ics: imip_reply(inv, (&me.name, &me.email), status, now),
-        }),
+        calendar: Some(CalendarPart { method: "REPLY".into(), ics: imip_reply(inv, (&me.name, &me.email), status, now) }),
         ..Default::default()
     })
 }

@@ -14,8 +14,8 @@ use gpui_kit::*;
 use pets_i18n::tr;
 use pets_ui::theme::Metric;
 
-use crate::settings::settings;
 use crate::roles::{Look, Pm};
+use crate::settings::settings;
 use crate::tabs::{MailState, Tab, TabKind};
 use crate::{Mailer, Section};
 
@@ -330,19 +330,13 @@ impl Mailer {
             .pb(px(8.))
             .child(button("rail-mail", glyph::MAIL, "frame-rail-mail", module(Section::Mail), || Box::new(view::Mail)))
             .when(has("frame-rail-calendar"), |d| {
-                d.child(button("rail-calendar", glyph::CALENDAR, "frame-rail-calendar", module(Section::Calendar), || {
-                    Box::new(view::Calendar)
-                }))
+                d.child(button("rail-calendar", glyph::CALENDAR, "frame-rail-calendar", module(Section::Calendar), || Box::new(view::Calendar)))
             })
             .when(has("frame-rail-contacts"), |d| {
-                d.child(button("rail-contacts", glyph::CONTACTS, "frame-rail-contacts", module(Section::Contacts), || {
-                    Box::new(view::Contacts)
-                }))
+                d.child(button("rail-contacts", glyph::CONTACTS, "frame-rail-contacts", module(Section::Contacts), || Box::new(view::Contacts)))
             })
             .when(has("frame-rail-tasks"), |d| {
-                d.child(button("rail-tasks", crate::tasks::g::TASKS, "frame-rail-tasks", module(Section::Tasks), || {
-                    Box::new(view::Tasks)
-                }))
+                d.child(button("rail-tasks", crate::tasks::g::TASKS, "frame-rail-tasks", module(Section::Tasks), || Box::new(view::Tasks)))
             })
             .child(div().flex_1())
             .child(button("rail-settings", glyph::SETTINGS, "frame-rail-settings", settings_tab, || Box::new(settings::Open)))
@@ -367,9 +361,7 @@ impl Mailer {
                 .items_center()
                 .gap(px(8.))
                 .rounded(l.px(Metric::RadiusControl))
-                .when(full, |d| {
-                    d.text_color(l.text()).font_weight(FontWeight::SEMIBOLD).cursor_pointer().hover(|d| d.bg(l.hover()))
-                })
+                .when(full, |d| d.text_color(l.text()).font_weight(FontWeight::SEMIBOLD).cursor_pointer().hover(|d| d.bg(l.hover())))
                 .when(full, |d| d.child(icon(glyph::WARNING, 12.)))
                 .child(self.settings.quota_text())
                 .child(
@@ -397,12 +389,7 @@ impl Mailer {
         };
         // Без связи (S5-08): серая точка и «Нет связи · повтор через N с» вместо состояния синхронизации.
         let sync = match crate::states::status_text(&self.offline, Instant::now()) {
-            Some(text) => div()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .child(div().size(px(8.)).rounded_full().bg(l.text3()))
-                .child(text),
+            Some(text) => div().flex().items_center().gap(px(6.)).child(div().size(px(8.)).rounded_full().bg(l.text3())).child(text),
             None if tasks && !self.live.status.is_empty() => div()
                 .flex()
                 .items_center()
@@ -459,7 +446,7 @@ impl Mailer {
         }
         // Вид → Быстрые фильтры (S5-03): галочка — закладки видны.
         let quick_on = !crate::prefs::get(cx).quick.hidden;
-        let item =|id: &'static str, g: char, key: &'static str, action: fn() -> Box<dyn Action>| {
+        let item = |id: &'static str, g: char, key: &'static str, action: fn() -> Box<dyn Action>| {
             div()
                 .id(id)
                 .h(l.px(Metric::HMenuItem))
@@ -491,9 +478,8 @@ impl Mailer {
             .text_size(l.px(Metric::TypeCaption))
             .text_color(l.text2())
             .child(tr!("filters-menu-view"));
-        let quick = item("more-quick", if quick_on { glyph::CHECK } else { ' ' }, "filters-menu-quick", || {
-            Box::new(crate::filters::view::QuickFilters)
-        });
+        let quick =
+            item("more-quick", if quick_on { glyph::CHECK } else { ' ' }, "filters-menu-quick", || Box::new(crate::filters::view::QuickFilters));
         let top = l.m(Metric::HTitlebar) + crate::bar::BAR_HEIGHT - 6.;
         let menu = div()
             .id("more-menu")
@@ -708,7 +694,8 @@ impl Mailer {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "frame", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, reset: Some(scenes::reset) };
+pub(crate) const PART: crate::part::Part =
+    crate::part::Part { name: "frame", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, reset: Some(scenes::reset) };
 
 /// Обработчики команд части — на корне экрана почты (`Mailer::render`).
 fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {

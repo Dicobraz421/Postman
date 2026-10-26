@@ -19,8 +19,8 @@ pub mod autodiscover;
 pub mod availability;
 pub mod calendar;
 pub mod directory;
-pub mod mail;
 mod http;
+pub mod mail;
 mod soap;
 mod sys;
 pub mod tz;
@@ -31,8 +31,8 @@ use std::time::Duration;
 pub use autodiscover::{Endpoint, Source, discover};
 pub use availability::Availability;
 pub use calendar::{
-    Attendee, CalendarItem, Changes, DayOfWeek, DeleteMode, Folder, FolderId, FolderRef, ItemId, ItemKind, ItemRef,
-    NewItem, Notify, Occurrence, Pattern, Range, Recurrence, Reply, SyncChanges, SyncState, WeekIndex, WellKnown,
+    Attendee, CalendarItem, Changes, DayOfWeek, DeleteMode, Folder, FolderId, FolderRef, ItemId, ItemKind, ItemRef, NewItem, Notify, Occurrence,
+    Pattern, Range, Recurrence, Reply, SyncChanges, SyncState, WeekIndex, WellKnown,
 };
 pub use directory::Person;
 pub use mail::{Attachment, Disposition, HierarchyChanges, MailFolder, MailHeader, MailItem, MailRole, MailSync, apply_roles};

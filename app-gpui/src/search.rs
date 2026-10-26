@@ -114,10 +114,7 @@ impl Local {
             return ids;
         }
         let rows = self.cache.rows_by_ids(&ids).unwrap_or_default();
-        rows.into_iter()
-            .filter(|r| self.query.matches(&self.env, r, &self.cache.recipients(&r.id).unwrap_or_default()))
-            .map(|r| r.id)
-            .collect()
+        rows.into_iter().filter(|r| self.query.matches(&self.env, r, &self.cache.recipients(&r.id).unwrap_or_default())).map(|r| r.id).collect()
     }
 }
 
@@ -260,14 +257,8 @@ impl Mailer {
             me: list.me.addresses().to_vec(),
         };
         let folder = list.mailbox.as_ref().and_then(|mb| list.names.get(mb)).cloned().unwrap_or_default();
-        let found = Found {
-            text: self.find.text.clone(),
-            marks: Arc::new(self.find.query.marks()),
-            chips: Vec::new(),
-            all: self.find.all,
-            folder,
-            waiting,
-        };
+        let found =
+            Found { text: self.find.text.clone(), marks: Arc::new(self.find.query.marks()), chips: Vec::new(), all: self.find.all, folder, waiting };
         let task = cx.background_spawn(async move { job.run() });
         cx.spawn(async move |this, cx| {
             let out = task.await;
@@ -394,11 +385,8 @@ pub(crate) fn marked(text: &str, marks: Option<&[String]>, l: &Look) -> AnyEleme
 /// Строка над списком во время поиска: «Поиск: …», «N результатов · все папки», «×» — к папке; под ней — чипы.
 pub(crate) fn header(found: &Found, count: usize, l: &Look, cx: &mut Context<crate::list::MailList>) -> Div {
     let place = if found.all { tr!("search-where-all") } else { found.folder.clone() };
-    let summary = if found.waiting {
-        tr!("search-summary-waiting", n = count, place = place)
-    } else {
-        tr!("search-summary", n = count, place = place)
-    };
+    let summary =
+        if found.waiting { tr!("search-summary-waiting", n = count, place = place) } else { tr!("search-summary", n = count, place = place) };
     let close = div()
         .id("search-close")
         .size(px(28.))
@@ -467,101 +455,94 @@ pub(crate) fn header(found: &Found, count: usize, l: &Look, cx: &mut Context<cra
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "search", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part =
+    crate::part::Part { name: "search", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Обработчики команд части — на корне экрана почты (`Mailer::render`).
 fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
     root.on_action(cx.listener(|this, _: &search::Focus, window, cx| {
-            if this.section == crate::Section::Contacts {
-                return this.contacts.update(cx, |c, cx| c.focus_search(window, cx));
-            }
-            if this.section == crate::Section::Calendar {
-                return this.cal.update(cx, |c, cx| c.focus_search(window, cx));
-            }
-            if this.section == crate::Section::Tasks {
-                return this.tasks.update(cx, |t, cx| t.focus_search(window, cx));
-            }
-            this.search.update(cx, |s, cx| s.focus(window, cx));
-        }))
-        // Поиск (S5-10): охват и уточнения командами — как переключатель и чипы.
-        .on_action(cx.listener(|this, _: &search::All, _, cx| this.set_scope(crate::bar::Scope::All, cx)))
-        .on_action(cx.listener(|this, _: &search::Folder, _, cx| this.set_scope(crate::bar::Scope::Folder, cx)))
-        .on_action(cx.listener(|this, _: &search::Attachments, window, cx| {
-            this.refine(&postman_core::query::Refine::Attachment, window, cx)
-        }))
-        .on_action(cx.listener(|this, _: &search::Unread, window, cx| this.refine(&postman_core::query::Refine::Unread, window, cx)))
-        .on_action(cx.listener(|this, _: &search::Recent, window, cx| {
-            this.refine(&postman_core::query::Refine::Within(30), window, cx)
-        }))
-        // По совпадениям в открытом письме (S5-14).
-        .on_action(cx.listener(|this, _: &search::NextMatch, _, cx| this.reading.update(cx, |r, cx| r.step_hit(1, cx))))
-        .on_action(cx.listener(|this, _: &search::PrevMatch, _, cx| this.reading.update(cx, |r, cx| r.step_hit(-1, cx))))
-        .on_action(cx.listener(|this, _: &search::Clear, window, cx| {
-            // Esc сначала закрывает контекстное меню письма (S5-08) или папки (S5-05б)…
-            if this.close_menu(cx) || this.close_folder_menu(cx) {
-                return;
-            }
-            // …затем историю уведомлений.
-            if this.toasts.read(cx).is_history_open() {
-                this.toasts.update(cx, |t, cx| t.toggle_history(cx));
-                return;
-            }
-            // …затем меню «…» и панель выбора срока.
-            if this.close_more(cx) || this.close_picker(cx) {
-                return;
-            }
-            // …затем просмотр вложения (S5-07).
-            if this.section == crate::Section::Mail && this.reading.update(cx, |r, cx| r.close_preview(cx)) {
-                return;
-            }
-            // …затем панель фильтров (S5-03) — назад к папкам.
-            if this.filters.read(cx).panel {
-                return this.toggle_filter_panel(cx);
-            }
-            // …затем строку «Удалить навсегда?».
-            if this.cancel_purge(cx) {
-                return;
-            }
-            // …затем выделение писем (S5-08).
-            if this.section == crate::Section::Mail && this.list.update(cx, |l, cx| l.clear_selection(cx)) {
-                return;
-            }
-            // …затем запись клавиши и правку на месте в настройках, затем саму вкладку.
-            if this.settings_escape(cx) {
-                return;
-            }
-            if this.tabs.is_active(crate::tabs::TabKind::Settings) && this.close_settings(window, cx) {
-                return;
-            }
-            // Панель чтения скрыта (Настройки → Чтение): письмо на месте списка — назад к списку.
-            if this.section == crate::Section::Mail && this.reading_instead_of_list(cx) {
-                this.reading.update(cx, |r, cx| r.clear(cx));
-                return;
-            }
-            // В календаре — поиск над панелью события (S5-21).
-            if this.section == crate::Section::Calendar && this.cal.update(cx, |c, cx| c.escape(window, cx)) {
-                window.focus(&this.focus, cx);
-                return;
-            }
-            // В контактах — строка «Удалить контакт?», форма, поиск контактов.
-            if this.section == crate::Section::Contacts && this.contacts.update(cx, |c, cx| c.escape(window, cx)) {
-                return;
-            }
-            if this.section == crate::Section::Tasks && this.tasks.update(cx, |t, cx| t.escape(window, cx)) {
-                return;
-            }
-            this.search.update(cx, |s, cx| s.set_value("", window, cx));
-            this.run_search("", cx);
+        if this.section == crate::Section::Contacts {
+            return this.contacts.update(cx, |c, cx| c.focus_search(window, cx));
+        }
+        if this.section == crate::Section::Calendar {
+            return this.cal.update(cx, |c, cx| c.focus_search(window, cx));
+        }
+        if this.section == crate::Section::Tasks {
+            return this.tasks.update(cx, |t, cx| t.focus_search(window, cx));
+        }
+        this.search.update(cx, |s, cx| s.focus(window, cx));
+    }))
+    // Поиск (S5-10): охват и уточнения командами — как переключатель и чипы.
+    .on_action(cx.listener(|this, _: &search::All, _, cx| this.set_scope(crate::bar::Scope::All, cx)))
+    .on_action(cx.listener(|this, _: &search::Folder, _, cx| this.set_scope(crate::bar::Scope::Folder, cx)))
+    .on_action(cx.listener(|this, _: &search::Attachments, window, cx| this.refine(&postman_core::query::Refine::Attachment, window, cx)))
+    .on_action(cx.listener(|this, _: &search::Unread, window, cx| this.refine(&postman_core::query::Refine::Unread, window, cx)))
+    .on_action(cx.listener(|this, _: &search::Recent, window, cx| this.refine(&postman_core::query::Refine::Within(30), window, cx)))
+    // По совпадениям в открытом письме (S5-14).
+    .on_action(cx.listener(|this, _: &search::NextMatch, _, cx| this.reading.update(cx, |r, cx| r.step_hit(1, cx))))
+    .on_action(cx.listener(|this, _: &search::PrevMatch, _, cx| this.reading.update(cx, |r, cx| r.step_hit(-1, cx))))
+    .on_action(cx.listener(|this, _: &search::Clear, window, cx| {
+        // Esc сначала закрывает контекстное меню письма (S5-08) или папки (S5-05б)…
+        if this.close_menu(cx) || this.close_folder_menu(cx) {
+            return;
+        }
+        // …затем историю уведомлений.
+        if this.toasts.read(cx).is_history_open() {
+            this.toasts.update(cx, |t, cx| t.toggle_history(cx));
+            return;
+        }
+        // …затем меню «…» и панель выбора срока.
+        if this.close_more(cx) || this.close_picker(cx) {
+            return;
+        }
+        // …затем просмотр вложения (S5-07).
+        if this.section == crate::Section::Mail && this.reading.update(cx, |r, cx| r.close_preview(cx)) {
+            return;
+        }
+        // …затем панель фильтров (S5-03) — назад к папкам.
+        if this.filters.read(cx).panel {
+            return this.toggle_filter_panel(cx);
+        }
+        // …затем строку «Удалить навсегда?».
+        if this.cancel_purge(cx) {
+            return;
+        }
+        // …затем выделение писем (S5-08).
+        if this.section == crate::Section::Mail && this.list.update(cx, |l, cx| l.clear_selection(cx)) {
+            return;
+        }
+        // …затем запись клавиши и правку на месте в настройках, затем саму вкладку.
+        if this.settings_escape(cx) {
+            return;
+        }
+        if this.tabs.is_active(crate::tabs::TabKind::Settings) && this.close_settings(window, cx) {
+            return;
+        }
+        // Панель чтения скрыта (Настройки → Чтение): письмо на месте списка — назад к списку.
+        if this.section == crate::Section::Mail && this.reading_instead_of_list(cx) {
+            this.reading.update(cx, |r, cx| r.clear(cx));
+            return;
+        }
+        // В календаре — поиск над панелью события (S5-21).
+        if this.section == crate::Section::Calendar && this.cal.update(cx, |c, cx| c.escape(window, cx)) {
             window.focus(&this.focus, cx);
-        }))
-
+            return;
+        }
+        // В контактах — строка «Удалить контакт?», форма, поиск контактов.
+        if this.section == crate::Section::Contacts && this.contacts.update(cx, |c, cx| c.escape(window, cx)) {
+            return;
+        }
+        if this.section == crate::Section::Tasks && this.tasks.update(cx, |t, cx| t.escape(window, cx)) {
+            return;
+        }
+        this.search.update(cx, |s, cx| s.set_value("", window, cx));
+        this.run_search("", cx);
+        window.focus(&this.focus, cx);
+    }))
 }
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
-const TEXTS: &[pets_i18n::Resource] = &[
-    ("ru", include_str!("../i18n/ru/search.ftl")),
-    ("en", include_str!("../i18n/en/search.ftl")),
-];
+const TEXTS: &[pets_i18n::Resource] = &[("ru", include_str!("../i18n/ru/search.ftl")), ("en", include_str!("../i18n/en/search.ftl"))];
 
 /// Поиск в командной строке (S5-10): охват «Везде | Текущая папка» и уточнения — как чипы «Уточнить»; по
 /// совпадениям в открытом письме (S5-14).
@@ -638,9 +619,7 @@ pub(crate) mod scenes {
         let list = m.list.read(cx);
         let selected = list.selected.and_then(|i| list.row(i)).map(|r| r.id.as_str());
         let marked = m.reading.read(cx).marks.is_some();
-        marked
-            && selected.is_some()
-            && screens::reading(m, cx).is_some_and(|r| r.doc.is_some() && Some(r.row.id.as_str()) == selected)
+        marked && selected.is_some() && screens::reading(m, cx).is_some_and(|r| r.doc.is_some() && Some(r.row.id.as_str()) == selected)
     }
 
     /// Письмо прокручено вниз, затем F3 (`search.next_match`) по кругу — к первому совпадению.

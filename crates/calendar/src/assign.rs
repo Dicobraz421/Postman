@@ -337,12 +337,7 @@ pub struct Step {
 
 /// Шаги по времени (старые первыми); битые — пропускаются.
 pub fn steps(t: &Task) -> Vec<Step> {
-    let mut out: Vec<Step> = t
-        .extra
-        .iter()
-        .filter(|p| is_prop(p, X_STEP))
-        .filter_map(|p| serde_json::from_str(&prop_text(p)).ok())
-        .collect();
+    let mut out: Vec<Step> = t.extra.iter().filter(|p| is_prop(p, X_STEP)).filter_map(|p| serde_json::from_str(&prop_text(p)).ok()).collect();
     out.sort_by_key(|s| s.at);
     out
 }
@@ -742,7 +737,9 @@ mod tests {
     fn corpus_requests() {
         let path = |n: &str| format!("{}/../worker/tests/fixtures/{n}", env!("CARGO_MANIFEST_DIR"));
         let tb = std::fs::read_to_string(path("todo-thunderbird.ics")).unwrap();
-        let tb = tb.replacen("BEGIN:VCALENDAR\r\n", "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\n", 1).replace("BEGIN:VCALENDAR\n", "BEGIN:VCALENDAR\nMETHOD:REQUEST\n");
+        let tb = tb
+            .replacen("BEGIN:VCALENDAR\r\n", "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\n", 1)
+            .replace("BEGIN:VCALENDAR\n", "BEGIN:VCALENDAR\nMETHOD:REQUEST\n");
         let r = parse(&tb);
         assert_eq!(r.method, "REQUEST");
         let ol = parse(&std::fs::read_to_string(path("todo-outlook.ics")).unwrap());

@@ -164,11 +164,7 @@ impl Client {
         if let Some(acc) = self.mail_account.as_deref().filter(|_| capability == MAIL || capability == SUBMISSION) {
             return Ok(acc);
         }
-        self.session
-            .primary_accounts
-            .get(capability)
-            .map(String::as_str)
-            .ok_or(Error::MissingCapability(capability))
+        self.session.primary_accounts.get(capability).map(String::as_str).ok_or(Error::MissingCapability(capability))
     }
 
     /// Один JMAP-запрос с несколькими вызовами. Ответы — в порядке вызовов;
@@ -231,10 +227,7 @@ fn enc(s: &str) -> String {
 
 /// Достать аргументы ответа по id вызова и десериализовать.
 pub fn take<T: serde::de::DeserializeOwned>(responses: &mut [Invocation], call_id: &str) -> Result<T> {
-    let r = responses
-        .iter_mut()
-        .find(|r| r.2 == call_id)
-        .ok_or_else(|| Error::Protocol(format!("нет ответа на {call_id}")))?;
+    let r = responses.iter_mut().find(|r| r.2 == call_id).ok_or_else(|| Error::Protocol(format!("нет ответа на {call_id}")))?;
     Ok(serde_json::from_value(r.1.take())?)
 }
 

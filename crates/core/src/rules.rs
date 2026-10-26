@@ -235,12 +235,7 @@ mod tests {
                 Rule { enabled: false, field: Field::From, value: "spam@x.ru".into(), action: Action::Discard },
                 Rule { enabled: true, field: Field::To, value: "team@corp".into(), action: Action::MarkRead },
                 Rule { enabled: true, field: Field::From, value: "boss".into(), action: Action::Flag },
-                Rule {
-                    enabled: true,
-                    field: Field::Subject,
-                    value: "срочно".into(),
-                    action: Action::Redirect("me@home.example".into()),
-                },
+                Rule { enabled: true, field: Field::Subject, value: "срочно".into(), action: Action::Redirect("me@home.example".into()) },
                 Rule { enabled: true, field: Field::Subject, value: "тендер".into(), action: Action::Category("pm.cat.tenders".into()) },
                 Rule { enabled: false, field: Field::From, value: "tb".into(), action: Action::Category("$label2".into()) },
             ],

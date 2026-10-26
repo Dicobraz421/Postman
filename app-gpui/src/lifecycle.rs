@@ -18,13 +18,13 @@ use pets_i18n::{I18n, tr};
 use pets_ui::Level as Toast;
 use pets_ui::theme::{Metric, Role};
 use postman_cache::EmailRow;
-use postman_core::lifecycle::{self, Ahead, Badge, Bad, Day, Notice, Patch, Pick, Plan, Roles, Span};
+use postman_core::lifecycle::{self, Ahead, Bad, Badge, Day, Notice, Patch, Pick, Plan, Roles, Span};
 use postman_core::marks::{Kind, When};
 use postman_core::sync::Command;
 
 use crate::Mailer;
-use crate::chrome::{glyph, icon};
 use crate::actions::mail;
+use crate::chrome::{glyph, icon};
 use crate::roles::{Look, Pm};
 
 /// Меток сроков в строке письма — не больше (после категорий).
@@ -145,18 +145,10 @@ pub(crate) fn chip(b: &Badge, l: &Look) -> Div {
     let base = div().flex().flex_none().items_center().gap(px(3.)).text_size(px(11.)).line_height(px(16.)).whitespace_nowrap();
     let text = badge_text(b);
     match b {
-        Badge::Due(_) => base
-            .text_color(l.pm(Pm::DeadlineFg))
-            .font_weight(FontWeight::SEMIBOLD)
-            .child(icon(glyph::CLOCK, 10.))
-            .child(text),
-        Badge::Overdue(_) => base
-            .px_1p5()
-            .rounded_sm()
-            .bg(l.pm(Pm::DeadlineFill))
-            .text_color(l.pm(Pm::DeadlineOn))
-            .font_weight(FontWeight::SEMIBOLD)
-            .child(text),
+        Badge::Due(_) => base.text_color(l.pm(Pm::DeadlineFg)).font_weight(FontWeight::SEMIBOLD).child(icon(glyph::CLOCK, 10.)).child(text),
+        Badge::Overdue(_) => {
+            base.px_1p5().rounded_sm().bg(l.pm(Pm::DeadlineFill)).text_color(l.pm(Pm::DeadlineOn)).font_weight(FontWeight::SEMIBOLD).child(text)
+        }
         _ => base.px_1p5().rounded_sm().border_1().border_color(l.stroke()).text_color(l.text2()).child(text),
     }
 }
@@ -589,18 +581,10 @@ impl Mailer {
             .text_color(l.text())
             .text_size(px(13.))
             .shadow_lg()
-            .child(
-                div()
-                    .px(px(10.))
-                    .py(px(4.))
-                    .text_size(px(12.))
-                    .text_color(l.text2())
-                    .truncate()
-                    .child(match p.rest.len() {
-                        0 => format!("{} · {}", picker_title(kind), p.row.subject),
-                        n => format!("{} · {}", picker_title(kind), tr!("bulk-letters", n = n + 1)),
-                    }),
-            );
+            .child(div().px(px(10.)).py(px(4.)).text_size(px(12.)).text_color(l.text2()).truncate().child(match p.rest.len() {
+                0 => format!("{} · {}", picker_title(kind), p.row.subject),
+                n => format!("{} · {}", picker_title(kind), tr!("bulk-letters", n = n + 1)),
+            }));
         for (i, pick) in lifecycle::picks(kind).into_iter().enumerate() {
             let when = pick.when(kind, &now);
             let hint = when.as_ref().map(when_hint).unwrap_or_default();
@@ -633,33 +617,28 @@ impl Mailer {
                         .px(px(10.))
                         .py(px(6.))
                         .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(6.))
-                                .child(div().flex_1().child(Input::new(input)))
-                                .child(
-                                    div()
-                                        .id("lifecycle-set")
-                                        .px(px(10.))
-                                        .h(px(28.))
-                                        .flex()
-                                        .items_center()
-                                        .rounded(l.px(Metric::RadiusControl))
-                                        .bg(l.accent())
-                                        .text_color(l.on_accent())
-                                        .cursor_pointer()
-                                        .child(tr!("lifecycle-set"))
-                                        .on_click(cx.listener(|this, _, _, cx| this.pick_typed(cx))),
-                                ),
+                            div().flex().items_center().gap(px(6.)).child(div().flex_1().child(Input::new(input))).child(
+                                div()
+                                    .id("lifecycle-set")
+                                    .px(px(10.))
+                                    .h(px(28.))
+                                    .flex()
+                                    .items_center()
+                                    .rounded(l.px(Metric::RadiusControl))
+                                    .bg(l.accent())
+                                    .text_color(l.on_accent())
+                                    .cursor_pointer()
+                                    .child(tr!("lifecycle-set"))
+                                    .on_click(cx.listener(|this, _, _, cx| this.pick_typed(cx))),
+                            ),
                         )
                         .children(error.map(|e| div().text_size(px(12.)).text_color(l.error()).child(e))),
                 );
             }
         }
-        let has = std::iter::once(&p.row).chain(&p.rest).any(|r| {
-            postman_core::marks::has(&r.keywords, kind) || (kind == Kind::Expire && !r.has_keyword(lifecycle::KEEP))
-        });
+        let has = std::iter::once(&p.row)
+            .chain(&p.rest)
+            .any(|r| postman_core::marks::has(&r.keywords, kind) || (kind == Kind::Expire && !r.has_keyword(lifecycle::KEEP)));
         if has {
             panel = panel.child(div().h(px(1.)).my(px(4.)).bg(l.border())).child(
                 menu_item("lifecycle-remove".into(), l)
@@ -743,10 +722,7 @@ impl Mailer {
 pub(crate) const PART: crate::part::Part = crate::part::Part { name: "lifecycle", texts: TEXTS, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
-const TEXTS: &[pets_i18n::Resource] = &[
-    ("ru", include_str!("../i18n/ru/lifecycle.ftl")),
-    ("en", include_str!("../i18n/en/lifecycle.ftl")),
-];
+const TEXTS: &[pets_i18n::Resource] = &[("ru", include_str!("../i18n/ru/lifecycle.ftl")), ("en", include_str!("../i18n/en/lifecycle.ftl"))];
 
 /// Сцены `--screens` сроков (ADR 0005).
 pub(crate) mod scenes {

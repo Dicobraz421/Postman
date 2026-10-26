@@ -6,8 +6,8 @@
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use pets_i18n::tr;
-use pets_ui::{Level as Toast, ToastAction};
 use pets_ui::theme::Metric;
+use pets_ui::{Level as Toast, ToastAction};
 use postman_cache::{EmailRow, Patch, Rights, account_of};
 use postman_core::marks::{self, Taken};
 
@@ -159,11 +159,14 @@ pub(crate) fn strip(row: &EmailRow, l: &Look, cx: &App) -> Option<Div> {
                 .items_baseline();
             div().flex().flex_1().min_w_0().items_center().gap(px(10.)).child(avatar).child(text)
         }
-        (Some(t), _) => {
-            div().flex().flex_1().min_w_0().items_center().gap(px(10.)).child(icon(glyph::CONTACTS, 16.).mx(px(3.))).child(
-                div().flex_1().min_w_0().truncate().child(tr!("shared-taken-me", time = when(t))),
-            )
-        }
+        (Some(t), _) => div()
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .items_center()
+            .gap(px(10.))
+            .child(icon(glyph::CONTACTS, 16.).mx(px(3.)))
+            .child(div().flex_1().min_w_0().truncate().child(tr!("shared-taken-me", time = when(t)))),
         (None, _) => div()
             .flex()
             .flex_1()
@@ -341,10 +344,7 @@ impl Mailer {
 pub(crate) const PART: crate::part::Part = crate::part::Part { name: "shared", texts: TEXTS, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
-const TEXTS: &[pets_i18n::Resource] = &[
-    ("ru", include_str!("../i18n/ru/shared.ftl")),
-    ("en", include_str!("../i18n/en/shared.ftl")),
-];
+const TEXTS: &[pets_i18n::Resource] = &[("ru", include_str!("../i18n/ru/shared.ftl")), ("en", include_str!("../i18n/en/shared.ftl"))];
 
 /// Сцены `--screens` общих ящиков (ADR 0005).
 pub(crate) mod scenes {
@@ -392,8 +392,7 @@ pub(crate) mod scenes {
         let want = shared_inbox(m, cx);
         let opened = want.is_some() && list.mailbox == want && list.search_ids.is_none();
         let first = list.row(0).map(|r| r.id.as_str());
-        let letter = screens::rows_loaded(list)
-            && screens::reading(m, cx).is_some_and(|r| r.doc.is_some() && Some(r.row.id.as_str()) == first);
+        let letter = screens::rows_loaded(list) && screens::reading(m, cx).is_some_and(|r| r.doc.is_some() && Some(r.row.id.as_str()) == first);
         m.section == Section::Mail && opened && (list.count == 0 || letter)
     }
 
@@ -403,8 +402,7 @@ pub(crate) mod scenes {
         let Some(id) = shared_inbox(m, cx) else { return Err("no shared mailbox in the folder tree".into()) };
         m.open_mailbox(id, cx);
         // Демо: второе письмо ящика отдела взял коллега (`postman_demo`, «Взять в работу»).
-        let i = (0..m.list.read(cx).count)
-            .find(|&i| m.list.read(cx).row(i).and_then(super::taken).is_some_and(|t| !t.by(postman_demo::ME)));
+        let i = (0..m.list.read(cx).count).find(|&i| m.list.read(cx).row(i).and_then(super::taken).is_some_and(|t| !t.by(postman_demo::ME)));
         let Some(i) = i else { return Err("no message taken by a colleague in the shared mailbox".into()) };
         screens::remember_composer(m, cx);
         m.list.update(cx, |l, cx| l.select(i, cx));

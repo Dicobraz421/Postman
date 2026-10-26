@@ -71,27 +71,14 @@ pub(crate) fn row_labels(book: &Book, row: &EmailRow) -> RowLabels {
 /// Метка в строке отправителя: подложка и текст цвета категории; длинное имя обрезается.
 pub(crate) fn chip(name: String, color: &str, l: &Look) -> Div {
     let s = l.cat(color);
-    div()
-        .flex_none()
-        .max_w(px(96.))
-        .px_1p5()
-        .rounded_sm()
-        .text_size(px(11.))
-        .line_height(px(16.))
-        .bg(s.bg)
-        .text_color(s.text)
-        .truncate()
-        .child(name)
+    div().flex_none().max_w(px(96.)).px_1p5().rounded_sm().text_size(px(11.)).line_height(px(16.)).bg(s.bg).text_color(s.text).truncate().child(name)
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
 pub(crate) const PART: crate::part::Part = crate::part::Part { name: "labels", texts: TEXTS, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
-const TEXTS: &[pets_i18n::Resource] = &[
-    ("ru", include_str!("../i18n/ru/labels.ftl")),
-    ("en", include_str!("../i18n/en/labels.ftl")),
-];
+const TEXTS: &[pets_i18n::Resource] = &[("ru", include_str!("../i18n/ru/labels.ftl")), ("en", include_str!("../i18n/en/labels.ftl"))];
 
 /// Сцены `--screens` меток и категорий (ADR 0005).
 pub(crate) mod scenes {

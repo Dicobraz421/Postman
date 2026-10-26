@@ -43,8 +43,7 @@ impl Conversation {
         rows.dedup_by(|a, b| a.id == b.id);
         let mut c = Self { thread: thread.to_owned(), ..Self::default() };
         for row in rows {
-            let day =
-                Timestamp::from_second(row.received_at).map(|t| t.to_zoned(tz.clone()).date()).unwrap_or_default();
+            let day = Timestamp::from_second(row.received_at).map(|t| t.to_zoned(tz.clone()).date()).unwrap_or_default();
             if c.messages.last().is_none_or(|m| m.day != day) {
                 c.items.push(Item::Day(day));
             }
@@ -341,32 +340,16 @@ mod tests {
         let tz = TimeZone::UTC;
         // 2026-10-19 23:00, 2026-10-20 09:00 и 10:00 UTC; своё письмо — из «Отправленных».
         let (d1, d2) = (1_792_450_800, 1_792_486_800);
-        let rows = vec![
-            row("c", d2 + 3600, "ivan@example.com"),
-            row("a", d1, "ivan@example.com"),
-            row("b", d2, "ME@example.com"),
-        ];
+        let rows = vec![row("c", d2 + 3600, "ivan@example.com"), row("a", d1, "ivan@example.com"), row("b", d2, "ME@example.com")];
         let c = Conversation::assemble("t", rows.clone(), &["me@example.com".into()], &tz);
         let ids: Vec<&str> = c.messages.iter().map(|m| m.row.id.as_str()).collect();
         assert_eq!(ids, ["a", "b", "c"]);
         assert_eq!(c.messages.iter().map(|m| m.mine).collect::<Vec<_>>(), [false, true, false]);
         let day = |s: &str| s.parse::<Date>().unwrap();
-        assert_eq!(
-            c.items,
-            [
-                Item::Day(day("2026-10-19")),
-                Item::Message(0),
-                Item::Day(day("2026-10-20")),
-                Item::Message(1),
-                Item::Message(2)
-            ]
-        );
+        assert_eq!(c.items, [Item::Day(day("2026-10-19")), Item::Message(0), Item::Day(day("2026-10-20")), Item::Message(1), Item::Message(2)]);
         // В часовом поясе +03:00 все три — 20-го: один разделитель.
         let msk = TimeZone::fixed(jiff::tz::offset(3));
-        assert_eq!(
-            Conversation::assemble("t", rows, &[], &msk).items.iter().filter(|i| matches!(i, Item::Day(_))).count(),
-            1
-        );
+        assert_eq!(Conversation::assemble("t", rows, &[], &msk).items.iter().filter(|i| matches!(i, Item::Day(_))).count(), 1);
     }
 
     #[test]

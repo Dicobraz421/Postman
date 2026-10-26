@@ -213,9 +213,10 @@ pub fn list_zip(bytes: &[u8]) -> Result<Listing, String> {
         out.packed = out.packed.saturating_add(packed);
         out.encrypted |= e.encrypted();
         if out.entries.len() < MAX_LISTED {
-            let modified = e.last_modified().filter(|d| d.year() >= 1980).map(|d| {
-                format!("{:04}-{:02}-{:02} {:02}:{:02}", d.year(), d.month(), d.day(), d.hour(), d.minute())
-            });
+            let modified = e
+                .last_modified()
+                .filter(|d| d.year() >= 1980)
+                .map(|d| format!("{:04}-{:02}-{:02} {:02}:{:02}", d.year(), d.month(), d.day(), d.hour(), d.minute()));
             out.entries.push(Entry { name: entry_name(e.name_raw()), size, packed, modified, encrypted: e.encrypted() });
         }
     }
@@ -261,9 +262,7 @@ pub fn scan_office(bytes: &[u8]) -> Result<OfficeScan, String> {
     let mut zip = zip::ZipArchive::new(io::Cursor::new(bytes)).map_err(|e| format!("документ не разобран: {e}"))?;
     let mut scan = OfficeScan { format: OfficeFormat::Ooxml, ..OfficeScan::default() };
     let vba: Vec<usize> = (0..zip.len())
-        .filter(|&i| {
-            zip.by_index_data(i).is_ok_and(|e| String::from_utf8_lossy(e.name_raw()).to_ascii_lowercase().ends_with("vbaproject.bin"))
-        })
+        .filter(|&i| zip.by_index_data(i).is_ok_and(|e| String::from_utf8_lossy(e.name_raw()).to_ascii_lowercase().ends_with("vbaproject.bin")))
         .collect();
     scan.macros = !vba.is_empty();
     if let Some(&i) = vba.first()

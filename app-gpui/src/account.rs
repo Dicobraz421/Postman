@@ -6,8 +6,8 @@
 
 use std::path::{Path, PathBuf};
 
-use postman_core::sync::Account;
 use postman_core::model::Auth;
+use postman_core::sync::Account;
 use serde::{Deserialize, Serialize};
 
 use crate::sys;
@@ -58,10 +58,7 @@ pub(crate) fn user_of(account: &Account) -> &str {
 /// `<кэш>.search`.
 pub(crate) fn cache_path(dir: &Path, account: &Account) -> PathBuf {
     let user = user_of(account);
-    let readable: String = user
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c.to_ascii_lowercase() } else { '_' })
-        .collect();
+    let readable: String = user.chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c.to_ascii_lowercase() } else { '_' }).collect();
     dir.join(format!("account-{readable}-{:08x}.redb", fnv(&format!("{}\n{user}", account.url))))
 }
 

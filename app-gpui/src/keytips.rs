@@ -243,7 +243,8 @@ impl crate::Mailer {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "keytips", scenes: scenes::SCENES, reset: Some(scenes::reset), ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part =
+    crate::part::Part { name: "keytips", scenes: scenes::SCENES, reset: Some(scenes::reset), ..crate::part::Part::NONE };
 
 /// Сцены `--screens` KeyTips (ADR 0005).
 pub(crate) mod scenes {

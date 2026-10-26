@@ -16,9 +16,30 @@ use crate::invite::{fold, text};
 
 /// Свойства задачи для `CalendarEvent/get`: `iCalendar` по умолчанию сервер не отдаёт.
 pub const TASK_PROPERTIES: &[&str] = &[
-    "id", "@type", "uid", "calendarIds", "title", "description", "start", "due", "timeZone", "showWithoutTime",
-    "estimatedDuration", "priority", "progress", "percentComplete", "keywords", "recurrenceRule", "alerts",
-    "relatedTo", "links", "organizerCalendarAddress", "participants", "sequence", "updated", "iCalendar",
+    "id",
+    "@type",
+    "uid",
+    "calendarIds",
+    "title",
+    "description",
+    "start",
+    "due",
+    "timeZone",
+    "showWithoutTime",
+    "estimatedDuration",
+    "priority",
+    "progress",
+    "percentComplete",
+    "keywords",
+    "recurrenceRule",
+    "alerts",
+    "relatedTo",
+    "links",
+    "organizerCalendarAddress",
+    "participants",
+    "sequence",
+    "updated",
+    "iCalendar",
 ];
 
 /// Имена своих свойств iCalendar (нижний регистр — так их отдаёт jCal).
@@ -302,9 +323,7 @@ impl Task {
         let s = |k: &str| v[k].as_str().unwrap_or("").to_owned();
         let tz = v["timeZone"].as_str();
         let moment = |k: &str| -> Result<Option<Moment>, String> {
-            v[k].as_str()
-                .map(|x| x.parse::<DateTime>().map(|d| Moment::new(d, tz)).map_err(|e| format!("{k} «{x}»: {e}")))
-                .transpose()
+            v[k].as_str().map(|x| x.parse::<DateTime>().map(|d| Moment::new(d, tz)).map_err(|e| format!("{k} «{x}»: {e}"))).transpose()
         };
         let mut ical: BTreeMap<String, String> = BTreeMap::new();
         let mut extra = Vec::new();
@@ -327,14 +346,8 @@ impl Task {
         let message_id = message_id.filter(|m| !m.is_empty());
         // Ссылка — по Message-ID (видна другим клиентам) и/или по id письма в ящике (Message-ID ещё не известен:
         // тело письма не загружено).
-        let mail = (message_id.is_some() || email_id.is_some())
-            .then(|| MailLink { message_id: message_id.unwrap_or_default(), email_id });
-        let parent = v["relatedTo"]
-            .as_object()
-            .into_iter()
-            .flatten()
-            .find(|(_, r)| r["relation"]["parent"] == true)
-            .map(|(uid, _)| uid.clone());
+        let mail = (message_id.is_some() || email_id.is_some()).then(|| MailLink { message_id: message_id.unwrap_or_default(), email_id });
+        let parent = v["relatedTo"].as_object().into_iter().flatten().find(|(_, r)| r["relation"]["parent"] == true).map(|(uid, _)| uid.clone());
         let mut keywords: Vec<String> =
             v["keywords"].as_object().into_iter().flatten().filter(|(_, on)| **on == true).map(|(k, _)| k.clone()).collect();
         keywords.sort();
@@ -343,12 +356,8 @@ impl Task {
             v["calendarIds"].as_object().into_iter().flatten().filter(|(_, on)| **on == true).map(|(k, _)| k.clone()).collect();
         calendar_ids.sort();
         let organizer = v["organizerCalendarAddress"].as_str().map(mailto);
-        let mut participants: Vec<TaskParticipant> = v["participants"]
-            .as_object()
-            .into_iter()
-            .flatten()
-            .map(|(k, p)| participant(k, p, organizer.as_deref()))
-            .collect();
+        let mut participants: Vec<TaskParticipant> =
+            v["participants"].as_object().into_iter().flatten().map(|(k, p)| participant(k, p, organizer.as_deref())).collect();
         participants.sort_by(|a, b| (a.role as u8, &a.email).cmp(&(b.role as u8, &b.email)));
         Ok(Self {
             id: s("id"),
@@ -401,8 +410,7 @@ impl Task {
 
     /// Мне поручено: в задаче есть поручивший, и это не я.
     pub fn is_assigned_to(&self, me: &str) -> bool {
-        self.organizer().is_some_and(|o| !o.email.eq_ignore_ascii_case(me))
-            && self.assignees().any(|p| p.email.eq_ignore_ascii_case(me))
+        self.organizer().is_some_and(|o| !o.email.eq_ignore_ascii_case(me)) && self.assignees().any(|p| p.email.eq_ignore_ascii_case(me))
     }
 
     /// Я поручил: я — поручивший, исполнители есть.
@@ -490,8 +498,7 @@ impl Task {
         let kws: Map<String, Value> = self.keywords.iter().map(|k| (k.clone(), json!(true))).collect();
         v.insert("keywords".into(), if kws.is_empty() { Value::Null } else { Value::Object(kws) });
         v.insert("recurrenceRule".into(), self.recurrence.clone().unwrap_or(Value::Null));
-        let alerts: Map<String, Value> =
-            self.alerts.iter().enumerate().map(|(i, a)| (format!("a{}", i + 1), alert_json(a))).collect();
+        let alerts: Map<String, Value> = self.alerts.iter().enumerate().map(|(i, a)| (format!("a{}", i + 1), alert_json(a))).collect();
         v.insert("alerts".into(), if alerts.is_empty() { Value::Null } else { Value::Object(alerts) });
         v.insert(
             "relatedTo".into(),
@@ -499,9 +506,10 @@ impl Task {
         );
         v.insert(
             "links".into(),
-            self.mail.as_ref().filter(|m| !m.message_id.is_empty()).map_or(Value::Null, |m| {
-                json!({ "mail": { "@type": "Link", "href": format!("mid:{}", m.message_id), "rel": "describedby" } })
-            }),
+            self.mail
+                .as_ref()
+                .filter(|m| !m.message_id.is_empty())
+                .map_or(Value::Null, |m| json!({ "mail": { "@type": "Link", "href": format!("mid:{}", m.message_id), "rel": "describedby" } })),
         );
         if !self.participants.is_empty() {
             if let Some(o) = self.organizer() {
@@ -719,10 +727,7 @@ fn alert(a: &Value) -> Option<Alert> {
     let t = &a["trigger"];
     let trigger = match t["@type"].as_str() {
         Some("AbsoluteTrigger") => Trigger::At(t["when"].as_str()?.parse::<jiff::Timestamp>().ok()?.as_second()),
-        _ => Trigger::Offset {
-            secs: signed(t["offset"].as_str()?)?,
-            from: if t["relativeTo"] == "end" { Anchor::Due } else { Anchor::Start },
-        },
+        _ => Trigger::Offset { secs: signed(t["offset"].as_str()?)?, from: if t["relativeTo"] == "end" { Anchor::Due } else { Anchor::Start } },
     };
     Some(Alert { trigger, email: a["action"] == "email" })
 }
@@ -861,7 +866,10 @@ mod tests {
         assert_eq!(t.notes, "Заметки **Markdown**");
         let due = t.due.clone().unwrap();
         assert_eq!(due.tz.as_deref(), Some("Europe/Moscow"));
-        assert_eq!(t.due_at(&TimeZone::UTC), Some(jiff::civil::date(2027, 3, 2).at(13, 0, 0, 0).to_zoned(TimeZone::UTC).unwrap().timestamp().as_second()));
+        assert_eq!(
+            t.due_at(&TimeZone::UTC),
+            Some(jiff::civil::date(2027, 3, 2).at(13, 0, 0, 0).to_zoned(TimeZone::UTC).unwrap().timestamp().as_second())
+        );
         assert_eq!(t.estimate, Some(5400));
         assert!(t.important);
         assert_eq!((t.progress, t.percent), (Progress::InProcess, Some(20)));
@@ -976,11 +984,24 @@ mod tests {
         let t = Task::from_jmap(&full()).unwrap();
         let ics = t.to_ics(None, 1_792_000_000, &TimeZone::UTC);
         for line in [
-            "BEGIN:VTODO", "UID:u1@itt.test", "SUMMARY:Отправить редакцию договора", "DTSTART:20270301T060000Z",
-            "DUE:20270302T130000Z", "ESTIMATED-DURATION:PT1H30M", "PRIORITY:1", "STATUS:IN-PROCESS", "PERCENT-COMPLETE:20",
-            "COMPLETED:20261021T100000Z", "CATEGORIES:pm.cat.clients", "RRULE:FREQ=MONTHLY;BYMONTHDAY=20",
-            "RELATED-TO;RELTYPE=PARENT:parent@itt.test", "X-POSTMAN-PROJECT:vec", "X-POSTMAN-ORDER:3",
-            "X-POSTMAN-MESSAGE-ID:<letter@itt.test>", "X-POSTMAN-EMAIL-ID:Mabc", "TRIGGER;RELATED=END:-PT30M",
+            "BEGIN:VTODO",
+            "UID:u1@itt.test",
+            "SUMMARY:Отправить редакцию договора",
+            "DTSTART:20270301T060000Z",
+            "DUE:20270302T130000Z",
+            "ESTIMATED-DURATION:PT1H30M",
+            "PRIORITY:1",
+            "STATUS:IN-PROCESS",
+            "PERCENT-COMPLETE:20",
+            "COMPLETED:20261021T100000Z",
+            "CATEGORIES:pm.cat.clients",
+            "RRULE:FREQ=MONTHLY;BYMONTHDAY=20",
+            "RELATED-TO;RELTYPE=PARENT:parent@itt.test",
+            "X-POSTMAN-PROJECT:vec",
+            "X-POSTMAN-ORDER:3",
+            "X-POSTMAN-MESSAGE-ID:<letter@itt.test>",
+            "X-POSTMAN-EMAIL-ID:Mabc",
+            "TRIGGER;RELATED=END:-PT30M",
         ] {
             assert!(ics.contains(&format!("{line}\r\n")), "нет «{line}» в\n{ics}");
         }
@@ -1026,8 +1047,12 @@ mod tests {
         let ics = t.to_ics(Some("REQUEST"), 1_792_000_000, &moscow());
         let v = postman_worker::parse_calendar(ics.as_bytes()).unwrap();
         let back = Task::from_worker(&v);
-        assert_eq!(back.len(), 1, "{ics}
-{v}");
+        assert_eq!(
+            back.len(),
+            1,
+            "{ics}
+{v}"
+        );
         let b = back.into_iter().next().unwrap();
         assert_eq!(b.uid, t.uid);
         assert_eq!(b.title, t.title);

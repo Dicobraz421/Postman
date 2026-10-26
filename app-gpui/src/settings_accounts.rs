@@ -8,8 +8,8 @@ use gpui_kit::*;
 use pets_i18n::tr;
 use pets_ui::theme::Metric;
 
-use crate::roles::Look;
 use crate::buttons::button;
+use crate::roles::Look;
 use crate::settings_tab::{SettingsEvent, SettingsView, aside_card, link};
 
 /// Инициалы для кружка: первые буквы имени до `@` (две), иначе первая буква.
@@ -53,16 +53,7 @@ impl SettingsView {
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(text)
         };
-        let card = || {
-            div()
-                .flex()
-                .items_center()
-                .gap_3()
-                .p_3()
-                .rounded(l.px(Metric::RadiusOverlay))
-                .border_1()
-                .border_color(l.border())
-        };
+        let card = || div().flex().items_center().gap_3().p_3().rounded(l.px(Metric::RadiusOverlay)).border_1().border_color(l.border());
         match (&self.info.account, self.info.live) {
             (Some(a), true) => {
                 let password = match self.stored {
@@ -83,13 +74,11 @@ impl SettingsView {
                                 .flex_col()
                                 .gap_0p5()
                                 .child(div().font_weight(FontWeight::SEMIBOLD).truncate().child(a.user.clone()))
-                                .child(
-                                    div()
-                                        .text_size(px(12.))
-                                        .text_color(l.text2())
-                                        .truncate()
-                                        .child(tr!("settings-account-line", host = host(&a.url).to_owned(), status = status)),
-                                )
+                                .child(div().text_size(px(12.)).text_color(l.text2()).truncate().child(tr!(
+                                    "settings-account-line",
+                                    host = host(&a.url).to_owned(),
+                                    status = status
+                                )))
                                 .when(!password.is_empty(), |d| d.child(div().text_size(px(12.)).text_color(l.text2()).child(password))),
                         )
                         .when(!confirm, |d| {
@@ -124,17 +113,15 @@ impl SettingsView {
             }
             _ => {
                 list = list.child(
-                    card()
-                        .child(avatar("D".into()))
-                        .child(
-                            div()
-                                .flex_1()
-                                .flex()
-                                .flex_col()
-                                .gap_0p5()
-                                .child(div().font_weight(FontWeight::SEMIBOLD).child(tr!("settings-account-demo")))
-                                .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("settings-account-demo-hint"))),
-                        ),
+                    card().child(avatar("D".into())).child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child(tr!("settings-account-demo")))
+                            .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("settings-account-demo-hint"))),
+                    ),
                 );
             }
         }
@@ -170,12 +157,10 @@ impl SettingsView {
                             .child(div().text_size(px(12.)).text_color(l.text2()).truncate().child(host(&a.url).to_owned())),
                     )
                     .when(!confirm, |d| {
-                        d.child(link(("settings-extra-remove", n), tr!("settings-account-remove"), l).on_click(cx.listener(
-                            move |this, _, _, cx| {
-                                this.remove_extra = Some(ask.clone());
-                                cx.notify();
-                            },
-                        )))
+                        d.child(link(("settings-extra-remove", n), tr!("settings-account-remove"), l).on_click(cx.listener(move |this, _, _, cx| {
+                            this.remove_extra = Some(ask.clone());
+                            cx.notify();
+                        })))
                     }),
             );
             if confirm {

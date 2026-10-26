@@ -122,16 +122,12 @@ impl Conn {
         let req = req.body(Full::new(body.clone())).map_err(|e| Error::Http(e.to_string()))?;
         let resp = self.sender.send_request(req).await.map_err(hyper_err)?;
         let status = resp.status().as_u16();
-        let www_authenticate = resp
-            .headers()
-            .get_all(header::WWW_AUTHENTICATE)
-            .iter()
-            .filter_map(|v| v.to_str().ok().map(str::to_owned))
-            .collect();
+        let www_authenticate = resp.headers().get_all(header::WWW_AUTHENTICATE).iter().filter_map(|v| v.to_str().ok().map(str::to_owned)).collect();
         let location = resp.headers().get(header::LOCATION).and_then(|v| v.to_str().ok()).map(str::to_owned);
-        let body = Limited::new(resp.into_body(), MAX_BODY).collect().await.map_err(|e| {
-            if e.is::<http_body_util::LengthLimitError>() { Error::TooLarge } else { Error::Http(e.to_string()) }
-        })?;
+        let body = Limited::new(resp.into_body(), MAX_BODY)
+            .collect()
+            .await
+            .map_err(|e| if e.is::<http_body_util::LengthLimitError>() { Error::TooLarge } else { Error::Http(e.to_string()) })?;
         Ok(Reply { status, body: body.to_bytes().to_vec(), location, www_authenticate })
     }
 }

@@ -40,11 +40,7 @@ fn prune(dir: &Path, now: SystemTime) {
 
 fn logs(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
-    let mut out: Vec<PathBuf> = entries
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "log"))
-        .collect();
+    let mut out: Vec<PathBuf> = entries.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "log")).collect();
     out.sort();
     out
 }
@@ -57,11 +53,7 @@ pub(crate) fn folder_size(dir: &Path) -> u64 {
 /// Куда положить отчёт: рабочий стол, без него — папка загрузок или временная.
 pub(crate) fn report_path() -> PathBuf {
     let home = std::env::var_os("USERPROFILE").map(PathBuf::from);
-    let dir = home
-        .iter()
-        .flat_map(|h| [h.join("Desktop"), h.join("Downloads")])
-        .find(|d| d.is_dir())
-        .unwrap_or_else(std::env::temp_dir);
+    let dir = home.iter().flat_map(|h| [h.join("Desktop"), h.join("Downloads")]).find(|d| d.is_dir()).unwrap_or_else(std::env::temp_dir);
     dir.join(format!("postman-report-{}.zip", today()))
 }
 

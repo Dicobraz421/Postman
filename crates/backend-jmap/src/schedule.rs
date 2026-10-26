@@ -87,19 +87,12 @@ pub async fn search(client: &Client, text: &str, from: i64, to: i64) -> Result<V
 
 /// Занятость в `[from, to)`: моя (из моих событий) и каждого адреса (`None` — нет данных: сотрудник не найден,
 /// календарь не открыт мне или сервер не ответил).
-pub async fn availability(
-    client: &Client,
-    emails: &[String],
-    from: i64,
-    to: i64,
-) -> Result<(Vec<Busy>, Vec<(String, Option<Vec<Busy>>)>)> {
+pub async fn availability(client: &Client, emails: &[String], from: i64, to: i64) -> Result<(Vec<Busy>, Vec<(String, Option<Vec<Busy>>)>)> {
     let mine = busy_from_events(&week(client, from, to).await?);
     let mut people = Vec::with_capacity(emails.len());
     for email in emails {
         let busy = match principal(client, email).await {
-            Ok(Some(id)) => {
-                client.availability(&id, &utc(from), &utc(to)).await.ok().and_then(|p| busy_from_periods(&p))
-            }
+            Ok(Some(id)) => client.availability(&id, &utc(from), &utc(to)).await.ok().and_then(|p| busy_from_periods(&p)),
             _ => None,
         };
         people.push((email.clone(), busy));
@@ -152,12 +145,8 @@ fn participant_email(p: &Value) -> Option<String> {
 pub fn merged_participants(new: &Value, old: &Value, keep: bool) -> Value {
     let mut out = new.as_object().cloned().unwrap_or_default();
     if keep {
-        let before: Vec<(String, Value)> = old
-            .as_object()
-            .into_iter()
-            .flatten()
-            .filter_map(|(_, p)| Some((participant_email(p)?, p["participationStatus"].clone())))
-            .collect();
+        let before: Vec<(String, Value)> =
+            old.as_object().into_iter().flatten().filter_map(|(_, p)| Some((participant_email(p)?, p["participationStatus"].clone()))).collect();
         for p in out.values_mut() {
             let status = participant_email(p).and_then(|e| before.iter().find(|(b, _)| *b == e).map(|(_, s)| s.clone()));
             if let Some(s) = status.filter(|s| s.is_string()) {
@@ -281,11 +270,7 @@ mod tests {
     #[test]
     fn empty_availability_is_no_data_not_free() {
         assert_eq!(busy_from_periods(&[]), None);
-        let p = |s: &str, e: &str, k: Option<&str>| BusyPeriod {
-            utc_start: s.into(),
-            utc_end: e.into(),
-            busy_status: k.map(str::to_owned),
-        };
+        let p = |s: &str, e: &str, k: Option<&str>| BusyPeriod { utc_start: s.into(), utc_end: e.into(), busy_status: k.map(str::to_owned) };
         let busy = busy_from_periods(&[
             p("2026-10-20T07:00:00Z", "2026-10-20T08:00:00Z", None),
             p("2026-10-20T09:00:00Z", "2026-10-20T10:00:00Z", Some("tentative")),
@@ -293,10 +278,7 @@ mod tests {
             p("плохо", "2026-10-20T12:00:00Z", None),
         ])
         .unwrap();
-        assert_eq!(
-            busy.iter().map(|b| b.kind).collect::<Vec<_>>(),
-            [BusyKind::Busy, BusyKind::Tentative, BusyKind::Unavailable]
-        );
+        assert_eq!(busy.iter().map(|b| b.kind).collect::<Vec<_>>(), [BusyKind::Busy, BusyKind::Tentative, BusyKind::Unavailable]);
         assert_eq!(busy[0].span.start, at("2026-10-20T07:00:00Z"));
     }
 
@@ -328,9 +310,13 @@ mod tests {
         assert_eq!(merged_participants(&new, &old, false)["a0"]["participationStatus"], "needs-action", "перенос — ответы заново");
         assert_eq!(local_shifted("2026-11-02T10:00:00", 3600).as_deref(), Some("2026-11-02T11:00:00"));
         assert_eq!(local_shifted("2026-11-02T23:30:00", 3600).as_deref(), Some("2026-11-03T00:30:00"));
-        let props = meeting_props(&serde_json::json!({ "title": "T", "description": "", "duration": "PT1H" }), "2026-11-02T10:00:00", "Europe/Moscow", Value::Null);
+        let props = meeting_props(
+            &serde_json::json!({ "title": "T", "description": "", "duration": "PT1H" }),
+            "2026-11-02T10:00:00",
+            "Europe/Moscow",
+            Value::Null,
+        );
         assert_eq!(props["locations"], Value::Null, "места нет — снято");
         assert_eq!((props["start"].as_str(), props["timeZone"].as_str()), (Some("2026-11-02T10:00:00"), Some("Europe/Moscow")));
     }
-
 }

@@ -29,8 +29,8 @@ use postman_imap::state::{FolderState, Plan};
 use postman_imap::{Config, Header, Role, Security, Session, flags, smtp, uid_set};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use postman_core::backend::{AreaCtx, AreaPlugin, Areas, BoxFuture, MailPlugin, Spawn};
 use postman_core::backend::Login;
+use postman_core::backend::{AreaCtx, AreaPlugin, Areas, BoxFuture, MailPlugin, Spawn};
 use postman_core::model::{Auth, Feature, Features};
 use postman_core::sync::{Account, Command, ErrorKind, Event, Index, Sender, Stage, Status, SyncError};
 
@@ -98,7 +98,8 @@ impl ImapAccount {
             user: user.to_owned(),
             password: password.to_owned(),
         };
-        let smtp = Config { host: smtp_host, port: smtp_port, security: security(smtp_port, 465), user: user.to_owned(), password: password.to_owned() };
+        let smtp =
+            Config { host: smtp_host, port: smtp_port, security: security(smtp_port, 465), user: user.to_owned(), password: password.to_owned() };
         let areas = query
             .split('&')
             .filter_map(|kv| kv.split_once('='))
@@ -708,7 +709,14 @@ impl Imap {
             attachments: m
                 .parts
                 .into_iter()
-                .map(|p| AttachmentRow { blob_id: format!("{key}#{}", p.index), name: p.name, mime: p.mime, size: p.size, cid: p.cid, inline: p.inline })
+                .map(|p| AttachmentRow {
+                    blob_id: format!("{key}#{}", p.index),
+                    name: p.name,
+                    mime: p.mime,
+                    size: p.size,
+                    cid: p.cid,
+                    inline: p.inline,
+                })
                 .collect(),
             blob_id: Some(key.to_owned()),
         };
@@ -978,7 +986,11 @@ impl Imap {
                     self.set_keywords(std::slice::from_ref(&p.id), &add, &remove).await?;
                     // Перенос: папка, куда письмо добавлено («Архив» — роль archive).
                     let to = p.mailboxes.iter().find(|(_, on)| *on).and_then(|(k, _)| {
-                        if k == postman_core::lifecycle::ARCHIVE { self.folder_by_role(Role::Archive).cloned() } else { self.folder_by_key(k).cloned() }
+                        if k == postman_core::lifecycle::ARCHIVE {
+                            self.folder_by_role(Role::Archive).cloned()
+                        } else {
+                            self.folder_by_key(k).cloned()
+                        }
                     });
                     if let Some(to) = to {
                         self.move_letters(std::slice::from_ref(&p.id), &to).await?;
@@ -1039,7 +1051,8 @@ impl Imap {
                 match self.send(*draft, replace).await {
                     Ok(()) => {
                         notify(Event::Sent { ticket, scheduled: None });
-                        let folders: Vec<String> = [Role::Sent, Role::Drafts].iter().filter_map(|r| self.folder_by_role(*r).map(|f| f.key.clone())).collect();
+                        let folders: Vec<String> =
+                            [Role::Sent, Role::Drafts].iter().filter_map(|r| self.folder_by_role(*r).map(|f| f.key.clone())).collect();
                         self.after(&folders, notify).await;
                     }
                     Err(e) => notify(Event::ComposeFailed { ticket, error: e.to_string() }),
@@ -1276,7 +1289,10 @@ mod tests {
         let (s, m) = q(F::And(vec![F::InMailbox("fabc".into()), F::From("Анна".into()), F::After("2026-10-01T00:00:00Z".into())])).unwrap();
         assert_eq!(s, "CHARSET UTF-8 (ALL FROM \"Анна\" SINCE 1-Oct-2026)");
         assert_eq!(m.as_deref(), Some("fabc"));
-        assert_eq!(q(F::Or(vec![F::Subject("a".into()), F::Subject("b".into()), F::Subject("c".into())])).unwrap().0, "CHARSET UTF-8 OR SUBJECT \"a\" OR SUBJECT \"b\" SUBJECT \"c\"");
+        assert_eq!(
+            q(F::Or(vec![F::Subject("a".into()), F::Subject("b".into()), F::Subject("c".into())])).unwrap().0,
+            "CHARSET UTF-8 OR SUBJECT \"a\" OR SUBJECT \"b\" SUBJECT \"c\""
+        );
         assert_eq!(q(F::Not(vec![F::Before("2026-01-31T00:00:00Z".into())])).unwrap().0, "CHARSET UTF-8 NOT (BEFORE 31-Jan-2026)");
         assert_eq!(q(F::MinSize(1024)).unwrap().0, "CHARSET UTF-8 LARGER 1023");
         assert!(q(F::HasKeyword("two words".into())).is_none());

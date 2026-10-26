@@ -14,7 +14,6 @@ use postman_core::settings::RulesState;
 use crate::buttons::plain as button;
 use crate::vacation::checkbox;
 
-
 /// Действие в редакторе (без данных: папка и адрес — отдельно).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Kind {
@@ -26,8 +25,7 @@ pub(crate) enum Kind {
     Category,
 }
 
-const FIELDS: [(Field, &str); 3] =
-    [(Field::From, "rules-field-from"), (Field::To, "rules-field-to"), (Field::Subject, "rules-field-subject")];
+const FIELDS: [(Field, &str); 3] = [(Field::From, "rules-field-from"), (Field::To, "rules-field-to"), (Field::Subject, "rules-field-subject")];
 const KINDS: [(Kind, &str); 6] = [
     (Kind::Move, "rules-kind-move"),
     (Kind::MarkRead, "rules-kind-read"),
@@ -86,8 +84,7 @@ impl Draft {
     }
 
     pub(crate) fn of(index: usize, r: &Rule) -> Self {
-        let mut d =
-            Draft { index: Some(index), enabled: r.enabled, field: r.field, value: r.value.clone(), ..Self::new() };
+        let mut d = Draft { index: Some(index), enabled: r.enabled, field: r.field, value: r.value.clone(), ..Self::new() };
         d.kind = match &r.action {
             Action::Move { mailbox_id, name } => {
                 d.folder = Some((mailbox_id.clone(), name.clone()));
@@ -124,8 +121,7 @@ impl Draft {
             Kind::Discard => Action::Discard,
             Kind::Redirect => {
                 let to = self.address.trim();
-                let ok = to.split_once('@').is_some_and(|(user, host)| !user.is_empty() && host.contains('.'))
-                    && !to.contains(char::is_whitespace);
+                let ok = to.split_once('@').is_some_and(|(user, host)| !user.is_empty() && host.contains('.')) && !to.contains(char::is_whitespace);
                 if !ok {
                     return Err(DraftError::Address);
                 }
@@ -177,10 +173,7 @@ pub(crate) fn describe(r: &Rule, mailboxes: &[(String, String)], categories: &[C
 
 pub(crate) enum RulesEvent {
     /// Записать список правил; `replace` — подтверждена замена чужого скрипта.
-    Save {
-        rules: Vec<Rule>,
-        replace: bool,
-    },
+    Save { rules: Vec<Rule>, replace: bool },
 }
 
 impl EventEmitter<RulesEvent> for RulesPanel {}
@@ -382,14 +375,7 @@ fn chip(id: impl Into<ElementId>, label: String, selected: bool) -> Stateful<Div
 
 fn link(id: impl Into<ElementId>, label: String) -> Stateful<Div> {
     let l = crate::roles::now();
-    div()
-        .id(id)
-        .px_1()
-        .rounded_md()
-        .cursor_pointer()
-        .text_color(l.accent_text())
-        .hover(|d| d.bg(l.hover()))
-        .child(label)
+    div().id(id).px_1().rounded_md().cursor_pointer().text_color(l.accent_text()).hover(|d| d.bg(l.hover())).child(label)
 }
 
 impl RulesPanel {
@@ -406,25 +392,12 @@ impl RulesPanel {
             .rounded_md()
             .when(editing, |d| d.bg(l.hover()))
             .child(
-                div()
-                    .id(("rule-on", i))
-                    .cursor_pointer()
-                    .child(checkbox(r.enabled))
-                    .on_click(cx.listener(move |this, _, _, cx| this.toggle(i, cx))),
+                div().id(("rule-on", i)).cursor_pointer().child(checkbox(r.enabled)).on_click(cx.listener(move |this, _, _, cx| this.toggle(i, cx))),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .when(!r.enabled, |d| d.text_color(l.text2()))
-                    .child(describe(r, &self.mailboxes, &self.categories)),
-            )
+            .child(div().flex_1().min_w_0().when(!r.enabled, |d| d.text_color(l.text2())).child(describe(r, &self.mailboxes, &self.categories)))
             .when(confirm, |d| {
                 d.child(div().text_color(l.error()).child(tr!("rules-delete-confirm")))
-                    .child(
-                        link(("rule-delete-yes", i), tr!("rules-delete"))
-                            .on_click(cx.listener(move |this, _, _, cx| this.delete(i, cx))),
-                    )
+                    .child(link(("rule-delete-yes", i), tr!("rules-delete")).on_click(cx.listener(move |this, _, _, cx| this.delete(i, cx))))
                     .child(link(("rule-delete-no", i), tr!("rules-cancel")).on_click(cx.listener(|this, _, _, cx| {
                         this.confirm_delete = None;
                         cx.notify();
@@ -432,16 +405,11 @@ impl RulesPanel {
             })
             .when(!confirm, |d| {
                 let rule = r.clone();
-                d.child(
-                    link(("rule-edit", i), tr!("rules-edit"))
-                        .on_click(cx.listener(move |this, _, _, cx| this.edit(Draft::of(i, &rule), cx))),
-                )
-                .child(link(("rule-delete", i), tr!("rules-delete")).on_click(cx.listener(
-                    move |this, _, _, cx| {
+                d.child(link(("rule-edit", i), tr!("rules-edit")).on_click(cx.listener(move |this, _, _, cx| this.edit(Draft::of(i, &rule), cx))))
+                    .child(link(("rule-delete", i), tr!("rules-delete")).on_click(cx.listener(move |this, _, _, cx| {
                         this.confirm_delete = Some(i);
                         cx.notify();
-                    },
-                )))
+                    })))
             })
     }
 
@@ -450,23 +418,19 @@ impl RulesPanel {
         let label = |text: String| div().w(px(90.)).flex_none().text_color(l.text2()).child(text);
         let fields = FIELDS.iter().enumerate().map(|(n, (field, key))| {
             let field = *field;
-            chip(("rules-field", n), tr!(key), d.field == field)
-                .on_click(cx.listener(move |this, _, _, cx| this.set_editor(cx, |d| d.field = field)))
+            chip(("rules-field", n), tr!(key), d.field == field).on_click(cx.listener(move |this, _, _, cx| this.set_editor(cx, |d| d.field = field)))
         });
         let kinds = KINDS.iter().enumerate().map(|(n, (kind, key))| {
             let kind = *kind;
-            chip(("rules-kind", n), tr!(key), d.kind == kind)
-                .on_click(cx.listener(move |this, _, _, cx| this.set_editor(cx, |d| d.kind = kind)))
+            chip(("rules-kind", n), tr!(key), d.kind == kind).on_click(cx.listener(move |this, _, _, cx| this.set_editor(cx, |d| d.kind = kind)))
         });
         let picked = d.folder.as_ref().map(|(id, _)| id.clone());
         let folders = self.mailboxes.iter().enumerate().map(|(n, (id, name))| {
             let folder = (id.clone(), name.clone());
-            chip(("rules-folder", n), name.clone(), picked.as_deref() == Some(id.as_str())).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    let folder = folder.clone();
-                    this.set_editor(cx, |d| d.folder = Some(folder))
-                },
-            ))
+            chip(("rules-folder", n), name.clone(), picked.as_deref() == Some(id.as_str())).on_click(cx.listener(move |this, _, _, cx| {
+                let folder = folder.clone();
+                this.set_editor(cx, |d| d.folder = Some(folder))
+            }))
         });
         let chosen = d.category.clone();
         let categories = self.categories.iter().enumerate().map(|(n, (keyword, name, color))| {
@@ -491,39 +455,19 @@ impl RulesPanel {
             .border_1()
             .border_color(l.c(pets_ui::theme::Role::StrokeCard))
             .bg(l.hover())
-            .child(div().font_weight(FontWeight::SEMIBOLD).child(if d.index.is_some() {
-                tr!("rules-edit-title")
-            } else {
-                tr!("rules-new-title")
-            }))
+            .child(div().font_weight(FontWeight::SEMIBOLD).child(if d.index.is_some() { tr!("rules-edit-title") } else { tr!("rules-new-title") }))
             .child(div().flex().items_center().gap_2().child(label(tr!("rules-if"))).children(fields))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(label(tr!("rules-contains")))
-                    .child(div().flex_1().child(Input::new(&self.value))),
-            )
+            .child(div().flex().items_center().gap_2().child(label(tr!("rules-contains"))).child(div().flex_1().child(Input::new(&self.value))))
             .child(div().flex().flex_wrap().items_center().gap_2().child(label(tr!("rules-then"))).children(kinds))
             .when(d.kind == Kind::Move, |el| {
-                el.child(
-                    div().flex().flex_wrap().items_center().gap_2().child(label(tr!("rules-folder"))).children(folders),
-                )
+                el.child(div().flex().flex_wrap().items_center().gap_2().child(label(tr!("rules-folder"))).children(folders))
             })
             .when(d.kind == Kind::Category, |el| {
-                el.child(
-                    div().flex().flex_wrap().items_center().gap_2().child(label(tr!("rules-category"))).children(categories),
-                )
+                el.child(div().flex().flex_wrap().items_center().gap_2().child(label(tr!("rules-category"))).children(categories))
             })
             .when(d.kind == Kind::Redirect, |el| {
                 el.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(label(tr!("rules-address")))
-                        .child(div().flex_1().child(Input::new(&self.address))),
+                    div().flex().items_center().gap_2().child(label(tr!("rules-address"))).child(div().flex_1().child(Input::new(&self.address))),
                 )
             })
             .when(d.kind == Kind::Discard, |el| el.child(div().text_color(l.text2()).child(tr!("rules-discard-hint"))))
@@ -532,20 +476,14 @@ impl RulesPanel {
                     .flex()
                     .gap_3()
                     .child(
-                        button(
-                            "rules-editor-save",
-                            if busy { tr!("rules-saving") } else { tr!("rules-editor-save") },
-                            !busy,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| this.save_editor(cx))),
+                        button("rules-editor-save", if busy { tr!("rules-saving") } else { tr!("rules-editor-save") }, !busy)
+                            .on_click(cx.listener(|this, _, _, cx| this.save_editor(cx))),
                     )
-                    .child(button("rules-editor-cancel", tr!("rules-cancel"), false).on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.editor = None;
-                            this.error = None;
-                            cx.notify();
-                        },
-                    ))),
+                    .child(button("rules-editor-cancel", tr!("rules-cancel"), false).on_click(cx.listener(|this, _, _, cx| {
+                        this.editor = None;
+                        this.error = None;
+                        cx.notify();
+                    }))),
             )
     }
 }
@@ -576,23 +514,13 @@ impl Render for RulesPanel {
             .flex_col()
             .gap_3()
             .when(!self.live, |d| d.child(div().text_color(l.text2()).child(tr!("rules-demo"))))
-            .when(self.live && self.state.is_none(), |d| {
-                d.child(div().text_color(l.text2()).child(tr!("rules-loading")))
-            })
-            .when(!rules.is_empty() && !active && self.live, |d| {
-                d.child(div().text_color(l.text2()).child(tr!("rules-all-off")))
-            })
-            .when(rules.is_empty() && self.state.is_some(), |d| {
-                d.child(div().text_color(l.text2()).child(tr!("rules-empty")))
-            })
+            .when(self.live && self.state.is_none(), |d| d.child(div().text_color(l.text2()).child(tr!("rules-loading"))))
+            .when(!rules.is_empty() && !active && self.live, |d| d.child(div().text_color(l.text2()).child(tr!("rules-all-off"))))
+            .when(rules.is_empty() && self.state.is_some(), |d| d.child(div().text_color(l.text2()).child(tr!("rules-empty"))))
             .child(list)
             .children(editor)
             .when_some(self.conflict.clone(), |d, (name, overwrite, pending)| {
-                let text = if overwrite {
-                    tr!("rules-conflict-overwrite", name = name)
-                } else {
-                    tr!("rules-conflict-active", name = name)
-                };
+                let text = if overwrite { tr!("rules-conflict-overwrite", name = name) } else { tr!("rules-conflict-active", name = name) };
                 d.child(
                     div()
                         .flex()
@@ -602,18 +530,14 @@ impl Render for RulesPanel {
                         .rounded_md()
                         .bg(l.warning_bg())
                         .child(div().flex_1().child(text))
-                        .child(link("rules-replace", tr!("rules-replace")).on_click(cx.listener(
-                            move |this, _, _, cx| {
-                                this.conflict = None;
-                                this.save(pending.clone(), true, cx);
-                            },
-                        )))
-                        .child(link("rules-replace-no", tr!("rules-cancel")).on_click(cx.listener(
-                            |this, _, _, cx| {
-                                this.conflict = None;
-                                cx.notify();
-                            },
-                        ))),
+                        .child(link("rules-replace", tr!("rules-replace")).on_click(cx.listener(move |this, _, _, cx| {
+                            this.conflict = None;
+                            this.save(pending.clone(), true, cx);
+                        })))
+                        .child(link("rules-replace-no", tr!("rules-cancel")).on_click(cx.listener(|this, _, _, cx| {
+                            this.conflict = None;
+                            cx.notify();
+                        }))),
                 )
             })
             .when_some(self.error.clone(), |d, e| d.child(div().text_color(l.error()).child(e)))
@@ -635,11 +559,7 @@ impl Render for RulesPanel {
                 d.child(div().pt_2().font_weight(FontWeight::SEMIBOLD).child(tr!("rules-foreign-title")))
                     .child(div().text_color(l.text2()).child(tr!("rules-foreign-hint")))
                     .children(foreign.into_iter().map(|f| {
-                        let title = if f.active {
-                            tr!("rules-foreign-active", name = f.name)
-                        } else {
-                            tr!("rules-foreign-inactive", name = f.name)
-                        };
+                        let title = if f.active { tr!("rules-foreign-active", name = f.name) } else { tr!("rules-foreign-inactive", name = f.name) };
                         div().flex().flex_col().gap_1().child(div().text_color(l.text2()).child(title)).child(
                             div()
                                 .p_2()
@@ -683,11 +603,7 @@ mod tests {
         assert_eq!(Draft { value: " ".into(), ..draft(Kind::Flag) }.rule(), Err(DraftError::Value));
         assert_eq!(Draft { folder: None, ..draft(Kind::Move) }.rule(), Err(DraftError::Folder));
         for bad in ["", "boss", "@corp.example", "boss@corp", "bo ss@corp.example"] {
-            assert_eq!(
-                Draft { address: bad.into(), ..draft(Kind::Redirect) }.rule(),
-                Err(DraftError::Address),
-                "{bad}"
-            );
+            assert_eq!(Draft { address: bad.into(), ..draft(Kind::Redirect) }.rule(), Err(DraftError::Address), "{bad}");
         }
         // Категория (S5-26): слово из таблицы; не выбрана — отказ.
         assert_eq!(draft(Kind::Category).rule().unwrap().action, Action::Category("pm.cat.tenders".into()));

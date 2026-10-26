@@ -10,8 +10,8 @@ use std::sync::Arc;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use pets_i18n::tr;
-use postman_ir::{Align, Block, Document, Inline, Marks};
 use pets_ui::theme::Role;
+use postman_ir::{Align, Block, Document, Inline, Marks};
 
 use crate::roles::{Look, Pm, look};
 
@@ -182,11 +182,13 @@ fn block(b: &Block, key: &str, images: &Images, hits: &Hits, cx: &mut App) -> An
             .gap_1()
             .children(items.iter().enumerate().map(|(n, item)| {
                 let marker = if *ordered { format!("{}.", n + 1) } else { "•".into() };
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(div().w(px(16.)).child(marker))
-                    .child(div().flex().flex_col().flex_1().children(blocks_marked(item, &format!("{key}.{n}"), images, hits, cx)))
+                div().flex().gap_2().child(div().w(px(16.)).child(marker)).child(div().flex().flex_col().flex_1().children(blocks_marked(
+                    item,
+                    &format!("{key}.{n}"),
+                    images,
+                    hits,
+                    cx,
+                )))
             }))
             .into_any_element(),
         Block::Code(code) => div().p_2().rounded_md().bg(l.fill()).font_family("Cascadia Mono").child(code.clone()).into_any_element(),
@@ -195,12 +197,11 @@ fn block(b: &Block, key: &str, images: &Images, hits: &Hits, cx: &mut App) -> An
             .flex()
             .flex_col()
             .children(rows.iter().enumerate().map(|(r, row)| {
-                div()
-                    .flex()
-                    .when(r % 2 == 1, |d| d.bg(l.fill_passive()))
-                    .children(row.iter().enumerate().map(|(c, cell)| {
-                        div().min_w(px(90.)).px_2().py_1().child(paragraph(cell, &format!("{key}.{r}.{c}"), images, hits, l))
-                    }))
+                div().flex().when(r % 2 == 1, |d| d.bg(l.fill_passive())).children(
+                    row.iter()
+                        .enumerate()
+                        .map(|(c, cell)| div().min_w(px(90.)).px_2().py_1().child(paragraph(cell, &format!("{key}.{r}.{c}"), images, hits, l))),
+                )
             }))
             .into_any_element(),
     }

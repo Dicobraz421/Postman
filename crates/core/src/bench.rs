@@ -239,16 +239,8 @@ impl Bench {
         let r = stats(&mut self.resize);
         let c = stats(&mut self.ui_cpu);
         let ms = |d: Option<Duration>| d.unwrap_or_default().as_secs_f32() * 1000.0;
-        let marks: String = self
-            .marks
-            .iter()
-            .map(|(p, m)| format!(" rss_{p}_mb={:.0} private_{p}_mb={:.0}", mb(m.rss), mb(m.private)))
-            .collect();
-        let live = if self.live {
-            format!("live=1 first_sync_ms={:.0} list_ms={:.0} ", ms(self.synced_at), ms(self.list_at))
-        } else {
-            String::new()
-        };
+        let marks: String = self.marks.iter().map(|(p, m)| format!(" rss_{p}_mb={:.0} private_{p}_mb={:.0}", mb(m.rss), mb(m.private))).collect();
+        let live = if self.live { format!("live=1 first_sync_ms={:.0} list_ms={:.0} ", ms(self.synced_at), ms(self.list_at)) } else { String::new() };
         format!(
             "{live}rows={rows} exe_mb={:.1} first_frame_ms={:.0} {} {} resize_p50={:.2} resize_p99={:.2} resize_max={:.2} \
              ui_cpu_p50={:.2} ui_cpu_p99={:.2} rss_peak_mb={:.0} private_peak_mb={:.0}{marks}",
@@ -302,12 +294,7 @@ pub fn finish(line: String) {
         std::thread::sleep(IDLE);
         let m = memory();
         let extra = IDLE_FIELDS.get().map(|f| format!(" {}", f())).unwrap_or_default();
-        println!(
-            "{line} idle_cpu_pct={:.1} idle_rss_mb={:.0} idle_private_mb={:.0}{extra}",
-            load.percent(),
-            mb(m.rss),
-            mb(m.private)
-        );
+        println!("{line} idle_cpu_pct={:.1} idle_rss_mb={:.0} idle_private_mb={:.0}{extra}", load.percent(), mb(m.rss), mb(m.private));
         // Хранилище ещё открыто, но std открывает файлы с FILE_SHARE_DELETE: файл исчезнет, когда процесс
         // закроет его при выходе.
         remove_work_copy();
@@ -392,9 +379,7 @@ struct Memory {
 }
 
 fn memory() -> Memory {
-    memory_stats::memory_stats()
-        .map(|m| Memory { rss: m.physical_mem, private: m.virtual_mem })
-        .unwrap_or(Memory { rss: 0, private: 0 })
+    memory_stats::memory_stats().map(|m| Memory { rss: m.physical_mem, private: m.virtual_mem }).unwrap_or(Memory { rss: 0, private: 0 })
 }
 
 fn mb(bytes: usize) -> f32 {

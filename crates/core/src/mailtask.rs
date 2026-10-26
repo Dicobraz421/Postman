@@ -68,8 +68,7 @@ pub fn due_when(t: &Task, tz: &TimeZone) -> Option<When> {
 pub fn linked<'a>(tasks: &'a [Task], row: &EmailRow, message_id: Option<&str>) -> Option<&'a Task> {
     tasks.iter().find(|t| {
         t.mail.as_ref().is_some_and(|m| {
-            m.email_id.as_deref() == Some(row.id.as_str())
-                || message_id.is_some_and(|id| !id.is_empty() && m.message_id.eq_ignore_ascii_case(id))
+            m.email_id.as_deref() == Some(row.id.as_str()) || message_id.is_some_and(|id| !id.is_empty() && m.message_id.eq_ignore_ascii_case(id))
         })
     })
 }

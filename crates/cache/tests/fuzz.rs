@@ -59,8 +59,7 @@ const KEYWORDS: &[&str] = &["pm.cat.a", "pm.cat.b"];
 
 fn check(cache: &Cache, model: &BTreeMap<String, EmailRow>, step: usize) {
     for mb in MAILBOXES {
-        let mut want: Vec<&EmailRow> =
-            model.values().filter(|r| r.mailbox_ids.iter().any(|m| m == mb)).collect();
+        let mut want: Vec<&EmailRow> = model.values().filter(|r| r.mailbox_ids.iter().any(|m| m == mb)).collect();
         want.sort_by(|a, b| b.received_at.cmp(&a.received_at).then_with(|| a.id.cmp(&b.id)));
         assert_eq!(cache.count(mb).unwrap(), want.len(), "шаг {step}: счётчик {mb}");
         let page: Vec<String> = cache.page(mb, 0, 1000).unwrap().into_iter().map(|r| r.id).collect();
@@ -75,10 +74,8 @@ fn check(cache: &Cache, model: &BTreeMap<String, EmailRow>, step: usize) {
     let all = postman_cache::all_folders(None);
     for kw in KEYWORDS.iter().copied().chain(["$flagged"]) {
         for mb in MAILBOXES.iter().copied().chain([all.as_str()]) {
-            let mut want: Vec<&EmailRow> = model
-                .values()
-                .filter(|r| r.has_keyword(kw) && (mb == all || r.mailbox_ids.iter().any(|m| m == mb)))
-                .collect();
+            let mut want: Vec<&EmailRow> =
+                model.values().filter(|r| r.has_keyword(kw) && (mb == all || r.mailbox_ids.iter().any(|m| m == mb))).collect();
             want.sort_by(|a, b| b.received_at.cmp(&a.received_at).then_with(|| a.id.cmp(&b.id)));
             let want: Vec<String> = want.into_iter().map(|r| r.id.clone()).collect();
             assert_eq!(cache.keyword_count(kw, mb).unwrap(), want.len(), "шаг {step}: {kw} в {mb}");
@@ -91,12 +88,7 @@ fn check(cache: &Cache, model: &BTreeMap<String, EmailRow>, step: usize) {
     assert_eq!(rows.len(), model.len(), "шаг {step}: строки по id");
     for r in rows {
         let m = &model[&r.id];
-        assert_eq!(
-            (r.seen, r.flagged, &r.mailbox_ids, &r.keywords),
-            (m.seen, m.flagged, &m.mailbox_ids, &m.keywords),
-            "шаг {step}: {}",
-            r.id
-        );
+        assert_eq!((r.seen, r.flagged, &r.mailbox_ids, &r.keywords), (m.seen, m.flagged, &m.mailbox_ids, &m.keywords), "шаг {step}: {}", r.id);
     }
 }
 

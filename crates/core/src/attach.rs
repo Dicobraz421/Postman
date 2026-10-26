@@ -38,9 +38,7 @@ const MACRO_EXT: &[&str] = &["docm", "dotm", "xlsm", "xltm", "xlam", "xla", "ppt
 
 /// Документы Office, макросы в которых видно только по содержимому: OLE (`VBA` в составном файле) и OOXML
 /// (`vbaProject.bin` в архиве, в том числе в файле, переименованном из `.xlsm` в `.xlsx`).
-const OFFICE_EXT: &[&str] = &[
-    "doc", "dot", "xls", "xlt", "ppt", "pot", "pps", "docx", "dotx", "xlsx", "xltx", "xlsb", "pptx", "potx", "ppsx",
-];
+const OFFICE_EXT: &[&str] = &["doc", "dot", "xls", "xlt", "ppt", "pot", "pps", "docx", "dotx", "xlsx", "xltx", "xlsb", "pptx", "potx", "ppsx"];
 
 const IMAGE_EXT: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
 const TEXT_EXT: &[&str] = &["txt", "log", "md", "csv", "tsv", "eml", "json", "xml", "ini", "cfg", "conf", "yaml", "yml"];
@@ -120,9 +118,7 @@ pub fn dangerous<'a>(names: impl IntoIterator<Item = &'a str>) -> usize {
 pub fn unique_name(name: &str, taken: &mut std::collections::HashSet<String>) -> String {
     let safe = files::safe_name(name);
     let (stem, ext) = match safe.rsplit_once('.') {
-        Some((s, e)) if !s.is_empty() && e.len() <= 10 && e.chars().all(|c| c.is_alphanumeric()) => {
-            (s.to_string(), format!(".{e}"))
-        }
+        Some((s, e)) if !s.is_empty() && e.len() <= 10 && e.chars().all(|c| c.is_alphanumeric()) => (s.to_string(), format!(".{e}")),
         _ => (safe.clone(), String::new()),
     };
     let mut candidate = safe;
