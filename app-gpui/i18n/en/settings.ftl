@@ -400,8 +400,11 @@ settings-account-password-stored = Password — in Windows Credential Manager
 settings-account-password-none = Password not kept — asked at startup
 settings-account-remove = Remove
 settings-account-remove-confirm = Remove account { $user }? The address, login and password are forgotten; mail on the server stays.
-settings-account-demo = Demo mailbox
-settings-account-demo-hint = No server: synthetic messages, changes do not go to a server.
+settings-account-kind = { $kind ->
+    [standards] IMAP, CalDAV, CardDAV
+    [exchange] Exchange (EWS)
+   *[jmap] JMAP (Stalwart)
+}
 settings-account-shared = shared mailbox
 settings-account-one = Each account is a group in the folder tree, like shared mailboxes; "From" in a message picks the account to send from. The first one is the main account: contacts, tasks, rules and auto-reply are its.
 settings-account-exists = This account is already connected.

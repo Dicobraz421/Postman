@@ -406,10 +406,13 @@ impl CalendarView {
         let mut events = demo::my_events();
         events.extend(demo::other_events());
         events.extend(demo::colleague_events());
-        events.extend(demo::second_events());
+        events.extend(demo::account_events());
         events.sort_by_key(|e| e.span.start);
-        // Вторая учётная запись демо (S7-03б) — первой среди календарей: она в «Моих календарях».
-        let colleagues: Vec<Owner> = std::iter::once(demo::second_calendar()).chain(demo::shared_calendars()).collect();
+        // Дополнительные учётные записи демо (S7-09б) — первыми среди календарей, по порядку дерева: они в «Моих
+        // календарях» с подписью-адресом; за ними — коллеги.
+        let accounts = demo::account_calendars();
+        let mine = accounts.len();
+        let colleagues: Vec<Owner> = accounts.into_iter().chain(demo::shared_calendars()).collect();
         Self {
             hours: cal.work_hours(tz.clone()),
             view: cal.view,
@@ -430,7 +433,7 @@ impl CalendarView {
             categories: crate::labels::default_table(),
             colors: Self::assigned(&colleagues, &cal.calendar_colors),
             colleagues,
-            mine: 1,
+            mine,
             parts: Vec::new(),
             parts_range: None,
             color_menu: None,

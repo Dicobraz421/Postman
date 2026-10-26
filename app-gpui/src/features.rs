@@ -4,7 +4,9 @@
 //! - в палитре команд таких команд нет;
 //! - их клавиши показывают тост «Нет у сервера этой учётной записи» ([`Unavailable`]), а не молчат.
 //!
-//! Пока сервер не ответил (и в демо) — всё есть: на время входа разделы не прячутся.
+//! Пока сервер не ответил — всё есть: на время входа разделы не прячутся. В демо — функции учётной записи открытой
+//! папки ([`of_demo_folder`], S7-09б): у «стандартов» нет справочника, правил и автоответа, у Exchange — задач,
+//! контактов, правил и автоответа.
 
 use gpui_kit::*;
 use postman_core::model::{Feature, Features};
@@ -28,6 +30,29 @@ pub(crate) fn set(features: Features, cx: &mut App) {
     cx.set_global(Current(features));
     crate::commands::bind(cx, &crate::prefs::get(cx));
     cx.refresh_windows();
+}
+
+/// Функции учётной записи демо (`postman_demo::Has` — те же, что `Feature`, один к одному).
+pub(crate) fn of_demo(has: postman_demo::Has) -> Features {
+    [
+        (Feature::Calendar, has.calendar),
+        (Feature::Tasks, has.tasks),
+        (Feature::Contacts, has.contacts),
+        (Feature::Directory, has.directory),
+        (Feature::FreeBusy, has.free_busy),
+        (Feature::Rules, has.rules),
+        (Feature::Autoreply, has.autoreply),
+        (Feature::Quota, has.quota),
+    ]
+    .into_iter()
+    .fold(Features::NONE, |f, (feature, on)| f.with(feature, on))
+}
+
+/// Демо: функции учётной записи, чья папка `folder` (текущая — та, чья папка выбрана; S7, «Несколько учётных
+/// записей»). Папка общего ящика — его учётки; неизвестная — всё есть.
+pub(crate) fn of_demo_folder(folder: &str) -> Features {
+    let profile = postman_cache::profile_of(postman_cache::account_of(folder));
+    postman_demo::account(profile).map_or(Features::ALL, |a| of_demo(a.has))
 }
 
 /// Что нужно команде от сервера — хотя бы одна из функций; пусто — ничего.
@@ -70,7 +95,23 @@ pub(crate) mod scenes {
         Scene::new("features-mail-only", mail_only, mail_only_ready),
         // То же — «Настройки»: без «Календаря», «Правил» и «Автоответа».
         Scene::new("features-mail-only-settings", settings, settings_ready),
+        // Демо, выбрана папка учётки Exchange (S7-09б): функции — её сервера; в рейле нет «Задач».
+        Scene::new("features-exchange", exchange, exchange_ready),
     ];
+
+    /// Входящие учётки Exchange демо.
+    fn exchange_inbox() -> String {
+        postman_cache::scoped(postman_demo::EXCHANGE.profile, "inbox")
+    }
+
+    fn exchange(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.open_mailbox(exchange_inbox(), cx);
+        Ok(())
+    }
+
+    fn exchange_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.folders.read(cx).current.as_deref() == Some(exchange_inbox().as_str()) && super::get(cx) == super::of_demo(postman_demo::EXCHANGE.has)
+    }
 
     /// Сервер умеет всё — кроме своих сцен (S7-03).
     pub(crate) fn reset(s: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) {
@@ -140,6 +181,27 @@ mod tests {
         let directory = Features::NONE.with(Feature::Directory, true);
         assert!(available("view.contacts", directory));
         assert!(!available("contacts.new", directory));
+    }
+
+    #[test]
+    fn demo_accounts_have_their_server_features() {
+        use super::{of_demo, of_demo_folder};
+        assert_eq!(of_demo(postman_demo::MAIN.has), Features::ALL);
+        let standards = of_demo(postman_demo::STANDARDS.has);
+        assert!(available("view.tasks", standards) && available("contacts.new", standards));
+        assert!(!standards.has(Feature::Directory));
+        assert!(!available("settings.rules", standards) && !available("settings.vacation", standards));
+        let exchange = of_demo(postman_demo::EXCHANGE.has);
+        assert!(available("view.calendar", exchange) && available("view.contacts", exchange));
+        for id in ["view.tasks", "task.new", "contacts.new", "settings.rules", "settings.vacation"] {
+            assert!(!available(id, exchange), "{id}");
+        }
+        // Папка — учётки, чей префикс у её ключа; основная — без префикса.
+        assert_eq!(of_demo_folder("inbox"), Features::ALL);
+        for a in &postman_demo::ACCOUNTS[1..] {
+            let folder = postman_cache::scoped(a.profile, "inbox");
+            assert_eq!(of_demo_folder(&folder), of_demo(a.has), "{folder}");
+        }
     }
 
     #[test]

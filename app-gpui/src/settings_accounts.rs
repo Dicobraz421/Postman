@@ -1,7 +1,8 @@
 //! «Настройки → Аккаунты» (S5-09, `Account.dc.html`): учётная запись (сервер, логин, состояние синхронизации, где
 //! пароль), общие ящики, безопасность подключения; «Добавить аккаунт» — карточка на месте (`signin.rs`), «Удалить» —
 //! подтверждением строкой. Учётных записей может быть несколько (S7-03б): первая — основная, «Добавить аккаунт» при
-//! живой учётной записи добавляет ещё одну рядом; каждая — группой в дереве папок, как общие ящики.
+//! живой учётной записи добавляет ещё одну рядом; каждая — группой в дереве папок, как общие ящики. Демо — три
+//! учётки `postman_demo::ACCOUNTS` (S7-09б) той же карточкой: адрес, узел, вид сервера.
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -29,6 +30,51 @@ fn host(url: &str) -> &str {
     url.split_once("://").map_or(url, |(_, r)| r).split(['/', '?']).next().unwrap_or(url)
 }
 
+/// Подпись вида сервера учётки демо: ключ варианта `settings-account-kind`.
+fn kind(k: postman_demo::Kind) -> &'static str {
+    match k {
+        postman_demo::Kind::Jmap => "jmap",
+        postman_demo::Kind::Standards => "standards",
+        postman_demo::Kind::Exchange => "exchange",
+    }
+}
+
+/// Карточка учётной записи демо — как карточка дополнительной учётки: кружок, адрес, узел и вид сервера; удалять
+/// нечего.
+fn demo_card(a: &postman_demo::Account, l: &Look) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap_3()
+        .p_3()
+        .rounded(l.px(Metric::RadiusOverlay))
+        .border_1()
+        .border_color(l.border())
+        .child(avatar(initials(a.email), l))
+        .child(div().flex_1().min_w_0().flex().flex_col().gap_0p5().child(div().font_weight(FontWeight::SEMIBOLD).truncate().child(a.email)).child(
+            div().text_size(px(12.)).text_color(l.text2()).truncate().child(tr!(
+                "settings-account-line",
+                host = a.host.to_owned(),
+                status = tr!("settings-account-kind", kind = kind(a.kind))
+            )),
+        ))
+}
+
+/// Кружок с инициалами учётной записи.
+fn avatar(text: String, l: &Look) -> Div {
+    div()
+        .size(px(36.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .bg(l.picked())
+        .text_color(l.accent_text())
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(text)
+}
+
 impl SettingsView {
     pub(crate) fn accounts(&mut self, l: &Look, cx: &mut Context<Self>) -> (Option<Stateful<Div>>, AnyElement, Vec<Div>) {
         let adding = self.add.is_some();
@@ -40,20 +86,9 @@ impl SettingsView {
             }))
         });
         let mut list = div().flex().flex_col().gap_2().pt_3();
-        let avatar = |text: String| {
-            div()
-                .size(px(36.))
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded_full()
-                .bg(l.picked())
-                .text_color(l.accent_text())
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(text)
-        };
+        let avatar = |text: String| avatar(text, l);
         let card = || div().flex().items_center().gap_3().p_3().rounded(l.px(Metric::RadiusOverlay)).border_1().border_color(l.border());
+        let demo = !(self.info.live && self.info.account.is_some());
         match (&self.info.account, self.info.live) {
             (Some(a), true) => {
                 let password = match self.stored {
@@ -111,18 +146,11 @@ impl SettingsView {
                     );
                 }
             }
+            // Демо (S7-09б): основная учётка демо-ящика; дополнительные — ниже, после её общих ящиков.
             _ => {
-                list = list.child(
-                    card().child(avatar("D".into())).child(
-                        div()
-                            .flex_1()
-                            .flex()
-                            .flex_col()
-                            .gap_0p5()
-                            .child(div().font_weight(FontWeight::SEMIBOLD).child(tr!("settings-account-demo")))
-                            .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("settings-account-demo-hint"))),
-                    ),
-                );
+                if let Some(a) = postman_demo::ACCOUNTS.first() {
+                    list = list.child(demo_card(a, l));
+                }
             }
         }
         let shared_row = |name: &String| {
@@ -139,8 +167,10 @@ impl SettingsView {
         for name in &self.info.shared {
             list = list.child(shared_row(name));
         }
-        // Дополнительные учётные записи (S7-03б): та же карточка, «Удалить» — подтверждением строкой.
-        for (n, (profile, a, shared)) in self.info.extra.iter().enumerate() {
+        // Дополнительные учётные записи (S7-03б): та же карточка, «Удалить» — подтверждением строкой. Демо — свои
+        // карточки ниже (учётки демо-ящика в кэше — те же `ACCOUNTS`, но без узла и вида сервера).
+        let extra = if demo { &[][..] } else { &self.info.extra[..] };
+        for (n, (profile, a, shared)) in extra.iter().enumerate() {
             let confirm = self.remove_extra.as_deref() == Some(profile.as_str());
             let ask = profile.clone();
             list = list.child(
@@ -188,6 +218,11 @@ impl SettingsView {
             }
             for name in shared {
                 list = list.child(shared_row(name));
+            }
+        }
+        if demo {
+            for a in postman_demo::ACCOUNTS.iter().skip(1) {
+                list = list.child(demo_card(a, l));
             }
         }
         let body = div()
