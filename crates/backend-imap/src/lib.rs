@@ -386,8 +386,13 @@ async fn run(
     let address = Address::new("", &me.account.email);
     if me.profile.is_none() {
         // Основная учётная запись IMAP: почта и то, что нашлось по CalDAV/CardDAV (S7-03а «Нет у сервера — нет на
-        // экране»).
-        notify(Event::Features(me.areas.iter().fold(Features::NONE, |f, (_, a)| f.union(a.features()))));
+        // экране»). Ключевые слова (категории, сроки, «Ждём») — если сервер их хранит: `PERMANENTFLAGS \*` у «Входящих».
+        let keywords = match me.session().await {
+            Ok(s) => s.select("INBOX").await.is_ok_and(|sel| sel.keywords),
+            Err(_) => false,
+        };
+        let areas = me.areas.iter().fold(Features::NONE, |f, (_, a)| f.union(a.features()));
+        notify(Event::Features(areas.with(Feature::Keywords, keywords)));
         notify(Event::Me { address: address.clone(), signature: String::new() });
     }
     notify(Event::Senders(vec![Sender { account: me.scope.clone(), address, signature: String::new() }]));
