@@ -521,8 +521,9 @@ mod tests {
         }
     }
 
-    /// `docs/PARITY.md` — из реестра; доля сделанного не падает.
-    /// Обновить: `POSTMAN_UPDATE_DOCS=1 cargo test -p postman-gpui parity`.
+    /// `docs/PARITY.md` — из реестра; доля сделанного не падает (это проверяется всегда).
+    /// Устаревший документ PR не блокирует (R-04, скилл pets-dev): его обновляет полоса docs-gen раз в день
+    /// от main — `POSTMAN_UPDATE_DOCS=1 cargo test -p postman-gpui parity`.
     #[test]
     fn parity_doc_is_current() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/PARITY.md");
@@ -542,11 +543,8 @@ mod tests {
         }
         if std::env::var_os("POSTMAN_UPDATE_DOCS").is_some() {
             std::fs::write(&path, &doc).expect("запись docs/PARITY.md");
-        } else {
-            assert!(
-                old.replace("\r\n", "\n") == doc,
-                "docs/PARITY.md устарел: POSTMAN_UPDATE_DOCS=1 cargo test -p postman-gpui parity"
-            );
+        } else if old.replace("\r\n", "\n") != doc {
+            eprintln!("docs/PARITY.md устарел — обновит полоса docs-gen: POSTMAN_UPDATE_DOCS=1 cargo test -p postman-gpui parity");
         }
     }
 
