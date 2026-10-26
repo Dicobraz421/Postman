@@ -902,11 +902,6 @@ pub mod calendar {
         Owner { email: a.email.into(), name: a.email.into() }
     }
 
-    /// Календарь второй учётной записи демо («стандарты», CalDAV).
-    pub fn second_calendar() -> Owner {
-        of_account(&crate::STANDARDS)
-    }
-
     /// Календари дополнительных учёток демо (S7-09а), где календарь есть, — в «Моих календарях», по порядку дерева.
     pub fn account_calendars() -> Vec<Owner> {
         crate::ACCOUNTS.iter().filter(|a| a.profile.is_some() && a.has.calendar).map(of_account).collect()
@@ -920,29 +915,15 @@ pub mod calendar {
         e
     }
 
-    /// События второй учётной записи демо-недели («стандарты»).
-    pub fn second_events() -> Vec<Event> {
-        let a = &crate::STANDARDS;
-        vec![
-            account_event(a, "s", ("s1", "Созвон с партнёром"), 1, (16, 0), 60, "Teams"),
-            account_event(a, "s", ("s2", "Выставка: стенд"), 4, (11, 0), 120, "Экспоцентр"),
-        ]
-    }
-
-    /// События учётки Exchange демо-недели (EWS).
-    pub fn exchange_events() -> Vec<Event> {
-        let a = &crate::EXCHANGE;
-        vec![
-            account_event(a, "x", ("x1", "Комитет по бюджету"), 0, (15, 0), 60, "Зал совета"),
-            account_event(a, "x", ("x2", "Инструктаж по пропускам"), 3, (16, 30), 30, "Проходная"),
-        ]
-    }
-
-    /// События всех дополнительных учёток демо-недели (S7-09а).
+    /// События дополнительных учёток демо-недели (S7-09а): «стандарты» (CalDAV) и Exchange (EWS).
     pub fn account_events() -> Vec<Event> {
-        let mut v = second_events();
-        v.extend(exchange_events());
-        v
+        let (s, x) = (&crate::STANDARDS, &crate::EXCHANGE);
+        vec![
+            account_event(s, "s", ("s1", "Созвон с партнёром"), 1, (16, 0), 60, "Teams"),
+            account_event(s, "s", ("s2", "Выставка: стенд"), 4, (11, 0), 120, "Экспоцентр"),
+            account_event(x, "x", ("x1", "Комитет по бюджету"), 0, (15, 0), 60, "Зал совета"),
+            account_event(x, "x", ("x2", "Инструктаж по пропускам"), 3, (16, 30), 30, "Проходная"),
+        ]
     }
 
     /// Коллеги, открывшие мне календарь (S5-22): события их календарей — [`colleague_events`].
