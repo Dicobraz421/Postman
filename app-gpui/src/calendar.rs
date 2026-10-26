@@ -2649,7 +2649,7 @@ fn dotted(size: f32, color: Hsla) -> Div {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "calendar", texts: TEXTS, commands: COMMANDS, handlers, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "calendar", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Обработчики команд части — на корне экрана почты (`Mailer::render`).
 fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
@@ -2691,6 +2691,132 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("calendar.view_month", &["4"], CALENDAR),
     ]
 };
+
+/// Сцены `--screens` календаря (ADR 0005).
+pub(crate) mod scenes {
+    use gpui_kit::*;
+    use postman_core::prefs::CalendarView as V;
+
+    use crate::screens::{self, Scene};
+    use crate::{Mailer, Section};
+
+    pub(crate) const SCENES: &[Scene] = &[
+        // Раздел «Календарь»: неделя и приглашение без ответа в подробностях (S5-11).
+        Scene::new("calendar", week, week_ready).live(),
+        // Календарь с подробностями самого людного события (S3-05).
+        Scene::new("event", event, event_ready).live(),
+        // Своя встреча с участниками (S7-07б): в подробностях — «Изменить» и «Отменить встречу».
+        Scene::new("event-organizer", own, event_ready),
+        // «Отменить встречу» у своей повторяющейся встречи: строка «Только эту / Всю серию / Не отменять».
+        Scene::new("event-cancel", own, event_ready),
+        // Календари коллег (S5-22): события коллег цветом их календаря и с именем владельца, слева «Календари коллег»;
+        // открыто событие из календаря коллеги.
+        Scene::new("calendar-colleagues", colleagues, colleagues_ready),
+        // Виды календаря (S5-21): «День» — среда демо-недели, «Неделя» — с выходными, «Месяц» — клетки с полосами
+        // многодневных и строками событий, «+N ещё».
+        Scene::new("calendar-day", view, view_ready),
+        Scene::new("calendar-week", view, view_ready),
+        Scene::new("calendar-month", view, view_ready),
+        // Поиск над панелью события: найденное списком с датами (демо — по всем событиям).
+        Scene::new("calendar-search", search, search_ready),
+    ];
+
+    /// Запрос снимка `calendar-search`: место нескольких встреч демо (планёрки, демо продукта, итоги недели).
+    const QUERY: &str = "Переговорная 1"; // i18n-ok: место в демо-данных
+
+    fn week(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.close_palette(window, cx);
+        // Как `search::Clear`: календарь снимается без следов поиска в папках.
+        m.search.update(cx, |s, cx| s.set_value("", window, cx));
+        m.run_search("", cx);
+        m.set_section(Section::Calendar, cx);
+        // «Сейчас» — 14:20 сегодня: линия времени видна при любом часе съёмки.
+        let today = jiff::Zoned::now().date().at(14, 20, 0, 0);
+        let clock = today.to_zoned(jiff::tz::TimeZone::system()).ok().map(|z| z.timestamp().as_second());
+        m.cal.update(cx, |c, cx| {
+            c.clock = clock;
+            c.escape(window, cx);
+            c.set_view(V::WorkWeek, cx);
+            c.go_to_demo_week(cx);
+            c.select_pending(cx);
+        });
+        Ok(())
+    }
+
+    fn week_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let c = m.cal.read(cx);
+        // Живой ящик: неделя пришла с сервера.
+        let loaded = c.loaded || screens::demo(m);
+        m.section == Section::Calendar && c.clock.is_some() && loaded
+    }
+
+    fn event(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.cal.update(cx, |c, cx| c.select_busiest(cx));
+        m.set_section(Section::Calendar, cx);
+        Ok(())
+    }
+
+    fn own(s: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        let cancel = s.name == "event-cancel";
+        m.cal.update(cx, |c, cx| c.select_own(cancel, cx));
+        m.set_section(Section::Calendar, cx);
+        Ok(())
+    }
+
+    fn event_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        // Живая неделя может быть пустой: тогда снимок — без подробностей.
+        let c = m.cal.read(cx);
+        m.section == Section::Calendar && (c.selected() || c.is_empty())
+    }
+
+    fn colleagues(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.cal.update(cx, |c, cx| c.select_colleague(cx));
+        m.set_section(Section::Calendar, cx);
+        Ok(())
+    }
+
+    fn colleagues_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.section == Section::Calendar && m.cal.read(cx).selected()
+    }
+
+    fn view_of(s: &Scene) -> V {
+        match s.name {
+            "calendar-day" => V::Day,
+            "calendar-week" => V::Week,
+            _ => V::Month,
+        }
+    }
+
+    fn view(s: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        let view = view_of(s);
+        m.set_section(Section::Calendar, cx);
+        m.cal.update(cx, |c, cx| {
+            c.set_view(view, cx);
+            // День — среда демо-недели: пересечения и «под вопросом».
+            if view == V::Day { c.go_to_demo_day(2, cx) } else { c.go_to_demo_week(cx) }
+            c.select_pending(cx);
+        });
+        Ok(())
+    }
+
+    fn view_ready(s: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.section == Section::Calendar && m.cal.read(cx).view == view_of(s)
+    }
+
+    fn search(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.set_section(Section::Calendar, cx);
+        m.cal.update(cx, |c, cx| {
+            c.set_view(V::WorkWeek, cx);
+            c.go_to_demo_week(cx);
+            c.type_query(QUERY, window, cx);
+        });
+        Ok(())
+    }
+
+    fn search_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.section == Section::Calendar && m.cal.read(cx).results_ready()
+    }
+}
 
 #[cfg(test)]
 mod tests {

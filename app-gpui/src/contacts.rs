@@ -1832,7 +1832,7 @@ pub(crate) fn add_demo(book: &mut AddressBook) {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "contacts", texts: TEXTS, commands: COMMANDS, handlers, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "contacts", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Обработчики команд части — на корне экрана почты (`Mailer::render`).
 fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
@@ -1874,6 +1874,72 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("contacts.copy_address", &[], CONTACTS_ANY),
     ]
 };
+
+/// Сцены `--screens` контактов (ADR 0005).
+pub(crate) mod scenes {
+    use gpui_kit::*;
+
+    use crate::screens::{self, Scene};
+    use crate::{Mailer, Section};
+
+    pub(crate) const SCENES: &[Scene] = &[
+        // Раздел «Контакты»: список и карточка первого контакта (S4-02).
+        Scene::new("contacts", contacts, contacts_ready).live(),
+        // Форма правки первого контакта (демо).
+        Scene::new("contact-edit", edit, edit_ready).continues(),
+        // «Часто пишу» (S5-25): адресаты переписки по частоте, первая строка выбрана.
+        Scene::new("contacts-frequent", frequent, frequent_ready).continues().wait(frequent_wait),
+    ];
+
+    fn contacts(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.cal.update(cx, |c, cx| c.close_details(cx));
+        m.close_all_meetings(window, cx);
+        m.set_section(Section::Contacts, cx);
+        let live = screens::live(m);
+        m.contacts.update(cx, |c, cx| {
+            c.select_first(cx);
+            // Демо: коллега, чья занятость есть в демо-неделе, — видна полоса «Сегодня».
+            if !live {
+                c.select_email("m.ivanova@corp.example", cx);
+            }
+        });
+        Ok(())
+    }
+
+    fn contacts_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        // Живой ящик: контакты с сервера пришли — выделить первый (до ответа выделять нечего).
+        m.section == Section::Contacts && m.contacts.read(cx).ready()
+    }
+
+    fn edit(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.contacts.update(cx, |c, cx| c.edit_selected(window, cx));
+        Ok(())
+    }
+
+    fn edit_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.section == Section::Contacts && m.contacts.read(cx).editing()
+    }
+
+    fn frequent(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        // Из правки — назад к карточке; «Часто пишу» — из адресной книги переписки (собирается в фоне).
+        m.contacts.update(cx, |c, cx| c.escape(window, cx));
+        m.load_address_book(cx);
+        m.contacts_frequent(cx);
+        m.contacts.update(cx, |c, cx| c.show_frequent(cx));
+        Ok(())
+    }
+
+    fn frequent_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.contacts.read(cx).frequent_shown() && m.contacts.read(cx).ready()
+    }
+
+    /// Книга собирается в фоне: пока «Часто пишу» пуст — открыть снова, когда придёт.
+    fn frequent_wait(_: &Scene, m: &mut Mailer, cx: &mut Context<Mailer>) {
+        if !m.contacts.read(cx).frequent_shown() {
+            m.contacts.update(cx, |c, cx| c.show_frequent(cx));
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

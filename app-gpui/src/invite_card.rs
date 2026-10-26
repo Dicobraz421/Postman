@@ -1030,7 +1030,7 @@ fn demo_day(date: jiff::civil::Date, tz: &TimeZone) -> Vec<Event> {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "invite", commands: COMMANDS, handlers, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "invite", commands: COMMANDS, handlers, scenes: scenes::SCENES, reset: Some(scenes::reset), ..crate::part::Part::NONE };
 
 /// Обработчики команд части — на корне экрана почты (`Mailer::render`).
 fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
@@ -1058,6 +1058,80 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("invite.decline", &[], LIST),
     ]
 };
+
+/// Сцены `--screens` приглашений (ADR 0005).
+pub(crate) mod scenes {
+    use gpui_kit::*;
+    use postman_cache::BodyRow;
+
+    use crate::Mailer;
+    use crate::screens::{self, Scene};
+
+    pub(crate) const SCENES: &[Scene] = &[
+        // Письмо с приглашением: карточка встречи (S3-03), новое — с пересечением с моим днём (S5-11).
+        Scene::new("invite", invite, invite_ready).after("letter-image").wait(new_invite),
+        // Та же карточка: отвечено, изменено организатором, отменено, устарело (S5-11; подмена входов карточки).
+        Scene::new("invite-answered", state, state_ready).continues(),
+        Scene::new("invite-updated", state, state_ready).continues(),
+        Scene::new("invite-cancelled", state, state_ready).continues(),
+        Scene::new("invite-outdated", state, state_ready).continues(),
+        // Приглашение боковой панелью справа (S5-24, «Настройки → Чтение»): строка над письмом, панель — рядом.
+        Scene::new("invite-side", state, state_ready).continues(),
+    ];
+
+    /// Боковая панель приглашения — только в своей сцене (S5-24).
+    pub(crate) fn reset(s: &Scene, _: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) {
+        let side = s.name == "invite-side";
+        if crate::prefs::get(cx).reading.invite_side != side {
+            crate::prefs::update(cx, |p| p.reading.invite_side = side);
+        }
+    }
+
+    /// Письмо демо с приглашением (и для сцены `keytips-single`).
+    pub(crate) fn invitation(b: &BodyRow) -> bool {
+        b.attachments.iter().any(crate::attachments::is_invite)
+    }
+
+    fn invite(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        screens::select_demo(m, invitation, cx)
+    }
+
+    fn invite_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let target = screens::demo_id(m.list.read(cx), invitation);
+        let shown = |r: &crate::reading::Reading| {
+            r.doc.is_some()
+                && r.invite.as_ref().is_some_and(|c| c.invitation().is_some() && c.day.is_some() && c.clock.is_some())
+        };
+        target.is_some() && screens::reading(m, cx).is_some_and(|r| Some(r.row.id.as_str()) == target && shown(r))
+    }
+
+    /// Встреча демо — в прошлом (файл `.ics` с датой): «сейчас» — за сутки до неё, карточка — новое приглашение.
+    fn new_invite(_: &Scene, m: &mut Mailer, cx: &mut Context<Mailer>) {
+        m.reading.update(cx, |r, cx| {
+            let card = r.reading.as_mut().and_then(|r| r.invite.as_mut());
+            if let Some(c) = card.filter(|c| c.invitation().is_some() && c.clock.is_none()) {
+                c.screen_state("new");
+                cx.notify();
+            }
+        });
+    }
+
+    fn state(s: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        let which = s.name.trim_start_matches("invite-");
+        m.reading.update(cx, |r, cx| {
+            if let Some(c) = r.reading.as_mut().and_then(|r| r.invite.as_mut()) {
+                c.screen_state(which);
+            }
+            cx.notify();
+        });
+        Ok(())
+    }
+
+    fn state_ready(s: &Scene, m: &Mailer, cx: &App) -> bool {
+        let side = s.name != "invite-side" || crate::prefs::get(cx).reading.invite_side;
+        side && screens::reading(m, cx).and_then(|r| r.invite.as_ref()).is_some_and(|c| c.clock.is_some())
+    }
+}
 
 #[cfg(test)]
 mod tests {

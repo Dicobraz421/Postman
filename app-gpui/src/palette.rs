@@ -773,7 +773,7 @@ impl Mailer {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "palette", texts: TEXTS, commands: COMMANDS, handlers, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "palette", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Обработчики команд части — на корне экрана почты (`Mailer::render`).
 fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
@@ -803,6 +803,48 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("palette.close", &["escape"], PALETTE),
     ]
 };
+
+/// Сцены `--screens` палитры (ADR 0005).
+pub(crate) mod scenes {
+    use gpui_kit::*;
+
+    use crate::Mailer;
+    use crate::screens::Scene;
+
+    pub(crate) const SCENES: &[Scene] = &[
+        // Палитра команд Ctrl+K с пустым запросом: недавние — первыми.
+        Scene::new("palette", open, open_ready),
+        // Палитра с запросом в другой раскладке.
+        Scene::new("palette-query", query, query_ready).continues(),
+    ];
+
+    /// Палитра с запросом: «от», набранное в английской раскладке, — команды, папки и письма (S5-10).
+    const QUERY: &str = "jn";
+
+    fn open(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        // Недавние — как после трёх запусков из палитры.
+        m.recent = vec!["cmd:mail.due".into(), "folder:archive".into(), "cmd:mail.reply_all".into()];
+        m.toggle_palette(window, cx);
+        Ok(())
+    }
+
+    fn open_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.palette.as_ref().is_some_and(|p| p.view.read(cx).shown() > 0)
+    }
+
+    fn query(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        let Some(p) = m.palette.as_ref().map(|p| p.view.clone()) else { return Err("palette is not open".into()) };
+        let input = p.read(cx).input.clone();
+        input.update(cx, |s, cx| s.set_value(QUERY, window, cx));
+        // Как набор: `set_value` не шлёт `Change`.
+        p.update(cx, |p, cx| p.typed(cx));
+        Ok(())
+    }
+
+    fn query_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.palette.as_ref().is_some_and(|p| p.view.read(cx).has_letters())
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -2728,7 +2728,7 @@ pub(crate) fn demo(now: i64, tz: &TimeZone) -> Vec<Task> {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "tasks", texts: TEXTS, commands: COMMANDS, handlers, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "tasks", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Обработчики команд части — на корне экрана почты (`Mailer::render`).
 fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
@@ -2792,6 +2792,187 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("task.revoke", &[], TASKS),
     ]
 };
+
+/// Сцены `--screens` задач и поручений (ADR 0005).
+pub(crate) mod scenes {
+    use gpui_kit::*;
+    use postman_core::tasks::List;
+    use postman_demo::delegations as d;
+
+    use crate::screens::{self, Scene};
+    use crate::{Mailer, Section};
+
+    pub(crate) const SCENES: &[Scene] = &[
+        // Модуль «Задачи» (S6-05): «Сегодня», карточка задачи с подзадачами и заметкой (демо).
+        Scene::new("tasks", list, ready),
+        // «Сегодня» с выбранной просроченной задачей: «Просрочено» сверху, метка срока в карточке.
+        Scene::new("tasks-today", list, ready),
+        // Проект с прогрессом слева и его задачи.
+        Scene::new("tasks-project", list, ready),
+        // «Выполненные»: сегодня, вчера.
+        Scene::new("tasks-done", list, ready),
+        // «Добавить задачу» с фразой (S6-04): распознанное — чипами, итог строкой.
+        Scene::new("task-quickadd", card, ready),
+        // Карточка задачи (S6-06): варианты проекта открыты, подзадачи с полем «Добавить подзадачу».
+        Scene::new("task-card", card, ready),
+        // Карточка задачи со ссылкой на письмо (блок письма с «Открыть»).
+        Scene::new("task-card-mail", card, ready),
+        // Заметки задачи — Markdown с живым отображением, фокус в поле.
+        Scene::new("task-notes", card, ready),
+        // «Время в календаре» (S6-08): блок поставлен в ближайшее свободное окно.
+        Scene::new("task-timeblock", card, ready),
+        // Поручения (S6-10): форма «Поручить» с выбранным исполнителем, наблюдателем и сроком.
+        Scene::new("delegate", delegation, delegation_ready),
+        // Поручено мне: карточка с «Принять» / «Предложить срок» / «Отклонить».
+        Scene::new("delegation-in", delegation, delegation_ready),
+        // Я поручил, готово — на проверку: ход, результат, лента шагов, «Принять результат».
+        Scene::new("delegation-steps", delegation, delegation_ready),
+        // Проект поручений демо: круги всех статусов в списке.
+        Scene::new("delegation-statuses", delegation, delegation_ready),
+        // «Поручения» → «Я поручил» (S6-11): группы, «Напомнить всем», «Только свои» снят — и где я наблюдатель.
+        Scene::new("delegations-out", delegations, delegations_ready),
+        // «Поручения» → «Мне поручили»: новые, в работе, на проверке.
+        Scene::new("delegations-in", delegations, delegations_ready),
+        // «Отправленные» с быстрым фильтром «Ждём»: письма моих невыполненных поручений и «Ждём ответа».
+        Scene::new("quick-wait", quick_wait, quick_wait_ready),
+        // Письмо-поручение: карточка поручения над текстом письма.
+        Scene::new("delegation-mail", letter, letter_ready),
+        // Повтор (S6-07): варианты повтора в карточке.
+        Scene::new("task-repeat", card, ready),
+    ];
+
+    fn ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.section == Section::Tasks && m.tasks.read(cx).ready()
+    }
+
+    fn list(s: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.set_section(Section::Tasks, cx);
+        m.tasks.update(cx, |t, cx| match s.name {
+            "tasks-project" => t.set_nav(crate::tasks::Nav::Project(postman_demo::tasks::PROJECT.into()), cx),
+            "tasks-done" => t.set_nav(crate::tasks::Nav::List(List::Done), cx),
+            _ => {
+                t.set_nav(crate::tasks::Nav::List(List::Today), cx);
+                let title = if s.name == "tasks" { postman_demo::tasks::MAIN } else { postman_demo::tasks::OVERDUE };
+                t.select_title(title, cx);
+            }
+        });
+        Ok(())
+    }
+
+    fn card(s: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.set_section(Section::Tasks, cx);
+        let first = m.list.read(cx).row(0).cloned();
+        m.tasks.update(cx, |t, cx| {
+            t.set_nav(crate::tasks::Nav::List(List::Today), cx);
+            t.select_title(postman_demo::tasks::MAIN, cx);
+            match s.name {
+                "task-quickadd" => t.set_quick(postman_demo::tasks::QUICK, window, cx),
+                "task-card" => t.toggle_field(crate::tasks::Field::Project, cx),
+                "task-card-mail" => {
+                    if let Some(row) = first {
+                        t.attach_demo_letter(row, cx);
+                    }
+                }
+                "task-notes" => t.focus_notes(window, cx),
+                "task-repeat" => t.demo_repeat(cx),
+                _ => t.demo_block(cx),
+            }
+        });
+        Ok(())
+    }
+
+    fn delegation(s: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.set_section(Section::Tasks, cx);
+        m.tasks.update(cx, |t, cx| match s.name {
+            "delegate" => {
+                t.set_nav(crate::tasks::Nav::List(List::Today), cx);
+                t.select_title(d::TO_ASSIGN, cx);
+                t.screen_form(window, cx);
+            }
+            _ => {
+                t.set_nav(crate::tasks::Nav::Project(d::PROJECT.into()), cx);
+                // Статусы — первая строка (отклонённое: «Поручить другому»); ход и лента — готовое на проверку.
+                match s.name {
+                    "delegation-in" => t.select_title(d::INCOMING, cx),
+                    "delegation-steps" => t.select_title(d::REVIEW, cx),
+                    _ => {}
+                }
+            }
+        });
+        Ok(())
+    }
+
+    fn delegation_ready(s: &Scene, m: &Mailer, cx: &App) -> bool {
+        let t = m.tasks.read(cx);
+        m.section == Section::Tasks && t.ready() && (s.name != "delegate" || t.screen_form_open())
+    }
+
+    fn delegations(s: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        use postman_core::assign::Tab;
+        m.set_section(Section::Tasks, cx);
+        m.tasks.update(cx, |t, cx| {
+            if s.name == "delegations-out" {
+                t.own_only = false;
+                t.set_tab(Tab::ByMe, cx);
+                t.select_title(d::REVIEW, cx);
+            } else {
+                t.set_tab(Tab::ToMe, cx);
+                t.select_title(d::INCOMING, cx);
+            }
+        });
+        Ok(())
+    }
+
+    fn delegations_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let t = m.tasks.read(cx);
+        m.section == Section::Tasks && t.ready() && matches!(t.nav, crate::tasks::Nav::Delegations(_))
+    }
+
+    fn quick_wait(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        use postman_core::filters::Quick;
+        m.set_section(Section::Mail, cx);
+        m.open_mailbox("sent".into(), cx);
+        m.filters.update(cx, |f, cx| {
+            f.set(cx, |f| f.panel = false);
+            f.change(cx, |q| {
+                q.scope = crate::filters::Where::Folder;
+                q.criteria.clear_panel();
+                q.criteria.quick.clear();
+                q.criteria.quick.insert(Quick::Waiting);
+            });
+        });
+        Ok(())
+    }
+
+    fn quick_wait_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let list = m.list.read(cx);
+        list.query.scope == crate::filters::Where::Folder
+            && list.query.criteria.quick.contains(&postman_core::filters::Quick::Waiting)
+            && list.view.is_some()
+            && !list.computing
+            && (screens::rows_loaded(list) || list.count == 0)
+    }
+
+    fn todo(b: &postman_cache::BodyRow) -> bool {
+        screens::has(b, "todo")
+    }
+
+    fn letter(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.set_section(Section::Mail, cx);
+        let Some(i) = screens::demo_row(m.list.read(cx), todo) else {
+            return Err("no delegation letter in the demo inbox".into());
+        };
+        m.list.update(cx, |l, cx| l.select(i, cx));
+        Ok(())
+    }
+
+    fn letter_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let target = screens::demo_id(m.list.read(cx), todo);
+        target.is_some()
+            && screens::reading(m, cx)
+                .is_some_and(|r| Some(r.row.id.as_str()) == target && r.doc.is_some() && r.task_mail.is_some())
+    }
+}
 
 #[cfg(test)]
 mod tests {

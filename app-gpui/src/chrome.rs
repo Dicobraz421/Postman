@@ -708,7 +708,7 @@ impl Mailer {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "frame", texts: TEXTS, commands: COMMANDS, handlers, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "frame", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, reset: Some(scenes::reset), ..crate::part::Part::NONE };
 
 /// Обработчики команд части — на корне экрана почты (`Mailer::render`).
 fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
@@ -769,6 +769,60 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("view.notifications", &[], None),
     ]
 };
+
+/// Сцены `--screens` вкладок окна (ADR 0005).
+pub(crate) mod scenes {
+    use gpui_kit::*;
+
+    use crate::screens::{self, Scene};
+    use crate::tabs::TabKind;
+    use crate::{Mailer, Section};
+
+    pub(crate) const SCENES: &[Scene] = &[
+        // Две вкладки почты (S5-16, Ctrl+T): главная на «Входящих», вторая — «Все папки» с «Непрочитанными», активна.
+        Scene::new("tab-mail", tab_mail, tab_mail_ready).after("quick"),
+    ];
+
+    /// Вкладка почты сцены `tab-mail` — только в ней: дальше — главная со своим состоянием (как Ctrl+W).
+    pub(crate) fn reset(s: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) {
+        let mail_tab = m.tabs.iter().find(|t| t.kind == TabKind::Mail).map(|t| t.id);
+        if let Some(id) = mail_tab.filter(|_| s.name != "tab-mail") {
+            m.close_tab(id, window, cx);
+        }
+    }
+
+    fn tab_mail(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        use postman_core::filters::Check;
+        m.set_section(Section::Mail, cx);
+        m.reset_filters(cx);
+        m.filters.update(cx, |f, cx| f.set(cx, |f| f.quick_open = false));
+        let inbox = crate::live::inbox(&m.folders.read(cx).mailboxes);
+        let Some(id) = inbox else { return Err("no inbox".into()) };
+        m.open_mailbox(id.clone(), cx);
+        // Как Ctrl+T: вторая вкладка на той же папке; в ней — «Все папки» и «Непрочитанные».
+        m.new_mail_tab(window, cx);
+        m.open_mailbox(id, cx);
+        m.filters.update(cx, |f, cx| {
+            f.change(cx, |q| {
+                q.scope = crate::filters::Where::All;
+                q.criteria.toggle_check(Check::Unread);
+            })
+        });
+        Ok(())
+    }
+
+    fn tab_mail_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let list = m.list.read(cx);
+        m.tabs.is_active(TabKind::Mail)
+            && m.tabs.iter().filter(|t| t.kind == TabKind::Mail).count() == 1
+            && m.section == Section::Mail
+            && list.query.scope == crate::filters::Where::All
+            && !list.query.criteria.is_empty()
+            && list.view.is_some()
+            && !list.computing
+            && screens::rows_loaded(list)
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -456,13 +456,53 @@ impl Render for SignIn {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "signin", texts: TEXTS, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "signin", texts: TEXTS, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
 const TEXTS: &[pets_i18n::Resource] = &[
     ("ru", include_str!("../i18n/ru/account.ftl")),
     ("en", include_str!("../i18n/en/account.ftl")),
 ];
+
+/// Сцены `--screens` первого запуска (ADR 0005).
+pub(crate) mod scenes {
+    use gpui_kit::*;
+
+    use crate::screens::Scene;
+    use crate::{Mailer, Section};
+
+    /// Имя сцены строки входа: её одну снимает `--screens --live` без учётной записи в окружении.
+    pub(crate) const FIRSTRUN: &str = "firstrun";
+
+    pub(crate) const SCENES: &[Scene] = &[
+        // Первый запуск (S5-09): добавление аккаунта на месте экрана почты (сроки прошлых сцен сняты).
+        Scene::new(FIRSTRUN, firstrun, firstrun_ready),
+    ];
+
+    fn firstrun(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        // Уведомления сцены `toasts` — убрать: первый запуск без них.
+        m.toasts.update(cx, |t, cx| {
+            t.hide_all(cx);
+            if t.is_history_open() {
+                t.toggle_history(cx);
+            }
+        });
+        // Сроки сцены `lifecycle` — снять: дальше снимки без них.
+        let undo = m.screens.as_mut().map(|d| std::mem::take(&mut d.undo)).unwrap_or_default();
+        m.apply_patches(undo, cx);
+        m.close_settings(window, cx);
+        m.set_section(Section::Mail, cx);
+        // Демо: первый запуск без учётной записи — так же, как без `POSTMAN_URL` и сохранённого входа.
+        if m.live.signin.is_none() {
+            m.show_signin(None, window, cx);
+        }
+        Ok(())
+    }
+
+    fn firstrun_ready(_: &Scene, m: &Mailer, _: &App) -> bool {
+        m.live.signin.is_some() && !m.tabs.is_active(crate::tabs::TabKind::Settings)
+    }
+}
 
 #[cfg(test)]
 mod tests {

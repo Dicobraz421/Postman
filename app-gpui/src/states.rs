@@ -195,13 +195,68 @@ impl crate::Mailer {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "states", texts: TEXTS, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "states", texts: TEXTS, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
 const TEXTS: &[pets_i18n::Resource] = &[
     ("ru", include_str!("../i18n/ru/states.ftl")),
     ("en", include_str!("../i18n/en/states.ftl")),
 ];
+
+/// Сцены `--screens` состояний ящика (ADR 0005).
+pub(crate) mod scenes {
+    use gpui_kit::*;
+    use postman_core::settings::Usage;
+
+    use crate::screens::Scene;
+    use crate::{Mailer, Section};
+
+    pub(crate) const SCENES: &[Scene] = &[
+        // Ящик заполнен на 94 % (S5-29): индикатор в строке состояния и тост «Очистить вложения…».
+        Scene::new("quota", quota, quota_ready),
+        // Нет связи: строка состояния с обратным отсчётом, метка у аккаунта, полоса над списком.
+        Scene::new("offline", offline, offline_ready),
+    ];
+
+    fn quota(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        // Окно почты, как на макете: полоса «Автоответ включён» (образец сцены `vacation`) и строка состояния.
+        m.close_settings(window, cx);
+        m.set_section(Section::Mail, cx);
+        m.close_menu(cx);
+        m.toasts.update(cx, |t, cx| t.hide_all(cx));
+        // 9,4 из 10 ГБ, как на макете; тост — заново (прежняя заполненность — ниже порога).
+        let limit: u64 = 10 << 30;
+        m.set_quota(None, cx);
+        m.set_quota(Some(Usage { used: (limit * 94).div_ceil(100), limit }), cx);
+        Ok(())
+    }
+
+    fn quota_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.toasts.read(cx).on_screen() > 0 && m.settings.quota.is_some() && !m.tabs.is_active(crate::tabs::TabKind::Settings)
+    }
+
+    fn offline(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.close_menu(cx);
+        m.toasts.update(cx, |t, cx| t.hide_all(cx));
+        // После `quota` — снова 12 % из 2 ГБ.
+        if m.settings.quota.is_some_and(|u| u.percent() > postman_core::settings::WARN_PERCENT) {
+            let limit: u64 = 2 << 30;
+            m.set_quota(Some(Usage { used: limit / 8, limit }), cx);
+        }
+        let own = postman_demo::ME.to_owned();
+        m.folders.update(cx, |f, cx| {
+            f.own = Some(own);
+            cx.notify();
+        });
+        // Как событие синхронизации: связи нет, повтор через 25 с, две правки в очереди.
+        m.on_connection(postman_core::link::Connection::Offline { retry_in: 25, queued: 2 }, cx);
+        Ok(())
+    }
+
+    fn offline_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.offline.is_down() && m.list.read(cx).offline.is_some()
+    }
+}
 
 #[cfg(test)]
 mod tests {
