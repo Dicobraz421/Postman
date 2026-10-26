@@ -1,0 +1,5 @@
+# Коммиты без правок по сути — git blame их пропускает (`git config blame.ignoreRevsFile .git-blame-ignore-revs`;
+# GitHub — сам). PR с такими коммитами мержится merge-коммитом, чтобы хеш остался тем же.
+
+# rustfmt: cargo fmt --all по rustfmt.toml (2026-10-26)
+6dc6d6d862e08ce08d423f3285f662c2b0c727aa
