@@ -443,6 +443,22 @@ fn build_chain_algs() -> Vec<ChainAlg> {
     out
 }
 
+/// Содержимое `AlgorithmIdentifier` (без заголовка `SEQUENCE`) из DER.
+fn alg_content(der: &[u8]) -> Option<&[u8]> {
+    let (t, rest) = crate::ber::read(der)?;
+    (rest.is_empty() && t.tag == 0x30).then_some(t.value)
+}
+
+/// Подпись `signature` над `tbs` (сертификат, CRL) ключом `spki` по алгоритму `sig_alg` (содержимое
+/// `AlgorithmIdentifier`, как в подписанной структуре) — по той же таблице, что у цепочки: алгоритм ищется по точным
+/// байтам подписи и ключа. `None` — такого алгоритма в таблице нет.
+pub(crate) fn verify_signed(sig_alg: &[u8], spki: &SubjectPublicKeyInfoOwned, tbs: &[u8], signature: &[u8]) -> Option<bool> {
+    let der = spki.algorithm.to_der().ok()?;
+    let pk = alg_content(&der)?;
+    let alg = chain_algs().iter().find(|a| a.signature_alg_id().as_ref() == sig_alg && a.public_key_alg_id().as_ref() == pk)?;
+    Some(alg.verify_signature(spki.subject_public_key.raw_bytes(), tbs, signature).is_ok())
+}
+
 /// Алгоритмы подписи сертификатов для `rustls-webpki`.
 pub(crate) fn chain_algs() -> &'static [&'static dyn SignatureVerificationAlgorithm] {
     static ALGS: OnceLock<Vec<&'static dyn SignatureVerificationAlgorithm>> = OnceLock::new();
@@ -471,12 +487,7 @@ mod tests {
 
     /// Подпись `tbs` (сертификат или CRL) проверяется алгоритмом из таблицы цепочки, найденным по точным байтам.
     fn verify_signed(tbs_alg: &[u8], spki: &SubjectPublicKeyInfoOwned, tbs: &[u8], sig: &[u8]) -> bool {
-        let pk = content(&spki.algorithm.to_der().unwrap());
-        let alg = chain_algs()
-            .iter()
-            .find(|a| a.signature_alg_id().as_ref() == tbs_alg && a.public_key_alg_id().as_ref() == pk.as_slice())
-            .unwrap_or_else(|| panic!("нет алгоритма для {tbs_alg:02X?} / {pk:02X?}"));
-        alg.verify_signature(spki.subject_public_key.raw_bytes(), tbs, sig).is_ok()
+        super::verify_signed(tbs_alg, spki, tbs, sig).unwrap_or_else(|| panic!("нет алгоритма для {tbs_alg:02X?}"))
     }
 
     /// Совместимость кодирования ГОСТ с независимой реализацией: примеры RFC 9215 (приложение D) — самоподписанные
