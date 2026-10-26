@@ -411,7 +411,7 @@ mod tests {
     /// Красным — только повреждённое письмо; «Ввести» — у PIN, «Повторить» — у карты.
     #[test]
     fn problems_map_to_lines() {
-        let _ = pets_i18n::init(&[crate::TEXTS], "ru");
+        let _ = pets_i18n::init(&crate::parts::texts(), "ru");
         assert!(Problem::Damaged.danger());
         assert!(!Problem::NotForYou(vec!["УЦ, № 51".into()]).danger());
         assert_eq!(Problem::NeedPin.action().map(|a| a.0), Some("smime-enc-enter"));

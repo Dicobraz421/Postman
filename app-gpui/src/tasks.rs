@@ -2540,7 +2540,7 @@ impl Render for TasksBar {
         let can_delegate = editable && (deleg.is_none() || can(postman_calendar::assign::Action::Reassign));
         let (can_remind, can_revoke) = (can(postman_calendar::assign::Action::Remind), can(postman_calendar::assign::Action::Revoke));
         let search_state = v.search.clone();
-        use crate::commands::task as cmd;
+        use crate::tasks::task as cmd;
         let action = |id: &'static str, glyph: char, text: String, command: &'static str, on: bool, act: fn() -> Box<dyn Action>, cx: &App| {
             let b = crate::chrome::quiet_button(id, &l)
                 .child(icon(glyph, 16.))
@@ -2726,6 +2726,48 @@ pub(crate) fn demo(now: i64, tz: &TimeZone) -> Vec<Task> {
     out.extend(postman_demo::delegations::all(today, now));
     out
 }
+
+/// Опись части (ADR 0005, `parts.rs`).
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "tasks", texts: TEXTS, commands: COMMANDS, ..crate::part::Part::NONE };
+
+/// Тексты части (`i18n/<язык>/<часть>.ftl`).
+const TEXTS: &[pets_i18n::Resource] = &[
+    ("ru", include_str!("../i18n/ru/tasks.ftl")),
+    ("en", include_str!("../i18n/en/tasks.ftl")),
+];
+
+/// Задачи (S6-05): новая, выполнить / вернуть, срок, переименовать, удалить, открыть письмо, по списку.
+pub(crate) mod task {
+    gpui_kit::actions!(task, [New, Complete, Due, Edit, Delete, Open, Next, Prev, SlotNext, SlotPrev, Block, Delegate, Remind, RemindAll, Revoke]);
+}
+
+/// Команды части (`commands.rs`: контексты и `cmd`).
+const COMMANDS: &[pets_commands::Command] = {
+    use crate::commands::{TASKS_ANY, TASKS, cmd};
+    &[
+        // Задачи (S6-05, решение 6 S6): Ctrl+N — новая задача (в модуле; в почте — письмо: контекст глубже), Space —
+        // выполнено / вернуть, Insert — срок (как в почте, S5-16), Del — удалить, F2 — переименовать, Enter — письмо
+        // задачи, стрелки — по списку. Ctrl+Shift+K Outlook не берём (не в исключениях правила).
+        cmd("task.new", &["ctrl-n"], TASKS_ANY),
+        cmd("task.complete", &["space"], TASKS),
+        cmd("task.due", &["insert"], TASKS),
+        cmd("task.edit", &["f2"], TASKS),
+        cmd("task.delete", &["delete"], TASKS),
+        cmd("task.open", &["enter"], TASKS),
+        cmd("task.next", &["down"], TASKS),
+        cmd("task.prev", &["up"], TASKS),
+        // «Время в календаре» (S6-08): ←/→ — соседнее свободное окно, как во встрече; поставить — кнопкой (Enter — письмо).
+        cmd("task.slot_next", &["right"], TASKS),
+        cmd("task.slot_prev", &["left"], TASKS),
+        cmd("task.block", &[], TASKS),
+        // Поручения (S6-10): «Поручить», «Напомнить», «Забрать» — кнопки командной строки, без клавиш (главное действие
+        // поручения — Space, срок — Insert, как у задачи).
+        cmd("task.delegate", &[], TASKS),
+        cmd("task.remind", &[], TASKS),
+        cmd("task.remind_all", &[], TASKS),
+        cmd("task.revoke", &[], TASKS),
+    ]
+};
 
 #[cfg(test)]
 mod tests {

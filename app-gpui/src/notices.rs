@@ -619,6 +619,9 @@ impl Render for Notices {
     }
 }
 
+/// Опись части (ADR 0005, `parts.rs`).
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "notices", ..crate::part::Part::NONE };
+
 #[cfg(test)]
 mod tests {
     use super::{Level, MAX_HISTORY, Show, Stack};

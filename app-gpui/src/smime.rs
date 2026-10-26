@@ -490,6 +490,15 @@ impl ReadingPane {
 }
 
 /// Сцены снимков (`--screens smime…`): итог по виду образца демо.
+/// Опись части (ADR 0005, `parts.rs`).
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "smime", texts: TEXTS, ..crate::part::Part::NONE };
+
+/// Тексты части (`i18n/<язык>/<часть>.ftl`).
+const TEXTS: &[pets_i18n::Resource] = &[
+    ("ru", include_str!("../i18n/ru/smime.ftl")),
+    ("en", include_str!("../i18n/en/smime.ftl")),
+];
+
 #[cfg(test)]
 mod tests {
     // Не `use super::*`: вместе с gpui пришёл бы атрибут `gpui::test`, он перекрывает `#[test]`.
@@ -512,7 +521,7 @@ mod tests {
     /// Итоги образцов демо → тон значка: красный — только изменённое письмо; ГОСТ — алгоритм словами.
     #[test]
     fn demo_samples_map_to_badges() {
-        let _ = pets_i18n::init(&[crate::TEXTS], "ru");
+        let _ = pets_i18n::init(&crate::parts::texts(), "ru");
         use postman_core::smime::{Revocation, Verdict};
         let trust = postman_smime::Trust {
             roots: postman_demo::smime::anchors().into_iter().map(|(der, corporate)| postman_smime::Anchor { der, corporate }).collect(),

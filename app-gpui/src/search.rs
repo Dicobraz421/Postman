@@ -415,7 +415,7 @@ pub(crate) fn header(found: &Found, count: usize, l: &Look, cx: &mut Context<cra
             let tip = crate::keytips::with_key(tr!("search-close"), crate::keytips::key("search.clear", cx));
             move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
         })
-        .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::commands::search::Clear), cx));
+        .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::search::search::Clear), cx));
     let line = div()
         .id("list-header")
         .h(px(40.))
@@ -465,3 +465,37 @@ pub(crate) fn header(found: &Found, count: usize, l: &Look, cx: &mut Context<cra
     });
     div().flex_none().flex().flex_col().border_b_1().border_color(l.border()).child(line).children(refine)
 }
+
+/// Опись части (ADR 0005, `parts.rs`).
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "search", texts: TEXTS, commands: COMMANDS, ..crate::part::Part::NONE };
+
+/// Тексты части (`i18n/<язык>/<часть>.ftl`).
+const TEXTS: &[pets_i18n::Resource] = &[
+    ("ru", include_str!("../i18n/ru/search.ftl")),
+    ("en", include_str!("../i18n/en/search.ftl")),
+];
+
+/// Поиск в командной строке (S5-10): охват «Везде | Текущая папка» и уточнения — как чипы «Уточнить»; по
+/// совпадениям в открытом письме (S5-14).
+pub(crate) mod search {
+    gpui_kit::actions!(search, [Focus, Clear, All, Folder, Attachments, Unread, Recent, NextMatch, PrevMatch]);
+}
+
+/// Команды части (`commands.rs`: контексты и `cmd`).
+const COMMANDS: &[pets_commands::Command] = {
+    use crate::commands::{MAIL, cmd};
+    &[
+        cmd("search.focus", &["ctrl-e"], None),
+        cmd("search.clear", &["escape"], None),
+        // Не Outlook (там «Область поиска» и «Уточнить» — лентой): охват и уточнения поиска — чипами и в палитре.
+        cmd("search.all", &[], MAIL),
+        cmd("search.folder", &[], MAIL),
+        cmd("search.attachments", &[], MAIL),
+        cmd("search.unread", &[], MAIL),
+        cmd("search.recent", &[], MAIL),
+        // По совпадениям поиска в открытом письме (S5-14): F3 / Shift+F3, как «Найти далее» в браузерах и редакторах
+        // (в classic Outlook F3 — ещё одна клавиша поиска, она у нас — Ctrl+E). В поле поиска тоже: набрал — F3.
+        cmd("search.next_match", &["f3"], MAIL),
+        cmd("search.prev_match", &["shift-f3"], MAIL),
+    ]
+};

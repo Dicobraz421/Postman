@@ -1344,9 +1344,9 @@ impl Render for MailList {
         };
         let sort_menu = self.sort_open.then(|| {
             let menu = crate::filters::sort_menu(self.query.sort, &l, |s| match s {
-                Sort::Date => Box::new(crate::commands::view::SortByDate),
-                Sort::Sender => Box::new(crate::commands::view::SortBySender),
-                Sort::Size => Box::new(crate::commands::view::SortBySize),
+                Sort::Date => Box::new(crate::filters::view::SortByDate),
+                Sort::Sender => Box::new(crate::filters::view::SortBySender),
+                Sort::Size => Box::new(crate::filters::view::SortBySize),
             });
             div()
                 .id("sort-menu")

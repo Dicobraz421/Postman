@@ -2431,7 +2431,7 @@ impl Render for CalendarBar {
             .hover(|d| d.bg(l.accent_hover()))
             .child(icon(g::ADD, 14.))
             .child(tr!("cal-new-meeting"))
-            .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::commands::calendar::NewMeeting), cx));
+            .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::calendar::calendar::NewMeeting), cx));
         let new = crate::keytips::command(new, "calendar.new_meeting", Some(tr!("cal-new-meeting-tip")), &l, cx);
         let views = VIEWS.into_iter().map(|(v, command, short, full)| {
             let cal = self.cal.clone();
@@ -2647,6 +2647,36 @@ fn dotted(size: f32, color: Hsla) -> Div {
     });
     div().size(px(size)).flex_none().relative().rounded_full().border_1().border_color(color).children(dots)
 }
+
+/// Опись части (ADR 0005, `parts.rs`).
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "calendar", texts: TEXTS, commands: COMMANDS, ..crate::part::Part::NONE };
+
+/// Тексты части (`i18n/<язык>/<часть>.ftl`).
+const TEXTS: &[pets_i18n::Resource] = &[
+    ("ru", include_str!("../i18n/ru/calendar.ftl")),
+    ("en", include_str!("../i18n/en/calendar.ftl")),
+];
+
+pub(crate) mod calendar {
+    gpui_kit::actions!(calendar, [NewMeeting, PrevWeek, NextWeek, Today, ViewDay, ViewWorkWeek, ViewWeek, ViewMonth]);
+}
+
+/// Команды части (`commands.rs`: контексты и `cmd`).
+const COMMANDS: &[pets_commands::Command] = {
+    use crate::commands::{CALENDAR, cmd};
+    &[
+        cmd("calendar.new_meeting", &["ctrl-shift-q"], None),
+        // DESIGN «Хоткеи»: период вида — PgUp / PgDn (id — с недели, S3-05), «Сегодня» — Home (Alt не используется; в
+        // Outlook — Alt+↑/↓, Alt+Home). Виды — 1…4 вне полей ввода (S5-21; в Outlook — Ctrl+Alt+1…4, Alt не берём).
+        cmd("calendar.prev_week", &["pageup"], CALENDAR),
+        cmd("calendar.next_week", &["pagedown"], CALENDAR),
+        cmd("calendar.today", &["home"], CALENDAR),
+        cmd("calendar.view_day", &["1"], CALENDAR),
+        cmd("calendar.view_work_week", &["2"], CALENDAR),
+        cmd("calendar.view_week", &["3"], CALENDAR),
+        cmd("calendar.view_month", &["4"], CALENDAR),
+    ]
+};
 
 #[cfg(test)]
 mod tests {

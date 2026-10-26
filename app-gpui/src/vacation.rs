@@ -991,7 +991,7 @@ impl Render for VacationBar {
                 .child(div().flex_1())
                 .child(
                     link("vacation-bar-edit", tr!("vacation-bar-edit")).on_click(|_, window, cx| {
-                        window.dispatch_action(Box::new(crate::commands::settings::Vacation), cx)
+                        window.dispatch_action(Box::new(crate::settings::settings::Vacation), cx)
                     }),
                 )
                 .child(

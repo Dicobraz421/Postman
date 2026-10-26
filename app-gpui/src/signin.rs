@@ -455,6 +455,15 @@ impl Render for SignIn {
     }
 }
 
+/// Опись части (ADR 0005, `parts.rs`).
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "signin", texts: TEXTS, ..crate::part::Part::NONE };
+
+/// Тексты части (`i18n/<язык>/<часть>.ftl`).
+const TEXTS: &[pets_i18n::Resource] = &[
+    ("ru", include_str!("../i18n/ru/account.ftl")),
+    ("en", include_str!("../i18n/en/account.ftl")),
+];
+
 #[cfg(test)]
 mod tests {
     use super::{check_url, normalize_url};

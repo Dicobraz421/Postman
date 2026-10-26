@@ -77,6 +77,8 @@ mod shared;
 mod smime_enc;
 mod smime_seal;
 mod tasks;
+mod part;
+mod parts;
 
 pub(crate) use mailer::{Mailer, Section};
 
@@ -93,61 +95,6 @@ use postman_core::bench::{self, Bench};
 #[cfg(feature = "alloc-count")]
 #[global_allocator]
 static ALLOC: sys::alloc::Counting = sys::alloc::Counting;
-
-/// Тексты интерфейса (S2-06): ключи `.ftl`, RU и EN; `pets_ui::FTL` добавляется при запуске.
-/// Файл на часть экрана (`i18n/<язык>/<часть>.ftl`): параллельные задачи не правят один файл.
-pub const TEXTS: &[pets_i18n::Resource] = &[
-    ("ru", include_str!("../i18n/ru/app.ftl")),
-    ("ru", include_str!("../i18n/ru/commands.ftl")),
-    ("ru", include_str!("../i18n/ru/reading.ftl")),
-    ("ru", include_str!("../i18n/ru/attachments.ftl")),
-    ("ru", include_str!("../i18n/ru/compose.ftl")),
-    ("ru", include_str!("../i18n/ru/composetab.ftl")),
-    ("ru", include_str!("../i18n/ru/account.ftl")),
-    ("ru", include_str!("../i18n/ru/actions.ftl")),
-    ("ru", include_str!("../i18n/ru/calendar.ftl")),
-    ("ru", include_str!("../i18n/ru/settings.ftl")),
-    ("ru", include_str!("../i18n/ru/contacts.ftl")),
-    ("ru", include_str!("../i18n/ru/sync.ftl")),
-    ("ru", include_str!("../i18n/ru/shared.ftl")),
-    ("ru", include_str!("../i18n/ru/labels.ftl")),
-    ("ru", include_str!("../i18n/ru/threads.ftl")),
-    ("ru", include_str!("../i18n/ru/send.ftl")),
-    ("ru", include_str!("../i18n/ru/frame.ftl")),
-    ("ru", include_str!("../i18n/ru/filters.ftl")),
-    ("ru", include_str!("../i18n/ru/lifecycle.ftl")),
-    ("ru", include_str!("../i18n/ru/bulk.ftl")),
-    ("ru", include_str!("../i18n/ru/states.ftl")),
-    ("ru", include_str!("../i18n/ru/palette.ftl")),
-    ("ru", include_str!("../i18n/ru/search.ftl")),
-    ("ru", include_str!("../i18n/ru/smime.ftl")),
-    ("ru", include_str!("../i18n/ru/tasks.ftl")),
-    ("en", include_str!("../i18n/en/app.ftl")),
-    ("en", include_str!("../i18n/en/commands.ftl")),
-    ("en", include_str!("../i18n/en/reading.ftl")),
-    ("en", include_str!("../i18n/en/attachments.ftl")),
-    ("en", include_str!("../i18n/en/compose.ftl")),
-    ("en", include_str!("../i18n/en/composetab.ftl")),
-    ("en", include_str!("../i18n/en/account.ftl")),
-    ("en", include_str!("../i18n/en/actions.ftl")),
-    ("en", include_str!("../i18n/en/calendar.ftl")),
-    ("en", include_str!("../i18n/en/settings.ftl")),
-    ("en", include_str!("../i18n/en/contacts.ftl")),
-    ("en", include_str!("../i18n/en/sync.ftl")),
-    ("en", include_str!("../i18n/en/shared.ftl")),
-    ("en", include_str!("../i18n/en/labels.ftl")),
-    ("en", include_str!("../i18n/en/threads.ftl")),
-    ("en", include_str!("../i18n/en/send.ftl")),
-    ("en", include_str!("../i18n/en/frame.ftl")),
-    ("en", include_str!("../i18n/en/filters.ftl")),
-    ("en", include_str!("../i18n/en/lifecycle.ftl")),
-    ("en", include_str!("../i18n/en/bulk.ftl")),
-    ("en", include_str!("../i18n/en/states.ftl")),
-    ("en", include_str!("../i18n/en/palette.ftl")),
-    ("en", include_str!("../i18n/en/search.ftl")),
-    ("en", include_str!("../i18n/en/smime.ftl")),
-    ("en", include_str!("../i18n/en/tasks.ftl")),
-];
 
 pub(crate) fn format_date(ts: i64) -> String {
     let tz = jiff::tz::TimeZone::system();
@@ -260,7 +207,10 @@ fn main() {
     let lang = prefs::language_at_start(value("--lang"), &user_prefs);
     let theme = prefs::theme_at_start(value("--theme"), &user_prefs);
     let density = prefs::density_at_start(value("--density"), &user_prefs);
-    for p in pets_i18n::init(&[TEXTS, pets_ui::FTL], &lang) {
+    // Тексты интерфейса (S2-06) — описи частей (`parts.rs`), файл на часть экрана; и `pets_ui::FTL`.
+    let mut texts = parts::texts();
+    texts.push(pets_ui::FTL);
+    for p in pets_i18n::init(&texts, &lang) {
         tracing::warn!("i18n: {p}");
     }
     let mut screens = args.iter().position(|a| a == "--screens").and_then(|i| args.get(i + 1)).map(|d| {
@@ -381,7 +331,9 @@ mod tests {
     /// Наборы текстов согласованы: оба языка, одни ключи и переменные, без дублей.
     #[test]
     fn texts_are_consistent() {
-        assert_eq!(pets_i18n::check(&[super::TEXTS, pets_ui::FTL]), vec![]);
+        let mut texts = crate::parts::texts();
+        texts.push(pets_ui::FTL);
+        assert_eq!(pets_i18n::check(&texts), vec![]);
     }
 
     /// Строки интерфейса — только через Fluent: в коде экранов нет литералов с кириллицей.

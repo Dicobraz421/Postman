@@ -33,7 +33,7 @@ pub(crate) fn load(dir: &Path) -> Prefs {
             Prefs::default()
         }
     };
-    crate::keymap::migrate(crate::commands::COMMANDS, &mut p.keys, p.keys_rev);
+    crate::keymap::migrate(crate::commands::all(), &mut p.keys, p.keys_rev);
     p.keys_rev = crate::keymap::KEYS_REV;
     p
 }

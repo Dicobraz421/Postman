@@ -13,7 +13,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use pets_i18n::tr;
 
-use crate::commands::{COMMANDS, SINGLE};
+use crate::commands::SINGLE;
 use crate::keymap::{self, Column, KeySet, human};
 use crate::roles::Look;
 
@@ -99,7 +99,7 @@ impl Global for KeyTips {}
 /// Клавиша команды для подсказки и плашки: в «Одиночных клавишах» — буква схемы, если есть, иначе первая.
 pub(crate) fn keys_of(set: &KeySet) -> HashMap<&'static str, String> {
     let mut map: HashMap<&'static str, String> = HashMap::new();
-    let bound = keymap::bound(COMMANDS, &SINGLE, set);
+    let bound = keymap::bound(crate::commands::all(), &SINGLE, set);
     for b in bound.iter().filter(|b| b.column == Column::Single).chain(bound.iter().filter(|b| b.column == Column::Outlook)) {
         map.entry(b.id).or_insert_with(|| b.keys.clone());
     }
@@ -139,7 +139,7 @@ pub(crate) fn key(id: &str, cx: &App) -> Option<String> {
 
 /// «Название (клавиша)»: название команды и её клавиша по схеме; без клавиши — название.
 pub(crate) fn tip(id: &str, cx: &App) -> String {
-    let name = COMMANDS.iter().find(|c| c.id == id).map(|c| tr!(&c.name_key())).unwrap_or_default();
+    let name = crate::commands::all().iter().find(|c| c.id == id).map(|c| tr!(&c.name_key())).unwrap_or_default();
     with_key(name, key(id, cx))
 }
 
@@ -242,10 +242,13 @@ impl crate::Mailer {
     }
 }
 
+/// Опись части (ADR 0005, `parts.rs`).
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "keytips", ..crate::part::Part::NONE };
+
 #[cfg(test)]
 mod tests {
     // Не `use super::*`: вместе с gpui пришёл бы атрибут `gpui::test`.
-    use super::{COMMANDS, DELAY, KeySet, SINGLE, Timer, human, keymap, keys_of, with_key};
+    use super::{DELAY, KeySet, SINGLE, Timer, human, keymap, keys_of, with_key};
     use std::time::{Duration, Instant};
 
     /// 0,4 с с одним Ctrl — плашки; раньше — нет; отпустили или нажали другую клавишу — пропали; Ctrl с Shift — нет.
@@ -285,7 +288,7 @@ mod tests {
     /// с модификатором и не пишет «(Esc)». Исключения — тексты, которые объясняют клавиши (настройки, подсказки форм).
     #[test]
     fn no_keys_in_button_texts() {
-        let keys: Vec<String> = keymap::bound(COMMANDS, &SINGLE, &KeySet::default())
+        let keys: Vec<String> = keymap::bound(crate::commands::all(), &SINGLE, &KeySet::default())
             .into_iter()
             .map(|b| human(&b.keys))
             .filter(|k| k.contains('+'))

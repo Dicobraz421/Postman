@@ -35,7 +35,6 @@ use crate::calendar::{
     zone_label,
 };
 use crate::chrome::icon;
-use crate::commands::meeting;
 use crate::compose::{Book, accept_suggestion, current_token};
 use crate::roles::{Look, Pm};
 use crate::Mailer;
@@ -2240,6 +2239,42 @@ impl Render for MeetingView {
             .children(self.footer(cx))
     }
 }
+
+/// Опись части (ADR 0005, `parts.rs`).
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "meeting", commands: COMMANDS, ..crate::part::Part::NONE };
+
+/// Вкладка встречи (S3-05, вкладкой — S5-11).
+pub(crate) mod meeting {
+    gpui_kit::actions!(
+        meeting,
+        [Send, Close, Discard, NextSlot, PrevSlot, PickSlot, Longer, Shorter, PrevDay, NextDay, Today, AddPerson]
+    );
+}
+
+/// Команды части (`commands.rs`: контексты и `cmd`).
+const COMMANDS: &[pets_commands::Command] = {
+    use crate::commands::{MEETING_GRID, MEETING, cmd};
+    &[
+        cmd("meeting.send", &["ctrl-enter"], MEETING),
+        cmd("meeting.close", &["escape"], MEETING),
+        // Не Outlook (там Ctrl+D — «Удалить»): «Удалить черновик» встречи — Ctrl+D по макету (решение владельца
+        // 2026-10-22, S5.md «Вопросы владельцу» №5).
+        cmd("meeting.discard", &["ctrl-d"], MEETING),
+        // Не Outlook (там подбор — мышью): ←/→ — по общим свободным окнам, Enter — встреча в окно (S5-23).
+        cmd("meeting.next_slot", &["right"], MEETING_GRID),
+        cmd("meeting.prev_slot", &["left"], MEETING_GRID),
+        cmd("meeting.pick_slot", &["enter"], MEETING_GRID),
+        // Макет встречи: Shift+←/→ — конец выбранного времени (длительность) с шагом сетки; PgUp/PgDn — день, Home —
+        // сегодня, как в календаре.
+        cmd("meeting.longer", &["shift-right"], MEETING_GRID),
+        cmd("meeting.shorter", &["shift-left"], MEETING_GRID),
+        cmd("meeting.prev_day", &["pageup"], MEETING_GRID),
+        cmd("meeting.next_day", &["pagedown"], MEETING_GRID),
+        cmd("meeting.today", &["home"], MEETING_GRID),
+        // Outlook: Ctrl+Shift+B — «Адресная книга»; здесь — к полю участников с подсказками справочника.
+        cmd("meeting.add_person", &["ctrl-shift-b"], MEETING),
+    ]
+};
 
 #[cfg(test)]
 mod tests {

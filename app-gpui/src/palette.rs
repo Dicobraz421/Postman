@@ -18,7 +18,6 @@ use postman_core::query::Query;
 
 use crate::Mailer;
 use crate::chrome::{glyph, icon};
-use crate::commands::palette;
 use crate::roles::{Look, look};
 
 /// Ширина палитры (макет).
@@ -640,7 +639,7 @@ impl Mailer {
         let set = crate::keymap::KeySet::of(&crate::prefs::get(cx));
         let mut items = Vec::new();
         let features = crate::features::get(cx);
-        for c in crate::commands::COMMANDS.iter().filter(|c| !hidden(c.id) && crate::features::available(c.id, features)) {
+        for c in crate::commands::all().iter().filter(|c| !hidden(c.id) && crate::features::available(c.id, features)) {
             let Ok(action) = cx.build_action(&c.action_name(), None) else { continue };
             if !window.is_action_available(action.as_ref(), cx) {
                 continue;
@@ -721,7 +720,7 @@ impl Mailer {
         match a {
             // Действие — в фокус, который палитра вернула: как от клавиши там же.
             Act::Command(id) => {
-                let Some(c) = pets_commands::find(crate::commands::COMMANDS, id) else { return };
+                let Some(c) = pets_commands::find(crate::commands::all(), id) else { return };
                 match cx.build_action(&c.action_name(), None) {
                     Ok(action) => window.dispatch_action(action, cx),
                     Err(e) => tracing::warn!("palette: {id}: {e}"),
@@ -773,17 +772,43 @@ impl Mailer {
     }
 }
 
+/// Опись части (ADR 0005, `parts.rs`).
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "palette", texts: TEXTS, commands: COMMANDS, ..crate::part::Part::NONE };
+
+/// Тексты части (`i18n/<язык>/<часть>.ftl`).
+const TEXTS: &[pets_i18n::Resource] = &[
+    ("ru", include_str!("../i18n/ru/palette.ftl")),
+    ("en", include_str!("../i18n/en/palette.ftl")),
+];
+
+/// Палитра команд (S5-10): открыть, по строкам, выполнить, закрыть.
+pub(crate) mod palette {
+    gpui_kit::actions!(palette, [Open, Next, Prev, Run, Close]);
+}
+
+/// Команды части (`commands.rs`: контексты и `cmd`).
+const COMMANDS: &[pets_commands::Command] = {
+    use crate::commands::{MAILER, PALETTE, cmd};
+    &[
+        // Не Outlook (там Ctrl+K — «Проверить имена» в письме): палитра команд, как в новом Outlook и редакторах.
+        cmd("palette.open", &["ctrl-k"], MAILER),
+        cmd("palette.next", &["down"], PALETTE),
+        cmd("palette.prev", &["up"], PALETTE),
+        cmd("palette.run", &["enter"], PALETTE),
+        cmd("palette.close", &["escape"], PALETTE),
+    ]
+};
+
 #[cfg(test)]
 mod tests {
     // Не `use super::*`: вместе с gpui пришёл бы атрибут `gpui::test`, он перекрывает `#[test]`.
     use super::{command_icon, hidden};
-    use crate::commands::COMMANDS;
 
     /// Каждая команда палитры — со своим значком (S5-14), а не общим шевроном: новая команда — строкой в
     /// `command_icon`.
     #[test]
     fn palette_commands_have_icons() {
-        for c in COMMANDS.iter().filter(|c| !hidden(c.id)) {
+        for c in crate::commands::all().iter().filter(|c| !hidden(c.id)) {
             assert!(command_icon(c.id).is_some(), "{}: нет значка в палитре (command_icon)", c.id);
         }
     }

@@ -1202,6 +1202,50 @@ pub(crate) fn demo_senders() -> Vec<Sender> {
     std::iter::once(own).chain(shared).chain(std::iter::once(second)).collect()
 }
 
+/// Опись части (ADR 0005, `parts.rs`).
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "compose", texts: TEXTS, commands: COMMANDS, ..crate::part::Part::NONE };
+
+/// Тексты части (`i18n/<язык>/<часть>.ftl`).
+const TEXTS: &[pets_i18n::Resource] = &[
+    ("ru", include_str!("../i18n/ru/compose.ftl")),
+    ("ru", include_str!("../i18n/ru/composetab.ftl")),
+    ("ru", include_str!("../i18n/ru/send.ftl")),
+    ("en", include_str!("../i18n/en/compose.ftl")),
+    ("en", include_str!("../i18n/en/composetab.ftl")),
+    ("en", include_str!("../i18n/en/send.ftl")),
+];
+
+/// Письмо — вкладка или ответ в области чтения (S3-01, S5-06б): отправка, разметка, «Развернуть», удалить черновик.
+pub(crate) mod compose {
+    gpui_kit::actions!(
+        compose,
+        [Send, Attach, Close, Bold, Italic, Underline, Bullets, Numbers, Link, Quote, Expand, Discard]
+    );
+}
+
+/// Команды части (`commands.rs`: контексты и `cmd`).
+const COMMANDS: &[pets_commands::Command] = {
+    use crate::commands::{COMPOSER, cmd};
+    &[
+        // Отправить — Ctrl+Enter (Alt+S Outlook не берём: Alt не используется).
+        cmd("compose.send", &["ctrl-enter"], COMPOSER),
+        // Не Outlook: вложить файл — кнопкой или перетаскиванием, без клавиши.
+        cmd("compose.attach", &[], COMPOSER),
+        cmd("compose.close", &["escape"], COMPOSER),
+        // Панель форматирования (S5-06б): как в Outlook — Ctrl+B, Ctrl+I, Ctrl+U; списки, ссылка и цитата — кнопками.
+        cmd("compose.bold", &["ctrl-b"], COMPOSER),
+        cmd("compose.italic", &["ctrl-i"], COMPOSER),
+        cmd("compose.underline", &["ctrl-u"], COMPOSER),
+        cmd("compose.bullets", &[], COMPOSER),
+        cmd("compose.numbers", &[], COMPOSER),
+        cmd("compose.link", &[], COMPOSER),
+        cmd("compose.quote", &[], COMPOSER),
+        // Не Outlook (там «Открыть в новом окне»): ответ из области чтения — во вкладку.
+        cmd("compose.expand", &[], COMPOSER),
+        cmd("compose.discard", &[], COMPOSER),
+    ]
+};
+
 #[cfg(test)]
 mod tests {
     // Не `use super::*`: вместе с gpui пришёл бы атрибут `gpui::test`, он перекрывает `#[test]`.

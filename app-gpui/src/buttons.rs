@@ -104,6 +104,9 @@ fn over_panel(c: Hsla, panel: Hsla) -> Hsla {
     pets_ui::theme::over(c, panel)
 }
 
+/// Опись части (ADR 0005, `parts.rs`).
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "buttons", ..crate::part::Part::NONE };
+
 #[cfg(test)]
 mod tests {
     use super::{over_panel, surfaces};

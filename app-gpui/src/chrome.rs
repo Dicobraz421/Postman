@@ -14,7 +14,7 @@ use gpui_kit::*;
 use pets_i18n::tr;
 use pets_ui::theme::Metric;
 
-use crate::commands::{settings, view};
+use crate::settings::settings;
 use crate::roles::{Look, Pm};
 use crate::tabs::{MailState, Tab, TabKind};
 use crate::{Mailer, Section};
@@ -492,7 +492,7 @@ impl Mailer {
             .text_color(l.text2())
             .child(tr!("filters-menu-view"));
         let quick = item("more-quick", if quick_on { glyph::CHECK } else { ' ' }, "filters-menu-quick", || {
-            Box::new(view::QuickFilters)
+            Box::new(crate::filters::view::QuickFilters)
         });
         let top = l.m(Metric::HTitlebar) + crate::bar::BAR_HEIGHT - 6.;
         let menu = div()
@@ -706,6 +706,50 @@ impl Mailer {
         mailbox.and_then(|m| list.names.get(&m).cloned()).unwrap_or_else(|| tr!("frame-tab-mail"))
     }
 }
+
+/// Опись части (ADR 0005, `parts.rs`).
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "frame", texts: TEXTS, commands: COMMANDS, ..crate::part::Part::NONE };
+
+/// Тексты части (`i18n/<язык>/<часть>.ftl`).
+const TEXTS: &[pets_i18n::Resource] = &[
+    ("ru", include_str!("../i18n/ru/app.ftl")),
+    ("ru", include_str!("../i18n/ru/commands.ftl")),
+    ("ru", include_str!("../i18n/ru/frame.ftl")),
+    ("ru", include_str!("../i18n/ru/sync.ftl")),
+    ("en", include_str!("../i18n/en/app.ftl")),
+    ("en", include_str!("../i18n/en/commands.ftl")),
+    ("en", include_str!("../i18n/en/frame.ftl")),
+    ("en", include_str!("../i18n/en/sync.ftl")),
+];
+
+/// Разделы окна (рейл, Ctrl+1…4) и история уведомлений.
+pub(crate) mod view {
+    gpui_kit::actions!(view, [Mail, Calendar, Contacts, Tasks, Notifications]);
+}
+
+/// Вкладки в заголовке окна (S5-01): следующая, предыдущая, закрыть; новая вкладка почты (S5-16).
+pub(crate) mod tab {
+    gpui_kit::actions!(tab, [New, Next, Prev, Close]);
+}
+
+/// Команды части (`commands.rs`: контексты и `cmd`).
+const COMMANDS: &[pets_commands::Command] = {
+    use crate::commands::{MAILER, cmd};
+    &[
+        cmd("view.mail", &["ctrl-1"], None),
+        cmd("view.calendar", &["ctrl-2"], None),
+        cmd("view.contacts", &["ctrl-3"], None),
+        cmd("view.tasks", &["ctrl-4"], None),
+        // Вкладки окна (S5-01): как в браузере и новом Outlook; «Почта» не закрывается. Ctrl+T — ещё вкладка почты на
+        // текущей папке и фильтрах (S5-16); Ctrl+Shift+Tab — исключение правила, пара к Ctrl+Tab.
+        cmd("tab.new", &["ctrl-t"], MAILER),
+        cmd("tab.next", &["ctrl-tab"], MAILER),
+        cmd("tab.prev", &["ctrl-shift-tab"], MAILER),
+        cmd("tab.close", &["ctrl-w"], MAILER),
+        // Не Outlook: история тостов (значок 🔔 в строке состояния).
+        cmd("view.notifications", &[], None),
+    ]
+};
 
 #[cfg(test)]
 mod tests {

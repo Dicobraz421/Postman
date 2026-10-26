@@ -10,7 +10,7 @@ use pets_i18n::tr;
 use pets_ui::theme::Metric;
 
 use crate::chrome::{self, glyph};
-use crate::commands::mail;
+use crate::actions::mail;
 use crate::keytips;
 use crate::roles::{Look, look};
 

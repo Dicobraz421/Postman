@@ -194,6 +194,15 @@ impl crate::Mailer {
     }
 }
 
+/// Опись части (ADR 0005, `parts.rs`).
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "states", texts: TEXTS, ..crate::part::Part::NONE };
+
+/// Тексты части (`i18n/<язык>/<часть>.ftl`).
+const TEXTS: &[pets_i18n::Resource] = &[
+    ("ru", include_str!("../i18n/ru/states.ftl")),
+    ("en", include_str!("../i18n/en/states.ftl")),
+];
+
 #[cfg(test)]
 mod tests {
     use super::{Change, Offline, host_of};
@@ -263,7 +272,7 @@ mod tests {
 
     #[test]
     fn status_texts() {
-        let (ru, problems) = pets_i18n::I18n::new(&[crate::TEXTS], "ru");
+        let (ru, problems) = pets_i18n::I18n::new(&crate::parts::texts(), "ru");
         assert!(problems.is_empty(), "{problems:?}");
         assert_eq!(ru.fmt("states-offline-retry", &{
             let mut a = pets_i18n::FluentArgs::new();

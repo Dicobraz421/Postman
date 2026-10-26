@@ -191,7 +191,7 @@ pub(crate) fn strip(row: &EmailRow, l: &Look, cx: &App) -> Option<Div> {
     let button = button
         .text_size(l.px(Metric::TypeCaption))
         .child(label.clone())
-        .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::commands::mail::Take), cx));
+        .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::actions::mail::Take), cx));
     let button = crate::keytips::command(button, "mail.take", Some(label), l, cx);
     Some(
         div()
@@ -337,6 +337,15 @@ impl Mailer {
     }
 }
 
+/// Опись части (ADR 0005, `parts.rs`).
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "shared", texts: TEXTS, ..crate::part::Part::NONE };
+
+/// Тексты части (`i18n/<язык>/<часть>.ftl`).
+const TEXTS: &[pets_i18n::Resource] = &[
+    ("ru", include_str!("../i18n/ru/shared.ftl")),
+    ("en", include_str!("../i18n/en/shared.ftl")),
+];
+
 #[cfg(test)]
 mod tests {
     use super::{Act, Reply, patch, undo};
@@ -386,7 +395,7 @@ mod tests {
     /// Предупреждение в ответе: «От» — свой адрес; письмо у коллеги; ящик — без строки.
     #[test]
     fn reply_note() {
-        let _ = pets_i18n::init(&[crate::TEXTS], "ru");
+        let _ = pets_i18n::init(&crate::parts::texts(), "ru");
         let r = Reply { address: "sales@corp.example".into(), taken_by: None };
         assert_eq!(r.short(), "sales@");
         assert!(r.note("sales@corp.example").is_none());

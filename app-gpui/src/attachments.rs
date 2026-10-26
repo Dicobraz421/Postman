@@ -18,7 +18,6 @@ use postman_worker::OfficeScan;
 
 use crate::Mailer;
 use crate::chrome::icon;
-use crate::commands::attach;
 use crate::reading::{Reading, ReadingPane};
 use crate::roles::{Look, Pm};
 
@@ -194,7 +193,7 @@ pub(crate) fn visible(total: usize, expanded: bool) -> (usize, usize) {
 /// «как Outlook» (свернуть, развернуть; S5-05б), не нужны и ей — действие уходит дальше (`propagate`).
 pub(crate) fn handlers(root: Div, cx: &mut Context<Mailer>) -> Div {
     root.on_action(cx.listener(|this, _: &attach::Preview, _, cx| this.reading.update(cx, |r, cx| r.toggle_preview(None, cx))))
-        .on_action(cx.listener(|this, _: &crate::commands::mail::Signature, _, cx| this.reading.update(cx, |r, cx| r.toggle_smime(cx))))
+        .on_action(cx.listener(|this, _: &crate::actions::mail::Signature, _, cx| this.reading.update(cx, |r, cx| r.toggle_smime(cx))))
         .on_action(cx.listener(|this, _: &attach::SaveAll, _, cx| this.reading.update(cx, |r, cx| r.save_all(cx))))
         .on_action(cx.listener(|this, _: &attach::Next, _, cx| {
             if !this.reading.update(cx, |r, cx| r.step_preview(1, cx)) && !this.thread_arrow(crate::outline::Fold::Expand, cx) {
@@ -415,6 +414,33 @@ impl ReadingPane {
         card.child(actions).into_any_element()
     }
 }
+
+/// Опись части (ADR 0005, `parts.rs`).
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "attach", texts: TEXTS, commands: COMMANDS, ..crate::part::Part::NONE };
+
+/// Тексты части (`i18n/<язык>/<часть>.ftl`).
+const TEXTS: &[pets_i18n::Resource] = &[
+    ("ru", include_str!("../i18n/ru/attachments.ftl")),
+    ("en", include_str!("../i18n/en/attachments.ftl")),
+];
+
+/// Вложения открытого письма (S5-07): встроенный просмотр, «Сохранить все», по вложениям в просмотре.
+pub(crate) mod attach {
+    gpui_kit::actions!(attach, [Preview, SaveAll, Next, Prev]);
+}
+
+/// Команды части (`commands.rs`: контексты и `cmd`).
+const COMMANDS: &[pets_commands::Command] = {
+    use crate::commands::{LIST, MAIL, cmd};
+    &[
+        // Не Outlook (там просмотр — щелчком по вложению): просмотр и «Сохранить все» — кнопками ленты; в открытом
+        // просмотре ← / → — по вложениям письма, Esc — закрыть (как поиск: `search.clear`).
+        cmd("attach.preview", &[], MAIL),
+        cmd("attach.save_all", &[], MAIL),
+        cmd("attach.next", &["right"], LIST),
+        cmd("attach.prev", &["left"], LIST),
+    ]
+};
 
 #[cfg(test)]
 mod tests {

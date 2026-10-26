@@ -253,10 +253,10 @@ impl ReadingPane {
                 .child(div().text_color(l.text()).child(count))
                 .when(n > 1, |d| {
                     d.child(arrow("hit-prev", crate::chrome::glyph::UP, "cmd-search-prev-match", || {
-                        Box::new(crate::commands::search::PrevMatch)
+                        Box::new(crate::search::search::PrevMatch)
                     }))
                     .child(arrow("hit-next", crate::chrome::glyph::DOWN, "cmd-search-next-match", || {
-                        Box::new(crate::commands::search::NextMatch)
+                        Box::new(crate::search::search::NextMatch)
                     }))
                 })
                 .child(div().flex_1())

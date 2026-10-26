@@ -17,7 +17,9 @@ use postman_worker::Level;
 use crate::*;
 use crate::backend::Backend;
 use crate::bar::*;
-use crate::commands::{mail, search, view};
+use crate::actions::mail;
+use crate::chrome::view;
+use crate::search::search;
 use crate::folders::*;
 use crate::list::*;
 use crate::reading::*;
@@ -595,13 +597,13 @@ impl Render for Mailer {
             .on_action(cx.listener(|this, _: &mail::Remind, _, cx| this.open_picker(postman_core::marks::Kind::Remind, cx)))
             .on_action(cx.listener(|this, _: &mail::Wait, _, cx| this.open_picker(postman_core::marks::Kind::Wait, cx)))
             .on_action(cx.listener(|this, _: &mail::Expire, _, cx| this.open_picker(postman_core::marks::Kind::Expire, cx)))
-            .on_action(cx.listener(|this, _: &commands::thread::Next, _, cx| this.thread_step(1, cx)))
-            .on_action(cx.listener(|this, _: &commands::thread::Prev, _, cx| this.thread_step(-1, cx)))
-            .on_action(cx.listener(|this, _: &commands::thread::Toggle, _, cx| this.reading.update(cx, |r, cx| r.toggle_feed(cx))))
-            .on_action(cx.listener(|this, _: &commands::thread::Quotes, _, cx| this.reading.update(cx, |r, cx| r.quotes_key(cx))))
-            .on_action(cx.listener(|this, _: &commands::thread::Fold, _, cx| this.thread_fold(crate::outline::Fold::Toggle, cx)))
-            .on_action(cx.listener(|this, _: &commands::thread::Expand, _, cx| this.thread_fold(crate::outline::Fold::Expand, cx)))
-            .on_action(cx.listener(|this, _: &commands::thread::Collapse, _, cx| {
+            .on_action(cx.listener(|this, _: &crate::thread::thread::Next, _, cx| this.thread_step(1, cx)))
+            .on_action(cx.listener(|this, _: &crate::thread::thread::Prev, _, cx| this.thread_step(-1, cx)))
+            .on_action(cx.listener(|this, _: &crate::thread::thread::Toggle, _, cx| this.reading.update(cx, |r, cx| r.toggle_feed(cx))))
+            .on_action(cx.listener(|this, _: &crate::thread::thread::Quotes, _, cx| this.reading.update(cx, |r, cx| r.quotes_key(cx))))
+            .on_action(cx.listener(|this, _: &crate::thread::thread::Fold, _, cx| this.thread_fold(crate::outline::Fold::Toggle, cx)))
+            .on_action(cx.listener(|this, _: &crate::thread::thread::Expand, _, cx| this.thread_fold(crate::outline::Fold::Expand, cx)))
+            .on_action(cx.listener(|this, _: &crate::thread::thread::Collapse, _, cx| {
                 this.thread_fold(crate::outline::Fold::Collapse, cx)
             }))
             .on_action(cx.listener(|this, _: &mail::New, _, cx| {
@@ -612,53 +614,53 @@ impl Render for Mailer {
             .on_action(cx.listener(|this, _: &view::Calendar, _, cx| this.set_section(Section::Calendar, cx)))
             .on_action(cx.listener(|this, _: &view::Contacts, _, cx| this.set_section(Section::Contacts, cx)))
             .on_action(cx.listener(|this, _: &view::Tasks, _, cx| this.set_section(Section::Tasks, cx)))
-            .on_action(cx.listener(|this, _: &commands::task::New, window, cx| {
+            .on_action(cx.listener(|this, _: &crate::tasks::task::New, window, cx| {
                 if this.section != Section::Tasks {
                     this.set_section(Section::Tasks, cx);
                 }
                 this.tasks.update(cx, |t, cx| t.new_task(window, cx));
             }))
-            .on_action(cx.listener(|this, _: &commands::task::Complete, _, cx| this.tasks.update(cx, |t, cx| t.toggle_done(cx))))
-            .on_action(cx.listener(|this, _: &commands::task::Due, window, cx| this.tasks.update(cx, |t, cx| t.toggle_due(window, cx))))
-            .on_action(cx.listener(|this, _: &commands::task::Delegate, window, cx| this.tasks.update(cx, |t, cx| t.delegate(window, cx))))
-            .on_action(cx.listener(|this, _: &commands::task::Remind, _, cx| this.tasks.update(cx, |t, cx| t.remind(cx))))
-            .on_action(cx.listener(|this, _: &commands::task::RemindAll, _, cx| this.tasks.update(cx, |t, cx| t.remind_all(cx))))
-            .on_action(cx.listener(|this, _: &commands::task::Revoke, _, cx| this.tasks.update(cx, |t, cx| t.revoke(cx))))
-            .on_action(cx.listener(|this, _: &commands::task::Edit, window, cx| this.tasks.update(cx, |t, cx| t.rename(window, cx))))
-            .on_action(cx.listener(|this, _: &commands::task::Delete, _, cx| this.tasks.update(cx, |t, cx| t.delete(cx))))
-            .on_action(cx.listener(|this, _: &commands::task::Open, _, cx| this.tasks.update(cx, |t, cx| t.open_letter(cx))))
-            .on_action(cx.listener(|this, _: &commands::task::Next, _, cx| this.tasks.update(cx, |t, cx| t.step(1, cx))))
-            .on_action(cx.listener(|this, _: &commands::task::Prev, _, cx| this.tasks.update(cx, |t, cx| t.step(-1, cx))))
-            .on_action(cx.listener(|this, _: &commands::task::SlotNext, _, cx| this.tasks.update(cx, |t, cx| t.step_slot(1, cx))))
-            .on_action(cx.listener(|this, _: &commands::task::SlotPrev, _, cx| this.tasks.update(cx, |t, cx| t.step_slot(-1, cx))))
-            .on_action(cx.listener(|this, _: &commands::task::Block, _, cx| this.tasks.update(cx, |t, cx| t.place_block(cx))))
-            .on_action(cx.listener(|this, _: &commands::calendar::NewMeeting, _, cx| {
+            .on_action(cx.listener(|this, _: &crate::tasks::task::Complete, _, cx| this.tasks.update(cx, |t, cx| t.toggle_done(cx))))
+            .on_action(cx.listener(|this, _: &crate::tasks::task::Due, window, cx| this.tasks.update(cx, |t, cx| t.toggle_due(window, cx))))
+            .on_action(cx.listener(|this, _: &crate::tasks::task::Delegate, window, cx| this.tasks.update(cx, |t, cx| t.delegate(window, cx))))
+            .on_action(cx.listener(|this, _: &crate::tasks::task::Remind, _, cx| this.tasks.update(cx, |t, cx| t.remind(cx))))
+            .on_action(cx.listener(|this, _: &crate::tasks::task::RemindAll, _, cx| this.tasks.update(cx, |t, cx| t.remind_all(cx))))
+            .on_action(cx.listener(|this, _: &crate::tasks::task::Revoke, _, cx| this.tasks.update(cx, |t, cx| t.revoke(cx))))
+            .on_action(cx.listener(|this, _: &crate::tasks::task::Edit, window, cx| this.tasks.update(cx, |t, cx| t.rename(window, cx))))
+            .on_action(cx.listener(|this, _: &crate::tasks::task::Delete, _, cx| this.tasks.update(cx, |t, cx| t.delete(cx))))
+            .on_action(cx.listener(|this, _: &crate::tasks::task::Open, _, cx| this.tasks.update(cx, |t, cx| t.open_letter(cx))))
+            .on_action(cx.listener(|this, _: &crate::tasks::task::Next, _, cx| this.tasks.update(cx, |t, cx| t.step(1, cx))))
+            .on_action(cx.listener(|this, _: &crate::tasks::task::Prev, _, cx| this.tasks.update(cx, |t, cx| t.step(-1, cx))))
+            .on_action(cx.listener(|this, _: &crate::tasks::task::SlotNext, _, cx| this.tasks.update(cx, |t, cx| t.step_slot(1, cx))))
+            .on_action(cx.listener(|this, _: &crate::tasks::task::SlotPrev, _, cx| this.tasks.update(cx, |t, cx| t.step_slot(-1, cx))))
+            .on_action(cx.listener(|this, _: &crate::tasks::task::Block, _, cx| this.tasks.update(cx, |t, cx| t.place_block(cx))))
+            .on_action(cx.listener(|this, _: &crate::calendar::calendar::NewMeeting, _, cx| {
                 this.open_meeting(None, cx);
             }))
-            .on_action(cx.listener(|this, _: &commands::calendar::PrevWeek, _, cx| this.calendar_week(Some(-1), cx)))
-            .on_action(cx.listener(|this, _: &commands::calendar::NextWeek, _, cx| this.calendar_week(Some(1), cx)))
-            .on_action(cx.listener(|this, _: &commands::calendar::Today, _, cx| this.calendar_week(None, cx)))
-            .on_action(cx.listener(|this, _: &commands::calendar::ViewDay, _, cx| this.calendar_view(CalView::Day, cx)))
-            .on_action(cx.listener(|this, _: &commands::calendar::ViewWorkWeek, _, cx| this.calendar_view(CalView::WorkWeek, cx)))
-            .on_action(cx.listener(|this, _: &commands::calendar::ViewWeek, _, cx| this.calendar_view(CalView::Week, cx)))
-            .on_action(cx.listener(|this, _: &commands::calendar::ViewMonth, _, cx| this.calendar_view(CalView::Month, cx)))
-            .on_action(cx.listener(|this, _: &commands::contacts::New, window, cx| {
+            .on_action(cx.listener(|this, _: &crate::calendar::calendar::PrevWeek, _, cx| this.calendar_week(Some(-1), cx)))
+            .on_action(cx.listener(|this, _: &crate::calendar::calendar::NextWeek, _, cx| this.calendar_week(Some(1), cx)))
+            .on_action(cx.listener(|this, _: &crate::calendar::calendar::Today, _, cx| this.calendar_week(None, cx)))
+            .on_action(cx.listener(|this, _: &crate::calendar::calendar::ViewDay, _, cx| this.calendar_view(CalView::Day, cx)))
+            .on_action(cx.listener(|this, _: &crate::calendar::calendar::ViewWorkWeek, _, cx| this.calendar_view(CalView::WorkWeek, cx)))
+            .on_action(cx.listener(|this, _: &crate::calendar::calendar::ViewWeek, _, cx| this.calendar_view(CalView::Week, cx)))
+            .on_action(cx.listener(|this, _: &crate::calendar::calendar::ViewMonth, _, cx| this.calendar_view(CalView::Month, cx)))
+            .on_action(cx.listener(|this, _: &crate::contacts::contacts::New, window, cx| {
                 this.contacts.update(cx, |c, cx| c.new_contact(window, cx));
             }))
-            .on_action(cx.listener(|this, _: &commands::contacts::Edit, window, cx| {
+            .on_action(cx.listener(|this, _: &crate::contacts::contacts::Edit, window, cx| {
                 this.contacts.update(cx, |c, cx| c.edit(window, cx));
             }))
-            .on_action(cx.listener(|this, _: &commands::contacts::Delete, _, cx| this.contacts.update(cx, |c, cx| c.ask_delete(cx))))
-            .on_action(cx.listener(|this, _: &commands::contacts::Write, _, cx| this.contacts.update(cx, |c, cx| c.write(cx))))
-            .on_action(cx.listener(|this, _: &commands::contacts::Meeting, _, cx| this.contacts.update(cx, |c, cx| c.meet(cx))))
-            .on_action(cx.listener(|this, _: &commands::contacts::CopyAddress, _, cx| {
+            .on_action(cx.listener(|this, _: &crate::contacts::contacts::Delete, _, cx| this.contacts.update(cx, |c, cx| c.ask_delete(cx))))
+            .on_action(cx.listener(|this, _: &crate::contacts::contacts::Write, _, cx| this.contacts.update(cx, |c, cx| c.write(cx))))
+            .on_action(cx.listener(|this, _: &crate::contacts::contacts::Meeting, _, cx| this.contacts.update(cx, |c, cx| c.meet(cx))))
+            .on_action(cx.listener(|this, _: &crate::contacts::contacts::CopyAddress, _, cx| {
                 this.contacts.update(cx, |c, cx| c.copy_address(cx));
             }))
-            .on_action(cx.listener(|this, _: &commands::invite::Accept, _, cx| this.invite_key(postman_calendar::Partstat::Accepted, cx)))
-            .on_action(cx.listener(|this, _: &commands::invite::Tentative, _, cx| {
+            .on_action(cx.listener(|this, _: &crate::invite_card::invite::Accept, _, cx| this.invite_key(postman_calendar::Partstat::Accepted, cx)))
+            .on_action(cx.listener(|this, _: &crate::invite_card::invite::Tentative, _, cx| {
                 this.invite_key(postman_calendar::Partstat::Tentative, cx)
             }))
-            .on_action(cx.listener(|this, _: &commands::invite::Decline, _, cx| this.invite_key(postman_calendar::Partstat::Declined, cx)))
+            .on_action(cx.listener(|this, _: &crate::invite_card::invite::Decline, _, cx| this.invite_key(postman_calendar::Partstat::Declined, cx)))
             .on_action(cx.listener(|this, _: &search::Focus, window, cx| {
                 if this.section == Section::Contacts {
                     return this.contacts.update(cx, |c, cx| c.focus_search(window, cx));
@@ -684,26 +686,26 @@ impl Render for Mailer {
             // По совпадениям в открытом письме (S5-14).
             .on_action(cx.listener(|this, _: &search::NextMatch, _, cx| this.reading.update(cx, |r, cx| r.step_hit(1, cx))))
             .on_action(cx.listener(|this, _: &search::PrevMatch, _, cx| this.reading.update(cx, |r, cx| r.step_hit(-1, cx))))
-            .on_action(cx.listener(|this, _: &commands::palette::Open, window, cx| this.toggle_palette(window, cx)))
-            .on_action(cx.listener(|this, _: &commands::settings::Open, window, cx| this.open_settings(None, window, cx)))
-            .on_action(cx.listener(|this, _: &commands::settings::Vacation, window, cx| this.open_vacation(window, cx)))
-            .on_action(cx.listener(|this, _: &commands::settings::Rules, window, cx| this.open_rules(window, cx)))
-            .on_action(cx.listener(|this, _: &commands::settings::Calendar, window, cx| {
+            .on_action(cx.listener(|this, _: &crate::palette::palette::Open, window, cx| this.toggle_palette(window, cx)))
+            .on_action(cx.listener(|this, _: &crate::settings::settings::Open, window, cx| this.open_settings(None, window, cx)))
+            .on_action(cx.listener(|this, _: &crate::settings::settings::Vacation, window, cx| this.open_vacation(window, cx)))
+            .on_action(cx.listener(|this, _: &crate::settings::settings::Rules, window, cx| this.open_rules(window, cx)))
+            .on_action(cx.listener(|this, _: &crate::settings::settings::Calendar, window, cx| {
                 this.open_settings(Some(crate::settings_tab::Section::Calendar), window, cx)
             }))
-            .on_action(cx.listener(|this, _: &commands::tab::New, window, cx| this.new_mail_tab(window, cx)))
-            .on_action(cx.listener(|this, _: &commands::tab::Next, window, cx| this.step_tab(1, window, cx)))
-            .on_action(cx.listener(|this, _: &commands::tab::Prev, window, cx| this.step_tab(-1, window, cx)))
-            .on_action(cx.listener(|this, _: &commands::tab::Close, window, cx| {
+            .on_action(cx.listener(|this, _: &crate::chrome::tab::New, window, cx| this.new_mail_tab(window, cx)))
+            .on_action(cx.listener(|this, _: &crate::chrome::tab::Next, window, cx| this.step_tab(1, window, cx)))
+            .on_action(cx.listener(|this, _: &crate::chrome::tab::Prev, window, cx| this.step_tab(-1, window, cx)))
+            .on_action(cx.listener(|this, _: &crate::chrome::tab::Close, window, cx| {
                 let id = this.tabs.active().id;
                 this.close_tab(id, window, cx);
             }))
-            .on_action(cx.listener(|this, _: &view::Filters, _, cx| this.toggle_filter_panel(cx)))
-            .on_action(cx.listener(|this, _: &view::QuickFilters, _, cx| this.toggle_quick_filters(cx)))
-            .on_action(cx.listener(|this, _: &view::SortByDate, _, cx| this.sort_by(postman_core::filters::Sort::Date, cx)))
-            .on_action(cx.listener(|this, _: &view::SortBySender, _, cx| this.sort_by(postman_core::filters::Sort::Sender, cx)))
-            .on_action(cx.listener(|this, _: &view::SortBySize, _, cx| this.sort_by(postman_core::filters::Sort::Size, cx)))
-            .on_action(cx.listener(|this, _: &commands::filters::Reset, _, cx| this.reset_filters(cx)))
+            .on_action(cx.listener(|this, _: &crate::filters::view::Filters, _, cx| this.toggle_filter_panel(cx)))
+            .on_action(cx.listener(|this, _: &crate::filters::view::QuickFilters, _, cx| this.toggle_quick_filters(cx)))
+            .on_action(cx.listener(|this, _: &crate::filters::view::SortByDate, _, cx| this.sort_by(postman_core::filters::Sort::Date, cx)))
+            .on_action(cx.listener(|this, _: &crate::filters::view::SortBySender, _, cx| this.sort_by(postman_core::filters::Sort::Sender, cx)))
+            .on_action(cx.listener(|this, _: &crate::filters::view::SortBySize, _, cx| this.sort_by(postman_core::filters::Sort::Size, cx)))
+            .on_action(cx.listener(|this, _: &crate::filters::filters::Reset, _, cx| this.reset_filters(cx)))
             .on_action(cx.listener(|this, _: &view::Notifications, _, cx| {
                 this.toasts.update(cx, |t, cx| t.toggle_history(cx));
             }))

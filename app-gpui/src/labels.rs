@@ -84,6 +84,15 @@ pub(crate) fn chip(name: String, color: &str, l: &Look) -> Div {
         .child(name)
 }
 
+/// Опись части (ADR 0005, `parts.rs`).
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "labels", texts: TEXTS, ..crate::part::Part::NONE };
+
+/// Тексты части (`i18n/<язык>/<часть>.ftl`).
+const TEXTS: &[pets_i18n::Resource] = &[
+    ("ru", include_str!("../i18n/ru/labels.ftl")),
+    ("en", include_str!("../i18n/en/labels.ftl")),
+];
+
 #[cfg(test)]
 mod tests {
     use super::{RowLabels, row_labels};
