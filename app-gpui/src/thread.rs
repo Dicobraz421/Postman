@@ -760,7 +760,20 @@ impl Mailer {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "thread", texts: TEXTS, commands: COMMANDS, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "thread", texts: TEXTS, commands: COMMANDS, handlers, ..crate::part::Part::NONE };
+
+/// Обработчики команд части — на корне экрана почты (`Mailer::render`).
+fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
+    root.on_action(cx.listener(|this, _: &thread::Next, _, cx| this.thread_step(1, cx)))
+        .on_action(cx.listener(|this, _: &thread::Prev, _, cx| this.thread_step(-1, cx)))
+        .on_action(cx.listener(|this, _: &thread::Toggle, _, cx| this.reading.update(cx, |r, cx| r.toggle_feed(cx))))
+        .on_action(cx.listener(|this, _: &thread::Quotes, _, cx| this.reading.update(cx, |r, cx| r.quotes_key(cx))))
+        .on_action(cx.listener(|this, _: &thread::Fold, _, cx| this.thread_fold(crate::outline::Fold::Toggle, cx)))
+        .on_action(cx.listener(|this, _: &thread::Expand, _, cx| this.thread_fold(crate::outline::Fold::Expand, cx)))
+        .on_action(cx.listener(|this, _: &thread::Collapse, _, cx| {
+            this.thread_fold(crate::outline::Fold::Collapse, cx)
+        }))
+}
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
 const TEXTS: &[pets_i18n::Resource] = &[

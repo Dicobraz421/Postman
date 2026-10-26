@@ -1832,7 +1832,23 @@ pub(crate) fn add_demo(book: &mut AddressBook) {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "contacts", texts: TEXTS, commands: COMMANDS, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "contacts", texts: TEXTS, commands: COMMANDS, handlers, ..crate::part::Part::NONE };
+
+/// Обработчики команд части — на корне экрана почты (`Mailer::render`).
+fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
+    root.on_action(cx.listener(|this, _: &contacts::New, window, cx| {
+            this.contacts.update(cx, |c, cx| c.new_contact(window, cx));
+        }))
+        .on_action(cx.listener(|this, _: &contacts::Edit, window, cx| {
+            this.contacts.update(cx, |c, cx| c.edit(window, cx));
+        }))
+        .on_action(cx.listener(|this, _: &contacts::Delete, _, cx| this.contacts.update(cx, |c, cx| c.ask_delete(cx))))
+        .on_action(cx.listener(|this, _: &contacts::Write, _, cx| this.contacts.update(cx, |c, cx| c.write(cx))))
+        .on_action(cx.listener(|this, _: &contacts::Meeting, _, cx| this.contacts.update(cx, |c, cx| c.meet(cx))))
+        .on_action(cx.listener(|this, _: &contacts::CopyAddress, _, cx| {
+            this.contacts.update(cx, |c, cx| c.copy_address(cx));
+        }))
+}
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
 const TEXTS: &[pets_i18n::Resource] = &[

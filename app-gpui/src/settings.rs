@@ -649,7 +649,17 @@ pub(crate) fn rules_sample(mailboxes: &[(String, String)]) -> RulesState {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "settings", texts: TEXTS, commands: COMMANDS, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "settings", texts: TEXTS, commands: COMMANDS, handlers, ..crate::part::Part::NONE };
+
+/// Обработчики команд части — на корне экрана почты (`Mailer::render`).
+fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
+    root.on_action(cx.listener(|this, _: &settings::Open, window, cx| this.open_settings(None, window, cx)))
+        .on_action(cx.listener(|this, _: &settings::Vacation, window, cx| this.open_vacation(window, cx)))
+        .on_action(cx.listener(|this, _: &settings::Rules, window, cx| this.open_rules(window, cx)))
+        .on_action(cx.listener(|this, _: &settings::Calendar, window, cx| {
+            this.open_settings(Some(crate::settings_tab::Section::Calendar), window, cx)
+        }))
+}
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
 const TEXTS: &[pets_i18n::Resource] = &[

@@ -708,7 +708,26 @@ impl Mailer {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "frame", texts: TEXTS, commands: COMMANDS, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "frame", texts: TEXTS, commands: COMMANDS, handlers, ..crate::part::Part::NONE };
+
+/// Обработчики команд части — на корне экрана почты (`Mailer::render`).
+fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
+    root.on_action(cx.listener(|this, _: &crate::features::Unavailable, _, cx| this.unavailable(cx)))
+        .on_action(cx.listener(|this, _: &view::Mail, _, cx| this.set_section(crate::Section::Mail, cx)))
+        .on_action(cx.listener(|this, _: &view::Calendar, _, cx| this.set_section(crate::Section::Calendar, cx)))
+        .on_action(cx.listener(|this, _: &view::Contacts, _, cx| this.set_section(crate::Section::Contacts, cx)))
+        .on_action(cx.listener(|this, _: &view::Tasks, _, cx| this.set_section(crate::Section::Tasks, cx)))
+        .on_action(cx.listener(|this, _: &tab::New, window, cx| this.new_mail_tab(window, cx)))
+        .on_action(cx.listener(|this, _: &tab::Next, window, cx| this.step_tab(1, window, cx)))
+        .on_action(cx.listener(|this, _: &tab::Prev, window, cx| this.step_tab(-1, window, cx)))
+        .on_action(cx.listener(|this, _: &tab::Close, window, cx| {
+            let id = this.tabs.active().id;
+            this.close_tab(id, window, cx);
+        }))
+        .on_action(cx.listener(|this, _: &view::Notifications, _, cx| {
+            this.toasts.update(cx, |t, cx| t.toggle_history(cx));
+        }))
+}
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
 const TEXTS: &[pets_i18n::Resource] = &[
