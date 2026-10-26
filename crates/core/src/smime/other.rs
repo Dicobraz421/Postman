@@ -16,6 +16,11 @@ pub(super) fn gost_provider() -> Option<String> {
     None
 }
 
+/// Сети для CRL вне Windows нет: отзыв ГОСТ — «не проверен».
+pub(super) fn fetch_crl(_url: &str, _timeout: std::time::Duration) -> Result<Vec<u8>, String> {
+    Err("CRL download is Windows-only".into())
+}
+
 /// СКЗИ нет вне Windows.
 pub(super) fn gost_decrypt(
     _env: &postman_smime::envelope::Envelope,

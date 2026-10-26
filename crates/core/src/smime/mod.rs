@@ -10,11 +10,14 @@
 //! ГОСТ — движок выбирается сам (решение владельца 2026-10-21): есть сертифицированное СКЗИ (КриптоПро CSP, ViPNet
 //! CSP — провайдеры ГОСТ в CryptoAPI) — цепочку и отзыв ГОСТ подтверждает Windows тем же путём, что RSA; нет — только
 //! своя проверка Postman, отзыв «не проверен (ГОСТ без СКЗИ)». Подпись CMS в обоих случаях проверяет воркер (своя
-//! реализация); проверка подписи средствами СКЗИ — задача 12.1е, своя проверка CRL ГОСТ — 12.1д (`docs/SMIME.md` §8).
-//! Обнаружение СКЗИ — за трейтом [`GostProvider`], тесты подменяют оба режима.
+//! реализация); проверка подписи средствами СКЗИ — задача 12.1е (`docs/SMIME.md` §8). Без СКЗИ отзыв ГОСТ — своя
+//! проверка CRL ([`crl`], 12.1д): CRL по CDP доверенной цепочки, проверка — в воркере; «не проверен (ГОСТ без СКЗИ)» —
+//! только когда CRL недоступен или не прошёл проверку. Обнаружение СКЗИ — за трейтом [`GostProvider`], тесты
+//! подменяют оба режима.
 
 #[cfg(windows)]
 mod cng;
+pub mod crl;
 pub mod keys;
 #[cfg(windows)]
 mod seal_win;
@@ -51,7 +54,8 @@ pub enum Revocation {
     Unknown,
     /// Windows не подтвердила цепочку, которую принял воркер (корень убран, политика, запрет): текст — для журнала.
     Rejected(Confirm),
-    /// ГОСТ: Windows без СКЗИ подпись не проверяет, отзыв не проверен (12.1д — своя проверка CRL).
+    /// ГОСТ без СКЗИ: своя проверка CRL (12.1д) не удалась — CRL недоступен, не прошёл проверку или в сертификатах
+    /// нет адресов CRL.
     NotCheckedGost,
     /// Не проверялся: цепочка не доверена, подпись недействительна или демо-ящик.
     NotChecked,
@@ -122,10 +126,10 @@ pub struct Verdict {
 }
 
 impl Verdict {
-    /// Отзыв пора перепроверить (доверенная цепочка, отзыв проверялся в Windows).
+    /// Отзыв пора перепроверить (доверенная цепочка, отзыв проверялся в Windows или по CRL ГОСТ).
     pub fn stale(&self, now: i64) -> bool {
-        let windows = !matches!(self.revocation, Revocation::NotChecked | Revocation::NotCheckedGost);
-        self.report.trusted() && windows && now - self.checked_at > RECHECK_AFTER
+        let checked = !matches!(self.revocation, Revocation::NotChecked);
+        self.report.trusted() && checked && now - self.checked_at > RECHECK_AFTER
     }
 }
 
@@ -149,22 +153,24 @@ pub enum Anchors {
     Fixed(Arc<Trust>),
 }
 
-/// Окружение проверки: якоря и СКЗИ ГОСТ.
+/// Окружение проверки: якоря, СКЗИ ГОСТ и отзыв ГОСТ без СКЗИ.
 #[derive(Clone)]
 pub struct Context {
     pub anchors: Anchors,
     pub gost: Arc<dyn GostProvider>,
+    /// CRL ГОСТ по CDP (12.1д); `None` — отзыв ГОСТ без СКЗИ не проверяется (демо).
+    pub crl: Option<Arc<crl::GostCrl>>,
 }
 
 impl Context {
-    /// Живой ящик: хранилища и провайдеры Windows.
+    /// Живой ящик: хранилища и провайдеры Windows, CRL ГОСТ — по сети.
     pub fn system() -> Self {
-        Context { anchors: Anchors::Windows, gost: Arc::new(SystemGost) }
+        Context { anchors: Anchors::Windows, gost: Arc::new(SystemGost), crl: Some(crl::GostCrl::system()) }
     }
 
-    /// Демо и тесты: свои якоря, без Windows и без СКЗИ.
+    /// Демо и тесты: свои якоря, без Windows, без СКЗИ и без сети.
     pub fn fixed(trust: Trust) -> Self {
-        Context { anchors: Anchors::Fixed(Arc::new(trust)), gost: Arc::new(FixedGost(None)) }
+        Context { anchors: Anchors::Fixed(Arc::new(trust)), gost: Arc::new(FixedGost(None)), crl: None }
     }
 }
 
@@ -214,13 +220,13 @@ impl Anchors {
     }
 }
 
-/// Подтвердить цепочку в Windows и проверить отзыв (доверенная цепочка; ГОСТ — только при СКЗИ).
-fn revocation(report: &Report, chain: &[Vec<u8>], ctx: &Context, skzi: Option<&str>) -> Revocation {
+/// Подтвердить цепочку в Windows и проверить отзыв (доверенная цепочка; ГОСТ — при СКЗИ, без него — по CRL).
+fn revocation(report: &Report, chain: &[Vec<u8>], ctx: &Context, skzi: Option<&str>, now: i64) -> Revocation {
     if !report.trusted() || chain.is_empty() {
         return Revocation::NotChecked;
     }
     if report.is_gost() && skzi.is_none() {
-        return Revocation::NotCheckedGost;
+        return ctx.crl.as_ref().map_or(Revocation::NotCheckedGost, |c| c.check(chain, now));
     }
     if !ctx.anchors.windows() {
         return Revocation::NotChecked;
@@ -229,12 +235,12 @@ fn revocation(report: &Report, chain: &[Vec<u8>], ctx: &Context, skzi: Option<&s
 }
 
 /// Движок ГОСТ и отзыв для отчёта.
-fn confirm(report: &Report, chain: &[Vec<u8>], ctx: &Context) -> (Revocation, Option<GostEngine>) {
+fn confirm(report: &Report, chain: &[Vec<u8>], ctx: &Context, now: i64) -> (Revocation, Option<GostEngine>) {
     if !report.is_gost() {
-        return (revocation(report, chain, ctx, None), None);
+        return (revocation(report, chain, ctx, None, now), None);
     }
     let skzi = ctx.gost.provider();
-    let rev = revocation(report, chain, ctx, skzi.as_deref());
+    let rev = revocation(report, chain, ctx, skzi.as_deref(), now);
     let engine = match skzi {
         Some(name) if report.trusted() => GostEngine::Skzi(name),
         _ => GostEngine::Postman,
@@ -247,7 +253,7 @@ fn confirm(report: &Report, chain: &[Vec<u8>], ctx: &Context) -> (Revocation, Op
 pub fn cached(cache: &Cache, id: &str, ctx: &Context, now: i64) -> Option<Verdict> {
     let mut v: Verdict = cache.smime(id).ok().flatten()?;
     if v.stale(now) {
-        (v.revocation, v.gost) = confirm(&v.report, &v.chain, ctx);
+        (v.revocation, v.gost) = confirm(&v.report, &v.chain, ctx, now);
         v.checked_at = now;
         store(cache, id, &v);
     }
@@ -264,7 +270,7 @@ fn store(cache: &Cache, id: &str, v: &Verdict) {
 /// Отчёт воркера → итог: подтверждение в Windows, запись в кэш, сертификат подписанта — в сертификаты адресата.
 pub fn finish(cache: &Cache, id: &str, report: Report, ctx: &Context, now: i64) -> Verdict {
     let chain = report.chain.clone();
-    let (revocation, gost) = confirm(&report, &chain, ctx);
+    let (revocation, gost) = confirm(&report, &chain, ctx, now);
     let v = Verdict { report, chain, revocation, checked_at: now, gost };
     if v.report.status.signature_ok() || matches!(v.report.status, postman_smime::Status::Invalid) {
         store(cache, id, &v);
@@ -280,7 +286,7 @@ pub fn finish(cache: &Cache, id: &str, report: Report, ctx: &Context, now: i64) 
 /// блоб (решение владельца №4).
 pub fn assess(cache: &Cache, report: Report, ctx: &Context, now: i64) -> Verdict {
     let chain = report.chain.clone();
-    let (revocation, gost) = confirm(&report, &chain, ctx);
+    let (revocation, gost) = confirm(&report, &chain, ctx, now);
     let v = Verdict { report, chain, revocation, checked_at: now, gost };
     if v.report.trusted() && v.report.address_ok && !matches!(v.revocation, Revocation::Revoked | Revocation::Rejected(_)) {
         remember(cache, &v, now);
