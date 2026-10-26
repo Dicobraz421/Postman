@@ -740,13 +740,100 @@ impl Mailer {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "lifecycle", texts: TEXTS, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "lifecycle", texts: TEXTS, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
 const TEXTS: &[pets_i18n::Resource] = &[
     ("ru", include_str!("../i18n/ru/lifecycle.ftl")),
     ("en", include_str!("../i18n/en/lifecycle.ftl")),
 ];
+
+/// Сцены `--screens` сроков (ADR 0005).
+pub(crate) mod scenes {
+    use gpui_kit::*;
+    use postman_core::lifecycle;
+    use postman_core::marks::{Kind, When};
+
+    use crate::screens::{self, Scene};
+    use crate::{Mailer, Section};
+
+    pub(crate) const SCENES: &[Scene] = &[
+        // Жизненный цикл (S5-04): «Входящие» со всеми метками сроков (срок впереди, сегодня к часу, ждём ответа,
+        // напомнит, исчезнет, просрочено — наверху, «Срочное») и открытая панель «Срок» у первого письма.
+        Scene::new("lifecycle", marks, ready),
+        // Письмо с просроченным сроком открыто: плотная янтарная метка в строке и в шапке.
+        Scene::new("overdue", overdue, ready).continues(),
+    ];
+
+    /// Первым шести письмам «Входящих» — сроки всех видов (от «сейчас»), как поставили бы действия «Срок…»,
+    /// «Напомнить…», «Ждать ответа…», «Исчезнет…»; у первого письма открыта панель «Срок». Снимаются сценой
+    /// `firstrun` (`Driver::undo`).
+    fn marks(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.set_section(Section::Mail, cx);
+        m.reset_filters(cx);
+        m.filters.update(cx, |f, cx| f.set(cx, |f| f.quick_open = false));
+        let inbox = crate::live::inbox(&m.folders.read(cx).mailboxes).ok_or("no inbox")?;
+        m.open_mailbox(inbox, cx);
+        let rows: Vec<postman_cache::EmailRow> = m.list.read(cx).rows.1.iter().take(6).cloned().collect();
+        if rows.len() < 6 {
+            return Err("fewer than 6 letters in the demo inbox".into());
+        }
+        let now = jiff::Zoned::now();
+        let tz = now.time_zone().clone();
+        let ts = now.timestamp().as_second();
+        let at = |secs: i64| lifecycle::when_at(ts + secs, &tz).ok_or("time out of range");
+        let day = |days: i64| now.date().checked_add(jiff::Span::new().days(days)).map_err(|e| e.to_string());
+        let remind_day = day(3)?;
+        let marks: [(Kind, When); 6] = [
+            (Kind::Due, When::day(day(2)?)),
+            (Kind::Due, at(3 * 3600)?),
+            (Kind::Wait, When::day(day(2)?)),
+            (Kind::Remind, When::at(remind_day, jiff::civil::Time::new(9, 0, 0, 0).map_err(|e| e.to_string())?)),
+            (Kind::Expire, at(3 * 86_400)?),
+            (Kind::Due, When::day(day(-1)?)),
+        ];
+        let mut patches = Vec::new();
+        let mut undo = Vec::new();
+        for (row, (kind, when)) in rows.iter().zip(marks) {
+            let p = lifecycle::set(row, kind, Some(when));
+            let added: Vec<(String, bool)> = p.keywords.iter().filter(|(_, on)| *on).map(|(k, _)| (k.clone(), false)).collect();
+            undo.push(lifecycle::Patch { id: row.id.clone(), keywords: added, mailboxes: Vec::new() });
+            patches.push(p);
+        }
+        // «Напомнить» — словом без переноса в «Архив»: письмо остаётся в списке со своей меткой.
+        if let Some(d) = &mut m.screens {
+            d.undo = undo;
+            d.overdue = Some(rows[5].id.clone());
+        }
+        m.apply_patches(patches, cx);
+        m.open_letter(rows[0].clone(), cx);
+        m.lifecycle.picker = Some(super::Picker::new(Kind::Due, rows[0].clone()));
+        Ok(())
+    }
+
+    fn overdue(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.close_picker(cx);
+        let id = m.screens.as_ref().and_then(|d| d.overdue.clone());
+        let row = id.and_then(|id| m.cache.rows_by_ids(&[id]).ok()).and_then(|mut r| r.pop());
+        let Some(row) = row else { return Err("no overdue letter".into()) };
+        m.list.update(cx, |l, cx| l.select(0, cx));
+        m.open_letter(row, cx);
+        Ok(())
+    }
+
+    fn ready(s: &Scene, m: &Mailer, cx: &App) -> bool {
+        let list = m.list.read(cx);
+        let now = jiff::Zoned::now();
+        let (_, rows) = &list.rows;
+        let marked = rows.iter().filter(|r| !super::row_badges(r, &now).is_empty()).count();
+        let want = m.screens.as_ref().and_then(|d| d.overdue.as_deref());
+        let top = list.row(0).map(|r| r.id.as_str()) == want;
+        let lifecycle = s.name == "lifecycle";
+        let open = screens::reading(m, cx).is_some_and(|r| r.doc.is_some() && (lifecycle || Some(r.row.id.as_str()) == want));
+        let picker = m.lifecycle.picker.is_some() == lifecycle;
+        marked >= 6 && top && list.view.is_some() && !list.computing && screens::rows_loaded(list) && open && picker
+    }
+}
 
 #[cfg(test)]
 mod tests {

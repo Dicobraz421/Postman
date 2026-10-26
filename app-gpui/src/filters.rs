@@ -813,7 +813,7 @@ impl crate::Mailer {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "filters", texts: TEXTS, commands: COMMANDS, handlers, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "filters", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Обработчики команд части — на корне экрана почты (`Mailer::render`).
 fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
@@ -855,6 +855,76 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("filters.reset", &[], MAIL),
     ]
 };
+
+/// Сцены `--screens` фильтров (ADR 0005).
+pub(crate) mod scenes {
+    use gpui_kit::*;
+    use postman_core::filters::{Check, Quick};
+
+    use crate::screens::{self, Scene};
+    use crate::{Mailer, Section};
+
+    pub(crate) const SCENES: &[Scene] = &[
+        // Фильтры (S5-03): панель фильтров на месте папок, «Все папки», «Непрочитанные» — чип, «N из M», группы
+        // по папкам.
+        Scene::new("filters", panel, panel_ready),
+        // Быстрые фильтры (S5-03): закладки «Угрозы» и «Срок» включены (ИЛИ), панель по наведению открыта,
+        // группы по датам.
+        Scene::new("quick", quick, quick_ready),
+    ];
+
+    fn panel(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.set_section(Section::Mail, cx);
+        let inbox = crate::live::inbox(&m.folders.read(cx).mailboxes);
+        let Some(id) = inbox else { return Err("no inbox".into()) };
+        m.open_mailbox(id, cx);
+        m.filters.update(cx, |f, cx| {
+            f.set(cx, |f| f.panel = true);
+            f.change(cx, |q| {
+                q.scope = super::Where::All;
+                q.criteria.toggle_check(Check::Unread);
+            });
+        });
+        Ok(())
+    }
+
+    fn panel_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let (f, list) = (m.filters.read(cx), m.list.read(cx));
+        f.panel
+            && list.query.scope == super::Where::All
+            && !list.query.criteria.is_empty()
+            && list.view.is_some()
+            && !list.computing
+            && f.counts.total > 0
+            && screens::rows_loaded(list)
+    }
+
+    fn quick(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.filters.update(cx, |f, cx| {
+            f.set(cx, |f| f.panel = false);
+            f.change(cx, |q| {
+                q.scope = super::Where::Folder;
+                q.criteria.clear_panel();
+                q.criteria.toggle_quick(Quick::Threats);
+                q.criteria.toggle_quick(Quick::Due);
+            });
+        });
+        // Панель закладок — как по наведению.
+        m.filters.update(cx, |f, cx| f.set(cx, |f| f.quick_open = true));
+        Ok(())
+    }
+
+    fn quick_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let (f, list) = (m.filters.read(cx), m.list.read(cx));
+        !f.panel
+            && list.query.scope == super::Where::Folder
+            && list.query.criteria.quick.len() == 2
+            && list.view.is_some()
+            && !list.computing
+            && f.quick_open
+            && (screens::rows_loaded(list) || list.count == 0)
+    }
+}
 
 #[cfg(test)]
 mod tests {

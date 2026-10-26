@@ -338,13 +338,88 @@ impl Mailer {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "shared", texts: TEXTS, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "shared", texts: TEXTS, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
 const TEXTS: &[pets_i18n::Resource] = &[
     ("ru", include_str!("../i18n/ru/shared.ftl")),
     ("en", include_str!("../i18n/en/shared.ftl")),
 ];
+
+/// Сцены `--screens` общих ящиков (ADR 0005).
+pub(crate) mod scenes {
+    use gpui_kit::*;
+
+    use crate::screens::{self, Scene};
+    use crate::{Mailer, Section};
+
+    pub(crate) const SCENES: &[Scene] = &[
+        // «Входящие» общего ящика в дереве папок, первое письмо открыто (S4-06): никто не взял его в работу — полоса
+        // «Взять в работу», в командной строке — та же кнопка (S5-28).
+        Scene::new("shared", shared, shared_ready).live(),
+        // Тот же ящик (S5-28): письмо, взятое коллегой, — «Взято в работу: …» и «Забрать себе», в списке — метки
+        // «Назначено: …»; ответ в области чтения — от ящика, строка «Письмо взято в работу…».
+        Scene::new("taken", taken, taken_ready),
+    ];
+
+    /// «Входящие» первого общего ящика, где можно писать (иначе первого любого).
+    fn shared_inbox(m: &Mailer, cx: &App) -> Option<String> {
+        let f = m.folders.read(cx);
+        // Общие ящики, а не другие учётные записи профиля (S7-03б: `@<n>` — тоже строка дерева).
+        let shared: Vec<&postman_cache::AccountRow> =
+            f.accounts.iter().filter(|a| postman_cache::profile_of(Some(&a.id)) != Some(a.id.as_str())).collect();
+        let account = shared.iter().find(|a| !f.read_only(a)).or(shared.first())?;
+        let mut boxes = f.of(Some(&account.id));
+        let first = f.of(Some(&account.id)).next().map(|b| b.id.clone());
+        boxes.find(|b| b.role.as_deref() == Some("inbox")).map(|b| b.id.clone()).or(first)
+    }
+
+    fn shared(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.set_section(Section::Mail, cx);
+        let Some(id) = shared_inbox(m, cx) else { return Err("no shared mailbox in the folder tree".into()) };
+        m.open_mailbox(id, cx);
+        m.list.update(cx, |l, cx| {
+            if l.count > 0 {
+                l.select(0, cx);
+            }
+        });
+        Ok(())
+    }
+
+    fn shared_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        // Живой общий ящик может быть пуст: тогда снимок — без письма.
+        let list = m.list.read(cx);
+        let want = shared_inbox(m, cx);
+        let opened = want.is_some() && list.mailbox == want && list.search_ids.is_none();
+        let first = list.row(0).map(|r| r.id.as_str());
+        let letter = screens::rows_loaded(list)
+            && screens::reading(m, cx).is_some_and(|r| r.doc.is_some() && Some(r.row.id.as_str()) == first);
+        m.section == Section::Mail && opened && (list.count == 0 || letter)
+    }
+
+    fn taken(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.set_section(Section::Mail, cx);
+        m.tabs.activate_kind(crate::tabs::TabKind::Main);
+        let Some(id) = shared_inbox(m, cx) else { return Err("no shared mailbox in the folder tree".into()) };
+        m.open_mailbox(id, cx);
+        // Демо: второе письмо ящика отдела взял коллега (`postman_demo`, «Взять в работу»).
+        let i = (0..m.list.read(cx).count)
+            .find(|&i| m.list.read(cx).row(i).and_then(super::taken).is_some_and(|t| !t.by(postman_demo::ME)));
+        let Some(i) = i else { return Err("no message taken by a colleague in the shared mailbox".into()) };
+        screens::remember_composer(m, cx);
+        m.list.update(cx, |l, cx| l.select(i, cx));
+        let mailer = cx.entity();
+        cx.defer(move |cx| mailer.update(cx, |m, cx| m.respond(postman_compose::Mode::Reply, cx)));
+        Ok(())
+    }
+
+    fn taken_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let before = screens::composer_before(m);
+        let reply = m.compose.inline_view().is_some_and(|c| Some(c.read(cx).id) != before && c.read(cx).drawn());
+        let taken = screens::reading(m, cx).is_some_and(|r| super::taken(&r.row).is_some());
+        m.section == Section::Mail && screens::rows_loaded(m.list.read(cx)) && taken && reply
+    }
+}
 
 #[cfg(test)]
 mod tests {

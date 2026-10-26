@@ -6,6 +6,7 @@
 use gpui_kit::*;
 
 use crate::Mailer;
+use crate::screens::Scene;
 
 pub(crate) struct Part {
     /// Для журналов и тестов.
@@ -17,10 +18,14 @@ pub(crate) struct Part {
     pub commands: &'static [pets_commands::Command],
     /// Свои `on_action` на корне экрана почты.
     pub handlers: fn(Div, &mut Context<Mailer>) -> Div,
+    /// Свои сцены `--screens`, в порядке съёмки (`screens::Scene`).
+    pub scenes: &'static [Scene],
+    /// Перед каждой сценой (любой части): вернуть своё состояние, которое нужно только своим сценам.
+    pub reset: Option<fn(&Scene, &mut Mailer, &mut Window, &mut Context<Mailer>)>,
 }
 
 impl Part {
     /// Пустая опись: `Part { name: "…", texts: TEXTS, ..Part::NONE }`.
     pub(crate) const NONE: Part =
-        Part { name: "", texts: &[], commands: &[], handlers: |root, _| root };
+        Part { name: "", texts: &[], commands: &[], handlers: |root, _| root, scenes: &[], reset: None };
 }

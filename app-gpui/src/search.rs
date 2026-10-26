@@ -467,7 +467,7 @@ pub(crate) fn header(found: &Found, count: usize, l: &Look, cx: &mut Context<cra
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "search", texts: TEXTS, commands: COMMANDS, handlers, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "search", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Обработчики команд части — на корне экрана почты (`Mailer::render`).
 fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
@@ -587,3 +587,77 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("search.prev_match", &["shift-f3"], MAIL),
     ]
 };
+
+/// Сцены `--screens` поиска (ADR 0005).
+pub(crate) mod scenes {
+    use gpui_kit::*;
+
+    use crate::Mailer;
+    use crate::screens::{self, Scene};
+
+    pub(crate) const SCENES: &[Scene] = &[
+        // Поиск «Везде» (S5-10): результаты группами по папкам, подсветка, чипы «Уточнить».
+        Scene::new("search", search, search_ready),
+        // Письмо из результатов поиска: подсветка в теме и тексте, строка «Совпадения».
+        Scene::new("search-letter", letter, letter_ready).continues(),
+        // То же письмо (S5-14): прокручено до низа, затем F3 по кругу до первого совпадения (в теме) — оно прокручено в
+        // вид, «Совпадение 1 из N». Готово, только если переход прокрутил письмо наверх.
+        Scene::new("search-next", next, next_ready).continues(),
+    ];
+
+    /// Запрос с результатами в демо-ящике (S5-10): последнее слово первой темы демо («Отчёт за квартал») — письма во
+    /// «Входящих», «Архиве» и «Отправленных», в тексте писем Outlook — «итоги квартала».
+    fn query() -> &'static str {
+        postman_demo::SUBJECTS.first().and_then(|s| s.rsplit(' ').next()).unwrap_or("pipeline")
+    }
+
+    fn search(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        // Как «Везде» и ввод запроса с Enter.
+        m.bar.update(cx, |b, _| b.scope = crate::bar::Scope::All);
+        m.search.update(cx, |s, cx| s.set_value(query(), window, cx));
+        m.run_search(query(), cx);
+        Ok(())
+    }
+
+    fn search_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let list = m.list.read(cx);
+        list.found.as_ref().is_some_and(|f| !f.chips.is_empty()) && screens::rows_loaded(list)
+    }
+
+    fn letter(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        let Some(i) = screens::demo_row(m.list.read(cx), screens::outlook_letter) else {
+            return Err(format!("no Outlook letter among the results of \"{}\"", query()));
+        };
+        m.list.update(cx, |l, cx| l.select(i, cx));
+        Ok(())
+    }
+
+    fn letter_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let list = m.list.read(cx);
+        let selected = list.selected.and_then(|i| list.row(i)).map(|r| r.id.as_str());
+        let marked = m.reading.read(cx).marks.is_some();
+        marked
+            && selected.is_some()
+            && screens::reading(m, cx).is_some_and(|r| r.doc.is_some() && Some(r.row.id.as_str()) == selected)
+    }
+
+    /// Письмо прокручено вниз, затем F3 (`search.next_match`) по кругу — к первому совпадению.
+    fn next(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.reading.update(cx, |r, cx| {
+            let bottom = r.scroll.max_offset().y;
+            if bottom <= px(0.) {
+                return Err("the letter fits the reading pane: nothing to scroll".to_string());
+            }
+            r.scroll.set_offset(point(px(0.), -bottom));
+            for _ in 0..r.hits.get() {
+                r.step_hit(1, cx);
+            }
+            Ok(())
+        })
+    }
+
+    fn next_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let r = m.reading.read(cx);
+        r.hits.get() > 0 && r.hit == 0 && r.scroll.offset().y.abs() < px(1.)
+    }
+}

@@ -649,7 +649,7 @@ pub(crate) fn rules_sample(mailboxes: &[(String, String)]) -> RulesState {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "settings", texts: TEXTS, commands: COMMANDS, handlers, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "settings", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Обработчики команд части — на корне экрана почты (`Mailer::render`).
 fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
@@ -686,6 +686,176 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("settings.calendar", &[], None),
     ]
 };
+
+/// Сцены `--screens` вкладки «Настройки» (ADR 0005).
+pub(crate) mod scenes {
+    use gpui_kit::*;
+
+    use crate::screens::{self, Scene};
+    use crate::settings_tab::Section as S;
+    use crate::{Mailer, Section};
+
+    pub(crate) const SCENES: &[Scene] = &[
+        // «Настройки → Автоответ» (S4-05, S5-29; демо — образец со своими текстами коллегам и внешним).
+        Scene::new("vacation", vacation, vacation_ready).live(),
+        // Панель «Правила» (S4-07): демо — образец с редактором первого правила, живой ящик — правила с сервера.
+        Scene::new("rules", rules, rules_ready).live(),
+        // Вкладка «Настройки», раздел «Общие» (S5-09).
+        Scene::new("settings-general", section, section_ready),
+        // «Настройки → Безопасность» (S5-30).
+        Scene::new("settings-security", section, section_ready),
+        // «Настройки → Внешний вид» (S5-30).
+        Scene::new("settings-look", section, section_ready),
+        // «Настройки → Категории» с правкой новой категории: палитра с перечёркнутыми близкими цветами.
+        Scene::new("settings-categories", categories, section_ready),
+        // «Настройки → Клавиатура»: своё сочетание у одной команды и конфликт у другой.
+        Scene::new("settings-keys", keys, section_ready),
+        // «Настройки → Аккаунты» с карточкой «Добавить аккаунт» на месте.
+        Scene::new("settings-accounts", accounts, section_ready),
+        // «Настройки → Быстрые фильтры и сроки».
+        Scene::new("settings-quick", section, section_ready),
+        // «Настройки → Чтение».
+        Scene::new("settings-reading", section, section_ready),
+        // «Настройки → Календарь» (S5-20).
+        Scene::new("settings-calendar", section, section_ready),
+        // Тот же раздел, прокручен вниз: цвет свободного времени с образцом, календари коллег, приглашения.
+        Scene::new("settings-calendar-free", calendar_free, section_ready),
+        // «Настройки → Подписи и шаблоны» с образцом подписи и шаблона (демо — без файла).
+        Scene::new("settings-sign", sign, section_ready),
+    ];
+
+    fn vacation(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.set_section(Section::Mail, cx);
+        if !m.backend.is_live() {
+            m.settings.autoreply = Some(super::reply_sample());
+            m.set_vacation_state(Some(super::screen_sample()), cx);
+            // Строка состояния — с заполненностью ящика: 12 % из 2 ГБ.
+            let limit: u64 = 2 << 30;
+            m.set_quota(Some(postman_core::settings::Usage { used: limit / 8, limit }), cx);
+        }
+        m.open_vacation(window, cx);
+        Ok(())
+    }
+
+    fn vacation_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        // Живой ящик: автоответ прочитан с сервера (полоса — только если он включён).
+        let state = if screens::live(m) { m.settings.vacation.is_some() } else { m.settings.bar.is_some() };
+        screens::settings_on(m, S::Vacation, cx) && m.settings.vacation_panel.is_some() && state
+    }
+
+    fn rules(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.open_rules(window, cx);
+        // Демо: редактор первого правила открыт — снимок показывает и список, и редактор.
+        if let (false, Some(p)) = (m.backend.is_live(), m.settings.rules_panel.clone()) {
+            p.update(cx, |p, cx| {
+                let first = p.state.as_ref().and_then(|s| s.rules.first().cloned());
+                if let Some(r) = first {
+                    p.edit(crate::rules::Draft::of(0, &r), cx);
+                }
+            });
+        }
+        Ok(())
+    }
+
+    fn rules_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let live = screens::live(m);
+        match &m.settings.rules_panel {
+            Some(p) if screens::settings_on(m, S::Rules, cx) => {
+                let p = p.read(cx);
+                if live { p.state.is_some() } else { p.editor.is_some() }
+            }
+            _ => false,
+        }
+    }
+
+    /// Раздел вкладки сцены.
+    fn of(s: &Scene) -> S {
+        match s.name {
+            "settings-general" => S::General,
+            "settings-security" => S::Security,
+            "settings-look" => S::Look,
+            "settings-categories" => S::Categories,
+            "settings-keys" => S::Keys,
+            "settings-quick" => S::Quick,
+            "settings-reading" => S::Reading,
+            "settings-calendar" | "settings-calendar-free" => S::Calendar,
+            "settings-sign" => S::Signatures,
+            _ => S::Accounts,
+        }
+    }
+
+    fn section(s: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.open_settings(Some(of(s)), window, cx);
+        Ok(())
+    }
+
+    fn section_ready(s: &Scene, m: &Mailer, cx: &App) -> bool {
+        screens::settings_on(m, of(s), cx)
+            && m.settings.view.as_ref().is_some_and(|v| {
+                let v = v.read(cx);
+                match s.name {
+                    "settings-categories" => v.cat_edit.is_some(),
+                    "settings-accounts" => v.add.is_some(),
+                    "settings-sign" => !v.sign.prefs.signatures.is_empty(),
+                    _ => true,
+                }
+            })
+    }
+
+    fn categories(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.open_settings(Some(S::Categories), window, cx);
+        if let Some(v) = m.settings.view.clone() {
+            v.update(cx, |v, cx| v.edit_category(None, window, cx));
+        }
+        Ok(())
+    }
+
+    fn keys(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        // Своё сочетание у «Флаг» и конфликт: «Сегодня в календаре» на Ctrl+2, как «Календарь»; схема «Одиночные
+        // клавиши» (S5-17) со своей буквой у «Архив».
+        crate::prefs::update(cx, |p| {
+            p.keys.insert("mail.toggle_flag".into(), vec!["ctrl-g".into()]);
+            p.keys.insert("calendar.today".into(), vec!["ctrl-2".into()]);
+            p.key_scheme = postman_core::prefs::KeyScheme::Single;
+            p.keys_single.insert("mail.archive".into(), vec!["y".into()]);
+        });
+        m.open_settings(Some(S::Keys), window, cx);
+        Ok(())
+    }
+
+    fn accounts(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        crate::prefs::update(cx, |p| {
+            p.keys.clear();
+            p.keys_single.clear();
+            p.key_scheme = postman_core::prefs::KeyScheme::Outlook;
+        });
+        m.open_settings(Some(S::Accounts), window, cx);
+        m.on_settings(&crate::settings_tab::SettingsEvent::AddAccount, window, cx);
+        Ok(())
+    }
+
+    fn calendar_free(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.open_settings(Some(S::Calendar), window, cx);
+        if let Some(v) = m.settings.view.clone() {
+            v.update(cx, |v, cx| {
+                v.scroll.scroll_to_bottom();
+                cx.notify();
+            });
+        }
+        Ok(())
+    }
+
+    fn sign(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.open_settings(Some(S::Signatures), window, cx);
+        if let Some(v) = m.settings.view.clone() {
+            v.update(cx, |v, cx| {
+                v.sign.prefs = crate::settings_sign::screen_sample(&v.info.identities);
+                cx.notify();
+            });
+        }
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod tests {

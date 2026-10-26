@@ -760,7 +760,7 @@ impl Mailer {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "thread", texts: TEXTS, commands: COMMANDS, handlers, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "thread", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Обработчики команд части — на корне экрана почты (`Mailer::render`).
 fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
@@ -805,3 +805,101 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("thread.collapse", &[], MAIL),
     ]
 };
+
+/// Сцены `--screens` бесед (ADR 0005).
+pub(crate) mod scenes {
+    use gpui_kit::*;
+    use postman_core::prefs::Conversation;
+
+    use crate::screens::{self, Scene};
+    use crate::{Mailer, Section};
+
+    pub(crate) const SCENES: &[Scene] = &[
+        // Лента беседы (S5-05): письмо цепочки демо с ответами из разных клиентов, только новый текст. После первого
+        // запуска, последней из прежних: лента остаётся включённой, прежние сцены снимаются без неё.
+        Scene::new("thread", thread, thread_ready).after(crate::signin::scenes::FIRSTRUN),
+        // Виды беседы (S5-05б): свой вид «Входящих» — только в этих сценах.
+        // Меню папки «Входящие» (S5-05б) с открытым подменю «Вид беседы».
+        Scene::new("folder-menu", folder_menu, folder_menu_ready).continues(),
+        // Стопка беседы в панели чтения (S5-05б): старые письма свёрнуты строками, последнее и открытое раскрыты.
+        Scene::new("thread-stack", view, stack_ready).continues(),
+        // «Входящие» в виде «как Outlook» (S5-05б): беседа цепочки демо развёрнута, выбрано письмо под головой.
+        Scene::new("thread-list", view, list_ready).continues().wait(pick_child),
+    ];
+
+    /// Письмо под головой беседы демо во «Входящих» (сцена `thread-list`): старшее из двух писем цепочки там.
+    const CHILD: &str = "chain1";
+
+    fn thread(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.live.signin = None;
+        m.set_section(Section::Mail, cx);
+        // Без фильтров прошлых сцен.
+        m.reset_filters(cx);
+        m.filters.update(cx, |f, cx| f.set(cx, |f| f.quick_open = false));
+        m.open_mailbox("inbox".into(), cx);
+        let row = m.cache.rows_by_ids(&[postman_demo::CHAIN_OPEN.into()]).map_err(|e| e.to_string())?.pop();
+        let Some(row) = row else { return Err("no demo conversation in the cache".into()) };
+        m.reading.update(cx, |r, _| r.feed_on = true);
+        m.open_letter(row, cx);
+        Ok(())
+    }
+
+    fn thread_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let r = m.reading.read(cx);
+        let open = r.reading.as_ref().is_some_and(|r| r.row.id == postman_demo::CHAIN_OPEN);
+        open && r.feed_on && r.feed.as_ref().is_some_and(|f| f.conv.len() == postman_demo::CHAIN.len() && f.ready())
+    }
+
+    fn folder_menu(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        // Как правая кнопка по «Входящим» и наведение на «Вид беседы».
+        m.reading.update(cx, |r, _| r.feed_on = false);
+        m.screen_folder_menu("inbox".into(), point(px(150.), px(140.)), cx);
+        Ok(())
+    }
+
+    fn folder_menu_ready(_: &Scene, m: &Mailer, _: &App) -> bool {
+        m.folder_menu.is_some()
+    }
+
+    fn view(s: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.close_folder_menu(cx);
+        let stack = s.name == "thread-stack";
+        let view = if stack { Conversation::Stack } else { Conversation::Outlook };
+        // Как выбор в меню папки.
+        crate::prefs::update(cx, |p| p.reading.set_folder("inbox", Some(view)));
+        m.open_mailbox("inbox".into(), cx);
+        if stack {
+            let row = m.cache.rows_by_ids(&[postman_demo::CHAIN_OPEN.into()]).map_err(|e| e.to_string())?.pop();
+            let Some(row) = row else { return Err("no demo conversation in the cache".into()) };
+            m.open_letter(row, cx);
+        } else {
+            // Как щелчок по стрелке беседы; письмо под головой выбирается, когда беседы посчитаны (`pick_child`).
+            m.list.update(cx, |l, _| l.threads_open.insert("chain".into()));
+        }
+        Ok(())
+    }
+
+    fn stack_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let r = m.reading.read(cx);
+        let open = r.reading.as_ref().is_some_and(|r| r.row.id == postman_demo::CHAIN_OPEN && r.doc.is_some());
+        open && r.stacked(cx) && r.feed.as_ref().is_some_and(|f| f.conv.len() == postman_demo::CHAIN.len() && f.ready())
+    }
+
+    fn list_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let list = m.list.read(cx);
+        let open = screens::reading(m, cx).is_some_and(|r| r.row.id == CHILD && r.doc.is_some());
+        let picked = list.selected.and_then(|i| list.row(i)).is_some_and(|r| r.id == CHILD);
+        list.outline.is_some() && !list.computing && screens::rows_loaded(list) && picked && open
+    }
+
+    /// Беседы посчитаны — выбрать письмо под головой, как щелчок по нему.
+    fn pick_child(_: &Scene, m: &mut Mailer, cx: &mut Context<Mailer>) {
+        m.list.update(cx, |l, cx| {
+            let at = l.outline.as_ref().filter(|_| !l.computing).and_then(|o| o.position(CHILD));
+            let picked = l.selected.and_then(|i| l.row(i)).is_some_and(|r| r.id == CHILD);
+            if let (Some(i), false) = (at, picked) {
+                l.select(i, cx);
+            }
+        });
+    }
+}

@@ -105,7 +105,36 @@ fn over_panel(c: Hsla, panel: Hsla) -> Hsla {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "buttons", ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "buttons", scenes: scenes::SCENES, reset: Some(scenes::reset), ..crate::part::Part::NONE };
+
+/// Сцены `--screens` кнопок (ADR 0005).
+pub(crate) mod scenes {
+    use gpui_kit::*;
+
+    use crate::screens::Scene;
+    use crate::{Mailer, Section};
+
+    pub(crate) const SCENES: &[Scene] = &[
+        // Кнопки (S5-19): главная, тонированная и тонированная под указателем на каждой поверхности (`buttons::gallery`).
+        Scene::new("buttons", buttons, buttons_ready),
+    ];
+
+    /// Образцы кнопок — только в своей сцене (S5-19).
+    pub(crate) fn reset(s: &Scene, m: &mut Mailer, _: &mut Window, _: &mut Context<Mailer>) {
+        if let Some(d) = &mut m.screens {
+            d.gallery = s.name == "buttons";
+        }
+    }
+
+    fn buttons(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.set_section(Section::Mail, cx);
+        Ok(())
+    }
+
+    fn buttons_ready(_: &Scene, m: &Mailer, _: &App) -> bool {
+        m.screens.as_ref().is_some_and(|d| d.gallery)
+    }
+}
 
 #[cfg(test)]
 mod tests {

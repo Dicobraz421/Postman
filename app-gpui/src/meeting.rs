@@ -2241,7 +2241,7 @@ impl Render for MeetingView {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "meeting", commands: COMMANDS, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "meeting", commands: COMMANDS, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Вкладка встречи (S3-05, вкладкой — S5-11).
 pub(crate) mod meeting {
@@ -2275,6 +2275,69 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("meeting.add_person", &["ctrl-shift-b"], MEETING),
     ]
 };
+
+/// Сцены `--screens` вкладки встречи (ADR 0005).
+pub(crate) mod scenes {
+    use gpui_kit::*;
+    use postman_core::prefs::FreeColor;
+
+    use crate::screens::Scene;
+    use crate::{Mailer, Section};
+
+    pub(crate) const SCENES: &[Scene] = &[
+        // Вкладка новой встречи: поля и подбор времени в одной форме (S5-11); общие окна — розовым бренда (S5-20).
+        Scene::new("meeting", meeting, ready).live(),
+        // Та же встреча (S5-23): курсор ←/→ на втором общем окне — рамка плотнее и свечение.
+        Scene::new("meeting-slot", slot, ready).continues(),
+        // Та же встреча, цвет свободного времени — синий бренда («Настройки → Календарь», S5-20).
+        Scene::new("meeting-blue", blue, ready).continues(),
+        // Вкладка встречи: помощник с занятостью каждого (без «Только общее свободное время»).
+        Scene::new("assistant", assistant, ready).continues(),
+    ];
+
+    fn meeting(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.set_section(Section::Calendar, cx);
+        m.open_meeting_screen(cx);
+        Ok(())
+    }
+
+    fn slot(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        // Как →, → с клавиатуры: курсор — на втором общем окне.
+        let Some(v) = m.meetings.last() else { return Err("no meeting tab".into()) };
+        v.update(cx, |v, cx| {
+            v.step_cursor(true, cx);
+            v.step_cursor(true, cx);
+        });
+        Ok(())
+    }
+
+    fn blue(_: &Scene, _: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        crate::prefs::update(cx, |p| p.calendar.free_color = FreeColor::Blue);
+        Ok(())
+    }
+
+    fn assistant(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        // Цвет свободного времени — снова по умолчанию (после `meeting-blue`), курсора окон нет — как на макете.
+        crate::prefs::update(cx, |p| p.calendar.free_color = FreeColor::default());
+        let Some(v) = m.meetings.last() else { return Err("no meeting tab".into()) };
+        v.update(cx, |v, cx| {
+            v.only_free = false;
+            v.slot_cursor = None;
+            cx.notify();
+        });
+        Ok(())
+    }
+
+    fn ready(s: &Scene, m: &Mailer, cx: &App) -> bool {
+        let tab = m.tabs.is_active(crate::tabs::TabKind::Meeting);
+        let blue = crate::prefs::get(cx).calendar.free_color == FreeColor::Blue;
+        tab && blue == (s.name == "meeting-blue")
+            && m.meetings.last().is_some_and(|v| {
+                let v = v.read(cx);
+                v.ready() && (v.only_free == (s.name != "assistant")) && (s.name != "meeting-slot" || v.slot_cursor.is_some())
+            })
+    }
+}
 
 #[cfg(test)]
 mod tests {

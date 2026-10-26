@@ -317,7 +317,7 @@ impl Mailer {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "mail", texts: TEXTS, commands: COMMANDS, handlers, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "mail", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
 const TEXTS: &[pets_i18n::Resource] = &[
@@ -395,6 +395,51 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("mail.take", &["ctrl-j"], MAIL),
     ]
 };
+
+/// Сцены `--screens` писем (ADR 0005).
+pub(crate) mod scenes {
+    use gpui_kit::*;
+
+    use crate::screens::{self, Scene};
+    use crate::{Mailer, Section};
+
+    pub(crate) const SCENES: &[Scene] = &[
+        // Входящие, ничего не выбрано.
+        Scene::new("list", list, list_ready).live(),
+        // Первое письмо выбрано, тело разобрано воркером.
+        Scene::new("letter", letter, letter_ready).live().continues(),
+    ];
+
+    fn list(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.set_section(Section::Mail, cx);
+        Ok(())
+    }
+
+    fn list_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let list = m.list.read(cx);
+        // Живой ящик: снимок — после первой синхронизации, а не по старому кэшу.
+        let synced = m.live.synced || screens::demo(m);
+        synced
+            && m.section == Section::Mail
+            && list.search_ids.is_none()
+            && list.selected.is_none()
+            && screens::rows_loaded(list)
+            && screens::reading(m, cx).is_none()
+    }
+
+    fn letter(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.list.update(cx, |l, cx| l.select(0, cx));
+        Ok(())
+    }
+
+    fn letter_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let list = m.list.read(cx);
+        let first = list.row(0).map(|r| r.id.as_str());
+        list.selected == Some(0)
+            && first.is_some()
+            && screens::reading(m, cx).is_some_and(|r| r.doc.is_some() && Some(r.row.id.as_str()) == first)
+    }
+}
 
 #[cfg(test)]
 mod tests {

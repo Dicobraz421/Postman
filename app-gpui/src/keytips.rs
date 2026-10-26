@@ -243,7 +243,62 @@ impl crate::Mailer {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "keytips", ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "keytips", scenes: scenes::SCENES, reset: Some(scenes::reset), ..crate::part::Part::NONE };
+
+/// Сцены `--screens` KeyTips (ADR 0005).
+pub(crate) mod scenes {
+    use gpui_kit::*;
+    use postman_core::prefs::KeyScheme;
+
+    use crate::screens::{self, Scene};
+    use crate::{Mailer, Section};
+
+    pub(crate) const SCENES: &[Scene] = &[
+        // KeyTips (S5-18): письмо открыто, Ctrl удержан 0,4 с — плашки с клавишами над кнопками (схема «Outlook»).
+        Scene::new("keytips", keytips, keytips_ready),
+        // То же в схеме «Одиночные клавиши»: открыто приглашение без ответа — A / T / N на его кнопках.
+        Scene::new("keytips-single", single, single_ready).continues(),
+    ];
+
+    /// Плашки KeyTips — только в своих сценах: дальше Ctrl отпущен, схема — «Outlook».
+    pub(crate) fn reset(s: &Scene, _: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) {
+        if super::shown(cx) && !matches!(s.name, "keytips" | "keytips-single") {
+            screens::send_input(window, cx, PlatformInput::ModifiersChanged(screens::ctrl(false)));
+            crate::prefs::update(cx, |p| p.key_scheme = KeyScheme::Outlook);
+        }
+    }
+
+    fn keytips(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        if m.toasts.read(cx).is_history_open() {
+            m.toasts.update(cx, |t, cx| t.toggle_history(cx));
+        }
+        m.set_section(Section::Mail, cx);
+        m.open_mailbox("inbox".into(), cx);
+        m.list.update(cx, |l, cx| l.select(0, cx));
+        // Как удержание Ctrl: событие окна, таймер экрана почты (0,4 с).
+        screens::send_input(window, cx, PlatformInput::ModifiersChanged(screens::ctrl(true)));
+        Ok(())
+    }
+
+    fn keytips_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        super::shown(cx) && screens::reading(m, cx).is_some_and(|r| r.doc.is_some())
+    }
+
+    fn single(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        crate::prefs::update(cx, |p| p.key_scheme = KeyScheme::Single);
+        let invitation = crate::invite_card::scenes::invitation;
+        let Some(i) = screens::demo_row(m.list.read(cx), invitation) else {
+            return Err("no invitation in the demo inbox".into());
+        };
+        m.list.update(cx, |l, cx| l.select(i, cx));
+        Ok(())
+    }
+
+    fn single_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let single = crate::prefs::get(cx).key_scheme == KeyScheme::Single;
+        super::shown(cx) && single && screens::reading(m, cx).is_some_and(|r| r.doc.is_some() && r.invite.is_some())
+    }
+}
 
 #[cfg(test)]
 mod tests {

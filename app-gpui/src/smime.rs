@@ -491,13 +491,115 @@ impl ReadingPane {
 
 /// Сцены снимков (`--screens smime…`): итог по виду образца демо.
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "smime", texts: TEXTS, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "smime", texts: TEXTS, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
 const TEXTS: &[pets_i18n::Resource] = &[
     ("ru", include_str!("../i18n/ru/smime.ftl")),
     ("en", include_str!("../i18n/en/smime.ftl")),
 ];
+
+/// Сцены `--screens` S/MIME (ADR 0005).
+pub(crate) mod scenes {
+    use gpui_kit::*;
+
+    use crate::Mailer;
+    use crate::screens::{self, Scene};
+    use crate::smime_enc::{Lock, Problem};
+
+    pub(crate) const SCENES: &[Scene] = &[
+        // Подписанные письма демо (S5-12 Ф1), карточка подписи раскрыта: подпись RSA верна (корпоративный УЦ), ГОСТ Р
+        // 34.10-2012 (проверено Postman, без СКЗИ), текст изменён после подписи, издатель не доверен.
+        Scene::new("smime", letter, signed_ready).wait(open_card),
+        Scene::new("smime-gost", letter, signed_ready).wait(open_card),
+        Scene::new("smime-bad", letter, signed_ready).wait(open_card),
+        Scene::new("smime-untrusted", letter, signed_ready).wait(open_card),
+        // Шифрованное и подписанное письмо демо (S5-12 Ф2): расшифровано демо-ключом, «Зашифровано» и «Подписано»,
+        // карточка раскрыта (шифр и подпись), вложение — из расшифрованного письма.
+        Scene::new("encrypted", letter, sealed_ready).wait(open_card),
+        // Шифровано не для меня: строка «не для вас» с издателем и номером сертификата.
+        Scene::new("encrypted-other", letter, sealed_ready),
+        // Тег GCM испорчен: красная строка «повреждено».
+        Scene::new("encrypted-bad", letter, sealed_ready),
+        // Ключ на смарт-карте: строка «Нужен PIN · Ввести» (состояние подставлено — демо без карты).
+        Scene::new("encrypted-pin", letter, sealed_ready).wait(need_pin),
+    ];
+
+    /// Образец демо (`postman_demo::smime`) письма сцены.
+    fn kind(s: &Scene) -> &'static str {
+        match s.name {
+            "smime" => "rsa",
+            "smime-gost" => "gost",
+            "smime-bad" => "bad",
+            "smime-untrusted" => "untrusted",
+            "encrypted" => "enc",
+            "encrypted-bad" => "enc-bad",
+            _ => "enc-other",
+        }
+    }
+
+    fn letter(s: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        let kind = kind(s);
+        screens::select_demo(m, |b| screens::signed(b, kind), cx)
+    }
+
+    fn target<'a>(s: &Scene, m: &'a Mailer, cx: &'a App) -> Option<&'a str> {
+        let kind = kind(s);
+        screens::demo_id(m.list.read(cx), |b| screens::signed(b, kind))
+    }
+
+    fn signed_ready(s: &Scene, m: &Mailer, cx: &App) -> bool {
+        // Подпись проверена воркером, карточка раскрыта, тело разобрано.
+        let target = target(s, m, cx);
+        screens::reading(m, cx).is_some_and(|r| {
+            let done = r.smime.as_ref().is_some_and(|s| s.open && matches!(s.seal, crate::smime::Seal::Done(_)));
+            Some(r.row.id.as_str()) == target && r.doc.is_some() && done
+        })
+    }
+
+    fn sealed_ready(s: &Scene, m: &Mailer, cx: &App) -> bool {
+        let target = target(s, m, cx);
+        screens::reading(m, cx).is_some_and(|r| {
+            let smime = r.smime.as_ref();
+            let lock = smime.and_then(|s| s.lock.as_ref());
+            let ok = match s.name {
+                "encrypted" => {
+                    matches!(lock, Some(Lock::Open(_)))
+                        && smime.is_some_and(|s| s.open && matches!(s.seal, crate::smime::Seal::Done(_)))
+                }
+                "encrypted-other" => matches!(lock, Some(Lock::Failed(Problem::NotForYou(_)))),
+                "encrypted-bad" => matches!(lock, Some(Lock::Failed(Problem::Damaged))),
+                _ => matches!(lock, Some(Lock::Failed(Problem::NeedPin))),
+            };
+            Some(r.row.id.as_str()) == target && ok
+        })
+    }
+
+    /// Подпись проверена — раскрыть карточку, как щелчок по значку.
+    fn open_card(_: &Scene, m: &mut Mailer, cx: &mut Context<Mailer>) {
+        m.reading.update(cx, |r, cx| {
+            let closed = r
+                .reading
+                .as_ref()
+                .and_then(|r| r.smime.as_ref())
+                .is_some_and(|s| !s.open && matches!(s.seal, crate::smime::Seal::Done(_)));
+            if closed {
+                r.toggle_smime(cx);
+            }
+        });
+    }
+
+    /// Демо без смарт-карты: «не для вас» подменяется строкой PIN — так её видит владелец карты.
+    fn need_pin(_: &Scene, m: &mut Mailer, cx: &mut Context<Mailer>) {
+        m.reading.update(cx, |r, cx| {
+            let smime = r.reading.as_mut().and_then(|r| r.smime.as_mut());
+            if let Some(s) = smime.filter(|s| matches!(s.lock, Some(Lock::Failed(Problem::NotForYou(_))))) {
+                s.lock = Some(Lock::Failed(Problem::NeedPin));
+                cx.notify();
+            }
+        });
+    }
+}
 
 #[cfg(test)]
 mod tests {

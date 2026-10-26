@@ -1203,7 +1203,7 @@ pub(crate) fn demo_senders() -> Vec<Sender> {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "compose", texts: TEXTS, commands: COMMANDS, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "compose", texts: TEXTS, commands: COMMANDS, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
 const TEXTS: &[pets_i18n::Resource] = &[
@@ -1245,6 +1245,117 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("compose.discard", &[], COMPOSER),
     ]
 };
+
+/// Сцены `--screens` письма (ADR 0005).
+pub(crate) mod scenes {
+    use gpui_kit::*;
+
+    use crate::composer::scenes as samples;
+    use crate::screens::{self, Scene};
+    use crate::{Mailer, Section};
+
+    pub(crate) const SCENES: &[Scene] = &[
+        // Новое письмо во вкладке (S5-06б): адресаты чипами (один внешний), текст, вложение, панель справа.
+        Scene::new("compose", compose, compose_ready).after("task-repeat"),
+        // То же письмо с открытым меню «Отправить позже» у кнопки «Отправить» (S5-06).
+        Scene::new("send-later", send_later, send_later_ready).continues(),
+        // Второе письмо — вторая вкладка: все замечания «Перед отправкой» (карта, вложение, внешние, сменённый адрес).
+        Scene::new("checks", checks, checks_ready),
+        // «Конфиденциально» (S5-12 Ф4): адресат с сертификатом (Петров из подписанного образца демо) — замок у чипа,
+        // замечаний по сертификатам нет; письмо зашифруется ему и себе.
+        Scene::new("compose-confidential", confidential, confidential_ready),
+        // Ответ в области чтения над письмом с цитатой (S3-02, S5-06б).
+        Scene::new("reply-inline", reply, reply_ready).live(),
+    ];
+
+    fn compose(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.cal.update(cx, |c, cx| c.close_details(cx));
+        m.set_section(Section::Mail, cx);
+        // Как `mail.new`: письмо — вкладкой (поля ввода создаются после кадра).
+        let mut draft = samples::compose_draft();
+        draft.attachments.push(samples::sample_attachment());
+        m.open_compose(draft, cx);
+        Ok(())
+    }
+
+    fn compose_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        screens::compose_tab(m).is_some_and(|c| c.read(cx).drawn())
+    }
+
+    fn send_later(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        let Some(c) = m.compose.last().cloned() else { return Err("no compose tab".into()) };
+        // «Ждать ответа» включено — письмо изменено: у вкладки точка несохранённого.
+        c.update(cx, |c, cx| {
+            c.model.wait = Some(postman_core::marks::WAIT_DEFAULT);
+            c.toggle_later_menu(cx);
+        });
+        Ok(())
+    }
+
+    fn send_later_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        screens::compose_tab(m).is_some_and(|c| c.read(cx).drawn() && c.read(cx).later_menu_open())
+    }
+
+    fn checks(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        screens::remember_composer(m, cx);
+        m.load_address_book(cx);
+        samples::seed_book(&m.compose.book);
+        m.open_compose(samples::checks_draft(), cx);
+        Ok(())
+    }
+
+    fn checks_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        // Новое письмо — вторая вкладка; замечания по адресатам считаются при отрисовке.
+        let before = screens::composer_before(m);
+        screens::compose_tab(m).is_some_and(|c| {
+            let c = c.read(cx);
+            Some(c.id) != before && c.drawn() && c.model.checks().count() >= 5
+        })
+    }
+
+    fn confidential(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        screens::remember_composer(m, cx);
+        // Сертификат Петрова — как после открытия его подписанного письма (Ф1 запоминает подписанта).
+        let cache = m.cache.clone();
+        let ctx = crate::smime::demo_context();
+        let trust = ctx.anchors.trust();
+        if let Some(raw) = postman_demo::smime::raw("rsa") {
+            let now = jiff::Timestamp::now().as_second();
+            let report = postman_smime::verify(raw, &trust, u64::try_from(now).unwrap_or(0));
+            postman_core::smime::finish(&cache, "screens-seed-rsa", report, &ctx, now);
+        }
+        m.open_compose(samples::confidential_draft(), cx);
+        Ok(())
+    }
+
+    fn confidential_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let before = screens::composer_before(m);
+        let certs = m.compose.certs.clone();
+        let known = crate::smime_seal::lock(&certs).families("i.petrov@corp.example").is_some_and(|f| !f.is_empty());
+        screens::compose_tab(m).is_some_and(|c| Some(c.read(cx).id) != before && c.read(cx).drawn()) && known
+    }
+
+    fn reply(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        // Демо — письмо с картинкой в тексте и цитатой Outlook; живой ящик — первое письмо.
+        let i = if screens::live(m) { Some(0) } else { screens::demo_row(m.list.read(cx), screens::outlook_letter) };
+        let Some(i) = i else { return Err("no message to reply to".into()) };
+        screens::remember_composer(m, cx);
+        m.tabs.activate_kind(crate::tabs::TabKind::Main);
+        m.set_section(Section::Mail, cx);
+        m.list.update(cx, |l, cx| l.select(i, cx));
+        // Как `mail.reply`: ответ — когда тело разобрано (ответ ждёт его сам), и не посреди отрисовки.
+        let mailer = cx.entity();
+        cx.defer(move |cx| mailer.update(cx, |m, cx| m.respond(postman_compose::Mode::Reply, cx)));
+        Ok(())
+    }
+
+    fn reply_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        // Ответ — в области чтения над письмом (вкладки прошлых сцен ещё открыты).
+        let before = screens::composer_before(m);
+        let reply = m.compose.inline_view().is_some_and(|c| Some(c.read(cx).id) != before && c.read(cx).drawn());
+        reply && m.tabs.active().kind.shows_mail()
+    }
+}
 
 #[cfg(test)]
 mod tests {

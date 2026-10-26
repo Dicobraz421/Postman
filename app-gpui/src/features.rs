@@ -53,7 +53,53 @@ pub(crate) fn available(id: &str, features: Features) -> bool {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "features", ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "features", scenes: scenes::SCENES, reset: Some(scenes::reset), ..crate::part::Part::NONE };
+
+/// Сцены `--screens` «Нет у сервера — нет на экране» (ADR 0005).
+pub(crate) mod scenes {
+    use gpui_kit::*;
+    use postman_core::model::Features;
+
+    use crate::screens::{self, Scene};
+    use crate::settings_tab::Section as SettingsSection;
+    use crate::{Mailer, Section};
+
+    pub(crate) const SCENES: &[Scene] = &[
+        // «Нет у сервера — нет на экране» (S7-03): сервер только с почтой — рейл и разделы настроек без лишнего.
+        Scene::new("features-mail-only", mail_only, mail_only_ready),
+        // То же — «Настройки»: без «Календаря», «Правил» и «Автоответа».
+        Scene::new("features-mail-only-settings", settings, settings_ready),
+    ];
+
+    /// Сервер умеет всё — кроме своих сцен (S7-03).
+    pub(crate) fn reset(s: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) {
+        if !s.name.starts_with("features-") && super::get(cx) != Features::ALL {
+            m.set_features(Features::ALL, cx);
+        }
+    }
+
+    fn mail_only(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        // Открыт календарь — сервер без него возвращает в «Почту».
+        m.close_settings(window, cx);
+        m.set_section(Section::Calendar, cx);
+        m.set_features(Features::NONE, cx);
+        Ok(())
+    }
+
+    fn mail_only_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        !m.tabs.is_active(crate::tabs::TabKind::Settings) && m.section == Section::Mail && super::get(cx) == Features::NONE
+    }
+
+    fn settings(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.set_features(Features::NONE, cx);
+        m.open_settings(Some(SettingsSection::General), window, cx);
+        Ok(())
+    }
+
+    fn settings_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        screens::settings_on(m, SettingsSection::General, cx) && super::get(cx) == Features::NONE
+    }
+}
 
 #[cfg(test)]
 mod tests {

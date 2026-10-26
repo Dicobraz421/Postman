@@ -416,7 +416,7 @@ impl ReadingPane {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "attach", texts: TEXTS, commands: COMMANDS, handlers, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "attach", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
 const TEXTS: &[pets_i18n::Resource] = &[
@@ -441,6 +441,91 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("attach.prev", &["left"], LIST),
     ]
 };
+
+/// Сцены `--screens` вложений (ADR 0005).
+pub(crate) mod scenes {
+    use gpui_kit::*;
+    use postman_cache::BodyRow;
+
+    use crate::Mailer;
+    use crate::screens::{self, Scene};
+
+    pub(crate) const SCENES: &[Scene] = &[
+        // Письмо с вложениями и картинкой `cid:` в тексте (S3-03): лента 40 px с «+N» (S5-07).
+        Scene::new("attachments", letter, letter_ready),
+        // Встроенный просмотр вложений того же письма (S5-07): фото, страница PDF, оглавление архива, книга с
+        // макросами (карточка «Открытие заблокировано»).
+        Scene::new("preview-image", preview, preview_ready).continues(),
+        Scene::new("preview-pdf", preview, preview_ready).continues(),
+        // Та же страница PDF, прокрученная до низа (S5-07б): обрезанный прокруткой кадр не сдвинут.
+        Scene::new("preview-pdf-end", pdf_end, pdf_end_ready).continues(),
+        Scene::new("preview-zip", preview, preview_ready).continues(),
+        Scene::new("attach-macro", preview, preview_ready).continues(),
+        // Письмо с большой картинкой в тексте (S5-07б): кадр 1600 px, уменьшен до ширины области чтения, целиком.
+        Scene::new("letter-image", letter, letter_ready),
+    ];
+
+    /// Письмо сцены: с большой картинкой в тексте или с вложениями для просмотра и картинкой `cid:`.
+    fn wanted(s: &Scene) -> fn(&BodyRow) -> bool {
+        if s.name == "letter-image" { |b| screens::has(b, "chart") } else { screens::outlook_letter }
+    }
+
+    fn letter(s: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        screens::select_demo(m, wanted(s), cx)
+    }
+
+    fn letter_ready(s: &Scene, m: &Mailer, cx: &App) -> bool {
+        let target = screens::demo_id(m.list.read(cx), wanted(s));
+        target.is_some()
+            && screens::reading(m, cx)
+                .is_some_and(|r| Some(r.row.id.as_str()) == target && r.doc.is_some() && !r.images.is_empty())
+    }
+
+    /// Вложение демо-письма для сцены просмотра (`postman_demo::blob`).
+    fn blob(s: &Scene) -> &'static str {
+        match s.name {
+            "preview-image" => "photo",
+            "preview-pdf" => "pdf",
+            "preview-zip" => "zip",
+            _ => "xlsm",
+        }
+    }
+
+    fn preview(s: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        // Как щелчок по карточке ленты.
+        let blob = blob(s).to_string();
+        m.reading.update(cx, |r, cx| r.toggle_preview(Some(blob), cx));
+        Ok(())
+    }
+
+    fn preview_ready(s: &Scene, m: &Mailer, cx: &App) -> bool {
+        // Просмотр разобран воркером; у книги с макросами — и проверка для щитка в ленте.
+        let blob = blob(s);
+        screens::reading(m, cx).is_some_and(|r| {
+            let ready = r.preview.as_ref().is_some_and(|p| p.row.blob_id == blob && p.ready());
+            ready && (s.name != "attach-macro" || r.scans.contains_key(blob))
+        })
+    }
+
+    fn pdf_end(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.reading.update(cx, |r, cx| {
+            // Как прокрутка колесом до конца: смещение за край gpui прижимает к низу при раскладке.
+            if let Some(p) = r.reading.as_ref().and_then(|r| r.preview.as_ref()) {
+                p.scroll.set_offset(point(px(0.), px(-100_000.)));
+            }
+            cx.notify();
+        });
+        Ok(())
+    }
+
+    fn pdf_end_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        screens::reading(m, cx).and_then(|r| r.preview.as_ref()).is_some_and(|p| {
+            // Прокручено до низа и страница не перерисовывается.
+            let (offset, max) = (p.scroll.offset().y, p.scroll.max_offset().y);
+            p.ready() && max > px(0.) && (offset + max).abs() < px(1.)
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests {

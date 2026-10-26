@@ -1135,13 +1135,85 @@ impl Render for SummaryView {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "bulk", texts: TEXTS, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "bulk", texts: TEXTS, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
 const TEXTS: &[pets_i18n::Resource] = &[
     ("ru", include_str!("../i18n/ru/bulk.ftl")),
     ("en", include_str!("../i18n/en/bulk.ftl")),
 ];
+
+/// Сцены `--screens` выделения и контекстного меню (ADR 0005).
+pub(crate) mod scenes {
+    use gpui_kit::*;
+
+    use crate::screens::{self, Scene};
+    use crate::{Mailer, Section};
+
+    pub(crate) const SCENES: &[Scene] = &[
+        // Выделение (S5-08): три письма с флажками, панель массовых действий над списком, сводка в области чтения.
+        Scene::new("bulk", bulk, bulk_ready),
+        // Контекстное меню над выделением с открытым подменю «Категория».
+        Scene::new("context-menu", menu, menu_ready).continues(),
+        // «Сообщить о фишинге»: тост «Отменить» после сообщения и меню у другого письма на пункте с красной маской.
+        Scene::new("phishing", phishing, menu_ready).continues(),
+    ];
+
+    fn bulk(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.set_section(Section::Mail, cx);
+        m.reset_filters(cx);
+        m.filters.update(cx, |f, cx| f.set(cx, |f| f.quick_open = false));
+        m.close_picker(cx);
+        m.reading.update(cx, |r, cx| r.clear(cx));
+        let inbox = crate::live::inbox(&m.folders.read(cx).mailboxes).ok_or("no inbox")?;
+        m.open_mailbox(inbox, cx);
+        // Как Ctrl+щелчки по второй, третьей и пятой строкам.
+        m.list.update(cx, |l, cx| {
+            for i in [1, 2, 4] {
+                l.pick(i, false, cx);
+            }
+        });
+        Ok(())
+    }
+
+    fn bulk_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let list = m.list.read(cx);
+        let s = list.summary.as_ref().map(|s| s.summary.count);
+        m.section == Section::Mail && list.selection.len() == 3 && s == Some(3) && screens::rows_loaded(list)
+    }
+
+    fn menu(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        // Как правая кнопка по третьей строке (она в выделении), затем наведение на «Категория».
+        m.open_menu_at_row(2, None, cx);
+        m.screen_menu_sub(crate::menu::Sub::Category);
+        Ok(())
+    }
+
+    fn menu_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.menu.is_some() && screens::rows_loaded(m.list.read(cx))
+    }
+
+    fn phishing(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.close_menu(cx);
+        m.list.update(cx, |l, cx| {
+            l.clear_selection(cx);
+        });
+        // Как «Сообщить о фишинге» у первого письма (план — тот же, что у действия; «Отменить» — после снимков).
+        let rows: Vec<postman_cache::EmailRow> = m.list.read(cx).rows.1.iter().take(2).cloned().collect();
+        let Some(first) = rows.first().cloned() else { return Err("no letters in the inbox".into()) };
+        let boxes = m.folders.read(cx).mailboxes.clone();
+        let act = postman_core::bulk::Act::Phishing;
+        let plan = postman_core::bulk::plan(std::slice::from_ref(&first), &act, &boxes, |_, _| true);
+        if let Some(d) = &mut m.screens {
+            d.undo.extend(plan.undo.clone());
+        }
+        m.bulk_planned(act, plan, 1, cx);
+        // …и меню у второго письма на пункте «Сообщить о фишинге».
+        m.open_menu_at_row(1, None, cx);
+        m.screen_menu_last();
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod tests {

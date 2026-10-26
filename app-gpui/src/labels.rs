@@ -85,13 +85,56 @@ pub(crate) fn chip(name: String, color: &str, l: &Look) -> Div {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "labels", texts: TEXTS, ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "labels", texts: TEXTS, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
 const TEXTS: &[pets_i18n::Resource] = &[
     ("ru", include_str!("../i18n/ru/labels.ftl")),
     ("en", include_str!("../i18n/en/labels.ftl")),
 ];
+
+/// Сцены `--screens` меток и категорий (ADR 0005).
+pub(crate) mod scenes {
+    use gpui_kit::*;
+
+    use crate::screens::{self, Scene};
+    use crate::{Mailer, Section};
+
+    pub(crate) const SCENES: &[Scene] = &[
+        // Свои «Входящие» с полосами категорий и метками (S5-02): первому письму без меток клавишами 1 и 3 (как
+        // `mail.categorize`) поставлены «Клиенты» и «Тендеры», оно открыто.
+        Scene::new("labels", labels, labels_ready),
+    ];
+
+    fn labels(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.set_section(Section::Mail, cx);
+        let inbox = crate::live::inbox(&m.folders.read(cx).mailboxes);
+        let Some(id) = inbox else { return Err("no inbox".into()) };
+        m.open_mailbox(id, cx);
+        let list = m.list.read(cx);
+        let (offset, rows) = &list.rows;
+        let plain = rows.iter().position(|r| super::row_labels(&list.labels, r).chips.is_empty());
+        let Some(i) = plain.map(|p| p + offset) else {
+            return Err("no message without labels in the first rows of the demo inbox".into());
+        };
+        m.list.update(cx, |l, cx| {
+            l.select(i, cx);
+            l.toggle_category(1, cx);
+            l.toggle_category(3, cx);
+        });
+        Ok(())
+    }
+
+    fn labels_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let list = m.list.read(cx);
+        let row = list.selected.and_then(|i| list.row(i));
+        let labeled = row.is_some_and(|r| super::row_labels(&list.labels, r).chips.len() == 2);
+        let id = row.map(|r| r.id.as_str());
+        labeled
+            && list.mailbox == crate::live::inbox(&m.folders.read(cx).mailboxes)
+            && screens::reading(m, cx).is_some_and(|r| r.doc.is_some() && Some(r.row.id.as_str()) == id)
+    }
+}
 
 #[cfg(test)]
 mod tests {

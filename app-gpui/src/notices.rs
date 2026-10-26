@@ -620,7 +620,48 @@ impl Render for Notices {
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
-pub(crate) const PART: crate::part::Part = crate::part::Part { name: "notices", ..crate::part::Part::NONE };
+pub(crate) const PART: crate::part::Part = crate::part::Part { name: "notices", scenes: scenes::SCENES, ..crate::part::Part::NONE };
+
+/// Сцены `--screens` уведомлений (ADR 0005).
+pub(crate) mod scenes {
+    use gpui_kit::*;
+    use pets_i18n::tr;
+    use pets_ui::{Level, ToastAction};
+
+    use crate::Mailer;
+    use crate::screens::Scene;
+
+    pub(crate) const SCENES: &[Scene] = &[
+        // Стопка тостов (три и «+N ещё») рядом с открытой историей уведомлений.
+        Scene::new("toasts", toasts, toasts_ready),
+    ];
+
+    fn toasts(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        // Связь вернулась (запись в истории), затем пять уведомлений: видно три и «+2 ещё»; история открыта.
+        m.on_connection(postman_core::link::Connection::Online, cx);
+        m.folders.update(cx, |f, cx| {
+            f.own = None;
+            cx.notify();
+        });
+        let undo = || ToastAction::new(tr!("bulk-undo"), |_, _| {});
+        let weak = crate::reading::sandbox_label(postman_worker::Level::Partial);
+        m.toasts.update(cx, |t, cx| {
+            t.push_action(Level::Success, tr!("bulk-done-archive", n = 3), undo(), cx);
+            t.push(Level::Info, tr!("bulk-done-read", n = 12), cx);
+            t.push(Level::Error, tr!("bulk-phishing-failed", error = String::from("552")), cx);
+            t.push(Level::Warning, tr!("sandbox-weak", level = weak), cx);
+            t.push_action(Level::Success, tr!("bulk-done-archive", n = 14), undo(), cx);
+            if !t.is_history_open() {
+                t.toggle_history(cx);
+            }
+        });
+        Ok(())
+    }
+
+    fn toasts_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.toasts.read(cx).is_history_open() && !m.offline.is_down()
+    }
+}
 
 #[cfg(test)]
 mod tests {
