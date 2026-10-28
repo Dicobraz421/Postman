@@ -63,6 +63,8 @@ pub struct Prefs {
     pub security: Security,
     /// Свои клавиши столбца «Одиночные клавиши» (как `keys`, но для слоя схемы); действуют, когда она выбрана.
     pub keys_single: BTreeMap<String, Vec<String>>,
+    /// Ширины панелей главного окна (T1-05а): их тянут разделители.
+    pub layout: Layout,
 }
 
 /// Схема клавиш.
@@ -92,6 +94,7 @@ impl Default for Prefs {
             security: Security::default(),
             keytips: true,
             keys_single: BTreeMap::new(),
+            layout: Layout::default(),
         }
     }
 }
@@ -549,6 +552,44 @@ impl Lifecycle {
     /// Через сколько код подтверждения — в «Удалённые»; `None` — выключено.
     pub fn expire_codes(&self) -> Option<Duration> {
         self.expire_codes.then(|| Duration::from_secs(u64::from(self.expire_codes_hours) * 60 * 60))
+    }
+}
+
+// --- главное окно (T1-05а) ---
+
+/// Ширины панелей главного окна: папки и список, px при масштабе 100 %; чтению — остаток. `None` — ширина макета
+/// ([`Layout::FOLDERS`], [`Layout::LIST`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Layout {
+    pub folders: Option<u16>,
+    pub list: Option<u16>,
+}
+
+impl Layout {
+    /// Ширины макета.
+    pub const FOLDERS: u16 = 236;
+    pub const LIST: u16 = 452;
+    /// Минимумы: уже панель не сжимается ни разделителем, ни окном.
+    pub const MIN_FOLDERS: u16 = 160;
+    pub const MIN_LIST: u16 = 280;
+    pub const MIN_READING: u16 = 360;
+
+    /// Ширины в окне шириной `width` (px при 100 %, место трёх панелей): не меньше минимумов и не больше того, что
+    /// оставляет чтению его минимум. Папкам — первыми (список уступает), `None` остаётся `None`: ширину макета
+    /// сжимает [`Layout::widths`]. Окно уже суммы минимумов — минимумы.
+    pub fn clamp(self, width: u16) -> Layout {
+        let folders_max = width.saturating_sub(Self::MIN_LIST + Self::MIN_READING).max(Self::MIN_FOLDERS);
+        let folders = self.folders.map(|f| f.clamp(Self::MIN_FOLDERS, folders_max));
+        let taken = folders.unwrap_or(Self::FOLDERS).min(folders_max);
+        let list_max = width.saturating_sub(taken + Self::MIN_READING).max(Self::MIN_LIST);
+        Layout { folders, list: self.list.map(|l| l.clamp(Self::MIN_LIST, list_max)) }
+    }
+
+    /// Ширины папок и списка в окне `width`: свои или макета, в пределах [`Layout::clamp`].
+    pub fn widths(self, width: u16) -> (u16, u16) {
+        let full = Layout { folders: Some(self.folders.unwrap_or(Self::FOLDERS)), list: Some(self.list.unwrap_or(Self::LIST)) }.clamp(width);
+        (full.folders.unwrap_or(Self::FOLDERS), full.list.unwrap_or(Self::LIST))
     }
 }
 
@@ -1108,6 +1149,30 @@ mod tests {
         assert_eq!(old.general.language.as_deref(), Some("ru"));
         assert!(old.general.quiet && old.look.avatars && old.keytips, "прежний файл — умолчания новых полей");
         assert_eq!(LogLevel::Debug.filter(), "debug");
+    }
+
+    /// Ширины панелей (T1-05а): старый файл — макет; на узком окне — минимумы, на широком — свои; круг записи.
+    #[test]
+    fn layout_widths_are_clamped_and_kept() {
+        let old: Prefs = serde_json::from_str(r#"{"version":1,"reading":{"pane":"bottom"}}"#).unwrap();
+        assert_eq!(old.layout, Layout::default(), "старый файл — ширины макета");
+        assert_eq!(old.layout.widths(1600), (Layout::FOLDERS, Layout::LIST));
+        let wide = Layout { folders: Some(300), list: Some(600) };
+        assert_eq!(wide.clamp(1600), wide, "на широком окне — свои");
+        // 1000 px: папкам — до 1000 − 280 − 360 = 360, списку — что оставит чтению 360.
+        assert_eq!(wide.clamp(1000), Layout { folders: Some(300), list: Some(340) });
+        assert_eq!(Layout { folders: Some(900), list: Some(900) }.clamp(1000), Layout { folders: Some(360), list: Some(280) });
+        // Меньше минимума — минимум; окно уже суммы минимумов — минимумы.
+        assert_eq!(Layout { folders: Some(10), list: Some(10) }.clamp(1600), Layout { folders: Some(160), list: Some(280) });
+        assert_eq!(wide.clamp(600), Layout { folders: Some(160), list: Some(280) });
+        assert_eq!(Layout::default().widths(600), (160, 280));
+        // Без своей ширины папок список считается от ширины макета (236).
+        assert_eq!(Layout { folders: None, list: Some(900) }.clamp(1000), Layout { folders: None, list: Some(404) });
+        let d = dir();
+        let path = d.path().join(FILE);
+        let p = Prefs { layout: Layout { folders: Some(200), list: None }, ..Prefs::default() };
+        p.save(&path).unwrap();
+        assert_eq!(Prefs::load(&path).unwrap().layout, p.layout);
     }
 
     /// Адрес «Сообщить о фишинге» (S5-08): обрезается; не адрес — нет пересылки.
