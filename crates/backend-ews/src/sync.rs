@@ -463,13 +463,7 @@ async fn run(
                 {
                     notify(Event::Error(e));
                 }
-                if let Some(a) = me.areas.as_mut() {
-                    match a.poll().await {
-                        Ok(true) => notify(Event::CalendarChanged),
-                        Ok(false) => {}
-                        Err(e) => tracing::debug!("ews calendar poll: {e}"),
-                    }
-                }
+                me.poll_areas(notify).await;
             }
         }
     }
@@ -774,13 +768,21 @@ impl Ews {
         }
     }
 
-    /// Опрос областей: календарь изменился — `CalendarChanged`.
+    /// Опрос областей: календарь изменился — `CalendarChanged`, контакты — `ContactsLoaded`.
     async fn poll_areas(&mut self, notify: &impl Fn(Event)) {
         if let Some(a) = self.areas.as_mut() {
             match a.poll().await {
                 Ok(true) => notify(Event::CalendarChanged),
                 Ok(false) => {}
                 Err(e) => tracing::debug!("ews calendar poll: {e}"),
+            }
+            match a.poll_contacts().await {
+                Ok(true) => match a.load_contacts().await {
+                    Ok(cards) => notify(Event::ContactsLoaded(cards)),
+                    Err(e) => tracing::debug!("ews contacts: {e}"),
+                },
+                Ok(false) => {}
+                Err(e) => tracing::debug!("ews contacts poll: {e}"),
             }
         }
     }

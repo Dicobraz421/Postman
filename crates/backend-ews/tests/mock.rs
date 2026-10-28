@@ -181,7 +181,8 @@ fn exchange_mail_through_the_plugin() {
     let live = start(&url);
     let Event::Features(f) = live.wait("Features", |e| matches!(e, Event::Features(_))) else { unreachable!() };
     assert!(f.has(Feature::Calendar) && f.has(Feature::FreeBusy) && f.has(Feature::Directory));
-    assert!(!f.has(Feature::Tasks) && !f.has(Feature::Contacts) && !f.has(Feature::Rules));
+    assert!(f.has(Feature::Contacts), "личные контакты Exchange (T1-25в)");
+    assert!(!f.has(Feature::Tasks) && !f.has(Feature::Rules));
     live.wait("Synced", |e| matches!(e, Event::Status(Status::Synced)));
 
     // Дерево — запасным путём (FindFolder), роли — по стандартным папкам; календарь и контакты — не почта.
@@ -910,4 +911,80 @@ fn events_drive_the_sync() {
     live.wait("MailboxesChanged", |e| matches!(e, Event::MailboxesChanged));
     assert_eq!(requests(&log, n, "FindFolder").len(), 1, "дерево — одно чтение");
     assert!(requests(&log, n, "SyncFolderItems").is_empty(), "письма не сверялись");
+}
+
+// --- Личные контакты и справочник (T1-25в). ---
+
+/// Папка «Контакты» корпуса: страница `FindItem` — контакт и список рассылки, карточки — `get_item_contacts.xml`.
+fn contacts(body: &str) -> Option<String> {
+    let op = |tag: &str| body.contains(&format!("<m:{tag}"));
+    if op("FindItem") && body.contains(r#"Id="contacts""#) {
+        Some(
+            fixture("find_item_mail_page.xml")
+                .replace("AAMkADmsg2", "AAMkADcontact1")
+                .replace("AAMkADmsg1", "AAMkADlist1")
+                .replace(r#"IncludesLastItemInRange="false""#, r#"IncludesLastItemInRange="true""#),
+        )
+    } else if op("GetItem") && body.contains("AllProperties") {
+        Some(fixture("get_item_contacts.xml"))
+    } else if op("CreateItem") && body.contains("<t:Contact>") {
+        Some(fixture("create_item.xml"))
+    } else {
+        None
+    }
+}
+
+fn contacts_loaded(live: &Live) -> Vec<postman_core::model::ContactCard> {
+    let Event::ContactsLoaded(cards) = live.wait("ContactsLoaded", |e| matches!(e, Event::ContactsLoaded(_))) else { unreachable!() };
+    cards
+}
+
+/// «Мои контакты»: карточки из папки (без списков рассылки); новая и правка — `CreateItem` и `UpdateItem` в
+/// «Контакты», удаление — `DeleteItem` в «Удалённые», после каждой — `ContactsLoaded`. Справочник — поиском:
+/// страницы 0 и 100 — пустые, «только поиском».
+#[test]
+fn exchange_contacts_and_directory() {
+    let (url, log) = server_with(contacts);
+    let live = ready(&url);
+    live.commands.send(Command::Contacts).unwrap();
+    let cards = contacts_loaded(&live);
+    assert_eq!(cards.len(), 1, "список рассылки — не карточка");
+    assert_eq!((cards[0].id.as_str(), cards[0].name.as_str()), ("AAMkADcontact1", "Петрова Анна"));
+    assert_eq!(cards[0].emails, ["anna@example.test", "a.petrova@example.test"]);
+    let Event::DirectoryLoaded(dir) = live.wait("DirectoryLoaded", |e| matches!(e, Event::DirectoryLoaded(_))) else { unreachable!() };
+    assert!(dir.is_empty(), "GAL целиком не читаем");
+
+    let n = log.lock().unwrap().len();
+    let fresh = postman_core::model::ContactCard { name: "Борис".into(), emails: vec!["boris@example.test".into()], ..Default::default() };
+    live.commands.send(Command::SaveContact { card: Box::new(fresh), old: None, ticket: 1 }).unwrap();
+    live.wait("ContactSaved", |e| matches!(e, Event::ContactSaved { ticket: 1, .. }));
+    contacts_loaded(&live);
+    let create = requests(&log, n, "CreateItem").pop().expect("CreateItem");
+    assert!(create.contains(r#"<t:DistinguishedFolderId Id="contacts"/>"#) && create.contains("<t:DisplayName>Борис</t:DisplayName>"), "{create}");
+
+    let n = log.lock().unwrap().len();
+    let edited = postman_core::model::ContactCard { title: "Руководитель".into(), ..cards[0].clone() };
+    live.commands.send(Command::SaveContact { card: Box::new(edited), old: Some(Box::new(cards[0].clone())), ticket: 2 }).unwrap();
+    live.wait("ContactSaved", |e| matches!(e, Event::ContactSaved { ticket: 2, .. }));
+    contacts_loaded(&live);
+    let update = requests(&log, n, "UpdateItem").pop().expect("UpdateItem");
+    assert!(update.contains(r#"<t:ItemId Id="AAMkADcontact1"/>"#) && update.contains("<t:JobTitle>Руководитель</t:JobTitle>"), "{update}");
+    assert!(update.contains("<t:Department>Отдел разработки</t:Department>"), "отдел — с сервера, не стёрт: {update}");
+
+    let n = log.lock().unwrap().len();
+    live.commands.send(Command::DeleteContact { id: "AAMkADcontact1".into(), ticket: 3 }).unwrap();
+    live.wait("ContactDeleted", |e| matches!(e, Event::ContactDeleted { ticket: 3, .. }));
+    contacts_loaded(&live);
+    let delete = requests(&log, n, "DeleteItem").pop().expect("DeleteItem");
+    assert!(delete.contains(r#"DeleteType="MoveToDeletedItems""#) && delete.contains("AAMkADcontact1"), "{delete}");
+
+    for offset in [0, 100] {
+        live.commands.send(Command::DirectoryPage { account: None, offset, max: 100 }).unwrap();
+        let Event::DirectoryPage { offset: got, people, search_only, .. } = live.wait("DirectoryPage", |e| matches!(e, Event::DirectoryPage { .. }))
+        else {
+            unreachable!()
+        };
+        assert_eq!((got, people.len(), search_only), (offset, 0, true), "справочник Exchange — поиском с подсказкой");
+    }
+    assert!(requests(&log, 0, "FindPeople").is_empty(), "без строки GAL не читается");
 }
