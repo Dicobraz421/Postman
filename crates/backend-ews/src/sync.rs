@@ -212,6 +212,24 @@ fn is_gone(e: &postman_ews::Error) -> bool {
     e.code() == Some("ErrorItemNotFound")
 }
 
+/// Папка не сверилась — в журнал какая (роль и ключ, без имени и писем) и чем (код EWS или вид ошибки).
+fn folder_failed(f: &Folder, e: &postman_ews::Error) {
+    let role = f.role.map_or("-", role_name);
+    tracing::warn!(role, folder = %f.hash, code = e.code().unwrap_or(""), "ews folder sync failed: {e}");
+}
+
+fn role_name(r: MailRole) -> &'static str {
+    match r {
+        MailRole::Inbox => "inbox",
+        MailRole::Drafts => "drafts",
+        MailRole::Sent => "sent",
+        MailRole::Trash => "trash",
+        MailRole::Junk => "junk",
+        MailRole::Outbox => "outbox",
+        MailRole::Archive => "archive",
+    }
+}
+
 /// Папки команды нет в дереве (удалена на сервере, дерево ещё не перечитано).
 fn no_folder() -> postman_ews::Error {
     postman_ews::Error::Ews { code: "ErrorFolderNotFound".into(), message: String::new() }
@@ -751,7 +769,7 @@ impl Ews {
         for f in &mail {
             match self.refresh(f).await {
                 Ok(c) => changed |= c,
-                Err(e) => tracing::warn!("ews folder: {e}"),
+                Err(e) => folder_failed(f, &e),
             }
         }
         if !mail.is_empty() {
@@ -799,11 +817,11 @@ impl Ews {
             match self.refresh(&f).await {
                 Ok(c) => changed |= c,
                 Err(e) => {
+                    folder_failed(&f, &e);
                     let e = sync_error(Stage::Refresh, &e);
                     if e.kind == ErrorKind::Auth || e.kind == ErrorKind::Network {
                         return Err(e);
                     }
-                    tracing::warn!("ews folder: {e}");
                 }
             }
         }
