@@ -29,6 +29,9 @@ pub enum Viewer {
     Text,
     /// Документ Office: карточка проверки (макросы), содержимое не показывается.
     Office,
+    /// Документ Word `.docx` (T1-13б): текст документа — блоками IR из воркера; на макросы проверяется, как Office
+    /// ([`needs_scan`]). С макросами по имени (`.docm`, `.dotm`) и старый `.doc` — [`Viewer::Office`].
+    Document,
     /// Встроенного просмотра нет: карточка с размером и действиями.
     None,
 }
@@ -42,6 +45,8 @@ const OFFICE_EXT: &[&str] = &["doc", "dot", "xls", "xlt", "ppt", "pot", "pps", "
 
 const IMAGE_EXT: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
 const TEXT_EXT: &[&str] = &["txt", "log", "md", "csv", "tsv", "eml", "json", "xml", "ini", "cfg", "conf", "yaml", "yml"];
+/// MIME документа Word `.docx`.
+const DOCX_MIME: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
 fn extension(name: &str) -> String {
     let safe = files::safe_name(name);
@@ -92,10 +97,14 @@ pub fn viewer(name: &str, mime: &str) -> Viewer {
         Viewer::Archive
     } else if TEXT_EXT.contains(&e) {
         Viewer::Text
+    } else if e == "docx" {
+        Viewer::Document
     } else if needs_scan(name) {
         Viewer::Office
     } else if !e.is_empty() {
         Viewer::None
+    } else if mime == DOCX_MIME {
+        Viewer::Document
     } else if matches!(mime.as_str(), "image/png" | "image/jpeg" | "image/gif" | "image/webp") {
         Viewer::Image
     } else if mime == "application/pdf" {
@@ -169,6 +178,14 @@ mod tests {
         assert_eq!(viewer("letter.eml", "message/rfc822"), Viewer::Text);
         assert_eq!(viewer("Расчёт.xlsm", ""), Viewer::Office);
         assert_eq!(viewer("old.doc", ""), Viewer::Office);
+        // Word (T1-13б): .docx — просмотр документа, с макросами по имени и старый .doc — карточка проверки.
+        assert_eq!(viewer("Отчёт.DOCX", "application/octet-stream"), Viewer::Document);
+        assert_eq!(viewer("Отчёт.docm", DOCX_MIME), Viewer::Office);
+        assert_eq!(viewer("Шаблон.dotm", ""), Viewer::Office);
+        assert_eq!(viewer("old.doc", "application/msword"), Viewer::Office);
+        assert_eq!(viewer("Отчёт", DOCX_MIME), Viewer::Document, "MIME без имени");
+        assert_eq!(viewer("Отчёт", &DOCX_MIME.to_uppercase()), Viewer::Document);
+        assert!(needs_scan("Отчёт.docx"), "макросы .docx проверяются, как раньше");
         assert_eq!(viewer("setup.exe", ""), Viewer::None);
         assert_eq!(viewer("page.html", "text/html"), Viewer::None);
         assert_eq!(viewer("archive.7z", ""), Viewer::None);
