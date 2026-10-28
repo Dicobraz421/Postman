@@ -9,6 +9,8 @@ use jiff::civil::Date;
 use jiff::tz::TimeZone;
 use postman_cache::EmailRow;
 
+pub use crate::prefs::ThreadOrder;
+
 /// Письмо беседы.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Message {
@@ -30,17 +32,25 @@ pub enum Item {
 pub struct Conversation {
     /// Ключ цепочки в кэше (`EmailRow::thread_id`).
     pub thread: String,
-    /// Старые первыми.
+    /// В порядке беседы ([`ThreadOrder`]; у [`Conversation::assemble`] — старые первыми).
     pub messages: Vec<Message>,
     pub items: Vec<Item>,
 }
 
 impl Conversation {
-    /// Собрать ленту: письма по времени получения (при равном — по id), повторы id отброшены; перед первым письмом
-    /// каждого дня — разделитель. `me` — мои адреса, без учёта регистра.
-    pub fn assemble(thread: &str, mut rows: Vec<EmailRow>, me: &[String], tz: &TimeZone) -> Self {
+    /// Собрать ленту: письма по времени получения (при равном — по id), старые первыми, повторы id отброшены; перед
+    /// первым письмом каждого дня — разделитель. `me` — мои адреса, без учёта регистра.
+    pub fn assemble(thread: &str, rows: Vec<EmailRow>, me: &[String], tz: &TimeZone) -> Self {
+        Self::assemble_in(thread, rows, me, tz, ThreadOrder::OldestFirst)
+    }
+
+    /// [`Conversation::assemble`] в порядке `order` (T1-16а): сначала новые — и письма, и дни от новых к старым.
+    pub fn assemble_in(thread: &str, mut rows: Vec<EmailRow>, me: &[String], tz: &TimeZone, order: ThreadOrder) -> Self {
         rows.sort_by(|a, b| a.received_at.cmp(&b.received_at).then_with(|| a.id.cmp(&b.id)));
         rows.dedup_by(|a, b| a.id == b.id);
+        if order == ThreadOrder::NewestFirst {
+            rows.reverse();
+        }
         let mut c = Self { thread: thread.to_owned(), ..Self::default() };
         for row in rows {
             let day = Timestamp::from_second(row.received_at).map(|t| t.to_zoned(tz.clone()).date()).unwrap_or_default();
@@ -109,25 +119,49 @@ pub struct Outline {
 
 impl Outline {
     /// Сгруппировать: `items` — (id, ключ цепочки, номер группы) по порядку списка. Беседа — там, где её первое
-    /// письмо; `split` — беседы не переходят из группы в группу («Все папки»: беседа своя у каждой папки).
+    /// письмо; `split` — беседы не переходят из группы в группу («Все папки»: беседа своя у каждой папки). Голова и
+    /// письма под ней — по порядку списка.
     pub fn build(items: impl IntoIterator<Item = (String, String, usize)>, split: bool, open: HashSet<String>) -> Self {
+        // Порядок списка вместо времени: раньше в списке — новее.
+        let items = items.into_iter().enumerate().map(|(n, (id, thread, group))| (id, thread, group, -(n as i64)));
+        Self::build_in(items, split, open, ThreadOrder::NewestFirst)
+    }
+
+    /// [`Outline::build`] со временем писем (T1-16а): `items` — (id, ключ цепочки, номер группы, время получения) по
+    /// порядку списка. Беседа — там, где её первое письмо; голова — самое новое письмо беседы (как Outlook), письма
+    /// под ней — в порядке `order`; при равном времени — по порядку списка.
+    pub fn build_in(items: impl IntoIterator<Item = (String, String, usize, i64)>, split: bool, open: HashSet<String>, order: ThreadOrder) -> Self {
         let mut heads: Vec<Head> = Vec::new();
+        let mut times: Vec<Vec<i64>> = Vec::new();
         let mut at: HashMap<(String, usize), usize> = HashMap::new();
-        for (id, thread, group) in items {
+        for (id, thread, group, time) in items {
             let key = if thread.is_empty() { id.clone() } else { thread };
             let slot = (key.clone(), if split { group } else { 0 });
             match at.get(&slot) {
                 Some(&h) => {
-                    if let Some(head) = heads.get_mut(h)
+                    if let (Some(head), Some(t)) = (heads.get_mut(h), times.get_mut(h))
                         && !head.ids.contains(&id)
                     {
                         head.ids.push(id);
+                        t.push(time);
                     }
                 }
                 None => {
                     at.insert(slot, heads.len());
                     heads.push(Head { key, ids: vec![id], group });
+                    times.push(vec![time]);
                 }
+            }
+        }
+        for (head, times) in heads.iter_mut().zip(times) {
+            // Сортировка устойчивая: при равном времени — порядок списка.
+            let mut by: Vec<(i64, String)> = times.into_iter().zip(std::mem::take(&mut head.ids)).collect();
+            by.sort_by_key(|(t, _)| std::cmp::Reverse(*t));
+            let mut ids = by.into_iter().map(|(_, id)| id);
+            head.ids.extend(ids.next());
+            match order {
+                ThreadOrder::NewestFirst => head.ids.extend(ids),
+                ThreadOrder::OldestFirst => head.ids.extend(ids.rev()),
             }
         }
         let mut o = Self { heads, open, ..Self::default() };
@@ -422,6 +456,34 @@ mod tests {
         assert_eq!(o.members(0), ["a1"]);
         o.remove("b");
         assert_eq!(o.ids(), ["a1", "c"]);
+    }
+
+    /// Порядок беседы (T1-16а): лента и дни — в выбранном порядке; в списке голова — самое новое письмо, под ней —
+    /// остальные в выбранном порядке, где бы они ни стояли в списке.
+    #[test]
+    fn thread_order_in_feed_and_outline() {
+        let (d1, d2) = (1_792_450_800, 1_792_486_800);
+        let rows = vec![row("c", d2 + 3600, "x@e"), row("a", d1, "x@e"), row("b", d2, "x@e")];
+        let ids = |c: &Conversation| c.messages.iter().map(|m| m.row.id.clone()).collect::<Vec<_>>();
+        let old = Conversation::assemble_in("t", rows.clone(), &[], &TimeZone::UTC, ThreadOrder::OldestFirst);
+        assert_eq!(ids(&old), ["a", "b", "c"]);
+        assert_eq!(old, Conversation::assemble("t", rows.clone(), &[], &TimeZone::UTC), "по умолчанию — как раньше");
+        let new = Conversation::assemble_in("t", rows, &[], &TimeZone::UTC, ThreadOrder::NewestFirst);
+        assert_eq!(ids(&new), ["c", "b", "a"]);
+        let day = |s: &str| s.parse::<Date>().unwrap();
+        assert_eq!(new.items, [Item::Day(day("2026-10-20")), Item::Message(0), Item::Message(1), Item::Day(day("2026-10-19")), Item::Message(2)]);
+        assert_eq!(new.neighbor("c", 1).map(|r| r.id.as_str()), Some("b"), "соседи — по порядку на экране");
+        // Список не по дате: беседа — на месте первого письма, голова — самое новое (a3).
+        let items = [("a2", "t1", 20), ("b", "t2", 5), ("a3", "t1", 30), ("a1", "t1", 10)];
+        let items = items.map(|(id, t, at)| (id.to_string(), t.to_string(), 0, at));
+        let open: HashSet<String> = ["t1".to_string()].into();
+        let o = Outline::build_in(items.clone(), false, open.clone(), ThreadOrder::OldestFirst);
+        assert_eq!(o.heads()[0].ids, ["a3", "a1", "a2"]);
+        assert_eq!(o.ids(), ["a3", "a1", "a2", "b"]);
+        let o = Outline::build_in(items, false, open, ThreadOrder::NewestFirst);
+        assert_eq!(o.heads()[0].ids, ["a3", "a2", "a1"]);
+        assert_eq!(o.ids(), ["a3", "a2", "a1", "b"]);
+        assert_eq!(o.members(0), ["a3", "a2", "a1"]);
     }
 
     #[test]
