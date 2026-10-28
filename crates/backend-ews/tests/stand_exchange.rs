@@ -86,6 +86,15 @@ async fn ews_url(a: &Account2) -> String {
 /// Созданное тестами (метка в теме) — насовсем, без рассылки, только в ящике тестовой учётки.
 async fn cleanup(a: &Account2) {
     let mut c = Client::new(&ews_url(a).await, postman_backend_ews::auth(&a.user, &a.password)).unwrap();
+    // Контакты — по «Хранить как» (тема у контакта EWS пустая).
+    for folder in [WellKnown::Contacts, WellKnown::DeletedItems] {
+        if let Ok(ids) = c.find_contacts(&postman_ews::FolderRef::WellKnown(folder), TAG, 20).await
+            && !ids.is_empty()
+            && let Err(e) = c.delete(&ids, DeleteMode::HardDelete, postman_ews::Notify::None).await
+        {
+            eprintln!("уборка контактов {folder:?}: {}", e.code().unwrap_or("ошибка"));
+        }
+    }
     for folder in [WellKnown::Calendar, WellKnown::Inbox, WellKnown::Drafts, WellKnown::SentItems, WellKnown::DeletedItems] {
         if let Ok(ids) = c.find_by_subject(folder, TAG, 20).await
             && !ids.is_empty()
@@ -198,15 +207,15 @@ impl Live {
     }
 }
 
-/// Вход учётки Exchange целиком: почта, календарь, занятость и справочник; задач, контактов, правил — нет.
+/// Вход учётки Exchange целиком: почта, календарь, занятость, личные контакты и справочник; задач и правил — нет.
 #[test]
 #[ignore = "боевой Exchange: S7 «Проверка на боевом Exchange»"]
 fn sign_in() {
     let live = Live::start(&first());
-    for f in [Feature::Calendar, Feature::FreeBusy, Feature::Directory] {
+    for f in [Feature::Calendar, Feature::FreeBusy, Feature::Contacts, Feature::Directory] {
         assert!(live.features.has(f), "{f:?}");
     }
-    for f in [Feature::Tasks, Feature::Contacts, Feature::Rules, Feature::Autoreply] {
+    for f in [Feature::Tasks, Feature::Rules, Feature::Autoreply] {
         assert!(!live.features.has(f), "{f:?} у Exchange не показывается");
     }
     let boxes = live.cache.mailboxes().unwrap();
@@ -710,4 +719,87 @@ fn exchange_deleted_elsewhere() {
     }
     println!("удалено другим клиентом: ушло из кэша за {} с", start.elapsed().as_secs());
     rt().block_on(cleanup(&a));
+}
+
+/// Изменения по событиям (T1-21б): письмо себе появляется во «Входящих» кэша без «снова на связи» и раньше опроса
+/// (`POLL`, 2 мин) — по подписке.
+#[test]
+#[ignore = "боевой Exchange: S7 «Проверка на боевом Exchange»"]
+fn exchange_events_bring_mail() {
+    let a = first();
+    rt().block_on(cleanup(&a));
+    let live = Live::start(&a);
+    // Подписка открывается рядом с первой сверкой.
+    std::thread::sleep(Duration::from_secs(3));
+    let tag = tag();
+    let me = test_recipient(&a.email);
+    let draft = postman_compose::Draft {
+        from: postman_compose::Address::new("", &me),
+        to: vec![postman_compose::Address::new("", &me)],
+        subject: format!("{tag} events"),
+        markdown: "Письмо по событию сервера.".into(),
+        ..Default::default()
+    };
+    live.send(Command::Send { draft: Box::new(draft), replace: None, ticket: 1, release: postman_core::model::Release::Now });
+    live.wait("Sent", |e| matches!(e, Event::Sent { ticket: 1, .. }));
+    let start = Instant::now();
+    loop {
+        if live.cache.page(&live.inbox(), 0, 200).unwrap().iter().any(|r| r.subject.contains(&tag)) {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(90), "письмо не пришло событием за 90 с (опрос — 120 с)");
+        let _ = live.events.recv_timeout(Duration::from_secs(1));
+    }
+    println!("событие: письмо в кэше через {} с", start.elapsed().as_secs());
+    rt().block_on(cleanup(&a));
+}
+
+/// «Мои контакты» через синхронизацию (T1-25в): создать → в списке → изменить → удалить; справочник — поиском с
+/// подсказкой (страница пустая, `search_only`), GAL целиком не читается. Имя — с меткой, уборка — по ней.
+#[test]
+#[ignore = "боевой Exchange: S7 «Проверка на боевом Exchange»"]
+fn exchange_contacts_through_sync() {
+    use postman_core::model::ContactCard;
+    let a = first();
+    rt().block_on(cleanup(&a));
+    let live = Live::start(&a);
+    let tag = tag();
+    let loaded = |live: &Live| {
+        let Event::ContactsLoaded(cards) = live.wait("ContactsLoaded", |e| matches!(e, Event::ContactsLoaded(_))) else { unreachable!() };
+        cards
+    };
+    let card = ContactCard {
+        name: format!("{tag} contact"),
+        emails: vec!["postman-test@example.test".into()],
+        phones: vec!["+7 000 000-00-01".into()],
+        organization: "Postman".into(),
+        title: "Тестовый".into(),
+        ..Default::default()
+    };
+    live.send(Command::SaveContact { card: Box::new(card.clone()), old: None, ticket: 1 });
+    let Event::ContactSaved { id, .. } =
+        live.wait("ContactSaved", |e| matches!(e, Event::ContactSaved { ticket: 1, .. } | Event::ContactFailed { .. }))
+    else {
+        panic!("контакт не создан")
+    };
+    let mine = loaded(&live).into_iter().find(|c| c.id == id).expect("новый — в списке");
+    assert_eq!((mine.name.as_str(), mine.emails.as_slice(), mine.title.as_str()), (card.name.as_str(), card.emails.as_slice(), "Тестовый"));
+
+    let edited = ContactCard { title: "Изменённый".into(), phones: Vec::new(), ..mine.clone() };
+    live.send(Command::SaveContact { card: Box::new(edited), old: Some(Box::new(mine)), ticket: 2 });
+    live.wait("ContactSaved", |e| matches!(e, Event::ContactSaved { ticket: 2, .. }));
+    let after = loaded(&live).into_iter().find(|c| c.id == id).expect("после правки");
+    assert_eq!((after.title.as_str(), after.phones.len()), ("Изменённый", 0));
+
+    live.send(Command::DeleteContact { id: id.clone(), ticket: 3 });
+    live.wait("ContactDeleted", |e| matches!(e, Event::ContactDeleted { ticket: 3, .. }));
+    assert!(!loaded(&live).iter().any(|c| c.id == id), "удалён");
+
+    live.send(Command::DirectoryPage { account: None, offset: 0, max: 20 });
+    let Event::DirectoryPage { people, search_only, .. } = live.wait("DirectoryPage", |e| matches!(e, Event::DirectoryPage { .. })) else {
+        unreachable!()
+    };
+    assert!(search_only && people.len() <= 20, "справочник — поиском");
+    rt().block_on(cleanup(&a));
+    println!("контакт: создан, изменён, удалён; справочник — поиском");
 }

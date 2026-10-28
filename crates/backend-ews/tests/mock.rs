@@ -102,6 +102,9 @@ async fn serve(mut s: TcpStream, log: Arc<Mutex<Vec<String>>>, extra: Extra) {
         let body = String::from_utf8(body).unwrap();
         let reply = extra(&body).unwrap_or_else(|| answer(&body));
         log.lock().unwrap().push(body);
+        if reply == STREAM {
+            return stream(s).await;
+        }
         let out = format!("HTTP/1.1 200 OK\r\nContent-Type: text/xml; charset=utf-8\r\nContent-Length: {}\r\n\r\n{reply}", reply.len());
         s.write_all(out.as_bytes()).await.unwrap();
     }
@@ -178,7 +181,8 @@ fn exchange_mail_through_the_plugin() {
     let live = start(&url);
     let Event::Features(f) = live.wait("Features", |e| matches!(e, Event::Features(_))) else { unreachable!() };
     assert!(f.has(Feature::Calendar) && f.has(Feature::FreeBusy) && f.has(Feature::Directory));
-    assert!(!f.has(Feature::Tasks) && !f.has(Feature::Contacts) && !f.has(Feature::Rules));
+    assert!(f.has(Feature::Contacts), "личные контакты Exchange (T1-25в)");
+    assert!(!f.has(Feature::Tasks) && !f.has(Feature::Rules));
     live.wait("Synced", |e| matches!(e, Event::Status(Status::Synced)));
 
     // Дерево — запасным путём (FindFolder), роли — по стандартным папкам; календарь и контакты — не почта.
@@ -729,4 +733,258 @@ fn opening_a_vanished_letter_drops_it_without_error() {
     let Event::ThreadReady { ids, .. } = live.wait("ThreadReady", |e| matches!(e, Event::ThreadReady { .. })) else { unreachable!() };
     assert!(!ids.contains(&second.id), "в цепочке — без исчезнувшего");
     assert!(live.cache.rows_by_ids(std::slice::from_ref(&second.id)).unwrap().is_empty());
+}
+
+// --- Папки: создать, переименовать, перенести (T1-04в). ---
+
+/// Шаг сценария папок: 1 — папка создана, 2 — «Проект» переименован, 3 — перенесён на верхний уровень. Только для
+/// `folder_create_rename_move` (nextest — процесс на тест).
+static FOLDER_STEP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn folder_steps(body: &str) -> Option<String> {
+    use std::sync::atomic::Ordering::SeqCst;
+    let op = |tag: &str| body.contains(&format!("<m:{tag}"));
+    if op("CreateFolder") {
+        FOLDER_STEP.store(1, SeqCst);
+        return Some(fixture("create_folder.xml"));
+    }
+    if op("UpdateFolder") {
+        FOLDER_STEP.store(2, SeqCst);
+        return Some(fixture("update_folder.xml").replace("AAMkADinbox", "AAMkADproj"));
+    }
+    if op("MoveFolder") {
+        FOLDER_STEP.store(3, SeqCst);
+        return Some(fixture("update_folder.xml").replace("UpdateFolder", "MoveFolder").replace("AAMkADinbox", "AAMkADproj"));
+    }
+    if !op("FindFolder") || body.contains(r#"Id="contacts""#) {
+        return None;
+    }
+    let step = FOLDER_STEP.load(SeqCst);
+    let mut tree = fixture("find_folder_mail.xml");
+    if step >= 1 {
+        let new = r#"<t:Folder><t:FolderId Id="AAMkADnewfolder" ChangeKey="CK"/><t:ParentFolderId Id="AAMkADinbox" ChangeKey="PK"/><t:FolderClass>IPF.Note</t:FolderClass><t:DisplayName>Новая</t:DisplayName><t:TotalCount>0</t:TotalCount></t:Folder>"#;
+        tree = tree.replace("</t:Folders>", &format!("{new}</t:Folders>"));
+    }
+    if step >= 2 {
+        tree = tree.replace("<t:DisplayName>Проект</t:DisplayName>", "<t:DisplayName>Отчёты</t:DisplayName>");
+    }
+    if step >= 3 {
+        tree = tree.replace(
+            r#"<t:FolderId Id="AAMkADproj" ChangeKey="CK"/><t:ParentFolderId Id="AAMkADinbox""#,
+            r#"<t:FolderId Id="AAMkADproj" ChangeKey="CK"/><t:ParentFolderId Id="AAMkADroot""#,
+        );
+    }
+    Some(tree)
+}
+
+/// Создать → переименовать → перенести: запросы EWS, дерево в кэше после каждого шага, ключ папки и её состояние
+/// `SyncFolderItems` — те же (письма заново не грузятся).
+#[test]
+fn folder_create_rename_move() {
+    let (url, log) = server_with(folder_steps);
+    let live = ready(&url);
+    let boxes = || live.cache.mailboxes().unwrap();
+    let inbox = boxes().into_iter().find(|b| b.role.as_deref() == Some("inbox")).unwrap().id;
+    let project = boxes().into_iter().find(|b| b.name == "Проект").unwrap().id;
+    let letters = live.cache.page(&inbox, 0, 50).unwrap().len();
+    let n = log.lock().unwrap().len();
+
+    live.commands.send(Command::CreateFolder { account: None, parent: Some(inbox.clone()), name: " Новая ".into() }).unwrap();
+    live.wait("MailboxesChanged", |e| matches!(e, Event::MailboxesChanged));
+    let create = requests(&log, n, "CreateFolder").pop().expect("CreateFolder");
+    assert!(create.contains(r#"<t:FolderId Id="AAMkADinbox"/>"#) && create.contains("<t:DisplayName>Новая</t:DisplayName>"), "{create}");
+    assert!(boxes().iter().any(|b| b.name == "Новая" && b.parent_id.as_deref() == Some(inbox.as_str())), "новая — во «Входящих»");
+
+    live.commands.send(Command::RenameFolder { mailbox: project.clone(), name: "Отчёты".into() }).unwrap();
+    live.wait("MailboxesChanged", |e| matches!(e, Event::MailboxesChanged));
+    let rename = requests(&log, n, "UpdateFolder").pop().expect("UpdateFolder");
+    assert!(rename.contains(r#"<t:FolderId Id="AAMkADproj"/>"#) && rename.contains("<t:DisplayName>Отчёты</t:DisplayName>"), "{rename}");
+    let renamed = boxes().into_iter().find(|b| b.id == project).expect("ключ папки тот же");
+    assert_eq!(renamed.name, "Отчёты");
+
+    live.commands.send(Command::MoveFolder { mailbox: project.clone(), parent: None }).unwrap();
+    live.wait("MailboxesChanged", |e| matches!(e, Event::MailboxesChanged));
+    let mv = requests(&log, n, "MoveFolder").pop().expect("MoveFolder");
+    assert!(mv.contains(r#"<t:DistinguishedFolderId Id="msgfolderroot"/>"#) && mv.contains(r#"<t:FolderId Id="AAMkADproj"/>"#), "{mv}");
+    assert_eq!(boxes().into_iter().find(|b| b.id == project).unwrap().parent_id, None, "на верхнем уровне");
+
+    assert_eq!(live.cache.page(&inbox, 0, 50).unwrap().len(), letters, "письма на месте");
+    assert!(requests(&log, n, "FindItem").iter().all(|b| !b.contains("AAMkADproj")), "письма папки заново не грузятся");
+}
+
+/// Перенос папки в свою подпапку — отказ ядра (`admit`), до сервера.
+#[test]
+fn folder_into_its_subfolder_is_refused_before_the_server() {
+    let (url, log) = server();
+    let live = ready(&url);
+    let boxes = live.cache.mailboxes().unwrap();
+    let inbox = boxes.iter().find(|b| b.role.as_deref() == Some("inbox")).unwrap().id.clone();
+    let project = boxes.iter().find(|b| b.name == "Проект").unwrap().id.clone();
+    live.commands.send(Command::MoveFolder { mailbox: inbox.clone(), parent: Some(project) }).unwrap();
+    let start = Instant::now();
+    let failed = loop {
+        match live.events.recv_timeout(Duration::from_secs(10).saturating_sub(start.elapsed())) {
+            Ok(Event::FolderFailed { mailbox, error }) => break (mailbox, error),
+            Ok(_) => {}
+            Err(e) => panic!("нет FolderFailed ({e})"),
+        }
+    };
+    assert_eq!(failed, (Some(inbox), postman_core::sync::FOLDER_INTO_ITSELF.to_owned()));
+    assert!(requests(&log, 0, "MoveFolder").is_empty(), "на сервер не ушло");
+}
+
+// --- Изменения по событиям сервера (T1-21б). ---
+
+/// Ответ подменного сервера «поток»: `GetStreamingEvents` — кусками, из [`FRAMES`] по мере того, как тест их кладёт.
+const STREAM: &str = "<!-- stream -->";
+/// Куски потока, которые ещё не ушли (только у `events_drive_the_sync`; nextest — процесс на тест).
+static FRAMES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Конверт потока `GetStreamingEvents` с этим содержимым сообщения.
+fn frame(inner: &str) -> String {
+    format!(
+        r#"<Envelope xmlns="http://schemas.xmlsoap.org/soap/envelope/"><soap11:Body xmlns:soap11="http://schemas.xmlsoap.org/soap/envelope/"><m:GetStreamingEventsResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><m:ResponseMessages><m:GetStreamingEventsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode>{inner}</m:GetStreamingEventsResponseMessage></m:ResponseMessages></m:GetStreamingEventsResponse></soap11:Body></Envelope>"#
+    )
+}
+
+fn events(inner: &str) -> String {
+    frame(&format!(
+        "<m:Notifications><m:Notification><t:SubscriptionId>JwBkYjVwcjA2bWIxMTQ=</t:SubscriptionId>{inner}</m:Notification></m:Notifications>"
+    ))
+}
+
+/// Ответ chunked: «OK», затем куски из [`FRAMES`]; соединение — до конца теста.
+async fn stream(mut s: TcpStream) {
+    let chunk = |data: &str| format!("{:x}\r\n{data}\r\n", data.len());
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: text/xml; charset=utf-8\r\nTransfer-Encoding: chunked\r\n\r\n";
+    if s.write_all(format!("{head}{}", chunk(&frame("<m:ConnectionStatus>OK</m:ConnectionStatus>"))).as_bytes()).await.is_err() {
+        return;
+    }
+    loop {
+        let next: Vec<String> = std::mem::take(&mut *FRAMES.lock().unwrap());
+        for f in next {
+            if s.write_all(chunk(&f).as_bytes()).await.is_err() {
+                return;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Сервер со streaming-подпиской: `Subscribe` — подписка корпуса, `GetStreamingEvents` — поток.
+fn streaming(body: &str) -> Option<String> {
+    if body.contains("<m:StreamingSubscriptionRequest") {
+        Some(fixture("subscribe_streaming.xml"))
+    } else if body.contains("<m:GetStreamingEvents") {
+        Some(STREAM.to_owned())
+    } else {
+        None
+    }
+}
+
+/// С подпиской: событие писем «Входящих» → `SyncFolderItems` только по ним, дерево не читается (опроса нет — у
+/// `POLL` и дерева — `poll_plan`); событие дерева (создана папка) → одно чтение дерева, письма не сверяются.
+#[test]
+fn events_drive_the_sync() {
+    let (url, log) = server_with(streaming);
+    let live = ready(&url);
+    let start = Instant::now();
+    while requests(&log, 0, "GetStreamingEvents").is_empty() {
+        assert!(start.elapsed() < Duration::from_secs(10), "поток не открылся");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    while live.events.try_recv().is_ok() {}
+
+    let n = log.lock().unwrap().len();
+    FRAMES.lock().unwrap().push(events(
+        r#"<t:NewMailEvent><t:TimeStamp>2026-10-28T09:00:00Z</t:TimeStamp><t:ItemId Id="AAMkADmsg9" ChangeKey="CQ"/><t:ParentFolderId Id="AAMkADinbox" ChangeKey="AQ"/></t:NewMailEvent><t:ModifiedEvent><t:TimeStamp>2026-10-28T09:00:00Z</t:TimeStamp><t:FolderId Id="AAMkADinbox" ChangeKey="AQ"/><t:ParentFolderId Id="AAMkADroot" ChangeKey="AQ"/><t:UnreadCount>4</t:UnreadCount></t:ModifiedEvent>"#,
+    ));
+    live.wait("MailboxesChanged", |e| matches!(e, Event::MailboxesChanged));
+    let syncs = requests(&log, n, "SyncFolderItems");
+    assert!(!syncs.is_empty() && syncs.iter().all(|b| b.contains("AAMkADinbox")), "сверены только «Входящие»: {}", syncs.len());
+    assert!(requests(&log, n, "FindFolder").is_empty() && requests(&log, n, "SyncFolderHierarchy").is_empty(), "дерево не читалось");
+
+    let n = log.lock().unwrap().len();
+    FRAMES.lock().unwrap().push(events(
+        r#"<t:CreatedEvent><t:TimeStamp>2026-10-28T09:01:00Z</t:TimeStamp><t:FolderId Id="AAMkADnewfolder" ChangeKey="AQ"/><t:ParentFolderId Id="AAMkADinbox" ChangeKey="AQ"/></t:CreatedEvent>"#,
+    ));
+    live.wait("MailboxesChanged", |e| matches!(e, Event::MailboxesChanged));
+    assert_eq!(requests(&log, n, "FindFolder").len(), 1, "дерево — одно чтение");
+    assert!(requests(&log, n, "SyncFolderItems").is_empty(), "письма не сверялись");
+}
+
+// --- Личные контакты и справочник (T1-25в). ---
+
+/// Папка «Контакты» корпуса: страница `FindItem` — контакт и список рассылки, карточки — `get_item_contacts.xml`.
+fn contacts(body: &str) -> Option<String> {
+    let op = |tag: &str| body.contains(&format!("<m:{tag}"));
+    if op("FindItem") && body.contains(r#"Id="contacts""#) {
+        Some(
+            fixture("find_item_mail_page.xml")
+                .replace("AAMkADmsg2", "AAMkADcontact1")
+                .replace("AAMkADmsg1", "AAMkADlist1")
+                .replace(r#"IncludesLastItemInRange="false""#, r#"IncludesLastItemInRange="true""#),
+        )
+    } else if op("GetItem") && body.contains("AllProperties") {
+        Some(fixture("get_item_contacts.xml"))
+    } else if op("CreateItem") && body.contains("<t:Contact>") {
+        Some(fixture("create_item.xml"))
+    } else {
+        None
+    }
+}
+
+fn contacts_loaded(live: &Live) -> Vec<postman_core::model::ContactCard> {
+    let Event::ContactsLoaded(cards) = live.wait("ContactsLoaded", |e| matches!(e, Event::ContactsLoaded(_))) else { unreachable!() };
+    cards
+}
+
+/// «Мои контакты»: карточки из папки (без списков рассылки); новая и правка — `CreateItem` и `UpdateItem` в
+/// «Контакты», удаление — `DeleteItem` в «Удалённые», после каждой — `ContactsLoaded`. Справочник — поиском:
+/// страницы 0 и 100 — пустые, «только поиском».
+#[test]
+fn exchange_contacts_and_directory() {
+    let (url, log) = server_with(contacts);
+    let live = ready(&url);
+    live.commands.send(Command::Contacts).unwrap();
+    let cards = contacts_loaded(&live);
+    assert_eq!(cards.len(), 1, "список рассылки — не карточка");
+    assert_eq!((cards[0].id.as_str(), cards[0].name.as_str()), ("AAMkADcontact1", "Петрова Анна"));
+    assert_eq!(cards[0].emails, ["anna@example.test", "a.petrova@example.test"]);
+    let Event::DirectoryLoaded(dir) = live.wait("DirectoryLoaded", |e| matches!(e, Event::DirectoryLoaded(_))) else { unreachable!() };
+    assert!(dir.is_empty(), "GAL целиком не читаем");
+
+    let n = log.lock().unwrap().len();
+    let fresh = postman_core::model::ContactCard { name: "Борис".into(), emails: vec!["boris@example.test".into()], ..Default::default() };
+    live.commands.send(Command::SaveContact { card: Box::new(fresh), old: None, ticket: 1 }).unwrap();
+    live.wait("ContactSaved", |e| matches!(e, Event::ContactSaved { ticket: 1, .. }));
+    contacts_loaded(&live);
+    let create = requests(&log, n, "CreateItem").pop().expect("CreateItem");
+    assert!(create.contains(r#"<t:DistinguishedFolderId Id="contacts"/>"#) && create.contains("<t:DisplayName>Борис</t:DisplayName>"), "{create}");
+
+    let n = log.lock().unwrap().len();
+    let edited = postman_core::model::ContactCard { title: "Руководитель".into(), ..cards[0].clone() };
+    live.commands.send(Command::SaveContact { card: Box::new(edited), old: Some(Box::new(cards[0].clone())), ticket: 2 }).unwrap();
+    live.wait("ContactSaved", |e| matches!(e, Event::ContactSaved { ticket: 2, .. }));
+    contacts_loaded(&live);
+    let update = requests(&log, n, "UpdateItem").pop().expect("UpdateItem");
+    assert!(update.contains(r#"<t:ItemId Id="AAMkADcontact1"/>"#) && update.contains("<t:JobTitle>Руководитель</t:JobTitle>"), "{update}");
+    assert!(update.contains("<t:Department>Отдел разработки</t:Department>"), "отдел — с сервера, не стёрт: {update}");
+
+    let n = log.lock().unwrap().len();
+    live.commands.send(Command::DeleteContact { id: "AAMkADcontact1".into(), ticket: 3 }).unwrap();
+    live.wait("ContactDeleted", |e| matches!(e, Event::ContactDeleted { ticket: 3, .. }));
+    contacts_loaded(&live);
+    let delete = requests(&log, n, "DeleteItem").pop().expect("DeleteItem");
+    assert!(delete.contains(r#"DeleteType="MoveToDeletedItems""#) && delete.contains("AAMkADcontact1"), "{delete}");
+
+    for offset in [0, 100] {
+        live.commands.send(Command::DirectoryPage { account: None, offset, max: 100 }).unwrap();
+        let Event::DirectoryPage { offset: got, people, search_only, .. } = live.wait("DirectoryPage", |e| matches!(e, Event::DirectoryPage { .. }))
+        else {
+            unreachable!()
+        };
+        assert_eq!((got, people.len(), search_only), (offset, 0, true), "справочник Exchange — поиском с подсказкой");
+    }
+    assert!(requests(&log, 0, "FindPeople").is_empty(), "без строки GAL не читается");
 }

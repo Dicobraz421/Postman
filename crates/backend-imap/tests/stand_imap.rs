@@ -281,3 +281,52 @@ fn server_kind_by_address() {
     assert_eq!(registry().detect_blocking(&imap), with_dav);
     assert_eq!(registry().detect_blocking(&with_dav), with_dav);
 }
+
+/// Папки с меткой `[postman-test …]` — насовсем (`DELETE`, вложенные раньше).
+fn remove_test_folders() {
+    let url = format!("imaps://{}?smtp={}", env("POSTMAN_STAND_IMAP"), env("POSTMAN_STAND_SMTP"));
+    let account = ImapAccount::from_url(&url, &env("POSTMAN_STAND_USER1"), &env("POSTMAN_STAND_PASSWORD1")).unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    rt.block_on(async {
+        let mut s = postman_imap::Session::connect(&account.imap).await.unwrap();
+        let mut tagged: Vec<String> = s.folders().await.unwrap().into_iter().filter(|f| f.raw.contains("[postman-test")).map(|f| f.raw).collect();
+        tagged.sort_by_key(|r| std::cmp::Reverse(r.len()));
+        for raw in tagged {
+            s.delete_folder(&raw).await.unwrap_or_else(|e| eprintln!("уборка папки: {e}"));
+        }
+    });
+}
+
+/// T1-04в: папки через синхронизацию IMAP — создать две, переименовать, перенести одну в другую (`CREATE`, `RENAME`
+/// с разделителем ящика). Уборка — папки с меткой `[postman-test …]` до и после теста.
+#[test]
+#[ignore = "нужен стенд Stalwart: docs/STALWART.md"]
+fn imap_folders_create_rename_move() {
+    remove_test_folders();
+    let live = Live::start();
+    let tag = format!("[postman-test {}]", stamp());
+    let find = |name: &str| live.cache.mailboxes().unwrap().into_iter().find(|m| m.name == name);
+    // Дерево в кэше — после `MailboxesChanged` команды (до неё бывают и другие, от опроса).
+    let until = |what: &str, ok: &dyn Fn() -> bool| {
+        let start = Instant::now();
+        while !ok() {
+            assert!(start.elapsed() < WAIT, "не дождались: {what}");
+            if let Event::FolderFailed { error, .. } =
+                live.wait("MailboxesChanged", |e| matches!(e, Event::MailboxesChanged | Event::FolderFailed { .. }))
+            {
+                panic!("{what}: {error}");
+            }
+        }
+    };
+    for name in ["a", "b"] {
+        live.commands.send(Command::CreateFolder { account: None, parent: None, name: format!("{tag} {name}") }).unwrap();
+        until(name, &|| find(&format!("{tag} {name}")).is_some());
+    }
+    let (a, b) = (find(&format!("{tag} a")).unwrap().id, find(&format!("{tag} b")).unwrap().id);
+    live.commands.send(Command::RenameFolder { mailbox: a, name: format!("{tag} a2") }).unwrap();
+    until("a2", &|| find(&format!("{tag} a2")).is_some());
+    live.commands.send(Command::MoveFolder { mailbox: find(&format!("{tag} a2")).unwrap().id, parent: Some(b.clone()) }).unwrap();
+    until("a2 в b", &|| find(&format!("{tag} a2")).is_some_and(|m| m.parent_id.as_deref() == Some(b.as_str())));
+    remove_test_folders();
+    println!("IMAP: папки созданы, переименованы, перенесены");
+}

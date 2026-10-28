@@ -380,6 +380,8 @@ async fn run(
             biased;
             cmd = rx.recv() => {
                 let Some(cmd) = cmd else { return Ok(()) };
+                // Перенос папки в себя, в подпапку, в другой аккаунт — отказ ядра до сервера.
+                let Some(cmd) = postman_core::sync::admit(cmd, || cache.mailboxes().unwrap_or_default(), notify) else { continue };
                 if matches!(cmd, Command::Reconnect) {
                     if link.is_down() {
                         retry = Some(tokio::time::Instant::now());
@@ -1133,15 +1135,65 @@ async fn handle(
         }
         // «Повторить сейчас» — забота цикла синхронизации.
         Command::Reconnect => {}
-        // Папки — T1-04в, страница справочника — T1-25в: пока отказ «not supported» и пустая страница, интерфейс
-        // не ждёт ответа.
-        cmd @ (Command::CreateFolder { .. } | Command::RenameFolder { .. } | Command::MoveFolder { .. } | Command::DirectoryPage { .. }) => {
-            if let Some(e) = cmd.unsupported() {
-                notify(e);
+        // Папки (T1-04в): `Mailbox/set`, затем папки заново; отказ сервера — `FolderFailed`.
+        cmd @ (Command::CreateFolder { .. } | Command::RenameFolder { .. } | Command::MoveFolder { .. }) => {
+            folder_command(accounts, cache, cmd, notify).await;
+        }
+        // Страница справочника (T1-25в): срез того же списка, что в `DirectoryLoaded`.
+        Command::DirectoryPage { account, offset, max } => {
+            if !client.has(postman_jmap::PRINCIPALS) {
+                notify(Event::no_directory(account, offset));
+                return Ok(());
             }
+            let people = postman_core::contacts::directory(client.directory(DIRECTORY_LIMIT).await?.into_iter().map(Principal::from_jmap).collect());
+            notify(Event::directory_slice(account, &people, offset, max));
         }
     }
     Ok(())
+}
+
+/// Создать, переименовать или перенести папку (T1-04в): `Mailbox/set` в аккаунте папки, затем папки заново и
+/// `MailboxesChanged`; отказ — `FolderFailed` с ответом сервера.
+async fn folder_command(accounts: &Accounts, cache: &Cache, cmd: Command, notify: &impl Fn(Event)) {
+    let server = |key: &str| unscoped(key).1.to_owned();
+    let (mailbox, scope, result) = match cmd {
+        Command::CreateFolder { account, parent, name } => {
+            let scope = account.clone();
+            let result = match accounts.by_scope(account.as_deref()) {
+                Some(acc) => acc.client.create_mailbox_in(parent.as_deref().map(server).as_deref(), name.trim(), None).await.map(|_| ()),
+                None => Err(postman_jmap::Error::Protocol("no such account".into())),
+            };
+            (parent, scope, result)
+        }
+        Command::RenameFolder { mailbox, name } => {
+            let scope = postman_cache::account_of(&mailbox).map(str::to_owned);
+            let result = match accounts.locate(&mailbox) {
+                Ok((acc, id)) => acc.client.update_mailbox(id, Some(name.trim()), None).await,
+                Err(e) => Err(e),
+            };
+            (Some(mailbox), scope, result)
+        }
+        Command::MoveFolder { mailbox, parent } => {
+            let scope = postman_cache::account_of(&mailbox).map(str::to_owned);
+            let to = parent.as_deref().map(server);
+            let result = match accounts.locate(&mailbox) {
+                Ok((acc, id)) => acc.client.update_mailbox(id, None, Some(to.as_deref())).await,
+                Err(e) => Err(e),
+            };
+            (Some(mailbox), scope, result)
+        }
+        _ => return,
+    };
+    if let Err(e) = result {
+        tracing::info!("jmap folder command refused: {e}");
+        return notify(Event::FolderFailed { mailbox, error: e.to_string() });
+    }
+    if let Some(acc) = accounts.by_scope(scope.as_deref())
+        && let Err(e) = load_mailboxes(acc, cache).await
+    {
+        tracing::warn!("jmap mailboxes after folder command: {e}");
+    }
+    notify(Event::MailboxesChanged);
 }
 
 /// Имя вложения `.eml` из темы письма: без знаков, которые Windows не пускает в имя файла; пустая — «message».
