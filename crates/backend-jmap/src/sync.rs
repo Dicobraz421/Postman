@@ -1054,7 +1054,7 @@ async fn handle(
             tasks::handle(&JmapStore::new(client), cache, request, &|r| notify(Event::Tasks(r))).await?;
         }
         Command::Contacts => load_people(client, notify).await,
-        Command::FindPeople { text } => find_people(client, text, notify).await,
+        Command::FindPeople { text, offset } => find_people(client, text, offset, notify).await,
         Command::SaveContact { card, old, ticket } => {
             let saved = match &old {
                 Some(old) => client.update_contact(&old.to_jmap(), &card.to_jmap()).await.map(|()| old.id.clone()),
@@ -1457,21 +1457,21 @@ async fn load_people(client: &Client, notify: &impl Fn(Event)) {
     }
 }
 
-/// Люди справочника по строке (`Principal/query` с фильтром `text`) — тот же договор, что у EWS (`ResolveNames`).
-/// Справочника у сервера нет или запрос не удался — пусто (подсказки — из уже загруженного).
-async fn find_people(client: &Client, text: String, notify: &impl Fn(Event)) {
-    let people = if client.has(postman_jmap::PRINCIPALS) && text.trim().chars().count() >= PEOPLE_FROM {
-        match client.principals(text.trim(), PEOPLE_LIMIT).await {
-            Ok(found) => postman_core::contacts::directory(found.into_iter().map(Principal::from_jmap).collect()),
+/// Люди справочника по строке страницей с `offset` (`Principal/query` с фильтром `text`, `position`) — тот же
+/// договор, что у EWS. Справочника у сервера нет или запрос не удался — пусто (подсказки — из уже загруженного).
+async fn find_people(client: &Client, text: String, offset: u32, notify: &impl Fn(Event)) {
+    let (people, more) = if client.has(postman_jmap::PRINCIPALS) && text.trim().chars().count() >= PEOPLE_FROM {
+        match client.principals_page(text.trim(), u64::from(offset), PEOPLE_LIMIT).await {
+            Ok((found, more)) => (postman_core::contacts::directory(found.into_iter().map(Principal::from_jmap).collect()), more),
             Err(e) => {
                 tracing::debug!("jmap principal query: {e}");
-                Vec::new()
+                (Vec::new(), false)
             }
         }
     } else {
-        Vec::new()
+        (Vec::new(), false)
     };
-    notify(Event::PeopleFound { text, people });
+    notify(Event::PeopleFound { text, offset, people, more });
 }
 
 /// Личные контакты — разделу целиком и подсказкам адресов парами (имя, адрес).

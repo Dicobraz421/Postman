@@ -308,7 +308,7 @@ fn exchange_calendar_and_people() {
     let mine = events.iter().find(|e| e.title == title).expect("встреча в неделе");
     assert_eq!(mine.span.start, start.as_second());
 
-    live.send(Command::FindPeople { text: a.email.clone() });
+    live.send(Command::FindPeople { text: a.email.clone(), offset: 0 });
     let Event::PeopleFound { people, .. } = live.wait("PeopleFound", |e| matches!(e, Event::PeopleFound { .. })) else { unreachable!() };
     assert!(people.iter().any(|p| p.email.as_deref().is_some_and(|e| e.eq_ignore_ascii_case(&a.email))), "своя учётка в GAL");
 
@@ -548,7 +548,7 @@ fn exchange_directory_fields() {
     let a = first();
     let live = Live::start(&a);
     let local: String = a.email.split('@').next().unwrap_or("").chars().take(6).collect();
-    live.send(Command::FindPeople { text: local });
+    live.send(Command::FindPeople { text: local, offset: 0 });
     let Event::PeopleFound { people, .. } = live.wait("PeopleFound", |e| matches!(e, Event::PeopleFound { .. })) else { unreachable!() };
     let me = people.iter().any(|p| p.email.as_deref().is_some_and(|e| e.eq_ignore_ascii_case(&a.email)));
     let count = |f: fn(&postman_core::model::Principal) -> bool| people.iter().filter(|p| f(p)).count();
