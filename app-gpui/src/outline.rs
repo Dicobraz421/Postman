@@ -119,7 +119,7 @@ pub(crate) fn child_row(
     let from = if r.from_name.is_empty() { r.from_addr.clone() } else { r.from_name.clone() };
     let text = if r.preview.is_empty() { r.subject.clone() } else { r.preview.clone() };
     let lit = state.open || state.picked;
-    let stripe = if lit { Some(l.accent()) } else { labels.stripe.map(|c| l.cat(c).dot) };
+    let stripe = if lit { Some(l.row_strip(state.focused)) } else { labels.stripe.map(|c| l.cat(c).dot) };
     let line = |d: Div| d.absolute().left(px(GUIDE_X)).w(px(1.)).bg(l.stroke());
     div()
         .id(i)
@@ -133,8 +133,8 @@ pub(crate) fn child_row(
         .pr(px(12.))
         .text_size(px(12.))
         .when(last, |d| d.border_b_1().border_color(l.border()))
-        .when(lit, |d| d.bg(l.selected()))
-        .when(!lit, |d| d.hover(|d| d.bg(l.hover())))
+        .when(lit, |d| d.bg(l.row_fill(state.focused)))
+        .when(!lit, |d| d.hover(|d| d.bg(l.row_hover())))
         .when(state.menu, |d| d.border_1().border_color(l.accent_text()))
         .cursor_pointer()
         .child(div().absolute().left_0().top_0().bottom_0().w(px(4.)).when_some(stripe, |d, c| d.bg(c)))

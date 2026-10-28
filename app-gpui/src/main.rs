@@ -214,7 +214,11 @@ fn main() {
         tracing::warn!("i18n: {p}");
     }
     let mut screens = args.iter().position(|a| a == "--screens").and_then(|i| args.get(i + 1)).map(|d| {
-        let suffix = if theme == pets_ui::theme::FLUENT_DARK { "-dark" } else { "" };
+        let suffix = match theme.as_str() {
+            pets_ui::theme::FLUENT_DARK => "-dark",
+            roles::GRAY => "-gray",
+            _ => "",
+        };
         screens::Driver::new(d.into(), live, suffix).unwrap_or_else(|e| fatal("fatal-screens-dir", e))
     });
     // Второй запуск отдаёт аргументы первому (тот показывает окно) и выходит; замеры и снимки — всегда отдельно.

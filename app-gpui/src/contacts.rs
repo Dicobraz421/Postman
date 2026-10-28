@@ -497,6 +497,8 @@ struct Today {
 }
 
 pub(crate) struct ContactsView {
+    /// Экран в фокусе (T1-D): выбранная строка — тоном акцента, иначе нейтральной заливкой.
+    pub(crate) focused: bool,
     live: bool,
     source: Source,
     mine: Vec<Entry>,
@@ -559,6 +561,7 @@ impl ContactsView {
             }
         });
         let mut this = Self {
+            focused: true,
             live: false,
             source: Source::Directory,
             mine: demo_mine(),
@@ -1512,7 +1515,7 @@ impl ContactsView {
                 .child(div().text_color(l.text2()).child(n.to_string()))
                 .into_any_element(),
             Some(Item::Row(i)) => match self.entries().get(i) {
-                Some(e) => row(ix, e, self.selected.as_deref() == Some(e.card.id.as_str()), self.external(e), &l, cx),
+                Some(e) => row(ix, e, self.selected.as_deref() == Some(e.card.id.as_str()), self.focused, self.external(e), &l, cx),
                 None => div().into_any_element(),
             },
             None => div().into_any_element(),
@@ -1877,7 +1880,7 @@ impl ContactsView {
 }
 
 /// Строка списка: кружок с буквами, имя, ниже — должность и организация или адрес (тип у переговорных).
-fn row(ix: usize, e: &Entry, selected: bool, external: bool, l: &Look, cx: &mut Context<ContactsView>) -> AnyElement {
+fn row(ix: usize, e: &Entry, selected: bool, focused: bool, external: bool, l: &Look, cx: &mut Context<ContactsView>) -> AnyElement {
     let name = e.name();
     let email = e.card.emails.first().filter(|m| !m.eq_ignore_ascii_case(&name)).cloned();
     let second = match (e.kind, e.card.title.as_str(), e.card.organization.as_str(), email) {
@@ -1904,8 +1907,9 @@ fn row(ix: usize, e: &Entry, selected: bool, external: bool, l: &Look, cx: &mut 
         .border_b_1()
         .border_color(l.border())
         .cursor_pointer()
-        .when(selected, |d| d.bg(l.selected()).child(div().absolute().left_0().top_0().bottom_0().w(px(3.)).bg(l.accent())))
-        .when(!selected, |d| d.hover(|d| d.bg(l.hover())))
+        // Как строка писем (T1-D): тон акцента в фокусе, нейтральная без; полоса — акцент или цвет подписей.
+        .when(selected, |d| d.bg(l.row_fill(focused)).child(div().absolute().left_0().top_0().bottom_0().w(px(3.)).bg(l.row_strip(focused))))
+        .when(!selected, |d| d.hover(|d| d.bg(l.row_hover())))
         .child(avatar(&name, 36., l))
         .child(
             div()

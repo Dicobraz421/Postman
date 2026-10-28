@@ -19,6 +19,8 @@ use crate::roles::{Look, look};
 // --- папки ---
 
 pub(crate) struct Folders {
+    /// Экран почты в фокусе (T1-D): выбранная папка — тоном акцента, иначе нейтральной заливкой.
+    pub(crate) focused: bool,
     pub(crate) mailboxes: Vec<MailboxRow>,
     /// Общие ящики (S4-06): ветка на аккаунт.
     pub(crate) accounts: Vec<AccountRow>,
@@ -65,6 +67,7 @@ impl EventEmitter<FolderEvent> for Folders {}
 impl Folders {
     pub(crate) fn new(mailboxes: Vec<MailboxRow>, accounts: Vec<AccountRow>, current: Option<String>) -> Self {
         Self {
+            focused: true,
             mailboxes,
             accounts,
             collapsed: HashSet::new(),
@@ -173,8 +176,9 @@ impl Folders {
             .pl(px(if indent { 26. } else { 8. }))
             .pr(px(8.))
             .rounded(l.px(Metric::RadiusControl))
-            .when(selected, |d| d.bg(l.c(Role::FillCursor)).font_weight(FontWeight::SEMIBOLD))
-            .when(!selected, |d| d.hover(|d| d.bg(l.hover())))
+            // Как строка списка (T1-D): выбранная — тон акцента в фокусе, нейтральная без; наведение — тон акцента.
+            .when(selected, |d| d.bg(l.row_fill(self.focused)).font_weight(FontWeight::SEMIBOLD))
+            .when(!selected, |d| d.hover(|d| d.bg(l.row_hover())))
             .cursor_pointer()
             .flex()
             .items_center()
