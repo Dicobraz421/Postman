@@ -65,6 +65,71 @@ pub fn bench_copy(dir: &Path, n: usize) -> postman_cache::Result<PathBuf> {
     Ok(path)
 }
 
+/// Вложенные папки основной учётки (T1-04е): (ключ, родитель, имя), `""` — корень дерева. До трёх уровней под
+/// «Входящими» и под своей папкой «Проекты» (у неё нет роли).
+const MAIN_NESTED: &[(&str, &str, &str)] = &[
+    ("inbox-clients", "inbox", "Клиенты"),
+    ("inbox-clients-north", "inbox-clients", "Северный филиал"),
+    ("inbox-clients-north-contracts", "inbox-clients-north", "Договоры"),
+    ("inbox-lists", "inbox", "Рассылки"),
+    ("projects", "", "Проекты"),
+    ("projects-office", "projects", "Офис на Лесной"),
+    ("projects-office-estimate", "projects-office", "Смета"),
+    ("projects-office-estimate-2026", "projects-office-estimate", "2026"),
+    ("projects-passes", "projects", "Пропуска"),
+];
+
+/// Вложенные папки учётки Exchange (T1-04е): под «Входящими» и под своей папкой «Командировки».
+const EXCHANGE_NESTED: &[(&str, &str, &str)] = &[
+    ("inbox-buh", "inbox", "Бухгалтерия"),
+    ("inbox-buh-reports", "inbox-buh", "Отчёты"),
+    ("inbox-buh-reports-q3", "inbox-buh-reports", "III квартал"),
+    ("trips", "", "Командировки"),
+    ("trips-advance", "trips", "Авансовые отчёты"),
+];
+
+/// Строки вложенных папок учётки `scope`: ключи и родители — с префиксом учётки, роли нет; порядок — после
+/// системных папок, в порядке таблицы.
+fn nested(scope: Option<&str>, table: &[(&str, &str, &str)]) -> Vec<MailboxRow> {
+    table
+        .iter()
+        .zip(100..)
+        .map(|(&(id, parent, name), order)| MailboxRow {
+            id: scoped(scope, id),
+            parent_id: (!parent.is_empty()).then(|| scoped(scope, parent)),
+            name: name.into(),
+            role: None,
+            sort_order: order,
+            total: 0,
+            unread: 0,
+            rights: Rights::ALL,
+        })
+        .collect()
+}
+
+/// Папки основной учётки: системные и вложенные.
+fn main_boxes() -> Vec<MailboxRow> {
+    let mb = |id: &str, name: &str, order| MailboxRow {
+        id: id.into(),
+        parent_id: None,
+        name: name.into(),
+        role: Some(id.into()),
+        sort_order: order,
+        total: 0,
+        unread: 0,
+        rights: Rights::ALL,
+    };
+    let mut boxes = vec![
+        mb("inbox", "Входящие", 1),
+        mb("drafts", "Черновики", 2),
+        mb("sent", "Отправленные", 3),
+        mb("trash", "Удалённые", 4),
+        mb("archive", "Архив", 5),
+    ];
+    boxes.extend(nested(None, MAIN_NESTED));
+    boxes
+}
+
 pub fn ensure(path: &Path, n: usize) -> postman_cache::Result<()> {
     let cache = Cache::open(path)?;
     if cache.count("inbox").unwrap_or(0) + cache.count("archive").unwrap_or(0) >= n {
@@ -76,32 +141,19 @@ pub fn ensure(path: &Path, n: usize) -> postman_cache::Result<()> {
         if cache.rows_by_ids(&[delegations::letter_id(1)])?.is_empty() {
             delegations::letters(&cache, jiff::Timestamp::now().as_second())?;
         }
-        // …и учёток «стандарты» и Exchange (S7-09а).
-        if !cache.accounts()?.iter().any(|a| Some(a.id.as_str()) == EXCHANGE.profile) {
+        // …вложенных папок (T1-04е)…
+        let boxes = cache.mailboxes()?;
+        if !boxes.iter().any(|m| m.id == MAIN_NESTED[0].0) {
+            cache.replace_mailboxes(None, &main_boxes())?;
+        }
+        // …и учёток «стандарты» и Exchange (S7-09а) с их вложенными папками.
+        let exchange_nested = scoped(EXCHANGE.profile, EXCHANGE_NESTED[0].0);
+        if !cache.accounts()?.iter().any(|a| Some(a.id.as_str()) == EXCHANGE.profile) || !boxes.iter().any(|m| m.id == exchange_nested) {
             extra_accounts(&cache, jiff::Timestamp::now().as_second())?;
         }
         return Ok(());
     }
-    let mb = |id: &str, name: &str, order| MailboxRow {
-        id: id.into(),
-        parent_id: None,
-        name: name.into(),
-        role: Some(id.into()),
-        sort_order: order,
-        total: 0,
-        unread: 0,
-        rights: Rights::ALL,
-    };
-    cache.replace_mailboxes(
-        None,
-        &[
-            mb("inbox", "Входящие", 1),
-            mb("drafts", "Черновики", 2),
-            mb("sent", "Отправленные", 3),
-            mb("trash", "Удалённые", 4),
-            mb("archive", "Архив", 5),
-        ],
-    )?;
+    cache.replace_mailboxes(None, &main_boxes())?;
     let mut rng = 0x9E37_79B9_7F4A_7C15u64;
     let mut next = move || {
         rng ^= rng << 13;
@@ -447,7 +499,7 @@ fn extra_accounts(cache: &Cache, now: i64) -> postman_cache::Result<()> {
         let Some(profile) = a.profile else { continue };
         let scope = Some(profile);
         cache.replace_accounts_of(scope, &[AccountRow { id: profile.into(), name: a.email.into(), is_personal: true, read_only: false }])?;
-        let boxes: Vec<MailboxRow> = folders(a.kind)
+        let mut boxes: Vec<MailboxRow> = folders(a.kind)
             .iter()
             .zip(1..)
             .map(|(&(role, name), order)| MailboxRow {
@@ -461,6 +513,9 @@ fn extra_accounts(cache: &Cache, now: i64) -> postman_cache::Result<()> {
                 rights: Rights::ALL,
             })
             .collect();
+        if a.kind == Kind::Exchange {
+            boxes.extend(nested(scope, EXCHANGE_NESTED));
+        }
         cache.replace_mailboxes(scope, &boxes)?;
         let subjects = subjects(a.kind);
         let rows: Vec<EmailRow> = (0..8)
@@ -1455,6 +1510,39 @@ mod tests {
         assert_eq!(mail.len(), 2);
         assert!(mail.iter().any(|m| m.id.starts_with("@3") && m.keywords.is_empty()));
         drop(cache);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Вложенные папки (T1-04е): до глубины 3 под «Входящими» и под своей папкой основной учётки и у Exchange;
+    /// у каждого родителя есть строка той же учётки.
+    #[test]
+    fn nested_folders_up_to_depth_three() {
+        let dir = std::env::temp_dir().join(format!("postman-demo-nested-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("demo.redb");
+        ensure(&path, 50).unwrap();
+        let boxes = Cache::open(&path).unwrap().mailboxes().unwrap();
+        let by_id = |id: &str| boxes.iter().find(|b| b.id == id);
+        // Глубина и корень цепочки родителей; у каждого родителя есть строка.
+        let chain = |b: &MailboxRow| {
+            let (mut depth, mut top) = (0, b.id.clone());
+            let mut parent = b.parent_id.clone();
+            while let Some(p) = parent {
+                let row = by_id(&p).unwrap_or_else(|| panic!("нет родителя {p} у {}", b.id));
+                assert!(depth < 8, "цикл родителей у {}", b.id);
+                (depth, top, parent) = (depth + 1, row.id.clone(), row.parent_id.clone());
+            }
+            (depth, top)
+        };
+        let deepest = |top: &str| boxes.iter().map(chain).filter(|(_, t)| t == top).map(|(d, _)| d).max().unwrap();
+        assert_eq!(deepest("inbox"), 3);
+        assert_eq!(deepest("projects"), 3);
+        assert_eq!(deepest(&scoped(EXCHANGE.profile, "inbox")), 3);
+        assert!(boxes.iter().all(|b| chain(b).0 <= 3));
+        assert!(by_id("projects").is_some_and(|b| b.role.is_none() && b.parent_id.is_none()));
+        // Родитель — той же учётки.
+        let profile = |id: &str| id.split_once('/').map(|(p, _)| p.to_owned());
+        assert!(boxes.iter().filter_map(|b| b.parent_id.as_deref().map(|p| (b, p))).all(|(b, p)| profile(&b.id) == profile(p)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
