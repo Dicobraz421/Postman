@@ -1,6 +1,7 @@
-//! Вид беседы «В списке, как Outlook» (S5-05б, DESIGN «Беседы»): строка на беседу — самое новое письмо со
-//! стрелкой и числом писем; развёрнутая беседа — письма под ней строками пониже, с отступом и линией. Порядок и
-//! навигация — `postman_core::thread::Outline`; здесь — его место в списке (`MailList`) и строки.
+//! Беседы в списке (S5-05б, DESIGN «Беседы»): строка на беседу — самое новое письмо папки с числом писем. «Как
+//! Outlook» — со стрелкой: развёрнутая беседа — письма под ней строками пониже, с отступом и линией; «Лента» и
+//! «Стопка» (T1-15) — без раскрытия в списке, беседа — в панели чтения. Порядок и навигация —
+//! `postman_core::thread::Outline`; здесь — его место в списке (`MailList`) и строки.
 //!
 //! Беседы считаются в фоне вместе со своим набором писем (`Job` в `list.rs`): видимые строки — набор `view`, j/k
 //! идут по ним, ← / → и Enter сворачивают и разворачивают. Выделить строку беседы — все её письма (S5-08).
@@ -32,8 +33,8 @@ pub(crate) enum Mark {
     /// Обычная строка: не вид «как Outlook» или беседа из одного письма.
     #[default]
     None,
-    /// Голова беседы из `n` писем.
-    Head { n: usize, open: bool },
+    /// Голова беседы из `n` писем; `fold` — раскрывается в списке (вид «как Outlook»).
+    Head { n: usize, open: bool, fold: bool },
     /// Письмо под головой; `last` — последнее в беседе.
     Child { last: bool },
 }
@@ -66,7 +67,7 @@ impl Mark {
 
     /// Стрелка «Развернуть беседу» / «Свернуть беседу» слева от аватара.
     pub(crate) fn chevron(self, i: usize, l: &Look, cx: &mut Context<MailList>) -> Option<Stateful<Div>> {
-        let Mark::Head { open, .. } = self else { return None };
+        let Mark::Head { open, fold: true, .. } = self else { return None };
         let hint = if open { tr!("thread-collapse") } else { tr!("thread-expand") };
         Some(
             // Колонка стрелки — вплотную к полосе и аватару (без промежутков строки), как в макете.
@@ -202,10 +203,19 @@ pub(crate) enum Fold {
 }
 
 impl MailList {
-    /// Вид «как Outlook» в открытой папке (поиск — без бесед).
-    pub(crate) fn outlook_mode(&self, cx: &App) -> bool {
-        self.search_ids.is_none()
-            && self.mailbox.as_deref().is_some_and(|mb| crate::prefs::get(cx).reading.conversation_in(Some(mb)) == Conversation::Outlook)
+    /// Беседы в списке открытой папки — при любом виде (T1-15; поиск — без бесед).
+    pub(crate) fn outlook_mode(&self, _: &App) -> bool {
+        self.search_ids.is_none() && self.mailbox.is_some()
+    }
+
+    /// Вид папки — «Лента» или «Стопка» (T1-15): строка на беседу без раскрытия в списке.
+    pub(crate) fn flat_mode(&self, cx: &App) -> bool {
+        self.mailbox.as_deref().is_none_or(|mb| crate::prefs::get(cx).reading.conversation_in(Some(mb)) != Conversation::Outlook)
+    }
+
+    /// Развёрнутые беседы для пересчёта: в «Ленте» и «Стопке» — ни одной.
+    pub(crate) fn open_threads(&self) -> HashSet<String> {
+        if self.flat { HashSet::new() } else { self.threads_open.clone() }
     }
 
     /// Беседы показаны: посчитаны и список — не результаты поиска (поиск — без бесед, беседы ждут возврата к папке).
@@ -218,7 +228,7 @@ impl MailList {
         let Some(o) = self.threads() else { return Mark::None };
         match o.line(i) {
             Some(Line::Head(h)) => match o.heads().get(h) {
-                Some(head) if head.ids.len() > 1 => Mark::Head { n: head.ids.len(), open: o.is_open(head) },
+                Some(head) if head.ids.len() > 1 => Mark::Head { n: head.ids.len(), open: o.is_open(head), fold: !self.flat },
                 _ => Mark::None,
             },
             Some(Line::Child(h, k)) => Mark::Child { last: o.heads().get(h).is_some_and(|head| k + 1 == head.ids.len()) },
@@ -229,7 +239,7 @@ impl MailList {
     /// Беседы посчитаны (в фоне): набор писем — видимые строки, группы — по ним.
     pub(crate) fn set_outline(&mut self, mut outline: Outline, groups: &[(Group, usize)]) {
         // Пока считали, беседу могли развернуть или свернуть.
-        outline.set_open(self.threads_open.clone());
+        outline.set_open(self.open_threads());
         self.thread_groups = groups.iter().map(|(g, _)| g.clone()).collect();
         self.groups = outline.groups(&self.thread_groups);
         self.view = Some(Arc::new(outline.ids().to_vec()));
@@ -250,7 +260,7 @@ impl MailList {
 
     /// ←, → и Enter у выбранной строки. `false` — не вид «как Outlook» или делать нечего (клавиша идёт дальше).
     pub(crate) fn fold(&mut self, how: Fold, cx: &mut Context<Self>) -> bool {
-        let Some(i) = self.selected.filter(|_| self.search_ids.is_none()) else { return false };
+        let Some(i) = self.selected.filter(|_| self.search_ids.is_none() && !self.flat) else { return false };
         let Some(o) = &mut self.outline else { return false };
         let next = match how {
             Fold::Expand => o.expand(i),
@@ -267,6 +277,9 @@ impl MailList {
 
     /// Щелчок по стрелке беседы. Открытое письмо скрылось в свёрнутой беседе — открыть её голову.
     pub(crate) fn toggle_thread(&mut self, i: usize, cx: &mut Context<Self>) {
+        if self.flat {
+            return;
+        }
         let had = self.selected.is_some();
         let Some(head) = self.outline.as_mut().and_then(|o| o.toggle(i)) else { return };
         self.outline_changed(cx);
@@ -360,5 +373,17 @@ mod tests {
         assert_eq!(o.groups(&names), [(Group::Top, 1), (Group::Folder("y".into()), 1)]);
         // Без групп — всё в нулевой.
         assert_eq!(outline_of(&ids, &[], &threads, true, HashSet::new()).heads()[1].group, 0);
+    }
+
+    /// Три вида на одном наборе (T1-15): «Лента» и «Стопка» — строка на беседу, самое новое письмо, без раскрытия
+    /// (`MailList::open_threads` пуст); «как Outlook» с развёрнутой беседой — голова и письма под ней.
+    #[test]
+    fn views_shape_the_list() {
+        let ids: Vec<String> = ["a3", "b", "a1"].iter().map(|s| s.to_string()).collect();
+        let threads: HashMap<String, String> = [("a3", "t"), ("a1", "t")].iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+        let rows = |open: HashSet<String>| outline_of(&ids, &[], &threads, false, open).ids().to_vec();
+        assert_eq!(rows(HashSet::new()), ["a3", "b"], "лента и стопка");
+        let outlook = rows(["t".to_string()].into());
+        assert!(outlook.len() > 2 && outlook.contains(&"a1".to_string()) && outlook.ends_with(&["b".to_string()]), "как Outlook: {outlook:?}");
     }
 }
