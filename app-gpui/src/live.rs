@@ -1072,7 +1072,7 @@ impl Mailer {
             self.live.people_asked.remove(0);
         }
         self.live.people_asked.push(text.to_owned());
-        let _ = self.backend.send(Command::FindPeople { text: text.to_owned() });
+        let _ = self.backend.send(Command::FindPeople { text: text.to_owned(), offset: 0 });
     }
 
     /// Адрес и логин учётной записи, с которой идёт синхронизация (для «Настройки → Аккаунты»).

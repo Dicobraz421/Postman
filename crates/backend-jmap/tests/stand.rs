@@ -748,16 +748,16 @@ async fn find_people_through_sync() {
     wait_for(&rx, "первая синхронизация", |e| matches!(e, SyncEvent::Status(Status::Synced)).then_some(()));
     let other = env("POSTMAN_STAND_USER2");
     let query = other.split('@').next().unwrap().to_owned();
-    assert!(commands.send(Command::FindPeople { text: query.clone() }).is_ok());
+    assert!(commands.send(Command::FindPeople { text: query.clone(), offset: 0 }).is_ok());
     let people = wait_for(&rx, "PeopleFound", |e| match e {
-        SyncEvent::PeopleFound { text, people } if *text == query => Some(people.clone()),
+        SyncEvent::PeopleFound { text, people, .. } if *text == query => Some(people.clone()),
         _ => None,
     });
     assert!(people.iter().any(|p| p.email.as_deref().is_some_and(|e| e.eq_ignore_ascii_case(&other))), "найдено: {}", people.len());
     // Короткая строка — без запроса и пусто.
-    assert!(commands.send(Command::FindPeople { text: "us".into() }).is_ok());
+    assert!(commands.send(Command::FindPeople { text: "us".into(), offset: 0 }).is_ok());
     let short = wait_for(&rx, "PeopleFound (коротко)", |e| match e {
-        SyncEvent::PeopleFound { text, people } if text == "us" => Some(people.len()),
+        SyncEvent::PeopleFound { text, people, .. } if text == "us" => Some(people.len()),
         _ => None,
     });
     assert_eq!(short, 0);

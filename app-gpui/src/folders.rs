@@ -1,6 +1,6 @@
 //! Панель папок (разделы — рейл модулей, `chrome.rs`). Общие ящики (S4-06) — свёртываемые ветки
 //! с именем аккаунта под своими папками; своя учётная запись сворачивается так же (T1-06). Воронка у открытой папки
-//! переключает панель на фильтры (S5-03, `filters.rs`). Правая кнопка по папке — её меню (`folder_menu.rs`, S5-05б).
+//! переключает панель на фильтры (S5-03, `filters.rs`). Меню папки (ПКМ) — T1-04д; «Вид беседы» — в меню письма (T1-14).
 //! Дерево прокручивается с полосой при наведении, открытая папка — в видимой области (T1-07).
 
 use std::collections::HashSet;
@@ -26,6 +26,8 @@ pub(crate) struct Folders {
     pub(crate) accounts: Vec<AccountRow>,
     /// Свёрнутые группы (id аккаунта; своя — [`OWN`]) — на время работы.
     pub(crate) collapsed: HashSet<String>,
+    /// Свёрнутые папки с подпапками (T1-04г) — на время работы.
+    folded: HashSet<String>,
     pub(crate) current: Option<String>,
     /// Число результатов, пока показан поиск.
     pub(crate) results: Option<usize>,
@@ -49,17 +51,68 @@ enum Row<'a> {
     Own,
     /// Ветка доп. учётки или общего ящика.
     Branch(&'a AccountRow),
-    /// Папка; `true` — с отступом (в ветке).
-    Folder(&'a MailboxRow, bool),
+    /// Папка: в ветке ли (отступ ветки), уровень вложенности, есть ли подпапки.
+    Folder(&'a MailboxRow, bool, Node),
+}
+
+/// Место папки в дереве (T1-04г).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Node {
+    pub(crate) depth: usize,
+    pub(crate) parent: bool,
+}
+
+/// Дерево папок по `parent_id` (T1-04г): подпапки — под родителем, среди соседей — `sort_order`, при равном —
+/// порядок сервера; родителя нет в списке — папка наверху; цикл `parent_id` не зацикливает (такие папки — наверху).
+/// `folded` — свёрнутые: их подпапки не показываются.
+pub(crate) fn tree<'a>(folders: &[&'a MailboxRow], folded: &HashSet<String>) -> Vec<(&'a MailboxRow, Node)> {
+    let ids: HashSet<&str> = folders.iter().map(|m| m.id.as_str()).collect();
+    fn parent<'m>(m: &'m MailboxRow, ids: &HashSet<&str>) -> Option<&'m str> {
+        m.parent_id.as_deref().filter(|p| ids.contains(p) && *p != m.id)
+    }
+    let children = |of: Option<&str>| {
+        let mut v: Vec<&'a MailboxRow> = folders.iter().copied().filter(|m| parent(m, &ids) == of).collect();
+        v.sort_by_key(|m| m.sort_order);
+        v
+    };
+    let mut out = Vec::new();
+    let mut seen: HashSet<&str> = HashSet::new();
+    // `show` — строка видна (не под свёрнутой папкой); скрытые всё равно помечаются пройденными — не «цикл».
+    fn walk<'a>(
+        m: &'a MailboxRow,
+        depth: usize,
+        show: bool,
+        children: &dyn Fn(Option<&str>) -> Vec<&'a MailboxRow>,
+        folded: &HashSet<String>,
+        seen: &mut HashSet<&'a str>,
+        out: &mut Vec<(&'a MailboxRow, Node)>,
+    ) {
+        if !seen.insert(m.id.as_str()) {
+            return;
+        }
+        let kids = children(Some(m.id.as_str()));
+        if show {
+            out.push((m, Node { depth, parent: !kids.is_empty() }));
+        }
+        let open = show && !folded.contains(&m.id);
+        for k in kids {
+            walk(k, depth + 1, open, children, folded, seen, out);
+        }
+    }
+    for root in children(None) {
+        walk(root, 0, true, &children, folded, &mut seen, &mut out);
+    }
+    // Папки в цикле `parent_id` (ни одна не корень) — наверх, с их подпапками.
+    let mut rest: Vec<&'a MailboxRow> = folders.iter().copied().filter(|m| !seen.contains(m.id.as_str())).collect();
+    rest.sort_by_key(|m| m.sort_order);
+    for m in rest {
+        walk(m, 0, true, &children, folded, &mut seen, &mut out);
+    }
+    out
 }
 
 pub(crate) enum FolderEvent {
     Open(String),
-    /// Правая кнопка по папке (S5-05б): меню папки у точки `at`.
-    Menu {
-        id: String,
-        at: Point<Pixels>,
-    },
 }
 
 impl EventEmitter<FolderEvent> for Folders {}
@@ -71,6 +124,7 @@ impl Folders {
             mailboxes,
             accounts,
             collapsed: HashSet::new(),
+            folded: HashSet::new(),
             current,
             results: None,
             filters: None,
@@ -100,6 +154,14 @@ impl Folders {
         account.read_only || (folders.peek().is_some() && folders.all(|m| m.rights.read_only()))
     }
 
+    /// Свернуть или развернуть подпапки папки `id` (T1-04г).
+    fn fold(&mut self, id: &str, cx: &mut Context<Self>) {
+        if !self.folded.remove(id) {
+            self.folded.insert(id.to_owned());
+        }
+        cx.notify();
+    }
+
     fn toggle(&mut self, account: &str, cx: &mut Context<Self>) {
         self.flip(account);
         cx.notify();
@@ -115,6 +177,14 @@ impl Folders {
     /// Открыть папку (щелчок, палитра, Ctrl+Y): её группа разворачивается, строка прокручивается в видимую область.
     pub(crate) fn open(&mut self, id: String) {
         self.collapsed.remove(account_of(&id).unwrap_or(OWN));
+        // Свёрнутые папки над ней — развернуть (T1-04г); цикл `parent_id` не зацикливает.
+        let mut up = self.mailboxes.iter().find(|m| m.id == id).and_then(|m| m.parent_id.clone());
+        let mut steps = 0;
+        while let Some(p) = up.take().filter(|_| steps < self.mailboxes.len()) {
+            self.folded.remove(&p);
+            up = self.mailboxes.iter().find(|m| m.id == p).and_then(|m| m.parent_id.clone());
+            steps += 1;
+        }
         self.current = Some(id);
         if let Some(ix) = self.current_row() {
             self.scroll.scroll_to_item(ix);
@@ -135,13 +205,15 @@ impl Folders {
         }
         // Без подписи свернуть свою группу нечем — её папки видны всегда.
         if !own_label || !self.collapsed.contains(OWN) {
-            rows.extend(self.of(None).map(|m| Row::Folder(m, false)));
+            let own: Vec<&MailboxRow> = self.of(None).collect();
+            rows.extend(tree(&own, &self.folded).into_iter().map(|(m, n)| Row::Folder(m, false, n)));
         }
         for a in ordered(&self.accounts) {
             let Some(a) = self.accounts.iter().find(|x| x.id == a.id) else { continue };
             rows.push(Row::Branch(a));
             if !self.collapsed.contains(&a.id) {
-                rows.extend(self.of(Some(&a.id)).map(|m| Row::Folder(m, true)));
+                let theirs: Vec<&MailboxRow> = self.of(Some(&a.id)).collect();
+                rows.extend(tree(&theirs, &self.folded).into_iter().map(|(m, n)| Row::Folder(m, true, n)));
             }
         }
         rows
@@ -152,7 +224,7 @@ impl Folders {
         let id = self.current.as_deref()?;
         let group = account_of(id).unwrap_or(OWN);
         self.rows().iter().position(|r| match r {
-            Row::Folder(m, _) => m.id == id,
+            Row::Folder(m, ..) => m.id == id,
             Row::Own => group == OWN && self.collapsed.contains(OWN),
             Row::Branch(a) => group == a.id && self.collapsed.contains(&a.id),
         })
@@ -165,15 +237,24 @@ impl Folders {
             && self.current.as_deref().is_some_and(|id| account_of(id).unwrap_or(OWN) == account)
     }
 
-    fn folder(&self, m: &MailboxRow, indent: bool, l: &Look, cx: &mut Context<Self>) -> AnyElement {
+    fn folder(&self, m: &MailboxRow, indent: bool, node: Node, l: &Look, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.results.is_none() && self.current.as_deref() == Some(&m.id);
         let id = m.id.clone();
-        let menu = m.id.clone();
+        let fold = m.id.clone();
+        // Шеврон подпапок (T1-04г): место под него — у каждой папки, чтобы значки уровня стояли ровно.
+        let open = !self.folded.contains(&m.id);
+        let chevron = div().id(SharedString::from(format!("mb-fold-{}", m.id))).w(px(12.)).flex_none().text_color(l.text3()).when(node.parent, |d| {
+            d.child(if open { "▾" } else { "▸" }).cursor_pointer().on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                this.fold(&fold, cx);
+            }))
+        });
         div()
             .id(SharedString::from(format!("mb-{}", m.id)))
             .h(px(row_h(l)))
             .flex_none()
-            .pl(px(if indent { 26. } else { 8. }))
+            // Отступ ветки и 16 px на уровень вложенности.
+            .pl(px(if indent { 22. } else { 4. } + 16. * node.depth as f32))
             .pr(px(8.))
             .rounded(l.px(Metric::RadiusControl))
             // Как строка списка (T1-D): выбранная — тон акцента в фокусе, нейтральная без; наведение — тон акцента.
@@ -183,20 +264,15 @@ impl Folders {
             .flex()
             .items_center()
             .gap(px(10.))
-            .child(crate::chrome::icon(folder_glyph(m.role.as_deref()), 16.).text_color(l.text2()))
+            .child(chevron)
+            .child(crate::chrome::icon(folder_glyph(m.role.as_deref()), 16.).text_color(l.text2()).ml(px(-6.)))
             .child(div().flex_1().min_w_0().truncate().child(m.name.clone()))
             // Непрочитанные — с сервера (`Mailbox.unreadEmails`), а не по загруженной части папки.
             .when(m.unread > 0, |d| unread(d, m.unread, l))
             // Воронка — у открытой папки.
             .when_some(self.filters.as_ref().filter(|_| selected), |d, f| d.child(crate::filters::funnel(f, f.read(cx), l)))
+            // Меню папки (ПКМ) — с «Новой папкой» и «Переименовать» (T1-04д); «Вид беседы» — в меню письма (T1-14).
             .on_click(cx.listener(move |_, _, _, cx| cx.emit(FolderEvent::Open(id.clone()))))
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(move |_, ev: &MouseDownEvent, _, cx| {
-                    cx.stop_propagation();
-                    cx.emit(FolderEvent::Menu { id: menu.clone(), at: ev.position });
-                }),
-            )
             .into_any_element()
     }
 
@@ -359,7 +435,7 @@ impl Render for Folders {
                 // Своя учётная запись — подписью над папками, без связи — с меткой «нет связи» (макет «Состояния»).
                 Row::Own => self.own_header(&l, cx),
                 Row::Branch(a) => self.branch(a, &l, cx),
-                Row::Folder(m, indent) => self.folder(m, indent, &l, cx),
+                Row::Folder(m, indent, node) => self.folder(m, indent, node, &l, cx),
             })
             .collect();
         let list = div().id("folders").flex().flex_col().gap(px(2.)).size_full().overflow_y_scroll().track_scroll(&self.scroll).children(rows);
@@ -371,8 +447,9 @@ impl Render for Folders {
 #[cfg(test)]
 mod tests {
     // Не `super::*`: из `gpui_kit::*` пришёл бы атрибут `test` gpui вместо встроенного.
-    use super::{Folders, OWN, Row};
+    use super::{Folders, OWN, Row, tree};
     use postman_cache::{AccountRow, MailboxRow, Rights};
+    use std::collections::HashSet;
 
     /// Строки дерева коротко: `@` — своя подпись, `+id` — ветка, иначе id папки.
     fn shown(f: &Folders) -> Vec<String> {
@@ -381,7 +458,7 @@ mod tests {
             .map(|r| match r {
                 Row::Own => "@".to_owned(),
                 Row::Branch(a) => format!("+{}", a.id),
-                Row::Folder(m, _) => m.id.clone(),
+                Row::Folder(m, ..) => m.id.clone(),
             })
             .collect()
     }
@@ -392,6 +469,46 @@ mod tests {
 
     fn acc(id: &str, read_only: bool) -> AccountRow {
         AccountRow { id: id.into(), name: id.into(), is_personal: false, read_only }
+    }
+
+    /// Дерево по `parent_id` (T1-04г): подпапки под родителем по `sort_order`, глубина, сирота — наверху, цикл не
+    /// зацикливает; свёрнутая папка — без подпапок; переход к вложенной папке разворачивает родителей.
+    #[test]
+    fn folder_tree_by_parent() {
+        let m =
+            |id: &str, parent: Option<&str>, order: u32| MailboxRow { parent_id: parent.map(Into::into), sort_order: order, ..mb(id, Rights::ALL) };
+        let all = [
+            m("b", None, 2),
+            m("a", None, 1),
+            m("a2", Some("a"), 2),
+            m("a1", Some("a"), 1),
+            m("a11", Some("a1"), 0),
+            m("orphan", Some("gone"), 3),
+            m("x", Some("y"), 4),
+            m("y", Some("x"), 5),
+        ];
+        let refs: Vec<&MailboxRow> = all.iter().collect();
+        let got = |folded: &HashSet<String>| tree(&refs, folded).into_iter().map(|(m, n)| (m.id.as_str(), n.depth, n.parent)).collect::<Vec<_>>();
+        assert_eq!(
+            got(&HashSet::new()),
+            [
+                ("a", 0, true),
+                ("a1", 1, true),
+                ("a11", 2, false),
+                ("a2", 1, false),
+                ("b", 0, false),
+                ("orphan", 0, false),
+                ("x", 0, true),
+                ("y", 1, true)
+            ]
+        );
+        let folded: HashSet<String> = ["a".to_string()].into();
+        assert_eq!(got(&folded).iter().map(|r| r.0).collect::<Vec<_>>(), ["a", "b", "orphan", "x", "y"]);
+        let mut f = Folders::new(all.to_vec(), Vec::new(), None);
+        f.folded = ["a".to_string(), "a1".to_string()].into();
+        f.open("a11".into());
+        assert!(f.folded.is_empty(), "родители открытой папки развёрнуты");
+        assert_eq!(shown(&f), ["a", "a1", "a11", "a2", "b", "orphan", "x", "y"]);
     }
 
     /// Ветки дерева (S4-06): папки по аккаунтам; «только чтение» — по сессии или по правам всех папок.

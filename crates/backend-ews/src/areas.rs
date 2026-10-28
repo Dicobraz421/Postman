@@ -483,14 +483,18 @@ impl EwsAreas {
         Ok(true)
     }
 
-    /// Люди справочника по строке: `FindPeople`, сервер его не знает — `ResolveNames` (и дальше — только он).
-    pub async fn find_people(&mut self, text: &str) -> Result<Vec<Principal>, Error> {
+    /// Люди справочника по строке страницей с `offset` и есть ли ещё: `FindPeople`, сервер его не знает —
+    /// `ResolveNames` (и дальше — только он; у него страниц нет — всё найденное сразу).
+    pub async fn find_people(&mut self, text: &str, offset: u32) -> Result<(Vec<Principal>, bool), Error> {
         if text.trim().chars().count() < PEOPLE_FROM {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), false));
         }
         if self.find_people {
-            match self.client.find_people(text, PEOPLE_LIMIT).await {
-                Ok(people) => return Ok(people.into_iter().map(principal).collect()),
+            match self.client.search_people(text, offset, PEOPLE_LIMIT).await {
+                Ok(page) => {
+                    let more = page.more();
+                    return Ok((page.people.into_iter().map(principal).collect(), more));
+                }
                 // Отказ сервера (нет операции, схема) — не сеть: дальше — `ResolveNames`.
                 Err(e) if e.code().is_some() => {
                     tracing::info!(code = e.code().unwrap_or(""), "exchange: FindPeople refused, using ResolveNames");
@@ -499,7 +503,10 @@ impl EwsAreas {
                 Err(e) => return Err(e),
             }
         }
-        Ok(self.client.resolve_names(text, PEOPLE_LIMIT).await?.into_iter().map(principal).collect())
+        if offset > 0 {
+            return Ok((Vec::new(), false));
+        }
+        Ok((self.client.resolve_names(text, PEOPLE_LIMIT).await?.into_iter().map(principal).collect(), false))
     }
 
     /// Команды областей тем же договором событий, что у JMAP; чужая — назад.
@@ -578,11 +585,11 @@ impl EwsAreas {
                 }
                 Err(e) => notify(SyncEvent::ContactFailed { ticket, error: e.to_string() }),
             },
-            Command::FindPeople { text } => match self.find_people(&text).await {
-                Ok(people) => notify(SyncEvent::PeopleFound { text, people }),
+            Command::FindPeople { text, offset } => match self.find_people(&text, offset).await {
+                Ok((people, more)) => notify(SyncEvent::PeopleFound { text, offset, people, more }),
                 Err(e) => {
                     tracing::debug!("ews find people: {e}");
-                    notify(SyncEvent::PeopleFound { text, people: Vec::new() });
+                    notify(SyncEvent::PeopleFound { text, offset, people: Vec::new(), more: false });
                 }
             },
             // Занятость в Exchange открывает политика сервера, а не владелец календаря.

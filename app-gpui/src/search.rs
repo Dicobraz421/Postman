@@ -482,8 +482,8 @@ fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
     .on_action(cx.listener(|this, _: &search::NextMatch, _, cx| this.reading.update(cx, |r, cx| r.step_hit(1, cx))))
     .on_action(cx.listener(|this, _: &search::PrevMatch, _, cx| this.reading.update(cx, |r, cx| r.step_hit(-1, cx))))
     .on_action(cx.listener(|this, _: &search::Clear, window, cx| {
-        // Esc сначала закрывает контекстное меню письма (S5-08) или папки (S5-05б)…
-        if this.close_menu(cx) || this.close_folder_menu(cx) {
+        // Esc сначала закрывает контекстное меню письма (S5-08)…
+        if this.close_menu(cx) {
             return;
         }
         // …затем историю уведомлений.

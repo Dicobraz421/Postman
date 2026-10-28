@@ -59,8 +59,6 @@ pub(crate) struct Mailer {
     pub(crate) summary: Entity<crate::bulk::SummaryView>,
     /// Контекстное меню письма (S5-08, `menu.rs`); после закрытия — фокус обратно экрану.
     pub(crate) menu: Option<crate::menu::Menu>,
-    /// Меню папки (S5-05б, `folder_menu.rs`): «Вид беседы ▸».
-    pub(crate) folder_menu: Option<crate::folder_menu::FolderMenu>,
     pub(crate) refocus: bool,
     /// Связи с сервером нет (S5-08, `states.rs`): строка состояния, метка у аккаунта, полоса над списком.
     pub(crate) offline: crate::states::Offline,
@@ -215,7 +213,6 @@ impl Mailer {
                     this.show_mail_tab(cx);
                     this.open_mailbox(id.clone(), cx)
                 }
-                FolderEvent::Menu { id, at } => this.open_folder_menu(id.clone(), *at, cx),
             }),
             cx.subscribe(&reading, |this, _, ev: &ReadingEvent, cx| match ev {
                 ReadingEvent::Sandbox(level) => {
@@ -302,7 +299,6 @@ impl Mailer {
             toasts,
             summary,
             menu: None,
-            folder_menu: None,
             refocus: false,
             offline: Default::default(),
             offline_ticking: false,
@@ -530,7 +526,6 @@ impl Render for Mailer {
         }
         let l = crate::roles::look(cx);
         let menu = self.context_menu(window, &l, cx);
-        let folder_menu = self.folder_menu(window, &l, cx);
         let picker = self.lifecycle_overlay(&l, cx);
         // Вкладка «Настройки» (S5-09) — на месте рейла и модуля.
         let settings_tab = self.tabs.is_active(crate::tabs::TabKind::Settings);
@@ -598,7 +593,6 @@ impl Render for Mailer {
             .children(self.reminder_cards(cx))
             // Контекстное меню письма (S5-08) и папки (S5-05б) — над всем, кроме тостов.
             .children(menu)
-            .children(folder_menu)
             // Образцы кнопок — только снимок `buttons` (S5-19).
             .children(self.screens.as_ref().filter(|d| d.gallery()).map(|_| crate::buttons::gallery(&l)))
             // Тосты — поверх всего, последним ребёнком.
@@ -616,7 +610,7 @@ impl Mailer {
     /// Выделение без фокуса (T1-D): окно не активно или фокус в поле ввода, письме — строки списков нейтральные.
     /// Открытое меню строки фокус у экрана не отнимает.
     fn sync_focus(&mut self, window: &Window, cx: &mut Context<Self>) {
-        let menu = self.menu.is_some() || self.folder_menu.is_some() || self.contacts.read(cx).menu_open();
+        let menu = self.menu.is_some() || self.contacts.read(cx).menu_open();
         let focused = window.is_window_active() && (self.focus.is_focused(window) || menu);
         if self.list.read(cx).focused != focused {
             self.list.update(cx, |l, cx| {

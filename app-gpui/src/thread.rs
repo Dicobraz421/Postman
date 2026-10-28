@@ -793,8 +793,8 @@ pub(crate) mod scenes {
         // запуска, последней из прежних: лента остаётся включённой, прежние сцены снимаются без неё.
         Scene::new("thread", thread, thread_ready).after(crate::signin::scenes::FIRSTRUN),
         // Виды беседы (S5-05б): свой вид «Входящих» — только в этих сценах.
-        // Меню папки «Входящие» (S5-05б) с открытым подменю «Вид беседы».
-        Scene::new("folder-menu", folder_menu, folder_menu_ready).continues(),
+        // Меню письма с открытым подменю «Вид беседы» (T1-14; было в меню папки).
+        Scene::new("thread-view-menu", view_menu, view_menu_ready).continues(),
         // Стопка беседы в панели чтения (S5-05б): старые письма свёрнуты строками, последнее и открытое раскрыты.
         Scene::new("thread-stack", view, stack_ready).continues(),
         // «Входящие» в виде «как Outlook» (S5-05б): беседа цепочки демо развёрнута, выбрано письмо под головой.
@@ -824,22 +824,23 @@ pub(crate) mod scenes {
         open && r.feed_on && r.feed.as_ref().is_some_and(|f| f.conv.len() == postman_demo::CHAIN.len() && f.ready())
     }
 
-    fn folder_menu(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
-        // Как правая кнопка по «Входящим» и наведение на «Вид беседы».
+    fn view_menu(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        // Как правая кнопка по первому письму и наведение на «Вид беседы».
         m.reading.update(cx, |r, _| r.feed_on = false);
-        m.screen_folder_menu("inbox".into(), point(px(150.), px(140.)), cx);
+        m.open_menu_at_row(0, None, cx);
+        m.screen_menu_sub(crate::menu::Sub::View);
         Ok(())
     }
 
-    fn folder_menu_ready(_: &Scene, m: &Mailer, _: &App) -> bool {
-        m.folder_menu.is_some()
+    fn view_menu_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.menu.is_some() && screens::rows_loaded(m.list.read(cx))
     }
 
     fn view(s: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
-        m.close_folder_menu(cx);
+        m.close_menu(cx);
         let stack = s.name == "thread-stack";
         let view = if stack { Conversation::Stack } else { Conversation::Outlook };
-        // Как выбор в меню папки.
+        // Как выбор «Вида беседы» в меню письма.
         crate::prefs::update(cx, |p| p.reading.set_folder("inbox", Some(view)));
         m.open_mailbox("inbox".into(), cx);
         if stack {

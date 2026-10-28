@@ -275,6 +275,23 @@ impl Client {
         Ok(g.list)
     }
 
+    /// Найденные по строке страницей с `position` (подгрузка по прокрутке): люди и есть ли ещё (`total`
+    /// `Principal/query`).
+    pub async fn principals_page(&self, text: &str, position: u64, limit: u64) -> Result<(Vec<Principal>, bool)> {
+        let acc = self.account_for(PRINCIPALS)?;
+        let query = json!({ "accountId": acc, "filter": { "text": text }, "position": position, "limit": limit, "calculateTotal": true });
+        let calls = [
+            inv("Principal/query", query, "q"),
+            inv("Principal/get", json!({ "accountId": acc, "#ids": { "resultOf": "q", "name": "Principal/query", "path": "/ids" } }), "g"),
+        ];
+        let mut r = self.call(USING, &calls).await?;
+        let q: Value = take(&mut r, "q")?;
+        let g: GetResponse<Principal> = take(&mut r, "g")?;
+        let shown = q["ids"].as_array().map_or(0, Vec::len) as u64;
+        let more = q["total"].as_u64().is_some_and(|t| position + shown < t);
+        Ok((g.list, more))
+    }
+
     /// Справочник: все сотрудники, переговорные и ресурсы (`Principal/query` без фильтра), не больше `limit`.
     pub async fn directory(&self, limit: u64) -> Result<Vec<Principal>> {
         let acc = self.account_for(PRINCIPALS)?;

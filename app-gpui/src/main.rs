@@ -27,7 +27,6 @@ mod contacts;
 mod diagnostics;
 mod features;
 mod filters;
-mod folder_menu;
 mod folders;
 mod invite_card;
 mod ir_view;

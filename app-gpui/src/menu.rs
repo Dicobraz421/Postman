@@ -2,6 +2,9 @@
 //! Действует на выделение, если строка в нём, иначе — на эту строку. Не модальное окно, а слой поверх экрана:
 //! стрелки — по пунктам, → / Enter — подменю («Категория», «Переместить»), ← — назад, Enter — выполнить, Esc и
 //! щелчок вне — закрыть.
+//!
+//! «Вид беседы ▸ Лента / Стопка / Как Outlook / По умолчанию» (T1-14; было в меню папки) — свой вид папки этого
+//! письма (`Reading::set_folder`); «По умолчанию» — вид из «Настройки → Чтение».
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -11,6 +14,7 @@ use postman_cache::EmailRow;
 use postman_compose::Mode;
 use postman_core::marks::Kind;
 use postman_core::model::Features;
+use postman_core::prefs::Conversation;
 
 use crate::Mailer;
 use crate::bulk::{Ask, key_hint, mask, menu_line, separator};
@@ -30,6 +34,26 @@ const SUB_MAX_H: f32 = 360.;
 pub(crate) enum Sub {
     Category,
     Move,
+    /// Вид беседы папки письма (T1-14).
+    View,
+}
+
+/// Пункты «Вида беседы»: свой вид папки или «По умолчанию» (`None`).
+pub(crate) const VIEWS: [Option<Conversation>; 4] = [Some(Conversation::Feed), Some(Conversation::Stack), Some(Conversation::Outlook), None];
+
+/// Название вида в меню.
+fn view_name(v: Option<Conversation>) -> String {
+    match v {
+        Some(Conversation::Feed) => tr!("thread-view-feed"),
+        Some(Conversation::Stack) => tr!("thread-view-stack"),
+        Some(Conversation::Outlook) => tr!("thread-view-outlook"),
+        None => tr!("thread-view-default"),
+    }
+}
+
+/// Папка, чей вид беседы меняет меню: открытая папка списка, в поиске — первая папка письма.
+pub(crate) fn view_folder(open: Option<&str>, row: Option<&EmailRow>) -> Option<String> {
+    open.map(str::to_owned).or_else(|| row.and_then(|r| r.mailbox_ids.first().cloned()))
 }
 
 /// Пункт меню.
@@ -50,6 +74,7 @@ enum Item {
     Archive,
     Delete,
     Phishing,
+    View,
 }
 
 /// Пункты группами (разделитель между группами), порядок — S5-08.
@@ -58,6 +83,7 @@ const GROUPS: &[&[Item]] = &[
     &[Item::Seen, Item::Flag, Item::Category],
     &[Item::Due, Item::Remind, Item::Wait, Item::Expire],
     &[Item::Move, Item::Archive, Item::Delete],
+    &[Item::View],
     &[Item::Phishing],
 ];
 
@@ -76,6 +102,7 @@ impl Item {
         match self {
             Item::Category => Some(Sub::Category),
             Item::Move => Some(Sub::Move),
+            Item::View => Some(Sub::View),
             _ => None,
         }
     }
@@ -108,6 +135,7 @@ impl Item {
             Item::Archive => glyph::ARCHIVE,
             Item::Delete => glyph::DELETE,
             Item::Phishing => ' ',
+            Item::View => glyph::CONVERSATION,
         }
     }
 
@@ -129,7 +157,7 @@ impl Item {
             Item::Archive => "mail.archive",
             Item::Delete => "mail.delete",
             Item::Phishing => "mail.report_phishing",
-            Item::Category => return None,
+            Item::Category | Item::View => return None,
         })
     }
 }
@@ -217,7 +245,6 @@ impl Mailer {
         if !menu.item().is_some_and(|it| menu.enabled(it)) {
             menu.step(1);
         }
-        self.folder_menu = None;
         self.menu = Some(menu);
         cx.notify();
     }
@@ -308,7 +335,7 @@ impl Mailer {
             Item::Archive => self.ask(ids, Ask::Archive, cx),
             Item::Delete => self.ask(ids, Ask::Trash, cx),
             Item::Phishing => self.ask(ids, Ask::Phishing, cx),
-            Item::Category | Item::Move => {}
+            Item::Category | Item::Move | Item::View => {}
         }
     }
 
@@ -318,7 +345,16 @@ impl Mailer {
         let Some(sub) = m.sub else { return };
         let ids = m.ids.clone();
         let list = self.list.read(cx);
+        if sub == Sub::View {
+            let folder = view_folder(list.mailbox.as_deref(), m.row.as_ref().map(|(_, r)| r));
+            let (Some(folder), Some(&view)) = (folder, VIEWS.get(k)) else { return };
+            self.close_menu(cx);
+            // Открытая папка перестраивается по настройкам (список — `MailList`, чтение — `Reading`).
+            crate::prefs::update(cx, |p| p.reading.set_folder(&folder, view));
+            return;
+        }
         let ask = match sub {
+            Sub::View => return,
             Sub::Category => {
                 let cats = list.category_items();
                 match cats.get(k) {
@@ -340,6 +376,7 @@ impl Mailer {
         match sub {
             Sub::Category => list.category_items().len() + 1,
             Sub::Move => list.folder_items().len(),
+            Sub::View => VIEWS.len(),
         }
     }
 
@@ -445,6 +482,7 @@ impl Mailer {
                     Item::Archive => tr!("menu-archive"),
                     Item::Delete => tr!("menu-delete"),
                     Item::Phishing => tr!("menu-phishing"),
+                    Item::View => tr!("folder-menu-view"),
                 };
                 let key = it.command(m.unread).map(|c| key_hint(c, cx)).unwrap_or_default();
                 let glyph_el = if it == Item::Phishing {
@@ -485,6 +523,7 @@ impl Mailer {
             let n = match s {
                 Sub::Category => cats.len() + 1,
                 Sub::Move => folders.len(),
+                Sub::View => VIEWS.len(),
             };
             let extra = if s == Sub::Category { SEP_H } else { 0. };
             let h = (n as f32 * ITEM_H + extra + 8.).min(SUB_MAX_H);
@@ -515,6 +554,23 @@ impl Mailer {
                             .child(div().flex_1().child(tr!("bulk-uncategorize")))
                             .on_click(cx.listener(move |this, _, _, cx| this.choose_sub(k, cx))),
                     );
+                }
+                Sub::View => {
+                    let prefs = crate::prefs::get(cx).reading;
+                    let folder = view_folder(list.mailbox.as_deref(), m.row.as_ref().map(|(_, r)| r));
+                    let own = folder.and_then(|f| prefs.folders.get(&f).copied());
+                    for (k, v) in VIEWS.into_iter().enumerate() {
+                        // «По умолчанию» — с видом из настроек справа.
+                        let hint = v.is_none().then(|| view_name(Some(prefs.conversation)));
+                        sc = sc.child(
+                            menu_line(("menu-view", k), l)
+                                .when(m.sub_cursor == k, |d| d.bg(l.hover()))
+                                .child(div().w(px(16.)).flex_none().when(own == v, |d| d.child(icon(glyph::CHECK, 12.).text_color(l.accent_text()))))
+                                .child(div().flex_1().min_w_0().truncate().child(view_name(v)))
+                                .children(hint.map(|h| div().flex_none().text_size(px(11.)).text_color(l.text3()).child(h)))
+                                .on_click(cx.listener(move |this, _, _, cx| this.choose_sub(k, cx))),
+                        );
+                    }
                 }
                 Sub::Move => {
                     for (k, (_, name)) in folders.iter().enumerate() {
@@ -578,5 +634,40 @@ impl Mailer {
                 }))
                 .into_any_element(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{VIEWS, view_folder};
+    use postman_core::prefs::{Conversation, Reading};
+
+    /// «Вид беседы» в меню письма (T1-14): папка — открытая (в поиске — первая папка письма); выбор — свой вид этой
+    /// папки, «По умолчанию» снимает его.
+    #[test]
+    fn view_menu_sets_the_letter_folder_view() {
+        assert_eq!(view_folder(Some("inbox"), None).as_deref(), Some("inbox"));
+        let row = postman_cache::EmailRow {
+            id: "e".into(),
+            thread_id: "t".into(),
+            mailbox_ids: vec!["sent".into()],
+            received_at: 0,
+            subject: String::new(),
+            from_name: String::new(),
+            from_addr: String::new(),
+            preview: String::new(),
+            seen: true,
+            flagged: false,
+            has_attachment: false,
+            size: 0,
+            keywords: Vec::new(),
+        };
+        assert_eq!(view_folder(None, Some(&row)).as_deref(), Some("sent"), "поиск — папка письма");
+        let mut r = Reading::default();
+        r.set_folder("inbox", VIEWS[2]);
+        assert_eq!(r.conversation_in(Some("inbox")), Conversation::Outlook);
+        assert_eq!(r.conversation_in(Some("sent")), r.conversation);
+        r.set_folder("inbox", VIEWS[3]);
+        assert_eq!(r.conversation_in(Some("inbox")), r.conversation, "«По умолчанию» — общий вид");
     }
 }
