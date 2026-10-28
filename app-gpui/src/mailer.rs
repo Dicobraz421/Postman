@@ -424,7 +424,7 @@ impl Mailer {
             self.set_features(crate::features::of_demo_folder(&id), cx);
         }
         self.folders.update(cx, |f, cx| {
-            f.current = Some(id.clone());
+            f.open(id.clone());
             f.results = None;
             cx.notify();
         });

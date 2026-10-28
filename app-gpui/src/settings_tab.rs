@@ -8,6 +8,7 @@
 //! сервера — событиями [`SettingsEvent`] экрану почты.
 
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use pets_i18n::tr;
@@ -193,8 +194,10 @@ pub(crate) struct SettingsView {
     pub(crate) phishing_error: bool,
     /// «Календарь»: открытый список выбора (часы, пояс, напоминание).
     pub(crate) cal_menu: Option<crate::settings_cal::Menu>,
-    /// Прокрутка раздела: новый раздел — сверху; снимок `settings-calendar-free` — внизу.
+    /// Прокрутка раздела: новый раздел — сверху; снимок `settings-calendar-free` — внизу. Полоса — всегда, как у списка писем (T1-08).
     pub(crate) scroll: ScrollHandle,
+    /// Прокрутка открытого списка выбора «Календаря» (`cal_menu`): своя полоса.
+    pub(crate) cal_scroll: ScrollHandle,
     /// «Общие» (S5-30): автозапуск, клиент `mailto:`, отчёт — из Windows.
     pub(crate) os: crate::settings_general::OsState,
     /// «Безопасность»: строка «Сбросить входы?», входы сброшены, раскрыта подсказка песочницы.
@@ -261,6 +264,7 @@ impl SettingsView {
             phishing_error: false,
             cal_menu: None,
             scroll: ScrollHandle::new(),
+            cal_scroll: ScrollHandle::new(),
             os: Default::default(),
             wipe_confirm: false,
             wiped: false,
@@ -845,9 +849,11 @@ impl Render for SettingsView {
                 div().flex_1().min_h_0().flex().child(body)
             } else {
                 div()
+                    .relative()
                     .flex_1()
                     .min_h_0()
                     .child(div().id("settings-content").size_full().overflow_y_scroll().track_scroll(&self.scroll).px_6().pb_6().child(body))
+                    .child(Scrollbar::vertical(&self.scroll).mode(ScrollbarMode::Always))
             });
         div()
             .size_full()

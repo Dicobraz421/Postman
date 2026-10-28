@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Header>
+    <h:ServerVersionInfo MajorVersion="15" MinorVersion="0" MajorBuildNumber="1497" MinorBuildNumber="46" Version="V2_23" xmlns:h="http://schemas.microsoft.com/exchange/services/2006/types" xmlns="http://schemas.microsoft.com/exchange/services/2006/types"/>
+  </s:Header>
+  <s:Body>
+    <m:FindFolderResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+      <m:ResponseMessages>
+        <m:FindFolderResponseMessage ResponseClass="Success">
+          <m:ResponseCode>NoError</m:ResponseCode>
+          <m:RootFolder TotalItemsInView="3" IncludesLastItemInRange="true">
+            <t:Folders>
+              <t:ContactsFolder>
+                <t:FolderId Id="AAMkADcolleagues" ChangeKey="AQAAAC=="/>
+                <t:ParentFolderId Id="AAMkADcontacts" ChangeKey="AQAAAA=="/>
+                <t:FolderClass>IPF.Contact</t:FolderClass>
+                <t:DisplayName>Коллеги</t:DisplayName>
+                <t:TotalCount>5</t:TotalCount>
+              </t:ContactsFolder>
+              <t:Folder>
+                <t:FolderId Id="AAMkADsync" ChangeKey="AQAAAD=="/>
+                <t:ParentFolderId Id="AAMkADcontacts" ChangeKey="AQAAAA=="/>
+                <t:FolderClass>IPF.Note</t:FolderClass>
+                <t:DisplayName>Sync Issues</t:DisplayName>
+                <t:TotalCount>0</t:TotalCount>
+              </t:Folder>
+              <t:Folder>
+                <t:FolderId Id="AAMkADstore" ChangeKey="AQAAAE=="/>
+                <t:ParentFolderId Id="AAMkADcontacts" ChangeKey="AQAAAA=="/>
+                <t:FolderClass>IPF.Contact.MOC.QuickContacts</t:FolderClass>
+                <t:DisplayName>{06967759-274D-40B2-A3EB-D7F9E73727D7}</t:DisplayName>
+                <t:TotalCount>0</t:TotalCount>
+              </t:Folder>
+            </t:Folders>
+          </m:RootFolder>
+        </m:FindFolderResponseMessage>
+      </m:ResponseMessages>
+    </m:FindFolderResponse>
+  </s:Body>
+</s:Envelope>

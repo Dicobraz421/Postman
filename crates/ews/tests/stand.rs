@@ -84,8 +84,19 @@ fn now() -> i64 {
 }
 
 /// Всё с меткой — насовсем, без рассылки: календарь, «Входящие» (приглашения, ответы, отмены), «Отправленные»,
-/// «Удалённые».
+/// «Удалённые»; контакты — по «Хранить как» (тема у контакта EWS пустая) в «Контактах» и «Удалённых».
 async fn cleanup(c: &mut Client, tag: &str) {
+    for folder in [WellKnown::Contacts, WellKnown::DeletedItems] {
+        match c.find_contacts(&FolderRef::WellKnown(folder), tag, 20).await {
+            Ok(ids) if !ids.is_empty() => {
+                if let Err(e) = c.delete(&ids, DeleteMode::HardDelete, Notify::None).await {
+                    eprintln!("уборка контактов: {:?} — {}", folder, e.code().unwrap_or("ошибка"));
+                }
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("уборка контактов: {:?} — {}", folder, e.code().unwrap_or("ошибка")),
+        }
+    }
     for folder in [WellKnown::Calendar, WellKnown::Inbox, WellKnown::Drafts, WellKnown::SentItems, WellKnown::DeletedItems] {
         match c.find_by_subject(folder, tag, 20).await {
             Ok(ids) if !ids.is_empty() => {
@@ -431,6 +442,7 @@ fn ews_mail_folders() {
         assert!(roles.iter().any(|(r, _)| *r == MailRole::Inbox), "роль «Входящие»");
         let mut state = None;
         let mut all = Vec::new();
+        let mut via = "SyncFolderHierarchy";
         for _ in 0..25 {
             match c.sync_folders(state.as_ref(), &roles).await {
                 Ok(ch) => {
@@ -446,6 +458,7 @@ fn ews_mail_folders() {
                 // docs/EXCHANGE.md); роли из GetFolder при этом работают.
                 Err(e) if e.code() == Some("ErrorInternalServerError") => {
                     // Запасной путь — FindFolder (Deep).
+                    via = "FindFolder";
                     all = c.find_folders(&roles).await.unwrap();
                     break;
                 }
@@ -455,7 +468,7 @@ fn ews_mail_folders() {
         assert!(all.iter().any(|f| f.role == Some(MailRole::Inbox)), "«Входящие» в дереве");
         let (page, _) = c.mail_page(&FolderRef::WellKnown(WellKnown::Inbox), 0, 5).await.unwrap();
         assert!(page.len() <= 5);
-        println!("папок: {}; ролей: {}", all.len(), roles.len());
+        println!("дерево — {via}: папок {}, вложенных {}; ролей {}", all.len(), all.iter().filter(|f| f.parent.is_some()).count(), roles.len());
     });
 }
 
@@ -546,5 +559,163 @@ fn ews_mail_draft() {
             println!("черновик: сохранён, найден, удалён");
         })
         .await;
+    });
+}
+
+/// Папка: создать в корне ящика → переименовать → перенести во «Входящие» → удалить насовсем (T1-04а). Имя — с
+/// меткой прогона; папка удаляется и при падении теста.
+#[test]
+#[ignore = "боевой Exchange: S7 «Проверка на боевом Exchange»"]
+fn ews_mail_folder_ops() {
+    rt().block_on(async {
+        let mut c = client(&first()).await;
+        let tag = tag();
+        let roles = c.mail_roles().await.unwrap();
+        let inbox = roles.iter().find(|(r, _)| *r == MailRole::Inbox).map(|(_, id)| id.clone()).expect("«Входящие»");
+        let id = c.create_folder(&FolderRef::WellKnown(WellKnown::Root), &format!("{tag} folder")).await.unwrap();
+        let result = std::panic::AssertUnwindSafe(async {
+            let again = c.create_folder(&FolderRef::WellKnown(WellKnown::Root), &format!("{tag} folder")).await.unwrap_err();
+            assert_eq!(again.code(), Some("ErrorFolderExists"), "то же имя");
+            let id = c.rename_folder(&id, &format!("{tag} renamed")).await.unwrap();
+            let id = c.move_folder(&id, &FolderRef::Id(inbox.clone())).await.unwrap();
+            let tree = c.find_folders(&roles).await.unwrap();
+            let f = tree.iter().find(|f| f.name == format!("{tag} renamed")).expect("папка в дереве под новым именем");
+            assert_eq!(f.parent.as_deref(), Some(inbox.id.as_str()), "родитель — «Входящие»");
+            id
+        })
+        .catch_unwind()
+        .await;
+        let last = result.as_ref().map(|id| id.clone()).unwrap_or(id);
+        c.delete_folder(&last, DeleteMode::HardDelete).await.unwrap_or_else(|e| eprintln!("уборка папки: {}", e.code().unwrap_or("ошибка")));
+        if let Err(p) = result {
+            std::panic::resume_unwind(p);
+        }
+        println!("папка: создана, имя занято, переименована, перенесена, удалена");
+    });
+}
+
+/// Уведомления (T1-21а): streaming-подписка на корень и «Входящие» — письмо самому себе даёт событие письма во
+/// «Входящих»; затем pull-подписка — `GetEvents` с водяным знаком видит второе письмо.
+#[test]
+#[ignore = "боевой Exchange: S7 «Проверка на боевом Exchange»"]
+fn ews_notify_new_mail() {
+    rt().block_on(async {
+        let a = first();
+        let tag = tag();
+        guarded(&tag, &[&a], async {
+            let mut c = client(&a).await;
+            let inbox = c.mail_roles().await.unwrap().into_iter().find(|(r, _)| *r == MailRole::Inbox).map(|(_, id)| id.id).expect("«Входящие»");
+            let me = test_recipient(&a.email);
+            let folders = vec![FolderRef::WellKnown(WellKnown::Root), FolderRef::WellKnown(WellKnown::Inbox)];
+
+            let mut n = postman_ews::Notifier::new(client(&a).await, folders.clone());
+            let send = async {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                c.send_mail(&letter(&me, &format!("{tag} notify")), true).await.unwrap();
+            };
+            let wait = async {
+                let start = Instant::now();
+                loop {
+                    let left = Duration::from_secs(90).saturating_sub(start.elapsed());
+                    let ch = tokio::time::timeout(left, n.next()).await.expect("событие за 90 с").unwrap_or_else(|e| panic!("уведомления: {e}"));
+                    if ch.contains(&postman_ews::Change::Mail(inbox.clone())) {
+                        break start.elapsed();
+                    }
+                }
+            };
+            let ((), took) = tokio::join!(send, wait);
+            assert_eq!(n.mode(), Some(postman_ews::Mode::Streaming), "streaming, не pull");
+            println!("streaming: письмо во «Входящих» — событие через {} с", took.as_secs());
+
+            let mut p = client(&a).await;
+            let mut sub = p.subscribe_pull(&folders, None).await.unwrap();
+            c.send_mail(&letter(&me, &format!("{tag} pull")), true).await.unwrap();
+            let events = poll!("GetEvents: письмо", {
+                let ev = p.get_events(&mut sub).await.unwrap();
+                ev.iter().any(|e| e.kind == postman_ews::EventKind::NewMail && e.parent.as_deref() == Some(inbox.as_str())).then_some(ev.len())
+            });
+            p.unsubscribe(&sub).await.unwrap();
+            println!("pull: событий {events}, подписка снята");
+        })
+        .await;
+    });
+}
+
+/// Личный контакт (T1-25а): создан → прочитан (и виден в изменениях папки) → изменён → удалён в «Удалённые».
+/// Имя — с меткой прогона; уборка — по ней.
+#[test]
+#[ignore = "боевой Exchange: S7 «Проверка на боевом Exchange»"]
+fn ews_contacts_round_trip() {
+    use postman_ews::{ContactData, Phone, PhoneKind};
+    rt().block_on(async {
+        let a = first();
+        let tag = tag();
+        guarded(&tag, &[&a], async {
+            let mut c = client(&a).await;
+            let folders = c.contact_folders().await.unwrap();
+            assert!(folders.first().is_some_and(|f| f.parent.is_none()), "папка «Контакты»");
+            let contacts = FolderRef::WellKnown(WellKnown::Contacts);
+            let (_, base) = {
+                let mut state = None;
+                for _ in 0..25 {
+                    let ch = c.sync_contacts(&contacts, state.as_ref(), 100).await.unwrap();
+                    let done = ch.done;
+                    state = Some(ch.state);
+                    if done {
+                        break;
+                    }
+                }
+                ((), state)
+            };
+            let data = ContactData {
+                display_name: format!("{tag} contact"),
+                given_name: "Тест".into(),
+                surname: "Проверка".into(),
+                emails: vec!["postman-test@example.test".into()],
+                phones: vec![Phone { kind: PhoneKind::Business, number: "+7 000 000-00-01".into() }],
+                company: "Postman".into(),
+                job_title: "Тестовый".into(),
+                department: String::new(),
+                notes: "Создан тестом.".into(),
+            };
+            let id = c.create_contact(&contacts, &data).await.unwrap();
+            let got = c.get_contacts(std::slice::from_ref(&id)).await.unwrap().pop().expect("контакт прочитан");
+            assert_eq!(got.data, data, "карточка как записана");
+            let ch = c.sync_contacts(&contacts, base.as_ref(), 100).await.unwrap();
+            assert!(ch.created.iter().any(|i| i.id == id.id), "новый — в изменениях папки");
+
+            let mut changed = data.clone();
+            changed.job_title = "Изменённый".into();
+            changed.phones.clear();
+            changed.emails.push("postman-test2@example.test".into());
+            changed.notes.clear();
+            let id = c.update_contact(&got.id, &changed).await.unwrap();
+            let got = c.get_contacts(std::slice::from_ref(&id)).await.unwrap().pop().expect("контакт после правки");
+            assert_eq!(got.data, changed, "правка целиком: телефон и заметки сняты, адрес добавлен");
+
+            c.delete_contacts(std::slice::from_ref(&id)).await.unwrap();
+            assert!(c.get_contacts(std::slice::from_ref(&id)).await.unwrap().is_empty(), "в «Контактах» нет");
+            let trash = c.find_contacts(&FolderRef::WellKnown(WellKnown::DeletedItems), &tag, 5).await.unwrap();
+            assert_eq!(trash.len(), 1, "контакт — в «Удалённых»");
+            println!("контакт: создан, прочитан, изменён, удалён в «Удалённые»; папок контактов {}", folders.len());
+        })
+        .await;
+    });
+}
+
+/// Справочник списком (T1-25а): первая страница GAL — не больше 20 (правило S7), или «только поиском».
+#[test]
+#[ignore = "боевой Exchange: S7 «Проверка на боевом Exchange»"]
+fn ews_directory_page() {
+    rt().block_on(async {
+        let page = client(&first()).await.find_people_page(0, 20).await.unwrap_or_else(|e| panic!("FindPeople: {}", e.code().unwrap_or("ошибка")));
+        println!(
+            "справочник: только поиском {}, на странице {}, строк {}, всего известно {}",
+            page.search_only,
+            page.people.len(),
+            page.next - page.offset,
+            page.total.is_some()
+        );
+        assert!(page.people.len() <= 20 && page.next - page.offset <= 20);
     });
 }
