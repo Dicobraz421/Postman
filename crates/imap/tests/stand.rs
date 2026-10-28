@@ -148,3 +148,32 @@ fn imap_wrong_password() {
         assert!(matches!(Session::connect(&imap).await, Err(postman_imap::Error::Auth(_))));
     });
 }
+
+/// Папки: разделитель ящика, создать две с меткой, переименовать, перенести одну в другую, удалить (вложенную раньше).
+#[test]
+#[ignore = "нужен стенд Stalwart: docs/STALWART.md"]
+fn imap_folder_create_rename_move_delete() {
+    rt().block_on(async {
+        let mut s = Session::connect(&config("POSTMAN_STAND_IMAP")).await.unwrap();
+        let d = s.delimiter().await.unwrap();
+        assert!(d.is_some(), "у Stalwart есть разделитель иерархии");
+        // Забытое прошлыми прогонами (папки с меткой) — сначала вложенные.
+        let mut old: Vec<String> = s.folders().await.unwrap().into_iter().filter(|f| f.raw.contains("[postman-test")).map(|f| f.raw).collect();
+        old.sort_by_key(|r| std::cmp::Reverse(r.len()));
+        for raw in old {
+            s.delete_folder(&raw).await.unwrap_or_else(|e| eprintln!("уборка: {e}"));
+        }
+        let tag = format!("[postman-test {}]", stamp());
+        let a = s.create_folder(None, &format!("{tag} a")).await.unwrap();
+        let b = s.create_folder(None, &format!("{tag} b")).await.unwrap();
+        let a2 = s.rename_folder(&a, None, &format!("{tag} a2")).await.unwrap();
+        let moved = s.rename_folder(&a2, Some(&b), &format!("{tag} a2")).await.unwrap();
+        let folders = s.folders().await.unwrap();
+        let f = folders.iter().find(|f| f.raw == moved).expect("a2 в b");
+        assert_eq!(f.parent.as_deref(), Some(b.as_str()));
+        s.delete_folder(&moved).await.unwrap();
+        s.delete_folder(&b).await.unwrap();
+        assert!(!s.folders().await.unwrap().iter().any(|f| f.raw.contains(&tag)), "уборка");
+        println!("папки IMAP: разделитель {d:?}, созданы, переименованы, перенесены, удалены");
+    });
+}
