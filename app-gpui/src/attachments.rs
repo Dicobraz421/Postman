@@ -552,7 +552,7 @@ mod tests {
         let items = listed(&all, &HashSet::new(), false, &scans);
         assert_eq!(items.iter().map(|i| i.risk).collect::<Vec<_>>(), [Risk::Macros, Risk::Macros, Risk::Safe]);
         assert_eq!(items.iter().map(|i| i.can_open).collect::<Vec<_>>(), [false, false, true]);
-        assert!(items.iter().all(|i| i.viewer == Viewer::Office));
+        assert_eq!(items.iter().map(|i| i.viewer).collect::<Vec<_>>(), [Viewer::Office, Viewer::Office, Viewer::Document]);
     }
 
     #[test]

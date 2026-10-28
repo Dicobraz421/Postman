@@ -9,7 +9,9 @@
 //!   [`areas`]. У учётной записи EWS области подключает сам почтовый путь; у IMAP-учётки на Exchange —
 //!   `imaps://…?ews=https://…/EWS/Exchange.asmx`.
 //! - Вход — пароль учётной записи из диспетчера учётных данных Windows (`model::Auth::Basic`) через SSPI
-//!   (Negotiate/NTLM); TLS — SChannel (`postman-ews`).
+//!   (Negotiate/NTLM); пустой пароль — вход учётной записью Windows без пароля (учётные данные текущего входа:
+//!   Kerberos, вне домена — NTLM, T1-02а). Адрес ящика — у сервера (`ResolveNames` своей учётки), не из логина.
+//!   TLS — SChannel (`postman-ews`).
 
 pub mod areas;
 pub mod sync;
@@ -52,6 +54,20 @@ pub fn ews_auth(a: &Account) -> Option<(String, String, postman_ews::Auth)> {
 /// Пароль пустой — вход учётной записью Windows (Kerberos), иначе явный.
 pub fn auth(user: &str, password: &str) -> postman_ews::Auth {
     if password.is_empty() { postman_ews::Auth::Windows } else { postman_ews::Auth::password(user, password) }
+}
+
+/// Причина отказа входа учётной записью Windows (в `SyncError::detail`): машина не в домене, нет билета Kerberos,
+/// сервер не принял текущего пользователя.
+pub const WINDOWS_SIGN_IN_UNAVAILABLE: &str = "windows sign-in unavailable";
+
+/// Ошибка входа: у входа учётной записью Windows отказ SSPI или сервера — с причиной
+/// [`WINDOWS_SIGN_IN_UNAVAILABLE`], род — `Auth`.
+pub fn sign_in_error(stage: Stage, a: &postman_ews::Auth, e: &postman_ews::Error) -> SyncError {
+    let mut err = sync_error(stage, e);
+    if matches!(a, postman_ews::Auth::Windows) && err.kind == ErrorKind::Auth {
+        err.detail = format!("{WINDOWS_SIGN_IN_UNAVAILABLE}: {e}");
+    }
+    err
 }
 
 /// Ошибка EWS → род ошибки договора.
@@ -185,5 +201,17 @@ mod tests {
         assert!(matches!(&e, postman_core::model::Error::Method { kind, .. } if kind == "ErrorItemNotFound"));
         assert!(!e.to_string().contains("addr@"), "текст сервера (бывают адреса) — не в ошибку");
         assert!(matches!(auth("u", ""), postman_ews::Auth::Windows));
+    }
+
+    #[test]
+    fn windows_sign_in_refusal_has_a_reason() {
+        let e = postman_ews::Error::Sspi { call: "AcquireCredentialsHandleW", code: 0x8009_030e };
+        let w = sign_in_error(Stage::Connect, &postman_ews::Auth::Windows, &e);
+        assert_eq!(w.kind, ErrorKind::Auth);
+        assert!(w.detail.starts_with(WINDOWS_SIGN_IN_UNAVAILABLE), "{}", w.detail);
+        let p = sign_in_error(Stage::Connect, &auth("u", "p"), &postman_ews::Error::Auth("credentials rejected".into()));
+        assert!(p.kind == ErrorKind::Auth && !p.detail.contains(WINDOWS_SIGN_IN_UNAVAILABLE), "с паролем — обычный отказ");
+        let net = sign_in_error(Stage::Connect, &postman_ews::Auth::Windows, &postman_ews::Error::Timeout);
+        assert_eq!(net.kind, ErrorKind::Network, "сеть — не отказ входа");
     }
 }

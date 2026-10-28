@@ -7,10 +7,13 @@
 //!   `PhoneNumber`) и `Department` он не отдаёт — `ErrorInvalidArgument` на весь запрос, телефон здесь пустой.
 //! - **`ResolveNames`** — запасной путь (сервер не знает `FindPeople` или отказал): только Active Directory, с данными
 //!   контакта, телефоном в том числе.
+//! - **Список по страницам** (T1-25а) — `FindPeople` по GAL без строки поиска, по имени, страницей с `offset`. Сервер,
+//!   которому нужна строка, отказывает — страница пустая с признаком «только поиском». Обходить GAL через
+//!   `ResolveNames` по буквам нельзя: это массовый обход.
 
 use crate::soap;
 use crate::xml::{El, esc};
-use crate::{Client, Result};
+use crate::{Client, Error, Result};
 
 /// Человек или список рассылки из справочника.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -148,6 +151,60 @@ fn persona(p: &El) -> Option<Person> {
     })
 }
 
+/// Страница справочника (`FindPeople` без строки поиска).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PeoplePage {
+    /// Люди и списки страницы; без адреса — пропущены.
+    pub people: Vec<Person>,
+    /// Смещение этой страницы.
+    pub offset: u32,
+    /// Смещение следующей: `offset` + строк в ответе (с пропущенными).
+    pub next: u32,
+    /// Всего в справочнике (`TotalNumberOfPeopleInView`), если сервер сказал.
+    pub total: Option<u32>,
+    /// Сервер отдаёт справочник только поиском (нужна строка): списка нет, страница пустая.
+    pub search_only: bool,
+}
+
+impl PeoplePage {
+    /// Есть ли ещё страницы.
+    pub fn more(&self) -> bool {
+        !self.search_only && self.next > self.offset && self.total.is_none_or(|t| self.next < t)
+    }
+}
+
+/// Предел страницы справочника у сервера.
+pub const PAGE_MAX: u32 = 100;
+
+/// `FindPeople` по GAL без строки: по имени, страница с `offset` (порядок схемы `FindPeopleType`: форма, страница,
+/// сортировка, папка).
+pub(crate) fn page_request(offset: u32, max: u32) -> String {
+    let props: String = PERSONA.iter().map(|p| format!(r#"<t:FieldURI FieldURI="{p}"/>"#)).collect();
+    format!(
+        r#"<m:FindPeople><m:PersonaShape><t:BaseShape>IdOnly</t:BaseShape><t:AdditionalProperties>{props}</t:AdditionalProperties></m:PersonaShape><m:IndexedPageItemView BasePoint="Beginning" MaxEntriesReturned="{}" Offset="{offset}"/><m:SortOrder><t:FieldOrder Order="Ascending"><t:FieldURI FieldURI="persona:DisplayName"/></t:FieldOrder></m:SortOrder><m:ParentFolderId><t:DistinguishedFolderId Id="directory"/></m:ParentFolderId></m:FindPeople>"#,
+        max.clamp(1, PAGE_MAX)
+    )
+}
+
+/// Страница `FindPeople`: люди, всего, следующее смещение.
+pub(crate) fn page_parse(resp: &El, offset: u32) -> Result<PeoplePage> {
+    soap::check(resp)?;
+    let rows: Vec<&El> = resp.child("People").into_iter().flat_map(|p| p.all("Persona")).collect();
+    Ok(PeoplePage {
+        people: rows.iter().filter_map(|p| persona(p)).collect(),
+        offset,
+        next: offset + rows.len() as u32,
+        total: resp.text_at(&["TotalNumberOfPeopleInView"]).and_then(|t| t.parse().ok()),
+        search_only: false,
+    })
+}
+
+/// Отказ сервера, после которого справочник — только поиском: ошибка EWS на запросе без строки (боевой Exchange 2013
+/// CU23 — `ErrorInvalidOperation`). Занятость и сеть — не отказ.
+fn needs_query(e: &Error) -> bool {
+    matches!(e, Error::Ews { .. })
+}
+
 /// Найденные `FindPeople`: ответ без `ResponseMessages` — сам ответ с `ResponseClass`. Без адреса — пропускаются.
 pub(crate) fn find_parse(resp: &El, max: usize) -> Result<Vec<Person>> {
     soap::check(resp)?;
@@ -166,6 +223,21 @@ impl Client {
         let people = find_parse(&resp, max)?;
         tracing::debug!(found = people.len(), "ews find people");
         Ok(people)
+    }
+
+    /// Справочник списком: страница с `offset`, не больше `max` (до [`PAGE_MAX`]) — подгрузка по прокрутке
+    /// пользователя, без обхода всего GAL. Сервер требует строку поиска — пустая страница с `search_only`.
+    pub async fn find_people_page(&mut self, offset: u32, max: u32) -> Result<PeoplePage> {
+        let page = match self.call("FindPeople", &page_request(offset, max)).await.and_then(|r| page_parse(&r, offset)) {
+            Ok(p) => p,
+            Err(e) if needs_query(&e) => {
+                tracing::info!(code = e.code().unwrap_or(""), "ews: directory only by search");
+                PeoplePage { offset, next: offset, search_only: true, ..PeoplePage::default() }
+            }
+            Err(e) => return Err(e),
+        };
+        tracing::debug!(offset, rows = page.next - page.offset, total = ?page.total, "ews directory page");
+        Ok(page)
     }
 
     /// Люди и списки справочника по строке (начало имени, фамилии, адреса), не больше `max`.
@@ -260,6 +332,31 @@ mod tests {
         assert_eq!((p[1].title.as_str(), p[1].department.as_str()), ("", ""), "нет данных — пусто");
         assert!(p[2].group && p[2].email == "spb@example.test");
         assert_eq!(find_parse(&resp(include_bytes!("../tests/fixtures/find_people.xml")), 1).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn directory_page() {
+        let r = page_request(40, 500);
+        let x = xml(format!(r#"<x xmlns:m="m" xmlns:t="t">{r}</x>"#).as_bytes()).unwrap();
+        let f = x.child("FindPeople").unwrap();
+        let order: Vec<&str> = f.children.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(order, ["PersonaShape", "IndexedPageItemView", "SortOrder", "ParentFolderId"], "порядок схемы FindPeopleType, без строки");
+        let view = f.child("IndexedPageItemView").unwrap();
+        assert_eq!((view.attr("Offset"), view.attr("MaxEntriesReturned")), (Some("40"), Some("100")));
+        assert_eq!(f.at(&["SortOrder", "FieldOrder", "FieldURI"]).and_then(|u| u.attr("FieldURI")), Some("persona:DisplayName"));
+
+        let p = page_parse(&resp(include_bytes!("../tests/fixtures/find_people.xml")), 0).unwrap();
+        assert_eq!((p.people.len(), p.offset, p.next, p.total, p.search_only), (3, 0, 4, Some(4), false), "без адреса пропущен, но считается");
+        assert!(!p.more(), "все 4 из 4");
+        assert!(PeoplePage { offset: 0, next: 20, total: Some(57), ..PeoplePage::default() }.more());
+        assert!(!PeoplePage { offset: 20, next: 20, total: None, ..PeoplePage::default() }.more(), "пустая страница — конец");
+    }
+
+    #[test]
+    fn directory_needs_query() {
+        let err = page_parse(&resp(include_bytes!("../tests/fixtures/find_people_query_required.xml")), 0).unwrap_err();
+        assert!(needs_query(&err), "{err}");
+        assert!(!needs_query(&Error::ServerBusy { back_off_ms: 1 }) && !needs_query(&Error::Timeout));
     }
 
     #[test]

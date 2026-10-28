@@ -4,7 +4,7 @@
 //! прочитано/флаг, перенос и удаление, отправка и черновики, поиск, крупные вложения.
 //!
 //! - **Дерево папок** — `SyncFolderHierarchy`; роли — по стандартным папкам (`GetFolder` их id сопоставляет
-//!   `ItemId` папки с ролью).
+//!   `ItemId` папки с ролью). Создать, переименовать, перенести — `CreateFolder`, `UpdateFolder`, `MoveFolder`.
 //! - **Письма папки** — `SyncFolderItems` (`sync_mail`): новые, изменённые, удалённые и смена «прочитано»
 //!   (`ReadFlagChange`); состояние непрозрачно, как у календаря.
 //! - **Список** — `mail_headers`: тема, отправитель, дата, размер, прочитано, флаг, вложения, `Message-ID`,
@@ -24,6 +24,16 @@ use crate::calendar::parse_time;
 use crate::soap::{self, text_el};
 use crate::xml::{El, esc};
 use crate::{BATCH, Client, Error, FolderId, FolderRef, ItemId, Result, SyncState, WellKnown};
+
+/// Свойства папки дерева сверх `Default`: без них в ответе `SyncFolderHierarchy` (и `FindFolder`) родителя нет —
+/// дерево плоское, и не отличить почту от календаря.
+const FOLDER_PROPS: &str =
+    r#"<t:AdditionalProperties><t:FieldURI FieldURI="folder:ParentFolderId"/><t:FieldURI FieldURI="folder:FolderClass"/></t:AdditionalProperties>"#;
+
+/// Почтовая папка: `Folder` класса `IPF.Note` (или без класса); календарь, контакты, задачи — нет.
+fn is_mail_folder(f: &El) -> bool {
+    f.name == "Folder" && f.text_at(&["FolderClass"]).is_none_or(|c| c.is_empty() || c.starts_with("IPF.Note"))
+}
 
 /// Роль почтовой папки — по стандартной папке Exchange (`DistinguishedFolderId`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -227,7 +237,8 @@ pub(crate) mod parse {
     //! Разбор ответов почты — отдельно от запросов, для тестов на корпусе.
     use super::*;
 
-    pub(crate) fn hierarchy(resp: &El) -> Result<HierarchyChanges> {
+    /// Изменения дерева: только почтовые папки; родитель `root` (корень IPM) — верхний уровень (`None`).
+    pub(crate) fn hierarchy(resp: &El, root: Option<&str>) -> Result<HierarchyChanges> {
         let msg = soap::single(resp)?;
         let mut out = HierarchyChanges {
             state: SyncState(msg.str_at(&["SyncState"])),
@@ -237,7 +248,10 @@ pub(crate) mod parse {
         for c in msg.child("Changes").into_iter().flat_map(|c| c.children.iter()) {
             match c.name.as_str() {
                 "Create" | "Update" => {
-                    let Some(f) = c.children.first().and_then(mail_folder) else { continue };
+                    let Some(mut f) = c.children.first().filter(|f| is_mail_folder(f)).and_then(mail_folder) else { continue };
+                    if f.parent.is_some() && f.parent.as_deref() == root {
+                        f.parent = None;
+                    }
                     if c.name == "Create" { out.created.push(f) } else { out.updated.push(f) }
                 }
                 "Delete" => out.deleted.extend(c.child("FolderId").and_then(|i| i.attr("Id")).map(str::to_owned)),
@@ -255,7 +269,7 @@ pub(crate) mod parse {
             .at(&["RootFolder", "Folders"])
             .into_iter()
             .flat_map(|f| f.children.iter())
-            .filter(|f| f.name == "Folder" && f.text_at(&["FolderClass"]).is_none_or(|c| c.is_empty() || c.starts_with("IPF.Note")))
+            .filter(|f| is_mail_folder(f))
             .filter_map(mail_folder)
             .map(|mut f| {
                 if f.parent.as_deref() == Some(root) {
@@ -275,6 +289,21 @@ pub(crate) mod parse {
             .and_then(|i| i.attr("Id"))
             .map(str::to_owned)
             .ok_or_else(|| Error::Xml("GetFolder: no folder".into()))
+    }
+
+    /// Папка из ответа `CreateFolder`, `UpdateFolder`, `MoveFolder`: её id (у перенесённой — как вернул сервер).
+    /// `ErrorFolderExists`, `ErrorAccessDenied` и прочие — ошибка с кодом.
+    pub(crate) fn folder_result(resp: &El) -> Result<FolderId> {
+        let msg = soap::single(resp)?;
+        let fid = msg
+            .at(&["Folders"])
+            .and_then(|f| f.children.first())
+            .and_then(|f| f.child("FolderId"))
+            .ok_or_else(|| Error::Xml(format!("{}: no folder", resp.name)))?;
+        Ok(FolderId {
+            id: fid.attr("Id").ok_or_else(|| Error::Xml("FolderId without Id".into()))?.to_owned(),
+            change_key: fid.attr("ChangeKey").map(str::to_owned),
+        })
     }
 
     /// Страница `FindItem`: id по порядку и есть ли ещё.
@@ -407,6 +436,51 @@ pub(crate) mod parse {
     }
 }
 
+pub(crate) mod req {
+    //! Запросы дерева папок — отдельно, для тестов сборки.
+    use super::*;
+
+    pub(crate) fn sync_folders(state: Option<&SyncState>) -> String {
+        let state = state.filter(|s| !s.0.is_empty()).map(|s| text_el("m:SyncState", &s.0)).unwrap_or_default();
+        format!(
+            r#"<m:SyncFolderHierarchy><m:FolderShape><t:BaseShape>Default</t:BaseShape>{FOLDER_PROPS}</m:FolderShape><m:SyncFolderId><t:DistinguishedFolderId Id="msgfolderroot"/></m:SyncFolderId>{state}</m:SyncFolderHierarchy>"#
+        )
+    }
+
+    pub(crate) fn find_folders() -> String {
+        format!(
+            r#"<m:FindFolder Traversal="Deep"><m:FolderShape><t:BaseShape>Default</t:BaseShape>{FOLDER_PROPS}</m:FolderShape><m:IndexedPageFolderView MaxEntriesReturned="1000" Offset="0" BasePoint="Beginning"/><m:ParentFolderIds><t:DistinguishedFolderId Id="msgfolderroot"/></m:ParentFolderIds></m:FindFolder>"#
+        )
+    }
+
+    /// Почтовая папка (`IPF.Note`) в `parent` — папке или корне ящика ([`WellKnown::Root`]).
+    pub(crate) fn create_folder(parent: &FolderRef, name: &str) -> String {
+        format!(
+            r#"<m:CreateFolder><m:ParentFolderId>{}</m:ParentFolderId><m:Folders><t:Folder><t:FolderClass>IPF.Note</t:FolderClass>{}</t:Folder></m:Folders></m:CreateFolder>"#,
+            parent.xml(),
+            text_el("t:DisplayName", name)
+        )
+    }
+
+    /// Новое имя (`folder:DisplayName`). Id — без `ChangeKey`: имя ставится поверх любой версии папки (у папки
+    /// версия меняется с каждым письмом).
+    pub(crate) fn rename_folder(id: &FolderId, name: &str) -> String {
+        format!(
+            r#"<m:UpdateFolder><m:FolderChanges><t:FolderChange>{}<t:Updates><t:SetFolderField><t:FieldURI FieldURI="folder:DisplayName"/><t:Folder>{}</t:Folder></t:SetFolderField></t:Updates></t:FolderChange></m:FolderChanges></m:UpdateFolder>"#,
+            soap::id_el("t:FolderId", &id.id, None),
+            text_el("t:DisplayName", name)
+        )
+    }
+
+    pub(crate) fn move_folder(id: &FolderId, to: &FolderRef) -> String {
+        format!(
+            r#"<m:MoveFolder><m:ToFolderId>{}</m:ToFolderId><m:FolderIds>{}</m:FolderIds></m:MoveFolder>"#,
+            to.xml(),
+            soap::id_el("t:FolderId", &id.id, None)
+        )
+    }
+}
+
 /// `<t:Message>` с одним изменённым полем — для `UpdateItem`.
 fn set_field(uri: &str, inner: String) -> String {
     format!(r#"<t:SetItemField><t:FieldURI FieldURI="{uri}"/><t:Message>{inner}</t:Message></t:SetItemField>"#)
@@ -418,11 +492,8 @@ impl Client {
     /// `None` с начала (все папки как созданные); `roles` — из
     /// [`Client::mail_roles`] (роли проставляются по id). `done == false` — повторить с новым состоянием.
     pub async fn sync_folders(&mut self, state: Option<&SyncState>, roles: &[(MailRole, FolderId)]) -> Result<HierarchyChanges> {
-        let state = state.filter(|s| !s.0.is_empty()).map(|s| text_el("m:SyncState", &s.0)).unwrap_or_default();
-        let body = format!(
-            r#"<m:SyncFolderHierarchy><m:FolderShape><t:BaseShape>Default</t:BaseShape></m:FolderShape><m:SyncFolderId><t:DistinguishedFolderId Id="msgfolderroot"/></m:SyncFolderId>{state}</m:SyncFolderHierarchy>"#
-        );
-        let mut changes = parse::hierarchy(&self.call("SyncFolderHierarchy", &body).await?)?;
+        let root = self.msg_root().await?;
+        let mut changes = parse::hierarchy(&self.call("SyncFolderHierarchy", &req::sync_folders(state)).await?, Some(&root))?;
         apply_roles(&mut changes.created, roles);
         apply_roles(&mut changes.updated, roles);
         Ok(changes)
@@ -433,12 +504,53 @@ impl Client {
     /// `docs/EXCHANGE.md`). Роли — по `roles`, как у [`Client::sync_folders`]; изменений не отслеживает — дерево
     /// целиком.
     pub async fn find_folders(&mut self, roles: &[(MailRole, FolderId)]) -> Result<Vec<MailFolder>> {
-        let body = r#"<m:GetFolder><m:FolderShape><t:BaseShape>IdOnly</t:BaseShape></m:FolderShape><m:FolderIds><t:DistinguishedFolderId Id="msgfolderroot"/></m:FolderIds></m:GetFolder>"#;
-        let root = parse::folder_id(&self.call("GetFolder", body).await?)?;
-        let body = r#"<m:FindFolder Traversal="Deep"><m:FolderShape><t:BaseShape>Default</t:BaseShape><t:AdditionalProperties><t:FieldURI FieldURI="folder:ParentFolderId"/><t:FieldURI FieldURI="folder:FolderClass"/></t:AdditionalProperties></m:FolderShape><m:IndexedPageFolderView MaxEntriesReturned="1000" Offset="0" BasePoint="Beginning"/><m:ParentFolderIds><t:DistinguishedFolderId Id="msgfolderroot"/></m:ParentFolderIds></m:FindFolder>"#;
-        let mut folders = parse::find_folders(&self.call("FindFolder", body).await?, &root)?;
+        let root = self.msg_root().await?;
+        let mut folders = parse::find_folders(&self.call("FindFolder", &req::find_folders()).await?, &root)?;
         apply_roles(&mut folders, roles);
         Ok(folders)
+    }
+
+    /// Id корня почтовых папок (`msgfolderroot`) — один раз на клиента: родитель верхнего уровня дерева.
+    async fn msg_root(&mut self) -> Result<String> {
+        if let Some(root) = &self.root {
+            return Ok(root.clone());
+        }
+        let body = r#"<m:GetFolder><m:FolderShape><t:BaseShape>IdOnly</t:BaseShape></m:FolderShape><m:FolderIds><t:DistinguishedFolderId Id="msgfolderroot"/></m:FolderIds></m:GetFolder>"#;
+        let root = parse::folder_id(&self.call("GetFolder", body).await?)?;
+        self.root = Some(root.clone());
+        Ok(root)
+    }
+
+    /// Создать почтовую папку `name` в `parent` (папка или корень ящика — [`WellKnown::Root`]) → её id. Такое имя
+    /// уже есть — [`Error::Ews`] с кодом `ErrorFolderExists`; нет прав — `ErrorAccessDenied`.
+    pub async fn create_folder(&mut self, parent: &FolderRef, name: &str) -> Result<FolderId> {
+        parse::folder_result(&self.call("CreateFolder", &req::create_folder(parent, name)).await?)
+    }
+
+    /// Переименовать папку (`UpdateFolder`, `folder:DisplayName`) → её новая версия.
+    pub async fn rename_folder(&mut self, id: &FolderId, name: &str) -> Result<FolderId> {
+        parse::folder_result(&self.call("UpdateFolder", &req::rename_folder(id, name)).await?)
+    }
+
+    /// Перенести папку (`MoveFolder`) в `to` — папку или корень ящика ([`WellKnown::Root`]) → её id после переноса.
+    pub async fn move_folder(&mut self, id: &FolderId, to: &FolderRef) -> Result<FolderId> {
+        parse::folder_result(&self.call("MoveFolder", &req::move_folder(id, to)).await?)
+    }
+
+    /// Удалить папку (`DeleteFolder`): в «Удалённые» или насовсем. Уже удалённая — не ошибка.
+    pub async fn delete_folder(&mut self, id: &FolderId, mode: crate::DeleteMode) -> Result<()> {
+        let body = format!(
+            r#"<m:DeleteFolder DeleteType="{}"><m:FolderIds>{}</m:FolderIds></m:DeleteFolder>"#,
+            mode.ews(),
+            soap::id_el("t:FolderId", &id.id, None)
+        );
+        let resp = self.call("DeleteFolder", &body).await?;
+        for msg in soap::messages(&resp) {
+            if soap::code(msg) != "ErrorItemNotFound" && soap::code(msg) != "ErrorFolderNotFound" {
+                soap::check(msg)?;
+            }
+        }
+        Ok(())
     }
 
     /// Письма папки по убыванию даты получения, страницей с `offset` (первая загрузка и «Загрузить ещё»): id и есть
@@ -610,13 +722,7 @@ fn create_item(mime: &[u8], disposition: Disposition, folder: Option<WellKnown>)
 }
 
 fn well_known(w: WellKnown) -> &'static str {
-    match w {
-        WellKnown::Calendar => "calendar",
-        WellKnown::Inbox => "inbox",
-        WellKnown::Drafts => "drafts",
-        WellKnown::SentItems => "sentitems",
-        WellKnown::DeletedItems => "deleteditems",
-    }
+    w.id()
 }
 
 #[cfg(test)]
@@ -636,17 +742,74 @@ mod tests {
             roles.iter().map(|(r, _)| *r).collect::<Vec<_>>(),
             [MailRole::Inbox, MailRole::Drafts, MailRole::Sent, MailRole::Trash, MailRole::Junk, MailRole::Outbox]
         );
-        let mut h = parse::hierarchy(&resp(include_bytes!("../tests/fixtures/sync_folder_hierarchy.xml"))).unwrap();
+        let mut h = parse::hierarchy(&resp(include_bytes!("../tests/fixtures/sync_folder_hierarchy.xml")), Some("AAMkADroot")).unwrap();
         assert!(!h.done);
+        // Календарь — не почта, в дерево не идёт.
         assert_eq!((h.created.len(), h.updated.len(), h.deleted.len()), (3, 1, 1));
         apply_roles(&mut h.created, &roles);
         apply_roles(&mut h.updated, &roles);
         let inbox = h.created.iter().find(|f| f.role == Some(MailRole::Inbox)).expect("Входящие");
         assert_eq!((inbox.name.as_str(), inbox.total, inbox.unread), ("Inbox", 42, 3));
+        assert_eq!(inbox.parent, None, "родитель — корень ящика: верхний уровень");
         let project = h.created.iter().find(|f| f.name == "Проект").unwrap();
         assert_eq!((project.role, project.parent.as_deref()), (None, Some("AAMkADinbox")));
         assert_eq!(h.deleted, ["AAMkADgone"]);
         assert_eq!(h.updated[0].unread, 1);
+    }
+
+    /// Запрос дерева с родителем и классом папки: без них Default-форма родителя не даёт (T1-04а).
+    #[test]
+    fn sync_folders_asks_for_parent() {
+        let x = xml(soap::envelope(&req::sync_folders(Some(&SyncState("s1".into())))).as_bytes()).unwrap();
+        let s = x.at(&["Body", "SyncFolderHierarchy"]).unwrap();
+        let order: Vec<&str> = s.children.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(order, ["FolderShape", "SyncFolderId", "SyncState"], "порядок схемы SyncFolderHierarchyType");
+        let props: Vec<&str> = s.at(&["FolderShape", "AdditionalProperties"]).unwrap().all("FieldURI").filter_map(|f| f.attr("FieldURI")).collect();
+        assert_eq!(props, ["folder:ParentFolderId", "folder:FolderClass"]);
+        assert!(!req::sync_folders(None).contains("SyncState"));
+        assert!(req::find_folders().contains(FOLDER_PROPS));
+    }
+
+    #[test]
+    fn folder_requests() {
+        let parse_body = |body: String| xml(soap::envelope(&body).as_bytes()).unwrap();
+        let inbox = FolderId { id: "AAMkADinbox".into(), change_key: Some("CK".into()) };
+        let c = parse_body(req::create_folder(&FolderRef::WellKnown(WellKnown::Root), "Отчёты <2026>"));
+        let cf = c.at(&["Body", "CreateFolder"]).unwrap();
+        assert_eq!(cf.at(&["ParentFolderId", "DistinguishedFolderId"]).and_then(|d| d.attr("Id")), Some("msgfolderroot"));
+        assert_eq!(cf.at(&["Folders", "Folder", "FolderClass"]).map(|e| e.text.as_str()), Some("IPF.Note"));
+        assert_eq!(cf.at(&["Folders", "Folder", "DisplayName"]).map(|e| e.text.as_str()), Some("Отчёты <2026>"), "имя экранировано");
+        let order: Vec<&str> = cf.at(&["Folders", "Folder"]).unwrap().children.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(order, ["FolderClass", "DisplayName"], "порядок схемы FolderType");
+        let sub = parse_body(req::create_folder(&FolderRef::Id(inbox.clone()), "Проект"));
+        assert_eq!(sub.at(&["Body", "CreateFolder", "ParentFolderId", "FolderId"]).and_then(|d| d.attr("Id")), Some("AAMkADinbox"));
+
+        let r = parse_body(req::rename_folder(&inbox, "Новое"));
+        let change = r.at(&["Body", "UpdateFolder", "FolderChanges", "FolderChange"]).unwrap();
+        let fid = change.child("FolderId").unwrap();
+        assert_eq!((fid.attr("Id"), fid.attr("ChangeKey")), (Some("AAMkADinbox"), None), "имя — поверх любой версии");
+        let set = change.at(&["Updates", "SetFolderField"]).unwrap();
+        assert_eq!(set.child("FieldURI").and_then(|f| f.attr("FieldURI")), Some("folder:DisplayName"));
+        assert_eq!(set.at(&["Folder", "DisplayName"]).map(|e| e.text.as_str()), Some("Новое"));
+
+        let m = parse_body(req::move_folder(&inbox, &FolderRef::WellKnown(WellKnown::Root)));
+        let mf = m.at(&["Body", "MoveFolder"]).unwrap();
+        let order: Vec<&str> = mf.children.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(order, ["ToFolderId", "FolderIds"], "порядок схемы MoveFolderType");
+        assert_eq!(mf.at(&["ToFolderId", "DistinguishedFolderId"]).and_then(|d| d.attr("Id")), Some("msgfolderroot"));
+        assert_eq!(mf.at(&["FolderIds", "FolderId"]).and_then(|d| d.attr("Id")), Some("AAMkADinbox"));
+    }
+
+    #[test]
+    fn folder_results() {
+        let id = parse::folder_result(&resp(include_bytes!("../tests/fixtures/create_folder.xml"))).unwrap();
+        assert_eq!((id.id.as_str(), id.change_key.as_deref()), ("AAMkADnewfolder", Some("AQAAABYAAAB")));
+        let err = parse::folder_result(&resp(include_bytes!("../tests/fixtures/create_folder_exists.xml"))).unwrap_err();
+        assert_eq!(err.code(), Some("ErrorFolderExists"), "{err}");
+        let err = parse::folder_result(&resp(include_bytes!("../tests/fixtures/move_folder_denied.xml"))).unwrap_err();
+        assert_eq!(err.code(), Some("ErrorAccessDenied"), "{err}");
+        let renamed = parse::folder_result(&resp(include_bytes!("../tests/fixtures/update_folder.xml"))).unwrap();
+        assert_eq!(renamed.change_key.as_deref(), Some("AQAAABYAAAC"));
     }
 
     #[test]
