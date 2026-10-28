@@ -1,5 +1,5 @@
-//! Платформенный код интерфейса — прослойка над нейтральным API `gpui_windows::pets` (pets-gpui-windows, решение
-//! владельца 2026-10-28): вызовов ОС здесь нет, на других ОС — заглушки. `unsafe` — только счётчик кучи (`alloc`) и
+//! Платформенный код интерфейса — прослойка над нейтральным API pets (решение владельца 2026-10-28): окно —
+//! `gpui_windows::pets` (pets-gpui-windows), без UI — `pets_shell`. Вызовов ОС здесь нет, на других ОС — заглушки. `unsafe` — только счётчик кучи (`alloc`) и
 //! `set_var` в начале `main` (`shell::default_env`).
 
 use gpui_kit::Window;
@@ -17,7 +17,7 @@ pub fn bench_idle_fields() -> String {
     let mut out = Vec::new();
     #[cfg(windows)]
     {
-        let (text, private_ws) = pets::memory::report();
+        let (text, private_ws) = pets_shell::memory::report();
         out.push(format!("idle_private_ws_mb={:.0}", private_ws as f64 / 1_048_576.0));
         if std::env::var_os("POSTMAN_BENCH_MEMMAP").is_some() {
             eprint!("{text}");
@@ -32,14 +32,14 @@ pub fn bench_idle_fields() -> String {
 /// для `--bench`, `--screens`, `--help`, `--version`.
 pub fn attach_parent_console() {
     #[cfg(windows)]
-    pets::console::attach_parent();
+    pets_shell::console::attach_parent();
 }
 
 /// Пароль учётной записи — в диспетчере учётных данных Windows (S3-04), тип «общие учётные данные», для этого
 /// пользователя на этой машине. На диск приложения пароль не попадает; в журнал — тоже (ошибки — только код Win32).
 #[cfg(windows)]
 pub mod credentials {
-    use gpui_windows::pets::credentials as os;
+    use pets_shell::credentials as os;
 
     pub fn write(target: &str, user: &str, secret: &str) -> Result<(), String> {
         os::write(target, user, secret).map_err(|e| e.to_string())
@@ -222,7 +222,7 @@ mod tests {
     /// Манифест из build.rs действует, хотя gpui вшивает свой: кодовая страница процесса — UTF-8.
     #[test]
     fn manifest_is_applied() {
-        assert_eq!(pets::console::active_code_page(), 65001);
+        assert_eq!(pets_shell::console::active_code_page(), 65001);
     }
 
     /// T1-01: в exe — значок «Ленты» всех размеров `res/postman.ico` (тесты собраны с теми же ресурсами, `build.rs`).

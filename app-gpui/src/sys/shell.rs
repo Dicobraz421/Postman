@@ -1,12 +1,13 @@
 //! Связь с Windows для «Настройки → Общие» (S5-30): автозапуск (HKCU Run), клиент `mailto:` по умолчанию
 //! (HKCU Classes, RegisteredApplications), журнал в файл (поток ошибок процесса без консоли), переменная окружения
-//! уровня журнала. Всё — в разделе пользователя, без прав администратора. Вызовы ОС — `gpui_windows::pets`; здесь —
+//! уровня журнала. Всё — в разделе пользователя, без прав администратора. Вызовы ОС — `pets_shell` и `gpui_windows::pets`; здесь —
 //! что и куда пишет Postman.
 
 use std::path::Path;
 
-use gpui_windows::pets::registry::{self, Hive};
-use gpui_windows::pets::{console, toast};
+use gpui_windows::pets::toast;
+use pets_shell::console;
+use pets_shell::registry::{self, Hive};
 
 /// Имя значения в Run и приложения в RegisteredApplications.
 const APP: &str = "Postman";
