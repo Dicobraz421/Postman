@@ -231,6 +231,11 @@ fn main() {
         }
     };
     std::fs::create_dir_all(&dir).unwrap_or_else(|e| fatal("fatal-data-dir", e));
+    // Копии перетащенных вложений (T1-18) прошлого запуска — в фоне; замеры и снимки не трогают копии работающего окна.
+    #[cfg(windows)]
+    if persist {
+        std::thread::spawn(|| sys::dragdrop::clean(&sys::dragdrop::temp_root()));
+    }
     let prefs_path = persist.then(|| prefs::path(&dir));
     if args.iter().any(|a| a == "--sign-out") {
         account::forget(&dir);
@@ -305,6 +310,11 @@ fn main() {
         }
         cx.activate(true);
     });
+    // Выход: копии перетащенных вложений (T1-18) больше не нужны.
+    #[cfg(windows)]
+    if persist {
+        sys::dragdrop::clean(&sys::dragdrop::temp_root());
+    }
 }
 
 /// Демо-ящик. Бенч и снимки — на свежей копии; подготовка данных не входит в first_frame_ms.

@@ -69,9 +69,25 @@ features = [
 ]
 
 # Уведомления Windows (S6-07: напоминания задач при свёрнутом окне) — WinRT, та же версия, что у gpui.
+# Перетаскивание вложения в другие приложения (T1-18, `sys/dragdrop.rs`): OLE drag source — COM, OLE, оболочка.
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.61"
-features = ["Data_Xml_Dom", "UI_Notifications"]
+features = [
+    "Data_Xml_Dom",
+    "UI_Notifications",
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_SystemServices",
+    "Win32_UI_Shell",
+]
+# Макрос `#[implement]` (свои COM-объекты перетаскивания, T1-18) ссылается на `windows_core` напрямую.
+[target.'cfg(windows)'.dependencies.windows-core]
+version = "0.61"
 
 # Значок, версия и манифест exe (build.rs, rc.exe из Windows SDK).
 [build-dependencies]

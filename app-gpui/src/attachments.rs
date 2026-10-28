@@ -4,8 +4,14 @@
 //! Что можно делать с файлом — `postman_core::attach` (имя) и проверка содержимого в воркере (макросы в OLE и
 //! OOXML): документ с макросами — красный щиток и полоса, «Открыть» заменено на «Сохранить»; исполняемые — только
 //! сохранить. Файлы на диске — `postman_core::files` (безопасное имя, метка «из Интернета»).
+//!
+//! Перетаскивание в другое приложение (T1-18): нажать на карточке и повести за порог `SM_CXDRAG`/`SM_CYDRAG` —
+//! OLE drag source (`sys::dragdrop`). Байты к этому моменту уже в памяти (кэш читается при нажатии, в фоне); нет их —
+//! загрузка, курсор «нельзя», по готовности — тост. Файл с макросами и исполняемый не перетаскивается, как и не
+//! открывается.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -98,6 +104,30 @@ pub(crate) fn listed(all: &[AttachmentRow], shown_cids: &HashSet<String>, invite
             }
         })
         .collect()
+}
+
+/// Перетаскивается только безопасный файл: с макросами (красный щиток) и исполняемые — нет, как и не открываются.
+pub(crate) fn draggable(item: &Item) -> bool {
+    item.risk == Risk::Safe
+}
+
+/// Кнопка нажата на карточке вложения: может начаться перетаскивание (T1-18).
+pub(crate) struct Drag {
+    row: AttachmentRow,
+    /// Где нажата кнопка (точки окна).
+    start: Point<Pixels>,
+    /// Байты (хранилище, демо, загрузка); нет — перетаскивание не начинается.
+    data: Option<Arc<Vec<u8>>>,
+    /// Порог пройден без байтов: идёт загрузка, по готовности — тост.
+    pub(crate) waiting: bool,
+    /// Идёт перетаскивание (модальный цикл OLE).
+    running: bool,
+}
+
+impl Drag {
+    pub(crate) fn blob(&self) -> &str {
+        &self.row.blob_id
+    }
 }
 
 /// Вложения ленты открытого письма.
@@ -294,7 +324,26 @@ impl ReadingPane {
             );
         }
         let grid = div().grid().grid_cols(PER_ROW as u16).gap(px(8.)).children(cards);
-        Some(div().flex().flex_col().gap(px(6.)).child(head).child(grid).into_any_element())
+        Some(
+            div()
+                .id("att-ribbon")
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(head)
+                .child(grid)
+                // Перетаскивание (T1-18): порог — по движению над лентой, уход с ленты с нажатой кнопкой — тоже.
+                .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| this.drag_move(ev.position, ev.pressed_button, window, cx)))
+                .on_hover(cx.listener(|this, hovered: &bool, window, cx| {
+                    if !*hovered && this.drag.as_ref().is_some_and(|d| !d.running && !d.waiting) {
+                        this.drag_go(cx);
+                    }
+                    let _ = window;
+                }))
+                .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| this.drag_release(cx)))
+                .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| this.drag_release(cx)))
+                .into_any_element(),
+        )
     }
 
     /// Карточка 40 px: плашка типа, имя и размер, справа — щиток опасности; по наведению — действия.
@@ -331,6 +380,9 @@ impl ReadingPane {
         };
         let row = item.row.clone();
         let blob = item.row.blob_id.clone();
+        let can_drag = draggable(item);
+        let drag_row = item.row.clone();
+        let waiting = self.drag.as_ref().is_some_and(|d| d.waiting && d.row.blob_id == item.row.blob_id);
         let mut actions = div()
             .absolute()
             .top(px(7.))
@@ -382,6 +434,13 @@ impl ReadingPane {
             .cursor_pointer()
             .tooltip(tip(format!("{} · {}", item.name, size_text(item.row.size))))
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_preview(Some(blob.clone()), cx)))
+            .when(can_drag, |d| {
+                d.on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, ev: &MouseDownEvent, _, cx| this.drag_press(drag_row.clone(), ev.position, cx)),
+                )
+            })
+            .when(waiting, |d| d.cursor(CursorStyle::OperationNotAllowed))
             .child(tile)
             .child(text);
         if let Some((text, g)) = status {
@@ -392,6 +451,126 @@ impl ReadingPane {
             card = card.child(div().absolute().left_0().top_0().bottom_0().w(px(3.)).bg(l.pm(Pm::ThreatDot)));
         }
         card.child(actions).into_any_element()
+    }
+}
+
+impl ReadingPane {
+    /// Кнопка нажата на карточке: запомнить и взять байты без сети — демо сразу, живой ящик — из хранилища в фоне.
+    fn drag_press(&mut self, row: AttachmentRow, at: Point<Pixels>, cx: &mut Context<Self>) {
+        if self.drag.as_ref().is_some_and(|d| d.running || d.waiting) {
+            return;
+        }
+        let blob = row.blob_id.clone();
+        let demo = (!self.live).then(|| postman_demo::blob(&blob)).flatten().map(Arc::new);
+        self.drag = Some(Drag { row, start: at, data: demo, waiting: false, running: false });
+        if !self.live {
+            return;
+        }
+        let cache = self.cache.clone();
+        let key = blob.clone();
+        let task = cx.background_spawn(async move { cache.blob(&key).ok().flatten() });
+        cx.spawn(async move |this, cx| {
+            let data = task.await;
+            this.update(cx, |this, _| {
+                if let Some(d) = this.drag.as_mut().filter(|d| d.row.blob_id == blob && d.data.is_none()) {
+                    d.data = data.map(Arc::new);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Движение с нажатой кнопкой: за порогом — перетаскивание.
+    fn drag_move(&mut self, at: Point<Pixels>, button: Option<MouseButton>, window: &Window, cx: &mut Context<Self>) {
+        let Some(d) = &self.drag else { return };
+        if d.running || d.waiting {
+            return;
+        }
+        if button != Some(MouseButton::Left) {
+            self.drag = None;
+            return;
+        }
+        let (tx, ty) = drag_threshold(window.scale_factor());
+        let (dx, dy) = (f32::from(at.x - d.start.x).abs(), f32::from(at.y - d.start.y).abs());
+        if dx > tx || dy > ty {
+            self.drag_go(cx);
+        }
+    }
+
+    /// Порог пройден: байты есть — копия для `CF_HDROP` в фоне и `DoDragDrop`; нет — загрузка и тост по готовности.
+    fn drag_go(&mut self, cx: &mut Context<Self>) {
+        let Some(d) = &mut self.drag else { return };
+        let Some(data) = d.data.clone() else {
+            d.waiting = true;
+            let row = d.row.clone();
+            self.fetch(&row, cx);
+            cx.notify();
+            return;
+        };
+        d.running = true;
+        let name = files::safe_name(&d.row.name);
+        self.start_drag(name, data, cx);
+    }
+
+    #[cfg(windows)]
+    fn start_drag(&mut self, name: String, data: Arc<Vec<u8>>, cx: &mut Context<Self>) {
+        use crate::sys::dragdrop;
+        let file = dragdrop::DragFile { name: name.clone(), data: data.clone() };
+        let copy =
+            cx.background_spawn(
+                async move { dragdrop::prepare(&dragdrop::temp_root(), &name, &data).map_err(|e| tracing::warn!("drag copy: {e}")).ok() },
+            );
+        cx.spawn(async move |this, cx| {
+            let copy = copy.await;
+            // Модальный цикл OLE — вне `update`: приложение свободно, окно рисуется и отвечает.
+            let result = dragdrop::drag(&file, copy);
+            this.update(cx, |this, cx| {
+                this.drag = None;
+                if let Err(e) = result {
+                    cx.emit(crate::reading::ReadingEvent::Toast(pets_ui::Level::Error, tr!("att-drag-failed", name = file.name.clone(), error = e)));
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    #[cfg(not(windows))]
+    fn start_drag(&mut self, _: String, _: Arc<Vec<u8>>, _: &mut Context<Self>) {
+        self.drag = None;
+    }
+
+    /// Кнопка отпущена до порога — перетаскивания не было.
+    fn drag_release(&mut self, cx: &mut Context<Self>) {
+        if self.drag.as_ref().is_some_and(|d| !d.running && !d.waiting) {
+            self.drag = None;
+            cx.notify();
+        }
+    }
+
+    /// Байты пришли: ждали их после порога — тост «можно перетаскивать», иначе — в запас нажатия.
+    pub(crate) fn drag_bytes(&mut self, blob_id: &str, data: &Arc<Vec<u8>>, cx: &mut Context<Self>) {
+        let Some(d) = self.drag.as_mut().filter(|d| d.row.blob_id == blob_id) else { return };
+        if d.waiting {
+            let name = files::safe_name(&d.row.name);
+            self.drag = None;
+            cx.emit(crate::reading::ReadingEvent::Toast(pets_ui::Level::Info, tr!("att-drag-ready", name = name)));
+        } else {
+            d.data = Some(data.clone());
+        }
+    }
+}
+
+/// Порог начала перетаскивания (точки окна): системный на Windows, иначе 4.
+fn drag_threshold(scale: f32) -> (f32, f32) {
+    #[cfg(windows)]
+    return crate::sys::dragdrop::threshold(scale);
+    #[cfg(not(windows))]
+    {
+        let _ = scale;
+        (4., 4.)
     }
 }
 
@@ -553,6 +732,10 @@ mod tests {
         assert_eq!(items.iter().map(|i| i.risk).collect::<Vec<_>>(), [Risk::Macros, Risk::Macros, Risk::Safe]);
         assert_eq!(items.iter().map(|i| i.can_open).collect::<Vec<_>>(), [false, false, true]);
         assert_eq!(items.iter().map(|i| i.viewer).collect::<Vec<_>>(), [Viewer::Office, Viewer::Office, Viewer::Document]);
+        // Перетаскивание (T1-18): у файла с макросами источника нет, как и «Открыть».
+        assert_eq!(items.iter().map(super::draggable).collect::<Vec<_>>(), [false, false, true]);
+        let exe = listed(&[att("setup.exe", "", None), att("photo.jpg", "image/jpeg", None)], &HashSet::new(), false, &HashMap::new());
+        assert_eq!(exe.iter().map(super::draggable).collect::<Vec<_>>(), [false, true], "исполняемый — тоже нет");
     }
 
     #[test]

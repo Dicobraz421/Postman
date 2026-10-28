@@ -9,6 +9,10 @@ mod windows;
 #[cfg(windows)]
 mod console;
 
+/// Перетаскивание вложения в другое приложение (T1-18): OLE drag source.
+#[cfg(windows)]
+pub mod dragdrop;
+
 #[cfg(windows)]
 mod memmap;
 
