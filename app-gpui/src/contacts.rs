@@ -171,25 +171,84 @@ pub(crate) fn filter(entries: &[Entry], query: &str) -> Vec<usize> {
     (0..entries.len()).filter(|&i| entries[i].matches(&words, query)).collect()
 }
 
-/// «Часто пишу» (S5-25): адресаты переписки по порядку `AddressBook::frequent` — запись справочника или моих контактов
-/// с этим адресом (та же карточка), иначе — адресат переписки. Адрес — одна строка.
-pub(crate) fn frequent(list: &[(String, String)], directory: &[Entry], mine: &[Entry]) -> Vec<Entry> {
+/// Адресат «Часто пишу» из адресной книги (`postman_core::contacts::Entry`): имя, адрес, последняя переписка
+/// (Unix-секунды).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Frequent {
+    pub(crate) name: String,
+    pub(crate) email: String,
+    pub(crate) last: i64,
+}
+
+/// Порядок «Часто пишу» (T1-24): как считает адресная книга (частота и давность), по имени, по адресу, сначала
+/// недавние. Помнится на время работы.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) enum Order {
+    #[default]
+    Frequency,
+    Name,
+    Address,
+    Recent,
+}
+
+impl Order {
+    const ALL: [Order; 4] = [Order::Frequency, Order::Name, Order::Address, Order::Recent];
+
+    fn key(self) -> &'static str {
+        match self {
+            Order::Frequency => "contacts-sort-frequency",
+            Order::Name => "contacts-sort-name",
+            Order::Address => "contacts-sort-address",
+            Order::Recent => "contacts-sort-recent",
+        }
+    }
+}
+
+/// Ключ сравнения имён с учётом языка, без регистра: ё = е, сначала цифры и знаки, затем буквы языка интерфейса
+/// (`ru` — кириллица), затем остальные.
+fn collate_key(s: &str, ru: bool) -> Vec<(u8, char)> {
+    normalize(s)
+        .chars()
+        .map(|c| {
+            let cyrillic = ('\u{0400}'..='\u{04FF}').contains(&c);
+            let rank = match c {
+                c if !c.is_alphabetic() => 0,
+                _ if cyrillic == ru => 1,
+                _ => 2,
+            };
+            (rank, c)
+        })
+        .collect()
+}
+
+/// «Часто пишу» (S5-25): адресаты переписки — запись справочника или моих контактов с этим адресом (та же карточка),
+/// иначе — адресат переписки. Адрес — одна строка. Порядок `list` — частота (`AddressBook::frequent`); другие
+/// порядки (T1-24) — по имени (`ru` — язык интерфейса), по адресу, по последней переписке.
+pub(crate) fn frequent(list: &[Frequent], directory: &[Entry], mine: &[Entry], order: Order, ru: bool) -> Vec<Entry> {
     let has = |e: &Entry, email: &str| e.card.emails.iter().any(|m| m.eq_ignore_ascii_case(email));
-    let mut out: Vec<Entry> = Vec::new();
-    for (name, email) in list {
-        if out.iter().any(|e| has(e, email)) {
+    let mut out: Vec<(Entry, i64)> = Vec::new();
+    for f in list {
+        if out.iter().any(|(e, _)| has(e, &f.email)) {
             continue;
         }
-        let known = directory.iter().find(|e| has(e, email)).or_else(|| mine.iter().find(|e| has(e, email)));
-        out.push(match known {
+        let known = directory.iter().find(|e| has(e, &f.email)).or_else(|| mine.iter().find(|e| has(e, &f.email)));
+        let entry = match known {
             Some(e) => e.clone(),
             None => Entry::new(
-                ContactCard { id: format!("freq:{email}"), name: name.clone(), emails: vec![email.clone()], ..Default::default() },
+                ContactCard { id: format!("freq:{}", f.email), name: f.name.clone(), emails: vec![f.email.clone()], ..Default::default() },
                 Kind::Correspondent,
             ),
-        });
+        };
+        out.push((entry, f.last));
     }
-    out
+    let email = |e: &Entry| e.card.emails.first().map(|m| m.to_lowercase()).unwrap_or_default();
+    match order {
+        Order::Frequency => {}
+        Order::Name => out.sort_by_cached_key(|(e, _)| (collate_key(&e.name(), ru), email(e))),
+        Order::Address => out.sort_by_cached_key(|(e, _)| email(e)),
+        Order::Recent => out.sort_by_key(|(_, last)| std::cmp::Reverse(*last)),
+    }
+    out.into_iter().map(|(e, _)| e).collect()
 }
 
 /// По имени (без регистра), затем по адресу.
@@ -353,9 +412,12 @@ pub(crate) struct ContactsView {
     source: Source,
     mine: Vec<Entry>,
     directory: Vec<Entry>,
-    /// «Часто пишу»: (имя, адрес) из адресной книги по порядку и строки списка из них (S5-25).
-    frequent_src: Vec<(String, String)>,
+    /// «Часто пишу»: адресаты из адресной книги по частоте и строки списка из них (S5-25) в выбранном порядке (T1-24).
+    frequent_src: Vec<Frequent>,
     frequent: Vec<Entry>,
+    order: Order,
+    /// Открыт выбор порядка «Часто пишу».
+    order_menu: bool,
     /// Поиск — по всем трём источникам сразу: найденные группами (справочник, мои, переписка).
     pool: Vec<Entry>,
     /// Ждём контакты с сервера.
@@ -412,6 +474,8 @@ impl ContactsView {
             directory: demo_directory(),
             frequent_src: Vec::new(),
             frequent: Vec::new(),
+            order: Order::default(),
+            order_menu: false,
             pool: Vec::new(),
             loading: false,
             loaded: false,
@@ -486,7 +550,7 @@ impl ContactsView {
     }
 
     /// «Часто пишу» из адресной книги (экран — при открытии раздела и когда книга собрана).
-    pub(crate) fn set_frequent(&mut self, list: Vec<(String, String)>, cx: &mut Context<Self>) {
+    pub(crate) fn set_frequent(&mut self, list: Vec<Frequent>, cx: &mut Context<Self>) {
         if self.frequent_src != list {
             self.frequent_src = list;
             self.refilter(cx);
@@ -527,7 +591,8 @@ impl ContactsView {
     }
 
     fn reshow(&mut self) {
-        self.frequent = frequent(&self.frequent_src, &self.directory, &self.mine);
+        let ru = !pets_i18n::current().lang().starts_with("en");
+        self.frequent = frequent(&self.frequent_src, &self.directory, &self.mine, self.order, ru);
         if self.searching() {
             // По всем трём источникам: справочник, мои, адресаты переписки (кого нет ни там, ни там).
             let groups: [(Source, Vec<Entry>); 3] = [
@@ -551,7 +616,7 @@ impl ContactsView {
         } else {
             self.pool.clear();
             self.shown = (0..self.entries().len()).collect();
-            // «Часто пишу» — по частоте, без букв.
+            // «Часто пишу» — в своём порядке, без букв.
             self.items = items(self.entries(), &self.shown, self.source != Source::Frequent);
         }
         self.list.reset(self.items.len());
@@ -1038,11 +1103,11 @@ impl ContactsView {
             .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
             .child(div().text_size(px(12.)).text_color(l.text2()).child(summary))
             .child(div().flex_1())
-            .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!(match self.source {
-                _ if searching => "contacts-sort-match",
-                Source::Frequent => "contacts-sort-frequency",
-                _ => "contacts-sort-name",
-            })));
+            .child(if self.source == Source::Frequent && !searching {
+                self.order_picker(&l, cx).into_any_element()
+            } else {
+                div().text_size(px(12.)).text_color(l.text2()).child(tr!(if searching { "contacts-sort-match" } else { "contacts-sort-name" })).into_any_element()
+            });
         let list = list(self.list.clone(), cx.processor(|this, ix: usize, _window, cx| this.item(ix, cx))).size_full();
         let letters: Vec<(char, usize)> = self
             .items
@@ -1089,6 +1154,63 @@ impl ContactsView {
                     .child(div().relative().flex_1().min_w_0().h_full().child(list).child(Scrollbar::vertical(&self.list).mode(ScrollbarMode::Hover)))
                     .children(index),
             )
+    }
+
+    /// Выбор порядка «Часто пишу» (T1-24): подпись с ▾, по щелчку — меню из четырёх порядков.
+    fn order_picker(&self, l: &Look, cx: &mut Context<Self>) -> impl IntoElement {
+        let menu = self.order_menu.then(|| {
+            let items = Order::ALL.into_iter().map(|o| {
+                crate::composer::menu_item(ElementId::NamedInteger("freq-order".into(), o as u64), l, o == self.order)
+                    .child(tr!(o.key()))
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_order(o, cx)))
+            });
+            let menu = crate::composer::menu_box("freq-order-menu", l).top(px(26.)).left_auto().right_0().min_w(px(180.)).children(items).on_mouse_down_out(
+                cx.listener(|this, _, _, cx| {
+                    this.order_menu = false;
+                    cx.notify();
+                }),
+            );
+            deferred(menu).with_priority(1)
+        });
+        div()
+            .relative()
+            .child(
+                div()
+                    .id("freq-order")
+                    .h(px(24.))
+                    .px(px(6.))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .rounded(l.px(Metric::RadiusControl))
+                    .text_size(px(12.))
+                    .text_color(l.text2())
+                    .cursor_pointer()
+                    .when(self.order_menu, |d| d.bg(l.pressed()))
+                    .hover(|d| d.bg(l.hover()))
+                    .child(tr!(self.order.key()))
+                    .child(icon(crate::chrome::glyph::CHEVRON_DOWN, 8.))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.order_menu = !this.order_menu;
+                        cx.notify();
+                    })),
+            )
+            .children(menu)
+    }
+
+    fn set_order(&mut self, order: Order, cx: &mut Context<Self>) {
+        self.order_menu = false;
+        if self.order != order {
+            self.order = order;
+            self.reshow();
+        }
+        cx.notify();
+    }
+
+    /// Снимок `contacts-frequent`: выбор порядка открыт.
+    pub(crate) fn open_order_menu(&mut self, cx: &mut Context<Self>) {
+        self.order_menu = true;
+        cx.notify();
     }
 
     fn item(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -1807,7 +1929,7 @@ pub(crate) mod scenes {
         Scene::new("contacts", contacts, contacts_ready).live(),
         // Форма правки первого контакта (демо).
         Scene::new("contact-edit", edit, edit_ready).continues(),
-        // «Часто пишу» (S5-25): адресаты переписки по частоте, первая строка выбрана.
+        // «Часто пишу» (S5-25): адресаты переписки по частоте, первая строка выбрана, выбор порядка открыт (T1-24).
         Scene::new("contacts-frequent", frequent, frequent_ready).continues().wait(frequent_wait),
     ];
 
@@ -1845,7 +1967,11 @@ pub(crate) mod scenes {
         m.contacts.update(cx, |c, cx| c.escape(window, cx));
         m.load_address_book(cx);
         m.contacts_frequent(cx);
-        m.contacts.update(cx, |c, cx| c.show_frequent(cx));
+        // Выбор порядка (T1-24) — открытым.
+        m.contacts.update(cx, |c, cx| {
+            c.show_frequent(cx);
+            c.open_order_menu(cx);
+        });
         Ok(())
     }
 
@@ -1864,7 +1990,11 @@ pub(crate) mod scenes {
 #[cfg(test)]
 mod tests {
     // Не `super::*`: из `gpui_kit::*` пришёл бы атрибут `test` gpui вместо встроенного.
-    use super::{ContactCard, Entry, FormError, FormText, Item, Kind, demo_directory, demo_mine, filter, frequent, items};
+    use super::{ContactCard, Entry, FormError, FormText, Frequent, Item, Kind, Order, demo_directory, demo_mine, filter, frequent, items};
+
+    fn freq(name: &str, email: &str, last: i64) -> Frequent {
+        Frequent { name: name.into(), email: email.into(), last }
+    }
 
     fn names(entries: &[Entry], q: &str) -> Vec<String> {
         filter(entries, q).into_iter().map(|i| entries[i].card.name.clone()).collect()
@@ -1900,13 +2030,8 @@ mod tests {
         let friend = mine.iter().find(|e| !e.card.emails.is_empty()).unwrap();
         let ce = colleague.card.emails[0].to_uppercase();
         let fe = friend.card.emails[0].clone();
-        let list = vec![
-            ("Партнёр".to_string(), "partner@outside.example".to_string()),
-            (String::new(), ce.clone()),
-            (String::new(), fe.clone()),
-            (String::new(), ce.to_lowercase()),
-        ];
-        let f = frequent(&list, &dir, &mine);
+        let list = vec![freq("Партнёр", "partner@outside.example", 0), freq("", &ce, 0), freq("", &fe, 0), freq("", &ce.to_lowercase(), 0)];
+        let f = frequent(&list, &dir, &mine, Order::Frequency, true);
         assert_eq!(f.len(), 3, "один адрес — одна строка");
         assert_eq!(f[0].kind, Kind::Correspondent);
         assert_eq!(f[0].card.name, "Партнёр");
@@ -1916,6 +2041,27 @@ mod tests {
         assert!(filter(&f, "gfhn").contains(&0));
         assert!(filter(&f, "партн").contains(&0));
         assert!(!filter(&f, "gfhn").contains(&1), "сотрудник не подходит");
+    }
+
+    /// Четыре порядка «Часто пишу» (T1-24) на одном наборе: частота — как дала адресная книга; имя — без регистра,
+    /// ё = е, буквы языка интерфейса раньше чужих; адрес; давность — сначала последняя переписка.
+    #[test]
+    fn frequent_orders() {
+        let list = vec![
+            freq("ёлкин Пётр", "petr@b.example", 300),
+            freq("Zoe", "zoe@a.example", 100),
+            freq("анна", "anna@c.example", 200),
+            freq("Егор", "egor@d.example", 400),
+        ];
+        let order = |o: Order, ru: bool| -> Vec<String> {
+            frequent(&list, &[], &[], o, ru).into_iter().map(|e| e.card.emails[0].clone()).collect()
+        };
+        assert_eq!(order(Order::Frequency, true), ["petr@b.example", "zoe@a.example", "anna@c.example", "egor@d.example"]);
+        // «Егор» < «ёлкин» (ё = е, «г» < «л»), кириллица — до латиницы.
+        assert_eq!(order(Order::Name, true), ["anna@c.example", "egor@d.example", "petr@b.example", "zoe@a.example"]);
+        assert_eq!(order(Order::Name, false), ["zoe@a.example", "anna@c.example", "egor@d.example", "petr@b.example"], "английский — латиница раньше");
+        assert_eq!(order(Order::Address, true), ["anna@c.example", "egor@d.example", "petr@b.example", "zoe@a.example"]);
+        assert_eq!(order(Order::Recent, true), ["egor@d.example", "petr@b.example", "anna@c.example", "zoe@a.example"]);
     }
 
     /// Список с буквами: заголовок буквы с числом, «Ё» — с «Е»; при поиске букв нет.

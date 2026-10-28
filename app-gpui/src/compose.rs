@@ -1158,13 +1158,13 @@ impl Mailer {
     /// «Часто пишу» (S5-25): адресаты переписки за 30 дней по частоте и давности — в «Контакты».
     pub(crate) fn contacts_frequent(&mut self, cx: &mut Context<Self>) {
         let now = jiff::Timestamp::now().as_second();
-        let list: Vec<(String, String)> = self
+        let list: Vec<crate::contacts::Frequent> = self
             .compose
             .book
             .borrow()
             .frequent(now, postman_core::contacts::FREQUENT_DAYS, FREQUENT_MAX)
             .into_iter()
-            .map(|e| (e.name.clone(), e.email.clone()))
+            .map(|e| crate::contacts::Frequent { name: e.name.clone(), email: e.email.clone(), last: e.last })
             .collect();
         self.contacts.update(cx, |c, cx| c.set_frequent(list, cx));
     }
