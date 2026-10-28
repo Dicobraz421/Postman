@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Header>
+    <h:ServerVersionInfo MajorVersion="15" MinorVersion="0" MajorBuildNumber="1497" MinorBuildNumber="46" Version="V2_23" xmlns:h="http://schemas.microsoft.com/exchange/services/2006/types" xmlns="http://schemas.microsoft.com/exchange/services/2006/types"/>
+  </s:Header>
+  <s:Body>
+    <m:GetItemResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+      <m:ResponseMessages>
+        <m:GetItemResponseMessage ResponseClass="Success">
+          <m:ResponseCode>NoError</m:ResponseCode>
+          <m:Items>
+            <t:Contact>
+              <t:ItemId Id="AAMkADcontact1" ChangeKey="EQAAAA=="/>
+              <t:ParentFolderId Id="AAMkADcontacts" ChangeKey="AQAAAA=="/>
+              <t:ItemClass>IPM.Contact</t:ItemClass>
+              <t:Subject>Петрова Анна</t:Subject>
+              <t:Body BodyType="Text">Коллега по проекту.</t:Body>
+              <t:FileAs>Петрова Анна</t:FileAs>
+              <t:DisplayName>Петрова Анна</t:DisplayName>
+              <t:GivenName>Анна</t:GivenName>
+              <t:CompanyName>Пример</t:CompanyName>
+              <t:EmailAddresses>
+                <t:Entry Key="EmailAddress2">SMTP:a.petrova@example.test</t:Entry>
+                <t:Entry Key="EmailAddress1">anna@example.test</t:Entry>
+                <t:Entry Key="EmailAddress3">/o=Example/ou=Exchange Administrative Group/cn=Recipients/cn=anna</t:Entry>
+              </t:EmailAddresses>
+              <t:PhoneNumbers>
+                <t:Entry Key="BusinessPhone">+7 495 000-00-01</t:Entry>
+                <t:Entry Key="HomePhone"/>
+                <t:Entry Key="MobilePhone">+7 900 000-00-01</t:Entry>
+              </t:PhoneNumbers>
+              <t:Department>Отдел разработки</t:Department>
+              <t:JobTitle>Ведущий инженер</t:JobTitle>
+              <t:Surname>Петрова</t:Surname>
+            </t:Contact>
+          </m:Items>
+        </m:GetItemResponseMessage>
+        <m:GetItemResponseMessage ResponseClass="Error">
+          <m:MessageText>The specified object was not found in the store.</m:MessageText>
+          <m:ResponseCode>ErrorItemNotFound</m:ResponseCode>
+          <m:DescriptiveLinkKey>0</m:DescriptiveLinkKey>
+          <m:Items/>
+        </m:GetItemResponseMessage>
+        <m:GetItemResponseMessage ResponseClass="Success">
+          <m:ResponseCode>NoError</m:ResponseCode>
+          <m:Items>
+            <t:DistributionList>
+              <t:ItemId Id="AAMkADlist1" ChangeKey="EgAAAA=="/>
+              <t:ParentFolderId Id="AAMkADcontacts" ChangeKey="AQAAAA=="/>
+              <t:ItemClass>IPM.DistList</t:ItemClass>
+              <t:Body BodyType="Text"></t:Body>
+              <t:DisplayName>Команда проекта</t:DisplayName>
+              <t:Members>
+                <t:Member Key="AAAAAA=="><t:Mailbox><t:Name>Петрова Анна</t:Name><t:EmailAddress>anna@example.test</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType><t:MailboxType>Contact</t:MailboxType></t:Mailbox><t:Status>Normal</t:Status></t:Member>
+                <t:Member Key="AAAAAB=="><t:Mailbox><t:Name>Петров Антон</t:Name><t:EmailAddress>anton@example.test</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType><t:MailboxType>OneOff</t:MailboxType></t:Mailbox><t:Status>Normal</t:Status></t:Member>
+              </t:Members>
+            </t:DistributionList>
+          </m:Items>
+        </m:GetItemResponseMessage>
+      </m:ResponseMessages>
+    </m:GetItemResponse>
+  </s:Body>
+</s:Envelope>
