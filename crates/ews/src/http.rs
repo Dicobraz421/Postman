@@ -1,11 +1,14 @@
 //! HTTP/1.1 к серверу Exchange одним соединением TLS: NTLM (и Kerberos у IIS) привязан к TCP — всё рукопожатие
 //! и следующие запросы идут по нему. Вход — по ответу 401: схема из `WWW-Authenticate`, токены — SSPI (`sys`),
 //! с привязкой к каналу TLS. Соединение закрылось — новое и вход заново.
+//!
+//! Поток (`GetStreamingEvents`, T1-21а) — ответ, который сервер пишет кусками до получаса: [`Http::post_stream`]
+//! отдаёт тело как есть и забирает соединение с собой, следующий запрос клиента откроет новое.
 
 use std::time::Instant;
 
 use http_body_util::{BodyExt as _, Full, Limited};
-use hyper::body::Bytes;
+use hyper::body::{Bytes, Incoming};
 use hyper::client::conn::http1::SendRequest;
 use hyper::header;
 use hyper_util::rt::TokioIo;
@@ -104,8 +107,56 @@ async fn connect(host: &str, port: u16, plain: bool) -> Result<Conn> {
     Ok(Conn { host: host.to_owned(), port, sender, binding })
 }
 
+/// Тело ответа-потока: куски по мере прихода; соединение живёт, пока жив поток.
+pub(crate) struct Body {
+    body: Incoming,
+    _conn: Conn,
+}
+
+impl Body {
+    /// Следующий кусок; `None` — сервер закончил ответ.
+    pub(crate) async fn chunk(&mut self) -> Result<Option<Bytes>> {
+        loop {
+            match self.body.frame().await {
+                None => return Ok(None),
+                Some(Err(e)) => return Err(hyper_err(e)),
+                Some(Ok(frame)) => {
+                    if let Ok(data) = frame.into_data() {
+                        return Ok(Some(data));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn www_authenticate(resp: &hyper::Response<Incoming>) -> Vec<String> {
+    resp.headers().get_all(header::WWW_AUTHENTICATE).iter().filter_map(|v| v.to_str().ok().map(str::to_owned)).collect()
+}
+
+/// Ответ целиком (с пределом размера).
+async fn collect(resp: hyper::Response<Incoming>) -> Result<Reply> {
+    let status = resp.status().as_u16();
+    let www_authenticate = www_authenticate(&resp);
+    let location = resp.headers().get(header::LOCATION).and_then(|v| v.to_str().ok()).map(str::to_owned);
+    let body = Limited::new(resp.into_body(), MAX_BODY)
+        .collect()
+        .await
+        .map_err(|e| if e.is::<http_body_util::LengthLimitError>() { Error::TooLarge } else { Error::Http(e.to_string()) })?;
+    Ok(Reply { status, body: body.to_bytes().to_vec(), location, www_authenticate })
+}
+
+/// Дочитать тело ответа 401 рукопожатия: иначе соединение не пойдёт под следующий запрос.
+async fn drain(resp: hyper::Response<Incoming>) {
+    let _ = Limited::new(resp.into_body(), MAX_BODY).collect().await;
+}
+
 impl Conn {
     async fn send(&mut self, url: &url::Url, body: &Bytes, authorization: Option<&str>) -> Result<Reply> {
+        collect(self.request(url, body, authorization).await?).await
+    }
+
+    async fn request(&mut self, url: &url::Url, body: &Bytes, authorization: Option<&str>) -> Result<hyper::Response<Incoming>> {
         self.sender.ready().await.map_err(hyper_err)?;
         let host = if self.port == 443 { self.host.clone() } else { format!("{}:{}", self.host, self.port) };
         let path = match url.query() {
@@ -120,15 +171,7 @@ impl Conn {
             req = req.header(header::AUTHORIZATION, a);
         }
         let req = req.body(Full::new(body.clone())).map_err(|e| Error::Http(e.to_string()))?;
-        let resp = self.sender.send_request(req).await.map_err(hyper_err)?;
-        let status = resp.status().as_u16();
-        let www_authenticate = resp.headers().get_all(header::WWW_AUTHENTICATE).iter().filter_map(|v| v.to_str().ok().map(str::to_owned)).collect();
-        let location = resp.headers().get(header::LOCATION).and_then(|v| v.to_str().ok()).map(str::to_owned);
-        let body = Limited::new(resp.into_body(), MAX_BODY)
-            .collect()
-            .await
-            .map_err(|e| if e.is::<http_body_util::LengthLimitError>() { Error::TooLarge } else { Error::Http(e.to_string()) })?;
-        Ok(Reply { status, body: body.to_bytes().to_vec(), location, www_authenticate })
+        self.sender.send_request(req).await.map_err(hyper_err)
     }
 }
 
@@ -139,6 +182,23 @@ impl Http {
 
     /// POST тела XML; ответ — любой статус (разбирает вызывающий). Вход — по 401.
     pub(crate) async fn post(&mut self, url: &url::Url, body: Vec<u8>) -> Result<Reply> {
+        self.pace().await;
+        let body = Bytes::from(body);
+        tokio::time::timeout(self.timeout, async { collect(self.post_once(url, &body).await?).await }).await.map_err(|_| Error::Timeout)?
+    }
+
+    /// POST, ответ на который — поток: статус и тело кусками ([`Body`]). Предел времени — до заголовков ответа;
+    /// соединение уходит с потоком.
+    pub(crate) async fn post_stream(&mut self, url: &url::Url, body: Vec<u8>) -> Result<(u16, Body)> {
+        self.pace().await;
+        let body = Bytes::from(body);
+        let resp = tokio::time::timeout(self.timeout, self.post_once(url, &body)).await.map_err(|_| Error::Timeout)??;
+        let conn = self.conn.take().ok_or(Error::Closed)?;
+        Ok((resp.status().as_u16(), Body { body: resp.into_body(), _conn: conn }))
+    }
+
+    /// Не чаще `min_interval`: подождать остаток с прошлого запроса.
+    async fn pace(&mut self) {
         if let Some(last) = self.last {
             let wait = self.min_interval.saturating_sub(last.elapsed());
             if !wait.is_zero() {
@@ -146,8 +206,6 @@ impl Http {
             }
         }
         self.last = Some(Instant::now());
-        let body = Bytes::from(body);
-        tokio::time::timeout(self.timeout, self.post_once(url, &body)).await.map_err(|_| Error::Timeout)?
     }
 
     async fn conn(&mut self, url: &url::Url) -> Result<&mut Conn> {
@@ -174,19 +232,21 @@ impl Http {
         reply.status == 401 && auth::choose(&reply.www_authenticate).is_some()
     }
 
-    async fn post_once(&mut self, url: &url::Url, body: &Bytes) -> Result<Reply> {
+    async fn post_once(&mut self, url: &url::Url, body: &Bytes) -> Result<hyper::Response<Incoming>> {
         // Сервер закрыл соединение, пока оно ждало (простой, перезапуск IIS), — одна попытка на новом.
-        let first = match self.conn(url).await?.send(url, body, None).await {
+        let first = match self.conn(url).await?.request(url, body, None).await {
             Err(Error::Closed) => {
                 self.conn = None;
-                self.conn(url).await?.send(url, body, None).await?
+                self.conn(url).await?.request(url, body, None).await?
             }
             r => r?,
         };
-        if first.status != 401 {
+        if first.status().as_u16() != 401 {
             return Ok(first);
         }
-        let scheme = auth::choose(&first.www_authenticate).ok_or(Error::AuthScheme)?;
+        let offered = www_authenticate(&first);
+        drain(first).await;
+        let scheme = auth::choose(&offered).ok_or(Error::AuthScheme)?;
         // 401 с `Connection: close` — рукопожатие на новом соединении.
         let auth = self.auth.clone();
         let conn = self.conn(url).await?;
@@ -197,16 +257,16 @@ impl Http {
     }
 }
 
-async fn handshake(conn: &mut Conn, auth: &Auth, scheme: Scheme, url: &url::Url, body: &Bytes) -> Result<Reply> {
+async fn handshake(conn: &mut Conn, auth: &Auth, scheme: Scheme, url: &url::Url, body: &Bytes) -> Result<hyper::Response<Incoming>> {
     let mut ctx = crate::sys::Context::new(scheme, auth, &format!("HTTP/{}", conn.host), conn.binding.as_deref())?;
     let mut token = ctx.step(None)?;
     for _ in 0..MAX_ROUNDS {
-        let reply = conn.send(url, body, Some(&auth::header(scheme, &token))).await.map_err(|e| match e {
+        let reply = conn.request(url, body, Some(&auth::header(scheme, &token))).await.map_err(|e| match e {
             Error::Closed => Error::Auth("server closed the connection during the handshake".into()),
             e => e,
         })?;
-        let server = auth::token(&reply.www_authenticate, scheme);
-        if reply.status != 401 {
+        let server = auth::token(&www_authenticate(&reply), scheme);
+        if reply.status().as_u16() != 401 {
             // Последний токен Kerberos (взаимная проверка): сервер уже проверен TLS — сбой только в журнал.
             if let (Some(t), false) = (server, ctx.done())
                 && let Err(e) = ctx.step(Some(&t))
@@ -215,6 +275,7 @@ async fn handshake(conn: &mut Conn, auth: &Auth, scheme: Scheme, url: &url::Url,
             }
             return Ok(reply);
         }
+        drain(reply).await;
         match server {
             Some(t) if !ctx.done() => token = ctx.step(Some(&t))?,
             _ => return Err(Error::Auth("credentials rejected".into())),

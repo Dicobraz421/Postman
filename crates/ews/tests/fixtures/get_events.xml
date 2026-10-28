@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Header>
+    <h:ServerVersionInfo MajorVersion="15" MinorVersion="0" MajorBuildNumber="1497" MinorBuildNumber="46" Version="V2_23" xmlns:h="http://schemas.microsoft.com/exchange/services/2006/types" xmlns="http://schemas.microsoft.com/exchange/services/2006/types"/>
+  </s:Header>
+  <s:Body>
+    <m:GetEventsResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+      <m:ResponseMessages>
+        <m:GetEventsResponseMessage ResponseClass="Success">
+          <m:ResponseCode>NoError</m:ResponseCode>
+          <m:Notification>
+            <t:SubscriptionId>KQBkYjVwcjA2bWIxMTQ=</t:SubscriptionId>
+            <t:PreviousWatermark>AQAAAPq2ZQ==</t:PreviousWatermark>
+            <t:MoreEvents>false</t:MoreEvents>
+            <t:StatusEvent>
+              <t:Watermark>AQAAAPq2ZA==</t:Watermark>
+            </t:StatusEvent>
+            <t:NewMailEvent>
+              <t:Watermark>AQAAAPq2ZB==</t:Watermark>
+              <t:TimeStamp>2026-10-28T09:00:00Z</t:TimeStamp>
+              <t:ItemId Id="AAMkADmsg1" ChangeKey="CQAAAA=="/>
+              <t:ParentFolderId Id="AAMkADinbox" ChangeKey="AQAAAA=="/>
+            </t:NewMailEvent>
+            <t:MovedEvent>
+              <t:Watermark>AQAAAPq2ZC==</t:Watermark>
+              <t:TimeStamp>2026-10-28T09:01:00Z</t:TimeStamp>
+              <t:ItemId Id="AAMkADmsg2" ChangeKey="CQAAAB=="/>
+              <t:ParentFolderId Id="AAMkADtrash" ChangeKey="AQAAAB=="/>
+              <t:OldItemId Id="AAMkADmsg2old" ChangeKey="CQAAAC=="/>
+              <t:OldParentFolderId Id="AAMkADinbox" ChangeKey="AQAAAA=="/>
+            </t:MovedEvent>
+            <t:CreatedEvent>
+              <t:Watermark>AQAAAPq2ZD==</t:Watermark>
+              <t:TimeStamp>2026-10-28T09:02:00Z</t:TimeStamp>
+              <t:FolderId Id="AAMkADnew" ChangeKey="AQAAAC=="/>
+              <t:ParentFolderId Id="AAMkADinbox" ChangeKey="AQAAAA=="/>
+            </t:CreatedEvent>
+            <t:ModifiedEvent>
+              <t:Watermark>AQAAAPq2ZE=</t:Watermark>
+              <t:TimeStamp>2026-10-28T09:02:00Z</t:TimeStamp>
+              <t:FolderId Id="AAMkADinbox" ChangeKey="AQAAAD=="/>
+              <t:ParentFolderId Id="AAMkADroot" ChangeKey="AQAAAE=="/>
+              <t:UnreadCount>3</t:UnreadCount>
+            </t:ModifiedEvent>
+          </m:Notification>
+        </m:GetEventsResponseMessage>
+      </m:ResponseMessages>
+    </m:GetEventsResponse>
+  </s:Body>
+</s:Envelope>

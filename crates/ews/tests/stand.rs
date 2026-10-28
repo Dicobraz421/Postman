@@ -582,3 +582,50 @@ fn ews_mail_folder_ops() {
         println!("папка: создана, имя занято, переименована, перенесена, удалена");
     });
 }
+
+/// Уведомления (T1-21а): streaming-подписка на корень и «Входящие» — письмо самому себе даёт событие письма во
+/// «Входящих»; затем pull-подписка — `GetEvents` с водяным знаком видит второе письмо.
+#[test]
+#[ignore = "боевой Exchange: S7 «Проверка на боевом Exchange»"]
+fn ews_notify_new_mail() {
+    rt().block_on(async {
+        let a = first();
+        let tag = tag();
+        guarded(&tag, &[&a], async {
+            let mut c = client(&a).await;
+            let inbox = c.mail_roles().await.unwrap().into_iter().find(|(r, _)| *r == MailRole::Inbox).map(|(_, id)| id.id).expect("«Входящие»");
+            let me = test_recipient(&a.email);
+            let folders = vec![FolderRef::WellKnown(WellKnown::Root), FolderRef::WellKnown(WellKnown::Inbox)];
+
+            let mut n = postman_ews::Notifier::new(client(&a).await, folders.clone());
+            let send = async {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                c.send_mail(&letter(&me, &format!("{tag} notify")), true).await.unwrap();
+            };
+            let wait = async {
+                let start = Instant::now();
+                loop {
+                    let left = Duration::from_secs(90).saturating_sub(start.elapsed());
+                    let ch = tokio::time::timeout(left, n.next()).await.expect("событие за 90 с").unwrap_or_else(|e| panic!("уведомления: {e}"));
+                    if ch.contains(&postman_ews::Change::Mail(inbox.clone())) {
+                        break start.elapsed();
+                    }
+                }
+            };
+            let ((), took) = tokio::join!(send, wait);
+            assert_eq!(n.mode(), Some(postman_ews::Mode::Streaming), "streaming, не pull");
+            println!("streaming: письмо во «Входящих» — событие через {} с", took.as_secs());
+
+            let mut p = client(&a).await;
+            let mut sub = p.subscribe_pull(&folders, None).await.unwrap();
+            c.send_mail(&letter(&me, &format!("{tag} pull")), true).await.unwrap();
+            let events = poll!("GetEvents: письмо", {
+                let ev = p.get_events(&mut sub).await.unwrap();
+                ev.iter().any(|e| e.kind == postman_ews::EventKind::NewMail && e.parent.as_deref() == Some(inbox.as_str())).then_some(ev.len())
+            });
+            p.unsubscribe(&sub).await.unwrap();
+            println!("pull: событий {events}, подписка снята");
+        })
+        .await;
+    });
+}
