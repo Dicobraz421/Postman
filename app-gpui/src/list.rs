@@ -181,6 +181,8 @@ pub(crate) struct MailList {
     /// `threads_open` — развёрнутые беседы, `thread_groups` — группы списка по номеру `Head::group`.
     pub(crate) outline: Option<postman_core::thread::Outline>,
     pub(crate) outlook: bool,
+    /// Вид папки — «Лента» или «Стопка» (T1-15): беседы в списке не раскрываются.
+    pub(crate) flat: bool,
     pub(crate) threads_open: HashSet<String>,
     pub(crate) thread_groups: Vec<Group>,
     /// Поиск (S5-10, `search.rs`): строка над списком, чипы, подсветка; группы найденного — по папкам или датам.
@@ -432,7 +434,7 @@ impl MailList {
             // Закладки скрыты или показаны (настройки) — место под ними в конце списка; вид беседы «как Outlook»
             // (S5-05б) включён или выключен в открытой папке — пересчитать.
             crate::prefs::observe_with(cx, |this: &mut Self, cx| {
-                if this.outlook_mode(cx) != this.outlook {
+                if this.outlook_mode(cx) != this.outlook || this.flat_mode(cx) != this.flat {
                     this.recompute(cx);
                 }
                 cx.notify();
@@ -489,6 +491,7 @@ impl MailList {
             bounds: Rc::new(std::cell::Cell::new(Bounds::default())),
             outline: None,
             outlook: false,
+            flat: true,
             threads_open: HashSet::new(),
             thread_groups: Vec::new(),
             found: None,
@@ -603,8 +606,10 @@ impl MailList {
         self.compute_gen += 1;
         let generation = self.compute_gen;
         let outlook = self.outlook_mode(cx);
-        if outlook != self.outlook {
+        let flat = self.flat_mode(cx);
+        if outlook != self.outlook || flat != self.flat {
             self.outlook = outlook;
+            self.flat = flat;
             self.outline = None;
         }
         let Some(scan) = self.scan_target() else {
@@ -621,7 +626,7 @@ impl MailList {
             own: self.query.own_list(),
             overdue_first: crate::prefs::get(cx).lifecycle.overdue_first,
             outlook,
-            open: self.threads_open.clone(),
+            open: self.open_threads(),
         };
         let cache = self.cache.clone();
         let task = cx.background_spawn(async move { job.run(&cache) });
