@@ -596,16 +596,27 @@ impl Client {
 
     /// Создать папку верхнего уровня с ролью (`archive` — «Архив» для жизненного цикла, S5-04) → id.
     pub async fn create_mailbox(&self, name: &str, role: Option<&str>) -> Result<String> {
+        self.create_mailbox_in(None, name, role).await
+    }
+
+    /// Создать папку в `parent` (`None` — верхний уровень), с ролью или без → id.
+    pub async fn create_mailbox_in(&self, parent: Option<&str>, name: &str, role: Option<&str>) -> Result<String> {
         let acc = self.mail_account()?;
-        let mut mb = json!({ "name": name, "parentId": null });
-        if let Some(r) = role {
-            mb["role"] = json!(r);
-        }
-        let args = json!({ "accountId": acc, "create": { "m": mb } });
+        let args = json!({ "accountId": acc, "create": { "m": mailbox_create(parent, name, role) } });
         let mut r = self.call(USING, &[inv("Mailbox/set", args, "s")]).await?;
         let v: Value = take(&mut r, "s")?;
         set_error(&v, "notCreated", "m", "Mailbox/set")?;
         v["created"]["m"]["id"].as_str().map(str::to_owned).ok_or_else(|| Error::Protocol("Mailbox/set: no id".into()))
+    }
+
+    /// Переименовать и/или перенести папку (`Mailbox/set` update, T1-04а): `name` — новое имя, `parent` — новый
+    /// родитель (`Some(None)` — на верхний уровень). `None` — поле не меняется.
+    pub async fn update_mailbox(&self, id: &str, name: Option<&str>, parent: Option<Option<&str>>) -> Result<()> {
+        let acc = self.mail_account()?;
+        let args = json!({ "accountId": acc, "update": { id: mailbox_update(name, parent) } });
+        let mut r = self.call(USING, &[inv("Mailbox/set", args, "s")]).await?;
+        let v: Value = take(&mut r, "s")?;
+        set_error(&v, "notUpdated", id, "Mailbox/set")
     }
 
     /// Удалить пустую папку.
@@ -679,6 +690,27 @@ impl Client {
 fn check_set(r: &mut [Invocation], id: &str, field: &str) -> Result<()> {
     let v: Value = take(r, "s")?;
     set_error(&v, field, id, "Email/set")
+}
+
+/// Новая папка для `Mailbox/set` `create`: имя, родитель (`null` — верхний уровень), роль.
+pub(crate) fn mailbox_create(parent: Option<&str>, name: &str, role: Option<&str>) -> Value {
+    let mut mb = json!({ "name": name, "parentId": parent });
+    if let Some(r) = role {
+        mb["role"] = json!(r);
+    }
+    mb
+}
+
+/// Патч папки для `Mailbox/set` `update`: только названные поля; `parentId: null` — на верхний уровень.
+pub(crate) fn mailbox_update(name: Option<&str>, parent: Option<Option<&str>>) -> Value {
+    let mut patch = json!({});
+    if let Some(n) = name {
+        patch["name"] = json!(n);
+    }
+    if let Some(p) = parent {
+        patch["parentId"] = json!(p);
+    }
+    patch
 }
 
 /// Ошибка из `notCreated`/`notUpdated`/`notDestroyed` по ключу.
@@ -785,6 +817,17 @@ mod tests {
         let p = EmailPatch::default().mailbox("in", false).mailbox("arch", true).keyword("$seen", false).keyword("pm.remind", true);
         assert_eq!(p.to_json(), json!({ "mailboxIds/in": null, "mailboxIds/arch": true, "keywords/$seen": null, "keywords/pm.remind": true }));
         assert!(EmailPatch::default().is_empty());
+    }
+
+    /// Создать, переименовать, перенести папку (T1-04а): `Mailbox/set` с `parentId` и патчем только нужных полей.
+    #[test]
+    fn mailbox_set_commands() {
+        assert_eq!(mailbox_create(None, "Архив", Some("archive")), json!({ "name": "Архив", "parentId": null, "role": "archive" }));
+        assert_eq!(mailbox_create(Some("in"), "Проект", None), json!({ "name": "Проект", "parentId": "in" }));
+        assert_eq!(mailbox_update(Some("Новое"), None), json!({ "name": "Новое" }), "переименовать — только имя");
+        assert_eq!(mailbox_update(None, Some(Some("arch"))), json!({ "parentId": "arch" }), "перенести — только родитель");
+        assert_eq!(mailbox_update(None, Some(None)), json!({ "parentId": null }), "на верхний уровень");
+        assert_eq!(mailbox_update(Some("x"), Some(Some("p"))), json!({ "name": "x", "parentId": "p" }));
     }
 
     #[test]

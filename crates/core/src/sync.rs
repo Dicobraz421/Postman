@@ -3,6 +3,7 @@
 //! своим соединением с кэшем; что внутри потока (JMAP, IMAP…) — дело плагина пути (`postman-backend-*`), `core`
 //! даёт ему поток ([`spawn_thread`]), цикл «без связи» ([`supervise`]) и этот договор.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -22,6 +23,7 @@ use crate::schedule::Meeting;
 use crate::send_later::Scheduled;
 use crate::settings;
 use crate::tasks;
+use postman_cache::MailboxRow;
 use postman_search::SearchIndex;
 use tokio::sync::mpsc::UnboundedReceiver;
 /// Канал команд синхронизации (UI держит отправителя).
@@ -82,6 +84,25 @@ pub enum Command {
     },
     /// Удалить письмо насовсем (из «Удалённых»). UI уже убрал его из кэша; сбой — письмо с сервера заново.
     Destroy(String),
+    /// Новая папка (T1-04б) → дерево перечитано, `MailboxesChanged`; отказ — `FolderFailed`. `account` — аккаунт
+    /// ключей кэша (`postman_cache::account_of`; `None` — основной), `parent` — ключ папки-родителя, `None` — верхний
+    /// уровень ящика.
+    CreateFolder {
+        account: Option<String>,
+        parent: Option<String>,
+        name: String,
+    },
+    /// Переименовать папку (ключ кэша) → `MailboxesChanged` или `FolderFailed`.
+    RenameFolder {
+        mailbox: String,
+        name: String,
+    },
+    /// Перенести папку под `parent` (`None` — верхний уровень ящика) → `MailboxesChanged` или `FolderFailed`. В саму
+    /// себя, в свою подпапку и в другой аккаунт — отказ ядра до плагина ([`admit`]).
+    MoveFolder {
+        mailbox: String,
+        parent: Option<String>,
+    },
     /// `replace` — id прежней версии черновика на сервере. `release` — когда сервер выпустит письмо (S5-06):
     /// `After` — окно «Отменить» (без FUTURERELEASE у сервера — сразу), `At` — «Отправить позже» → `Sent`.
     Send {
@@ -176,6 +197,13 @@ pub enum Command {
     Settings(settings::Request),
     /// Перечитать личные контакты и справочник → `ContactsLoaded`, `DirectoryLoaded` (и `Contacts` для подсказок).
     Contacts,
+    /// Страница справочника (T1-25б): до `max` людей с `offset` по порядку пути → `Event::DirectoryPage`. `account` —
+    /// учётная запись профиля (`None` — основная).
+    DirectoryPage {
+        account: Option<String>,
+        offset: u32,
+        max: u32,
+    },
     /// Люди справочника по набранной строке → `PeopleFound` (S7-08): поиск людей — функция ядра, каждый путь отвечает
     /// своим поиском (JMAP — `Principal/query`, EWS — `FindPeople`, запасной — `ResolveNames`); справочника нет — пусто.
     FindPeople {
@@ -289,6 +317,9 @@ impl Command {
         let target = match &self {
             Command::Body(k) | Command::Thread(k) | Command::Destroy(k) => one(k),
             Command::Keyword { id, .. } | Command::Move { id, .. } => one(id),
+            Command::RenameFolder { mailbox, .. } | Command::MoveFolder { mailbox, .. } => one(mailbox),
+            Command::CreateFolder { account, .. } => Target::Profile(postman_cache::profile_of(account.as_deref()).map(str::to_owned)),
+            Command::DirectoryPage { account, .. } => Target::Profile(account.clone()),
             Command::Blob { blob_id, .. } => one(blob_id),
             Command::LoadMore { mailbox } => one(mailbox),
             Command::Unsend { scheduled, .. } => one(&scheduled.submission),
@@ -580,6 +611,16 @@ pub enum Event {
     ContactsLoaded(Vec<ContactCard>),
     /// Справочник: сотрудники, переговорные и ресурсы с адресами (раздел «Контакты», подсказки адресов).
     DirectoryLoaded(Vec<Principal>),
+    /// Страница справочника (`Command::DirectoryPage`, T1-25б): `people` с `offset`; `total` — всего людей, если путь
+    /// знает; `search_only` — справочник у сервера только поиском (`FindPeople`), страниц не будет. Пути без
+    /// справочника — пустая страница ([`Event::no_directory`]).
+    DirectoryPage {
+        account: Option<String>,
+        offset: u32,
+        people: Vec<Principal>,
+        total: Option<u32>,
+        search_only: bool,
+    },
     /// Найдено в справочнике по строке `FindPeople` — к уже загруженному (подсказки адресов, поиск в «Контактах»).
     PeopleFound {
         text: String,
@@ -633,7 +674,82 @@ pub enum Event {
         too_late: bool,
         error: Option<String>,
     },
+    /// Папку не создать, не переименовать или не перенести (T1-04б). `mailbox` — папка команды, у `CreateFolder` —
+    /// родитель (`None` — верхний уровень); `error` — ответ сервера или отказ ядра ([`FOLDER_UNSUPPORTED`],
+    /// [`FOLDER_INTO_ITSELF`], [`FOLDER_OTHER_ACCOUNT`]: текст у интерфейса).
+    FolderFailed {
+        mailbox: Option<String>,
+        error: String,
+    },
     Error(SyncError),
+}
+
+/// Путь не умеет команду над папками ([`Command::unsupported`]).
+pub const FOLDER_UNSUPPORTED: &str = "not supported";
+/// Перенос папки в саму себя или в свою подпапку ([`admit`]).
+pub const FOLDER_INTO_ITSELF: &str = "folder cannot be moved into itself or its subfolder";
+/// Перенос папки в другой аккаунт ([`admit`]): у сервера это не перенос, а копия.
+pub const FOLDER_OTHER_ACCOUNT: &str = "folder cannot be moved to another account";
+
+impl Command {
+    /// Ответ пути, который команду не умеет, — чтобы интерфейс не ждал: у команд над папками — `FolderFailed`
+    /// «not supported», у страницы справочника — пустая страница. У прочих — `None` (путь пишет в журнал).
+    pub fn unsupported(&self) -> Option<Event> {
+        let mailbox = match self {
+            Command::CreateFolder { parent, .. } => parent.clone(),
+            Command::RenameFolder { mailbox, .. } | Command::MoveFolder { mailbox, .. } => Some(mailbox.clone()),
+            Command::DirectoryPage { account, offset, .. } => return Some(Event::no_directory(account.clone(), *offset)),
+            _ => return None,
+        };
+        Some(Event::FolderFailed { mailbox, error: FOLDER_UNSUPPORTED.into() })
+    }
+}
+
+impl Event {
+    /// Ответ на `DirectoryPage` срезом справочника, загруженного целиком (JMAP: тот же список, что в
+    /// `DirectoryLoaded`): `max` людей с `offset`, `total` — длина списка.
+    pub fn directory_slice(account: Option<String>, all: &[Principal], offset: u32, max: u32) -> Event {
+        let people = all.iter().skip(offset as usize).take(max as usize).cloned().collect();
+        let total = Some(u32::try_from(all.len()).unwrap_or(u32::MAX));
+        Event::DirectoryPage { account, offset, people, total, search_only: false }
+    }
+
+    /// Ответ пути без справочника: пустая страница, больше нет.
+    pub fn no_directory(account: Option<String>, offset: u32) -> Event {
+        Event::DirectoryPage { account, offset, people: Vec::new(), total: Some(0), search_only: false }
+    }
+}
+
+/// Пропустить ли команду в плагин (T1-04б): перенос папки в саму себя, в свою подпапку или в другой аккаунт ядро
+/// отклоняет само: `FolderFailed` — в `notify`, плагину — `None`. `folders` — дерево папок кэша (`Cache::mailboxes`),
+/// читается только для переноса папки. Плагин: `let Some(cmd) = admit(cmd, || …, notify) else { continue };`.
+pub fn admit(cmd: Command, folders: impl FnOnce() -> Vec<MailboxRow>, notify: &dyn Fn(Event)) -> Option<Command> {
+    let Command::MoveFolder { mailbox, parent: Some(parent) } = &cmd else { return Some(cmd) };
+    let error = if postman_cache::account_of(mailbox) != postman_cache::account_of(parent) {
+        FOLDER_OTHER_ACCOUNT
+    } else if is_within(parent, mailbox, &folders()) {
+        FOLDER_INTO_ITSELF
+    } else {
+        return Some(cmd);
+    };
+    notify(Event::FolderFailed { mailbox: Some(mailbox.clone()), error: error.into() });
+    None
+}
+
+/// Папка `key` — это `root` или её подпапка (вверх по `parent_id`; цикл в дереве не зацикливает).
+fn is_within(key: &str, root: &str, folders: &[MailboxRow]) -> bool {
+    let parent: HashMap<&str, &str> = folders.iter().filter_map(|m| Some((m.id.as_str(), m.parent_id.as_deref()?))).collect();
+    let mut at = key;
+    for _ in 0..=parent.len() {
+        if at == root {
+            return true;
+        }
+        match parent.get(at) {
+            Some(up) => at = up,
+            None => return false,
+        }
+    }
+    false
 }
 
 /// Поисковый индекс (если открылся); пишут в него и синхронизация, и UI.
@@ -837,6 +953,108 @@ mod tests {
         assert_eq!(got, [(p(None), vec!["a".to_string(), "s/c".to_string()]), (p(Some("@2")), vec!["@2/b".to_string()])]);
         assert!(Command::Events { from: 0, to: 1 }.for_each_account().is_some());
         assert!(Command::Contacts.for_each_account().is_none());
+    }
+
+    /// Команды над папками (T1-04б) — в учётную запись папки (у новой — её аккаунта), основную и дополнительную.
+    #[test]
+    fn folder_commands_route_by_folder() {
+        let target = |c: Command| c.routes().into_iter().map(|(t, _)| t).collect::<Vec<_>>();
+        let p = |s: Option<&str>| Target::Profile(s.map(str::to_owned));
+        let create = |account: Option<&str>, parent: Option<&str>| Command::CreateFolder {
+            account: account.map(str::to_owned),
+            parent: parent.map(str::to_owned),
+            name: "Новая".into(),
+        };
+        assert_eq!(target(create(None, None)), [p(None)]);
+        assert_eq!(target(create(Some("shared"), Some("shared/f"))), [p(None)], "общий ящик основной учётной записи");
+        assert_eq!(target(create(Some("@2"), None)), [p(Some("@2"))]);
+        assert_eq!(target(create(Some("@2.shared"), Some("@2.shared/f"))), [p(Some("@2"))]);
+        assert_eq!(target(Command::RenameFolder { mailbox: "f".into(), name: "x".into() }), [p(None)]);
+        assert_eq!(target(Command::RenameFolder { mailbox: "@3/f".into(), name: "x".into() }), [p(Some("@3"))]);
+        assert_eq!(target(Command::MoveFolder { mailbox: "f".into(), parent: None }), [p(None)]);
+        assert_eq!(target(Command::MoveFolder { mailbox: "@2/f".into(), parent: Some("@2/g".into()) }), [p(Some("@2"))]);
+        assert!(Command::MoveFolder { mailbox: "f".into(), parent: None }.for_each_account().is_none());
+        // Путь без папок отвечает отказом, команда не теряется.
+        let no = Command::RenameFolder { mailbox: "@2/f".into(), name: "x".into() }.unsupported();
+        assert!(matches!(no, Some(Event::FolderFailed { mailbox: Some(m), error }) if m == "@2/f" && error == FOLDER_UNSUPPORTED));
+        assert!(matches!(create(None, None).unsupported(), Some(Event::FolderFailed { mailbox: None, .. })));
+        assert!(Command::Contacts.unsupported().is_none());
+    }
+
+    /// Перенос папки в саму себя, в подпапку или в другой аккаунт — отказ ядра, плагин команды не получает; прочее —
+    /// в плагин (дерево папок для прочих команд не читается).
+    #[test]
+    fn folder_into_its_subfolder_is_refused_before_the_plugin() {
+        let row = |id: &str, parent: Option<&str>| MailboxRow {
+            id: id.into(),
+            parent_id: parent.map(str::to_owned),
+            name: id.into(),
+            role: None,
+            sort_order: 0,
+            total: 0,
+            unread: 0,
+            rights: Default::default(),
+        };
+        // a → b → c; d — сосед; x ↔ y — цикл в дереве.
+        let tree = vec![row("a", None), row("b", Some("a")), row("c", Some("b")), row("d", None), row("x", Some("y")), row("y", Some("x"))];
+        let mv = |m: &str, to: Option<&str>| Command::MoveFolder { mailbox: m.into(), parent: to.map(str::to_owned) };
+        let mut plugin = Vec::new();
+        let refused = std::cell::RefCell::new(Vec::new());
+        let notify = |e: Event| match e {
+            Event::FolderFailed { mailbox, error } => refused.borrow_mut().push((mailbox.unwrap_or_default(), error)),
+            _ => unreachable!(),
+        };
+        for cmd in
+            [mv("a", Some("c")), mv("a", Some("a")), mv("b", Some("c")), mv("a", Some("@2/z")), mv("c", Some("d")), mv("c", None), mv("x", Some("d"))]
+        {
+            match admit(cmd, || tree.clone(), &notify) {
+                Some(Command::MoveFolder { mailbox, parent }) => plugin.push((mailbox, parent)),
+                Some(_) => unreachable!(),
+                None => {}
+            }
+        }
+        let into = FOLDER_INTO_ITSELF.to_string();
+        assert_eq!(
+            refused.take(),
+            [("a".into(), into.clone()), ("a".into(), into.clone()), ("b".into(), into), ("a".into(), FOLDER_OTHER_ACCOUNT.to_string())]
+        );
+        assert_eq!(plugin, [("c".to_string(), Some("d".to_string())), ("c".into(), None), ("x".into(), Some("d".into()))]);
+        assert!(admit(mv("y", Some("x")), || tree.clone(), &notify).is_none(), "цикл: x — подпапка y");
+        assert_eq!(refused.take().len(), 1);
+        let read = std::cell::Cell::new(false);
+        let body = admit(
+            Command::Body("e".into()),
+            || {
+                read.set(true);
+                Vec::new()
+            },
+            &notify,
+        );
+        assert!(matches!(body, Some(Command::Body(_))) && !read.get());
+    }
+
+    /// Справочник по страницам (T1-25б): команда — в свою учётную запись; JMAP отвечает срезом загруженного, путь без
+    /// справочника — пустой страницей.
+    #[test]
+    fn directory_pages_route_and_slice() {
+        let target = |c: Command| c.routes().into_iter().map(|(t, _)| t).collect::<Vec<_>>();
+        let page = |account: Option<&str>| Command::DirectoryPage { account: account.map(str::to_owned), offset: 0, max: 100 };
+        assert_eq!(target(page(None)), [Target::Profile(None)]);
+        assert_eq!(target(page(Some("@2"))), [Target::Profile(Some("@2".into()))]);
+        assert!(page(None).for_each_account().is_none());
+        let all: Vec<Principal> = (0..5).map(|n| Principal { id: n.to_string(), email: Some(format!("p{n}@x.ru")), ..Default::default() }).collect();
+        let ids = |e: Event| match e {
+            Event::DirectoryPage { offset, people, total, search_only, .. } => {
+                (offset, people.into_iter().map(|p| p.id).collect::<Vec<_>>(), total, search_only)
+            }
+            _ => unreachable!(),
+        };
+        assert_eq!(ids(Event::directory_slice(None, &all, 0, 2)), (0, vec!["0".into(), "1".into()], Some(5), false));
+        assert_eq!(ids(Event::directory_slice(None, &all, 4, 2)), (4, vec!["4".into()], Some(5), false));
+        assert_eq!(ids(Event::directory_slice(None, &all, 9, 2)), (9, vec![], Some(5), false));
+        let none = page(Some("@2")).unsupported().unwrap();
+        assert!(matches!(&none, Event::DirectoryPage { account: Some(a), .. } if a == "@2"));
+        assert_eq!(ids(none), (0, vec![], Some(0), false));
     }
 
     /// События дополнительной учётной записи — с её владельцем, как календарь коллеги; основной — как есть.

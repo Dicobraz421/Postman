@@ -151,10 +151,15 @@ impl Live {
 }
 
 fn start(url: &str) -> Live {
+    // Логин не адрес почты — без Autodiscover (только подменный сервер).
+    start_as(url, r"EXAMPLE\user1", "secret")
+}
+
+/// Учётка с этим логином и паролем (пустой пароль — вход учётной записью Windows).
+fn start_as(url: &str, user: &str, password: &str) -> Live {
     let (tx, events) = std::sync::mpsc::channel();
     let cache = Cache::open_in_memory().unwrap();
-    // Логин не адрес почты — без Autodiscover (только подменный сервер).
-    let account = Account { url: url.to_owned(), auth: Auth::Basic { user: r"EXAMPLE\user1".into(), password: "secret".into() } };
+    let account = Account { url: url.to_owned(), auth: Auth::Basic { user: user.into(), password: password.into() } };
     let commands = postman_backend_ews::EwsPlugin.spawn(Spawn {
         account,
         profile: None,
@@ -206,13 +211,14 @@ fn exchange_mail_through_the_plugin() {
     assert!(upd.contains(r#"FieldURI="message:IsRead""#) && upd.contains("<t:IsRead>true</t:IsRead>") && upd.contains("AAMkADmsg1"));
 
     // Справочник — FindPeople по GAL: должность и отдел (телефонов FindPeople у Exchange 2013 не отдаёт).
+    let n = log.lock().unwrap().len();
     live.commands.send(Command::FindPeople { text: "Петр".into() }).unwrap();
     let Event::PeopleFound { people, .. } = live.wait("PeopleFound", |e| matches!(e, Event::PeopleFound { .. })) else { unreachable!() };
     assert_eq!(people.len(), 3);
     let anna = &people[0];
     assert_eq!((anna.title.as_str(), anna.department.as_str(), anna.phone.as_str()), ("Ведущий инженер", "Отдел разработки", ""));
     assert_eq!(people[2].kind, "group");
-    assert!(log.lock().unwrap().iter().any(|b| b.contains("<m:FindPeople")) && !log.lock().unwrap().iter().any(|b| b.contains("<m:ResolveNames")));
+    assert!(!requests(&log, n, "FindPeople").is_empty() && requests(&log, n, "ResolveNames").is_empty(), "поиск — FindPeople");
 
     // Отправка из MIME — CreateItem SendAndSaveCopy.
     let draft = postman_compose::Draft {
@@ -447,6 +453,7 @@ fn unchanged_meeting_is_not_fetched_again() {
 fn people_fall_back_to_resolve_names() {
     let (url, log) = server_with(|b| b.contains("<m:FindPeople").then(|| fixture("fault_schema.xml")));
     let live = ready(&url);
+    let n = log.lock().unwrap().len();
     for text in ["Петр", "Анна"] {
         live.commands.send(Command::FindPeople { text: text.into() }).unwrap();
         let Event::PeopleFound { people, .. } = live.wait("PeopleFound", |e| matches!(e, Event::PeopleFound { .. })) else { unreachable!() };
@@ -454,7 +461,7 @@ fn people_fall_back_to_resolve_names() {
         assert_eq!((people[0].department.as_str(), people[0].phone.as_str()), ("Отдел разработки", "+7 495 000-00-01"), "у ResolveNames — и телефон");
     }
     assert_eq!(requests(&log, 0, "FindPeople").len(), 1, "отказал — больше не спрашиваем");
-    assert_eq!(requests(&log, 0, "ResolveNames").len(), 2);
+    assert_eq!(requests(&log, n, "ResolveNames").len(), 2);
 }
 
 /// Правка и отмена своей встречи (S7-07б): `UpdateItem` по встрече недели — тема, время (UTC), пояс, участники,
@@ -506,4 +513,220 @@ fn meeting_edit_and_cancel_requests() {
         del.contains(r#"DeleteType="MoveToDeletedItems" SendMeetingCancellations="SendToAllAndSaveCopy""#) && del.contains("AAMkADmeet"),
         "{del}"
     );
+}
+
+// --- Вход учётной записью Windows (T1-02а): подменный сервер просит NTLM, клиент отвечает через SSPI без сети. ---
+
+const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn b64_encode(data: &[u8]) -> String {
+    let mut out = String::new();
+    for chunk in data.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(B64[((n >> (18 - 6 * i)) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+fn b64_decode(text: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    let (mut bits, mut n) = (0u32, 0);
+    for c in text.bytes().filter(|c| *c != b'=') {
+        let v = B64.iter().position(|x| *x == c).unwrap() as u32;
+        bits = (bits << 6) | v;
+        n += 6;
+        if n >= 8 {
+            n -= 8;
+            out.push((bits >> n) as u8);
+        }
+    }
+    out
+}
+
+/// CHALLENGE_MESSAGE NTLM (MS-NLMP 2.2.1.2): вызов сервера, домен и имена — для ответа SSPI клиента.
+fn ntlm_challenge() -> Vec<u8> {
+    let utf16 = |s: &str| s.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>();
+    let target = utf16("EXAMPLE");
+    let mut info = Vec::new();
+    for (id, value) in [(2u16, utf16("EXAMPLE")), (1, utf16("MAIL")), (4, utf16("example.test")), (3, utf16("mail.example.test"))] {
+        info.extend(id.to_le_bytes());
+        info.extend((value.len() as u16).to_le_bytes());
+        info.extend(value);
+    }
+    info.extend([7u8, 0, 8, 0]);
+    info.extend(133_000_000_000_000_000u64.to_le_bytes()); // MsvAvTimestamp (FILETIME)
+    info.extend([0u8, 0, 0, 0]); // MsvAvEOL
+    let header = 56u32;
+    let mut m = b"NTLMSSP\0".to_vec();
+    m.extend(2u32.to_le_bytes());
+    m.extend((target.len() as u16).to_le_bytes());
+    m.extend((target.len() as u16).to_le_bytes());
+    m.extend(header.to_le_bytes());
+    m.extend(0xE289_8215u32.to_le_bytes()); // UNICODE, NTLM, ESS, TARGET_INFO, VERSION, 128, 56, KEY_EXCH…
+    m.extend([0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef]); // ServerChallenge
+    m.extend([0u8; 8]);
+    m.extend((info.len() as u16).to_le_bytes());
+    m.extend((info.len() as u16).to_le_bytes());
+    m.extend((header + target.len() as u32).to_le_bytes());
+    m.extend([10, 0, 0x63, 0x45, 0, 0, 0, 15]); // Version
+    m.extend(target);
+    m.extend(info);
+    m
+}
+
+/// Соединение подменного сервера со входом NTLM: без входа — 401 `NTLM`; NEGOTIATE (тип 1) — вызов (тип 2);
+/// AUTHENTICATE (тип 3) — принят (`accept`) или отказ 401. Вошедшее соединение отвечает корпусом.
+async fn serve_ntlm(mut s: TcpStream, log: Arc<Mutex<Vec<String>>>, accept: bool) {
+    let mut signed_in = false;
+    loop {
+        let mut head = Vec::new();
+        let mut b = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            if s.read(&mut b).await.unwrap_or(0) == 0 {
+                return;
+            }
+            head.push(b[0]);
+        }
+        let head = String::from_utf8_lossy(&head).to_string();
+        let header =
+            |name: &str| head.lines().find_map(|l| l.split_once(':').filter(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.trim().to_owned()));
+        let len: usize = header("content-length").map(|v| v.parse().unwrap()).unwrap_or(0);
+        let mut body = vec![0u8; len];
+        s.read_exact(&mut body).await.unwrap();
+        let body = String::from_utf8(body).unwrap();
+        let token = header("authorization").and_then(|v| v.strip_prefix("NTLM ").map(b64_decode));
+        let unauthorized = |www: String| format!("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: {www}\r\nContent-Length: 0\r\n\r\n");
+        let out = match (&token, signed_in) {
+            (_, true) => None,
+            (None, false) => Some(unauthorized("NTLM".into())),
+            (Some(t), false) if t.get(8) == Some(&1) => Some(unauthorized(format!("NTLM {}", b64_encode(&ntlm_challenge())))),
+            (Some(t), false) if t.get(8) == Some(&3) && accept => {
+                log.lock().unwrap().push("NTLM AUTHENTICATE".into());
+                signed_in = true;
+                None
+            }
+            (Some(_), false) => Some(unauthorized("NTLM".into())),
+        };
+        let out = out.unwrap_or_else(|| {
+            let reply = answer(&body);
+            log.lock().unwrap().push(body);
+            format!("HTTP/1.1 200 OK\r\nContent-Type: text/xml; charset=utf-8\r\nContent-Length: {}\r\n\r\n{reply}", reply.len())
+        });
+        s.write_all(out.as_bytes()).await.unwrap();
+    }
+}
+
+fn ntlm_server(accept: bool) -> (String, Arc<Mutex<Vec<String>>>) {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let l = log.clone();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async move {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            tx.send(listener.local_addr().unwrap()).unwrap();
+            while let Ok((s, _)) = listener.accept().await {
+                tokio::spawn(serve_ntlm(s, l.clone(), accept));
+            }
+        });
+    });
+    (format!("http://{}/EWS/Exchange.asmx", rx.recv().unwrap()), log)
+}
+
+/// Пустой пароль — вход учётной записью Windows (SSPI, учётные данные текущего входа, NTLM без сети): почта и
+/// области работают; адрес ящика — у сервера (`ResolveNames` по имени учётной записи), а не логин `DOMAIN\user`.
+#[test]
+fn windows_sign_in_without_password() {
+    let (url, log) = ntlm_server(true);
+    let live = start_as(&url, r"EXAMPLE\anna", "");
+    let Event::Features(f) = live.wait("Features", |e| matches!(e, Event::Features(_))) else { unreachable!() };
+    assert!(f.has(Feature::Calendar) && f.has(Feature::Directory), "области подключены тем же входом");
+    let Event::Me { address, .. } = live.wait("Me", |e| matches!(e, Event::Me { .. })) else { unreachable!() };
+    assert_eq!(address.email, "anna@example.test", "адрес — у сервера");
+    live.wait("Synced", |e| matches!(e, Event::Status(Status::Synced)));
+    assert!(live.cache.mailboxes().unwrap().iter().any(|b| b.role.as_deref() == Some("inbox")), "почта пришла");
+    let log = log.lock().unwrap();
+    assert!(log.iter().filter(|b| *b == "NTLM AUTHENTICATE").count() >= 2, "вход SSPI — у почты и у областей");
+    assert!(log.iter().any(|b| b.contains("<m:ResolveNames") && b.contains(">anna<")), "свой адрес — ResolveNames по имени учётной записи");
+}
+
+/// Сервер не принял текущего пользователя Windows: одна ошибка `Auth` с причиной, без повторов.
+#[test]
+fn windows_sign_in_refused() {
+    let (url, log) = ntlm_server(false);
+    let live = start_as(&url, r"EXAMPLE\anna", "");
+    let start = Instant::now();
+    let err = loop {
+        match live.events.recv_timeout(Duration::from_secs(20).saturating_sub(start.elapsed())) {
+            Ok(Event::Error(e)) => break e,
+            Ok(_) => {}
+            Err(e) => panic!("нет ошибки входа ({e})"),
+        }
+    };
+    assert_eq!(err.kind, postman_core::model::ErrorKind::Auth);
+    assert!(err.detail.starts_with(postman_backend_ews::WINDOWS_SIGN_IN_UNAVAILABLE), "{}", err.detail);
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(live.events.try_iter().all(|e| !matches!(e, Event::Error(_))), "одна ошибка, без повторов");
+    assert!(log.lock().unwrap().iter().all(|b| b != "NTLM AUTHENTICATE"), "не вошли");
+}
+
+// --- Удалено в другом клиенте (T1-20). ---
+
+/// `SyncFolderItems` с состоянием (опрос после первой загрузки): во «Входящих» оба письма корпуса удалены — одно
+/// насовсем, другое перенесено в «Удалённые» (у EWS перенос из папки — тоже `Delete` в ней). Другие папки — без
+/// изменений.
+fn deleted_elsewhere(body: &str) -> Option<String> {
+    if !(body.contains("<m:SyncFolderItems") && body.contains("<m:SyncState>")) {
+        return None;
+    }
+    let changes = if body.contains("AAMkADinbox") {
+        r#"<t:Delete><t:ItemId Id="AAMkADmsg1" ChangeKey="CQAAAA=="/></t:Delete><t:Delete><t:ItemId Id="AAMkADmsg2" ChangeKey="CQAAAB=="/></t:Delete>"#
+    } else {
+        ""
+    };
+    Some(format!(
+        r#"<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><m:SyncFolderItemsResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><m:ResponseMessages><m:SyncFolderItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>c3RhdGUy</m:SyncState><m:IncludesLastItemInRange>true</m:IncludesLastItemInRange><m:Changes>{changes}</m:Changes></m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse></s:Body></s:Envelope>"#
+    ))
+}
+
+/// Удаление и перенос на сервере → письма уходят из кэша за один опрос (сверка «снова на связи» — тот же опрос).
+#[test]
+fn letters_deleted_elsewhere_leave_the_cache() {
+    let (url, _log) = server_with(deleted_elsewhere);
+    let live = ready(&url);
+    let inbox = live.cache.mailboxes().unwrap().into_iter().find(|b| b.role.as_deref() == Some("inbox")).unwrap().id;
+    assert_eq!(live.cache.page(&inbox, 0, 50).unwrap().len(), 2, "первая загрузка");
+    live.commands.send(Command::Reconnect).unwrap();
+    live.wait("EmailsChanged", |e| matches!(e, Event::EmailsChanged));
+    assert!(live.cache.page(&inbox, 0, 50).unwrap().is_empty(), "удалённые другим клиентом — не в кэше");
+    assert_eq!(live.cache.mailboxes().unwrap().into_iter().find(|b| b.id == inbox).unwrap().total, 0, "счётчик папки");
+}
+
+/// `GetItem` письма, которого уже нет на сервере.
+const ITEM_GONE: &str = r#"<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><m:GetItemResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><m:ResponseMessages><m:GetItemResponseMessage ResponseClass="Error"><m:MessageText>The specified object was not found in the store.</m:MessageText><m:ResponseCode>ErrorItemNotFound</m:ResponseCode><m:DescriptiveLinkKey>0</m:DescriptiveLinkKey><m:Items/></m:GetItemResponseMessage></m:ResponseMessages></m:GetItemResponse></s:Body></s:Envelope>"#;
+
+/// Открыть письмо, которое удалили в другом клиенте до опроса: оно уходит из кэша, ошибки нет (ни `Body`, ни `Thread`).
+#[test]
+fn opening_a_vanished_letter_drops_it_without_error() {
+    let (url, _log) = server_with(|b| (b.contains("<m:GetItem") && b.contains("IncludeMimeContent")).then(|| ITEM_GONE.to_owned()));
+    let live = ready(&url);
+    let inbox = live.cache.mailboxes().unwrap().into_iter().find(|b| b.role.as_deref() == Some("inbox")).unwrap().id;
+    let rows = live.cache.page(&inbox, 0, 50).unwrap();
+    let (first, second) = (rows[0].clone(), rows[1].clone());
+
+    live.commands.send(Command::Body(first.id.clone())).unwrap();
+    live.wait("MailboxesChanged", |e| matches!(e, Event::MailboxesChanged)); // `Event::Error` — паника в `wait`
+    assert!(live.cache.rows_by_ids(std::slice::from_ref(&first.id)).unwrap().is_empty(), "исчезнувшее — из кэша");
+
+    live.commands.send(Command::Thread(second.thread_id.clone())).unwrap();
+    let Event::ThreadReady { ids, .. } = live.wait("ThreadReady", |e| matches!(e, Event::ThreadReady { .. })) else { unreachable!() };
+    assert!(!ids.contains(&second.id), "в цепочке — без исчезнувшего");
+    assert!(live.cache.rows_by_ids(std::slice::from_ref(&second.id)).unwrap().is_empty());
 }

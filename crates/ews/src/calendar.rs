@@ -50,16 +50,22 @@ pub enum WellKnown {
     Drafts,
     SentItems,
     DeletedItems,
+    /// Личные контакты (T1-25а).
+    Contacts,
+    /// Корень почтовых папок ящика (`msgfolderroot`, верхний уровень дерева): родитель при создании и переносе папки.
+    Root,
 }
 
 impl WellKnown {
-    fn id(self) -> &'static str {
+    pub(crate) fn id(self) -> &'static str {
         match self {
             WellKnown::Calendar => "calendar",
             WellKnown::Inbox => "inbox",
             WellKnown::Drafts => "drafts",
             WellKnown::SentItems => "sentitems",
             WellKnown::DeletedItems => "deleteditems",
+            WellKnown::Contacts => "contacts",
+            WellKnown::Root => "msgfolderroot",
         }
     }
 }

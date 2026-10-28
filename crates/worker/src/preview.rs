@@ -1,12 +1,16 @@
-//! Встроенный просмотр вложений (S5-07): картинка, страница PDF, оглавление ZIP, текст, проверка Office на
-//! макросы. Только здесь, в песочнице: UI получает пиксели, строки и числа.
+//! Встроенный просмотр вложений (S5-07): картинка, страница PDF, оглавление ZIP, текст, документ Word `.docx`
+//! (T1-13а, [`docx`]), проверка Office на макросы. Только здесь, в песочнице: UI получает пиксели, строки, числа и
+//! безопасный IR.
 //!
 //! Пределы — на каждый запрос: вход не больше [`MAX_INPUT`], картинка и страница — не больше `max_side` по
 //! стороне (страница PDF — шириной `width`, если задана), текст — [`MAX_TEXT`] байт, оглавление — [`MAX_LISTED`] строк; архив не распаковывается (размеры —
-//! из центрального каталога), из OOXML читается только `vbaProject.bin` и не больше [`MAX_VBA`]. Время
+//! из центрального каталога), из OOXML читается только `vbaProject.bin` и не больше [`MAX_VBA`], у `.docx` — пределы
+//! [`docx`] (распаковка, блоки, символы). Время
 //! ограничивает сторож в `serve` (процесс завершается с [`crate::EXIT_TIME`]), память — Job Object песочницы.
 
 use std::io::{self, Read};
+
+pub mod docx;
 
 use serde::{Deserialize, Serialize};
 
@@ -32,6 +36,8 @@ pub enum PreviewKind {
     Text,
     /// Документ Office: только проверка на макросы.
     Office,
+    /// Документ Word `.docx` → IR (T1-13а); документ с макросами — проверка Office, как у `Office`.
+    Document,
 }
 
 /// Итог просмотра. У `Image` и `Pdf` пиксели RGBA — в бинарной части ответа.
@@ -59,6 +65,11 @@ pub enum Preview {
         truncated: bool,
     },
     Office(OfficeScan),
+    /// Текст документа Word: безопасный IR (как тело письма); `truncated` — показано начало.
+    Document {
+        blocks: Vec<postman_ir::Block>,
+        truncated: bool,
+    },
 }
 
 /// Оглавление архива.
@@ -125,6 +136,15 @@ pub fn preview(kind: PreviewKind, bytes: &[u8], page: u32, max_side: u32, width:
             Ok((Preview::Text { text, truncated }, Vec::new()))
         }
         PreviewKind::Office => Ok((Preview::Office(scan_office(bytes)?), Vec::new())),
+        PreviewKind::Document => {
+            // С макросами (`.docm`, `vbaProject.bin`) — не просмотр, а проверка: открытие заблокировано.
+            let scan = scan_office(bytes)?;
+            if scan.macros {
+                return Ok((Preview::Office(scan), Vec::new()));
+            }
+            let (blocks, truncated) = docx::docx(bytes)?;
+            Ok((Preview::Document { blocks, truncated }, Vec::new()))
+        }
     }
 }
 

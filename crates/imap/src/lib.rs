@@ -318,6 +318,29 @@ impl Session {
             .collect())
     }
 
+    /// Разделитель иерархии ящика (`LIST "" ""`, RFC 3501 §6.3.8); `None` — плоский ящик.
+    pub async fn delimiter(&mut self) -> Result<Option<String>> {
+        let names: Vec<async_imap::types::Name> = timed(async { Ok(self.inner.list(Some(""), Some("")).await?.try_collect().await?) }).await?;
+        Ok(names.first().and_then(|n| n.delimiter()).filter(|d| !d.is_empty()).map(str::to_owned))
+    }
+
+    /// Создать папку `name` в `parent` (его `raw`; `None` — верхний уровень) → её имя на сервере.
+    pub async fn create_folder(&mut self, parent: Option<&str>, name: &str) -> Result<String> {
+        let delimiter = self.delimiter().await?;
+        let path = names::folder_path(parent, name, delimiter.as_deref()).ok_or_else(|| Error::Protocol("bad folder name".into()))?;
+        timed(async { Ok(self.inner.run_command_and_check_ok(&names::create_command(&path)).await?) }).await?;
+        Ok(path)
+    }
+
+    /// Переименовать и/или перенести папку `raw`: новое имя `name` в `parent` (`None` — верхний уровень) — `RENAME`
+    /// в новый путь → её имя на сервере.
+    pub async fn rename_folder(&mut self, raw: &str, parent: Option<&str>, name: &str) -> Result<String> {
+        let delimiter = self.delimiter().await?;
+        let path = names::folder_path(parent, name, delimiter.as_deref()).ok_or_else(|| Error::Protocol("bad folder name".into()))?;
+        timed(async { Ok(self.inner.run_command_and_check_ok(&names::rename_command(raw, &path)).await?) }).await?;
+        Ok(path)
+    }
+
     /// Выбрать папку (с CONDSTORE, если он есть).
     pub async fn select(&mut self, raw: &str) -> Result<Selected> {
         let condstore = self.condstore();

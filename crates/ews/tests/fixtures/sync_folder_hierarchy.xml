@@ -14,6 +14,7 @@
             <t:Create>
             <t:Folder>
               <t:FolderId Id="AAMkADinbox" ChangeKey="CK1"/>
+              <t:ParentFolderId Id="AAMkADroot" ChangeKey="RK"/>
               <t:FolderClass>IPF.Note</t:FolderClass>
               <t:DisplayName>Inbox</t:DisplayName>
               <t:TotalCount>42</t:TotalCount>
@@ -40,6 +41,16 @@
               <t:ChildFolderCount>0</t:ChildFolderCount>
               <t:UnreadCount>0</t:UnreadCount>
             </t:Folder>
+            </t:Create>
+            <t:Create>
+            <t:CalendarFolder>
+              <t:FolderId Id="AAMkADcal" ChangeKey="CK6"/>
+              <t:ParentFolderId Id="AAMkADroot" ChangeKey="RK"/>
+              <t:FolderClass>IPF.Appointment</t:FolderClass>
+              <t:DisplayName>Calendar</t:DisplayName>
+              <t:TotalCount>0</t:TotalCount>
+              <t:ChildFolderCount>0</t:ChildFolderCount>
+            </t:CalendarFolder>
             </t:Create>
             <t:Update>
             <t:Folder>

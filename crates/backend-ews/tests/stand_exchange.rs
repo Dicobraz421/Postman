@@ -111,16 +111,23 @@ struct Live {
     events: Receiver<Event>,
     cache: Cache,
     features: Features,
+    /// Адрес ящика, который синхронизация нашла у сервера (`Event::Me`).
+    me: String,
 }
 
 impl Live {
     /// Учётка Exchange, как её заводит «Добавить аккаунт»: адрес — URL EWS, вход — логин и пароль.
     fn start(a: &Account2) -> Live {
+        Live::start_with(a, &a.password)
+    }
+
+    /// Учётка с этим паролем; пустой — вход учётной записью Windows без пароля (T1-02а).
+    fn start_with(a: &Account2, password: &str) -> Live {
         worker_next_to_tests();
         let url = rt().block_on(ews_url(a));
         let (tx, events) = std::sync::mpsc::channel();
         let cache = Cache::open_in_memory().unwrap();
-        let account = Account { url, auth: Auth::Basic { user: a.user.clone(), password: a.password.clone() } };
+        let account = Account { url, auth: Auth::Basic { user: a.user.clone(), password: password.to_owned() } };
         let commands = postman_backend_ews::EwsPlugin.spawn(Spawn {
             account,
             profile: None,
@@ -130,9 +137,11 @@ impl Live {
             repaint: Box::new(|| {}),
             areas: Vec::new(),
         });
-        let mut live = Live { commands, events, cache, features: Features::NONE };
+        let mut live = Live { commands, events, cache, features: Features::NONE, me: String::new() };
         let Event::Features(f) = live.wait("Features", |e| matches!(e, Event::Features(_))) else { unreachable!() };
         live.features = f;
+        let Event::Me { address, .. } = live.wait("Me", |e| matches!(e, Event::Me { .. })) else { unreachable!() };
+        live.me = address.email;
         live.wait("Synced", |e| matches!(e, Event::Status(Status::Synced)));
         live
     }
@@ -204,7 +213,28 @@ fn sign_in() {
     for role in ["inbox", "sent", "drafts", "trash"] {
         assert!(boxes.iter().any(|b| b.role.as_deref() == Some(role)), "папка {role}");
     }
+    assert!(live.me.eq_ignore_ascii_case(&first().email), "адрес ящика — у сервера, совпал с учёткой");
     println!("папок: {}", boxes.len());
+}
+
+/// Вход текущим пользователем Windows без пароля (T1-02а): адрес ящика найден у сервера. Только если сам процесс
+/// запущен от тестовой учётки (`runas`): вход Windows на машине владельца — его ящик, тесты его не трогают (S7).
+#[test]
+#[ignore = "боевой Exchange: S7 «Проверка на боевом Exchange»; процесс — от тестовой учётки"]
+fn sign_in_windows() {
+    let a = first();
+    let me = env("USERNAME").unwrap_or_default().to_lowercase();
+    let login = a.user.to_lowercase();
+    let account = login.rsplit_once('\\').map_or(login.as_str(), |(_, u)| u);
+    let account = account.split_once('@').map_or(account, |(u, _)| u);
+    if me.is_empty() || me != account {
+        println!("пропуск: процесс не от тестовой учётки — вход Windows дал бы чужой ящик");
+        return;
+    }
+    let live = Live::start_with(&a, "");
+    assert!(live.me.eq_ignore_ascii_case(&a.email), "адрес ящика — у сервера");
+    assert!(live.cache.mailboxes().unwrap().iter().any(|b| b.role.as_deref() == Some("inbox")));
+    println!("вход Windows: почта есть, адрес найден");
 }
 
 /// Почта через синхронизацию Postman: письмо себе, во «Входящих», тело, «прочитано», удаление.
@@ -627,4 +657,57 @@ fn exchange_meeting_edit_through_commands() {
     let Event::PersonDetails { person, .. } = la.wait("PersonDetails", |e| matches!(e, Event::PersonDetails { .. })) else { unreachable!() };
     let p = person.expect("своя учётка по ResolveNames");
     println!("правка командами: одиночная и серия; карточка: телефон {}, должность {}", !p.phone.is_empty(), !p.title.is_empty());
+}
+
+/// Письмо, удалённое другим клиентом (T1-20): второй клиент EWS переносит одно в «Удалённые» (как Outlook) и удаляет
+/// другое насовсем → после опроса обоих нет во «Входящих» кэша; тело исчезнувшего — без ошибки.
+#[test]
+#[ignore = "боевой Exchange: S7 «Проверка на боевом Exchange»"]
+fn exchange_deleted_elsewhere() {
+    let a = first();
+    rt().block_on(cleanup(&a));
+    let live = Live::start(&a);
+    let tag = tag();
+    let me = test_recipient(&a.email);
+    for (n, what) in [(1, "soft"), (2, "hard")] {
+        let draft = postman_compose::Draft {
+            from: postman_compose::Address::new("", &me),
+            to: vec![postman_compose::Address::new("", &me)],
+            subject: format!("{tag} {what}"),
+            markdown: "Удалить другим клиентом.".into(),
+            ..Default::default()
+        };
+        live.send(Command::Send { draft: Box::new(draft), replace: None, ticket: n, release: postman_core::model::Release::Now });
+        live.wait("Sent", |e| matches!(e, Event::Sent { ticket, .. } if *ticket == n));
+    }
+    let soft = live.arrived(&format!("{tag} soft"));
+    let hard = live.arrived(&format!("{tag} hard"));
+    while live.events.try_recv().is_ok() {}
+
+    // Второй клиент — `crates/ews` напрямую.
+    rt().block_on(async {
+        let mut c = Client::new(&ews_url(&a).await, postman_backend_ews::auth(&a.user, &a.password)).unwrap();
+        for (row, mode) in [(&soft, DeleteMode::MoveToDeletedItems), (&hard, DeleteMode::HardDelete)] {
+            let id = postman_backend_ews::sync::parse_key(&row.id).expect("ключ EWS");
+            c.delete_mail(std::slice::from_ref(&id), mode).await.unwrap();
+        }
+    });
+    // До опроса: открыть перенесённое — оно уходит из кэша, ошибки нет (`wait` падает на `Event::Error`).
+    live.send(Command::Body(soft.id.clone()));
+    live.wait("MailboxesChanged", |e| matches!(e, Event::MailboxesChanged));
+    assert!(live.cache.rows_by_ids(std::slice::from_ref(&soft.id)).unwrap().is_empty(), "открытое исчезнувшее — из кэша");
+    let start = Instant::now();
+    loop {
+        let here: Vec<String> =
+            live.cache.page(&live.inbox(), 0, 500).unwrap().into_iter().filter(|r| r.subject.contains(&tag)).map(|r| r.subject).collect();
+        if here.is_empty() {
+            break;
+        }
+        assert!(start.elapsed() < WAIT, "удалённое другим клиентом осталось во «Входящих»: {}", here.len());
+        live.send(Command::Reconnect);
+        std::thread::sleep(Duration::from_secs(5));
+        while live.events.try_recv().is_ok() {}
+    }
+    println!("удалено другим клиентом: ушло из кэша за {} с", start.elapsed().as_secs());
+    rt().block_on(cleanup(&a));
 }

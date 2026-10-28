@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Body>
+    <FindPeopleResponse ResponseClass="Error" xmlns="http://schemas.microsoft.com/exchange/services/2006/messages">
+      <MessageText>QueryString is required to search the directory.</MessageText>
+      <ResponseCode>ErrorInvalidOperation</ResponseCode>
+      <DescriptiveLinkKey>0</DescriptiveLinkKey>
+    </FindPeopleResponse>
+  </s:Body>
+</s:Envelope>
