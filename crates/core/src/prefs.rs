@@ -627,6 +627,22 @@ impl Pane {
     pub const ALL: [Pane; 3] = [Pane::Right, Pane::Bottom, Pane::Hidden];
 }
 
+/// Порядок писем в беседе (T1-16а): в ленте и стопке и под головой беседы в списке. Голова в списке — всегда самое
+/// новое письмо.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadOrder {
+    /// Сначала старые (по умолчанию).
+    #[default]
+    OldestFirst,
+    /// Сначала новые.
+    NewestFirst,
+}
+
+impl ThreadOrder {
+    pub const ALL: [ThreadOrder; 2] = [ThreadOrder::OldestFirst, ThreadOrder::NewestFirst];
+}
+
 /// Чтение. Внешние картинки не грузятся никогда — это политика Postman, не настройка (`docs/HANDOFF.md` §3a).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -640,11 +656,20 @@ pub struct Reading {
     /// Приглашение в письме (S5-24): подробности, кнопки столбиком и лента дня — колонкой 300 px справа, а не
     /// карточкой над текстом.
     pub invite_side: bool,
+    /// Порядок писем в беседе (T1-16а).
+    pub thread_order: ThreadOrder,
 }
 
 impl Default for Reading {
     fn default() -> Self {
-        Self { conversation: Conversation::Feed, folders: BTreeMap::new(), pane: Pane::Right, warn_link_mismatch: true, invite_side: false }
+        Self {
+            conversation: Conversation::Feed,
+            folders: BTreeMap::new(),
+            pane: Pane::Right,
+            warn_link_mismatch: true,
+            invite_side: false,
+            thread_order: ThreadOrder::OldestFirst,
+        }
     }
 }
 
@@ -1093,6 +1118,7 @@ mod tests {
         p.reading.set_folder("news", Some(Conversation::Outlook));
         p.reading.warn_link_mismatch = false;
         p.reading.invite_side = true;
+        p.reading.thread_order = ThreadOrder::NewestFirst;
         p.keys.insert("mail.reply".into(), vec!["ctrl-shift-y".into()]);
         p.keys.insert("tab.close".into(), vec![]);
         p.key_scheme = KeyScheme::Single;
@@ -1156,6 +1182,7 @@ mod tests {
     fn layout_widths_are_clamped_and_kept() {
         let old: Prefs = serde_json::from_str(r#"{"version":1,"reading":{"pane":"bottom"}}"#).unwrap();
         assert_eq!(old.layout, Layout::default(), "старый файл — ширины макета");
+        assert_eq!((old.reading.pane, old.reading.thread_order), (Pane::Bottom, ThreadOrder::OldestFirst), "беседа — как раньше");
         assert_eq!(old.layout.widths(1600), (Layout::FOLDERS, Layout::LIST));
         let wide = Layout { folders: Some(300), list: Some(600) };
         assert_eq!(wide.clamp(1600), wide, "на широком окне — свои");
