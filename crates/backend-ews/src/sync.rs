@@ -15,6 +15,8 @@
 //! - **Отправка** — `CreateItem` из MIME, копия в «Отправленные» — сервером (`SendAndSaveCopy`); «Отменить» — письмо
 //!   держит синхронизация, как у IMAP; «Отправить позже» — нет. **Черновик** — `SaveOnly` в «Черновики».
 //! - **Поиск и фильтры** — `FindItem` с AQS по папкам.
+//! - **Папки** — создать, переименовать, перенести (T1-04в): `CreateFolder`, `UpdateFolder`, `MoveFolder`, затем дерево
+//!   заново. Ключ папки — хэш `Id`, при переименовании и переносе тот же: состояние `SyncFolderItems` и письма остаются.
 //! - **Изменения** — опрос по таймеру ([`POLL`]); календарь, занятость и справочник — области ([`crate::areas`]).
 
 use std::collections::{HashMap, HashSet};
@@ -25,7 +27,7 @@ use postman_cache::{AccountRow, Addr, AttachmentRow, BodyRow, Cache, EmailRow, M
 use postman_compose::{Address, Draft};
 use postman_core::backend::{AreaCtx, Spawn};
 use postman_core::sync::{Command, ErrorKind, Event, Sender, Stage, Status, SyncError};
-use postman_ews::{Client, DeleteMode, FolderId, FolderRef, ItemId, MailHeader, MailRole, SyncState};
+use postman_ews::{Client, DeleteMode, FolderId, FolderRef, ItemId, MailHeader, MailRole, SyncState, WellKnown};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::areas::EwsAreas;
@@ -195,6 +197,11 @@ fn letters(cache: &Cache, folder: &str) -> postman_cache::Result<Vec<EmailRow>> 
 /// Письма нет на сервере (удалено или перенесено в другом клиенте).
 fn is_gone(e: &postman_ews::Error) -> bool {
     e.code() == Some("ErrorItemNotFound")
+}
+
+/// Папки команды нет в дереве (удалена на сервере, дерево ещё не перечитано).
+fn no_folder() -> postman_ews::Error {
+    postman_ews::Error::Ews { code: "ErrorFolderNotFound".into(), message: String::new() }
 }
 
 fn db(e: postman_cache::Error) -> postman_ews::Error {
@@ -410,6 +417,8 @@ async fn run(
                     me.release_held(true, notify).await;
                     return;
                 };
+                // Перенос папки в себя, в подпапку, в другой аккаунт — отказ ядра до сервера.
+                let Some(cmd) = postman_core::sync::admit(cmd, || me.cache.mailboxes().unwrap_or_default(), notify) else { continue };
                 if let Err(e) = me.handle(cmd, notify).await {
                     tracing::warn!("ews command: {e}");
                     notify(Event::Error(sync_error(Stage::Command, &e)));
@@ -450,6 +459,70 @@ impl Ews {
 
     fn folder_by_key(&self, key: &str) -> Option<&Folder> {
         self.folders.iter().find(|f| f.key == key || f.hash == key)
+    }
+
+    /// Папка по ключу кэша — в запрос, без `ChangeKey` (версия папки меняется с каждым письмом); `None` — корень
+    /// ящика (верхний уровень).
+    fn folder_ref(&self, key: Option<&str>) -> Option<FolderRef> {
+        match key {
+            None => Some(FolderRef::WellKnown(WellKnown::Root)),
+            Some(k) => self.folder_by_key(k).map(|f| FolderRef::Id(FolderId { id: f.fid.id.clone(), change_key: None })),
+        }
+    }
+
+    /// Создать, переименовать или перенести папку (T1-04в), затем дерево заново и `MailboxesChanged`; отказ сервера —
+    /// `FolderFailed` с кодом EWS (`ErrorFolderExists`, `ErrorAccessDenied`…).
+    async fn folder_command(&mut self, cmd: Command, notify: &impl Fn(Event)) {
+        let (mailbox, result) = match cmd {
+            Command::CreateFolder { parent, name, .. } => match self.folder_ref(parent.as_deref()) {
+                Some(at) => (parent, self.client.create_folder(&at, name.trim()).await.map(|_| ())),
+                None => (parent, Err(no_folder())),
+            },
+            Command::RenameFolder { mailbox, name } => match self.folder_by_key(&mailbox).cloned() {
+                Some(f) => (Some(mailbox), self.client.rename_folder(&f.fid, name.trim()).await.map(|_| ())),
+                None => (Some(mailbox), Err(no_folder())),
+            },
+            Command::MoveFolder { mailbox, parent } => match (self.folder_by_key(&mailbox).cloned(), self.folder_ref(parent.as_deref())) {
+                (Some(f), Some(to)) => {
+                    let moved = self.client.move_folder(&f.fid, &to).await;
+                    let result = match moved {
+                        Ok(id) => self.follow_folder(&f, &id),
+                        Err(e) => Err(e),
+                    };
+                    (Some(mailbox), result)
+                }
+                _ => (Some(mailbox), Err(no_folder())),
+            },
+            other => return tracing::debug!("ews: not a folder command: {}", name(&other)),
+        };
+        if let Err(e) = result {
+            tracing::info!(code = e.code().unwrap_or(""), "ews folder command refused");
+            return notify(Event::FolderFailed { mailbox, error: e.code().map_or_else(|| e.to_string(), str::to_owned) });
+        }
+        if let Err(e) = self.load_folders().await {
+            return notify(Event::Error(sync_error(Stage::Load, &e)));
+        }
+        notify(Event::MailboxesChanged);
+    }
+
+    /// Папка получила другой `Id` при переносе (обычно — тот же): письма и состояние `SyncFolderItems` — под новым
+    /// ключом, заново ничего не грузится.
+    fn follow_folder(&mut self, old: &Folder, id: &FolderId) -> postman_ews::Result<()> {
+        if id.id == old.fid.id {
+            return Ok(());
+        }
+        let hash = format!("f{}", hash(&id.id));
+        let key = scoped(self.scope(), &hash);
+        let mut rows = letters(&self.cache, &old.key).map_err(db)?;
+        for r in &mut rows {
+            r.mailbox_ids = vec![key.clone()];
+        }
+        self.cache.upsert_emails(&rows).map_err(db)?;
+        let state = |h: &str| scoped(self.scope(), &format!("ews.{h}"));
+        if let Some(s) = self.cache.state(&state(&old.hash)).map_err(db)? {
+            self.cache.set_state(&state(&hash), &s).map_err(db)?;
+        }
+        Ok(())
     }
 
     /// Папки заново и каждая сверена; итог — событиями.
@@ -1063,6 +1136,9 @@ impl Ews {
                 None => notify(Event::UnsendFailed { ticket, too_late: true, error: String::new() }),
             },
             // Соединение EWS поднимается само при следующем запросе; «снова на связи» — сверить сейчас, не ждать опроса.
+            cmd @ (Command::CreateFolder { .. } | Command::RenameFolder { .. } | Command::MoveFolder { .. }) => {
+                self.folder_command(cmd, notify).await
+            }
             Command::Reconnect => {
                 if let Err(e) = self.refresh_all(notify).await {
                     notify(Event::Error(e));

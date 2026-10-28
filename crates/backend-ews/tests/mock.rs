@@ -730,3 +730,101 @@ fn opening_a_vanished_letter_drops_it_without_error() {
     assert!(!ids.contains(&second.id), "в цепочке — без исчезнувшего");
     assert!(live.cache.rows_by_ids(std::slice::from_ref(&second.id)).unwrap().is_empty());
 }
+
+// --- Папки: создать, переименовать, перенести (T1-04в). ---
+
+/// Шаг сценария папок: 1 — папка создана, 2 — «Проект» переименован, 3 — перенесён на верхний уровень. Только для
+/// `folder_create_rename_move` (nextest — процесс на тест).
+static FOLDER_STEP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn folder_steps(body: &str) -> Option<String> {
+    use std::sync::atomic::Ordering::SeqCst;
+    let op = |tag: &str| body.contains(&format!("<m:{tag}"));
+    if op("CreateFolder") {
+        FOLDER_STEP.store(1, SeqCst);
+        return Some(fixture("create_folder.xml"));
+    }
+    if op("UpdateFolder") {
+        FOLDER_STEP.store(2, SeqCst);
+        return Some(fixture("update_folder.xml").replace("AAMkADinbox", "AAMkADproj"));
+    }
+    if op("MoveFolder") {
+        FOLDER_STEP.store(3, SeqCst);
+        return Some(fixture("update_folder.xml").replace("UpdateFolder", "MoveFolder").replace("AAMkADinbox", "AAMkADproj"));
+    }
+    if !op("FindFolder") || body.contains(r#"Id="contacts""#) {
+        return None;
+    }
+    let step = FOLDER_STEP.load(SeqCst);
+    let mut tree = fixture("find_folder_mail.xml");
+    if step >= 1 {
+        let new = r#"<t:Folder><t:FolderId Id="AAMkADnewfolder" ChangeKey="CK"/><t:ParentFolderId Id="AAMkADinbox" ChangeKey="PK"/><t:FolderClass>IPF.Note</t:FolderClass><t:DisplayName>Новая</t:DisplayName><t:TotalCount>0</t:TotalCount></t:Folder>"#;
+        tree = tree.replace("</t:Folders>", &format!("{new}</t:Folders>"));
+    }
+    if step >= 2 {
+        tree = tree.replace("<t:DisplayName>Проект</t:DisplayName>", "<t:DisplayName>Отчёты</t:DisplayName>");
+    }
+    if step >= 3 {
+        tree = tree.replace(
+            r#"<t:FolderId Id="AAMkADproj" ChangeKey="CK"/><t:ParentFolderId Id="AAMkADinbox""#,
+            r#"<t:FolderId Id="AAMkADproj" ChangeKey="CK"/><t:ParentFolderId Id="AAMkADroot""#,
+        );
+    }
+    Some(tree)
+}
+
+/// Создать → переименовать → перенести: запросы EWS, дерево в кэше после каждого шага, ключ папки и её состояние
+/// `SyncFolderItems` — те же (письма заново не грузятся).
+#[test]
+fn folder_create_rename_move() {
+    let (url, log) = server_with(folder_steps);
+    let live = ready(&url);
+    let boxes = || live.cache.mailboxes().unwrap();
+    let inbox = boxes().into_iter().find(|b| b.role.as_deref() == Some("inbox")).unwrap().id;
+    let project = boxes().into_iter().find(|b| b.name == "Проект").unwrap().id;
+    let letters = live.cache.page(&inbox, 0, 50).unwrap().len();
+    let n = log.lock().unwrap().len();
+
+    live.commands.send(Command::CreateFolder { account: None, parent: Some(inbox.clone()), name: " Новая ".into() }).unwrap();
+    live.wait("MailboxesChanged", |e| matches!(e, Event::MailboxesChanged));
+    let create = requests(&log, n, "CreateFolder").pop().expect("CreateFolder");
+    assert!(create.contains(r#"<t:FolderId Id="AAMkADinbox"/>"#) && create.contains("<t:DisplayName>Новая</t:DisplayName>"), "{create}");
+    assert!(boxes().iter().any(|b| b.name == "Новая" && b.parent_id.as_deref() == Some(inbox.as_str())), "новая — во «Входящих»");
+
+    live.commands.send(Command::RenameFolder { mailbox: project.clone(), name: "Отчёты".into() }).unwrap();
+    live.wait("MailboxesChanged", |e| matches!(e, Event::MailboxesChanged));
+    let rename = requests(&log, n, "UpdateFolder").pop().expect("UpdateFolder");
+    assert!(rename.contains(r#"<t:FolderId Id="AAMkADproj"/>"#) && rename.contains("<t:DisplayName>Отчёты</t:DisplayName>"), "{rename}");
+    let renamed = boxes().into_iter().find(|b| b.id == project).expect("ключ папки тот же");
+    assert_eq!(renamed.name, "Отчёты");
+
+    live.commands.send(Command::MoveFolder { mailbox: project.clone(), parent: None }).unwrap();
+    live.wait("MailboxesChanged", |e| matches!(e, Event::MailboxesChanged));
+    let mv = requests(&log, n, "MoveFolder").pop().expect("MoveFolder");
+    assert!(mv.contains(r#"<t:DistinguishedFolderId Id="msgfolderroot"/>"#) && mv.contains(r#"<t:FolderId Id="AAMkADproj"/>"#), "{mv}");
+    assert_eq!(boxes().into_iter().find(|b| b.id == project).unwrap().parent_id, None, "на верхнем уровне");
+
+    assert_eq!(live.cache.page(&inbox, 0, 50).unwrap().len(), letters, "письма на месте");
+    assert!(requests(&log, n, "FindItem").iter().all(|b| !b.contains("AAMkADproj")), "письма папки заново не грузятся");
+}
+
+/// Перенос папки в свою подпапку — отказ ядра (`admit`), до сервера.
+#[test]
+fn folder_into_its_subfolder_is_refused_before_the_server() {
+    let (url, log) = server();
+    let live = ready(&url);
+    let boxes = live.cache.mailboxes().unwrap();
+    let inbox = boxes.iter().find(|b| b.role.as_deref() == Some("inbox")).unwrap().id.clone();
+    let project = boxes.iter().find(|b| b.name == "Проект").unwrap().id.clone();
+    live.commands.send(Command::MoveFolder { mailbox: inbox.clone(), parent: Some(project) }).unwrap();
+    let start = Instant::now();
+    let failed = loop {
+        match live.events.recv_timeout(Duration::from_secs(10).saturating_sub(start.elapsed())) {
+            Ok(Event::FolderFailed { mailbox, error }) => break (mailbox, error),
+            Ok(_) => {}
+            Err(e) => panic!("нет FolderFailed ({e})"),
+        }
+    };
+    assert_eq!(failed, (Some(inbox), postman_core::sync::FOLDER_INTO_ITSELF.to_owned()));
+    assert!(requests(&log, 0, "MoveFolder").is_empty(), "на сервер не ушло");
+}
