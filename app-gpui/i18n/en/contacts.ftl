@@ -5,6 +5,7 @@ contacts-directory = Company directory
 contacts-nav-note = The directory comes from the server and updates itself. Your edits live in "My contacts": "Edit" on an employee creates a personal copy.
 contacts-search-placeholder = Search contacts
 contacts-new = New contact
+contacts-directory-search-only = The directory is available by search: type a name or address in Search contacts.
 contacts-loading = Loading contacts…
 contacts-empty = Nobody here yet.
 contacts-nothing = Nobody found

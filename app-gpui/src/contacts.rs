@@ -456,10 +456,54 @@ enum Mode {
     Confirm,
 }
 
+/// Страниц справочника (T1-25г) — по столько людей.
+pub(crate) const DIR_PAGE: u32 = 100;
+
+/// Справочник страницами (T1-25г): первая — при открытии, следующая — у конца прокрутки; один запрос на страницу.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct DirPages {
+    /// С какого человека следующая страница.
+    next: u32,
+    /// Запрошенная страница, ответа ещё нет.
+    asked: Option<u32>,
+    /// Всего людей, если путь знает.
+    pub(crate) total: Option<u32>,
+    /// Справочник у сервера только поиском (EWS): страниц нет, поле поиска.
+    pub(crate) search_only: bool,
+    /// Страниц больше нет.
+    done: bool,
+}
+
+impl DirPages {
+    /// Следующая страница — если не запрошена и есть ещё: её `offset` (запрос уходит один раз).
+    pub(crate) fn want(&mut self) -> Option<u32> {
+        if self.asked.is_some() || self.done || self.search_only {
+            return None;
+        }
+        self.asked = Some(self.next);
+        self.asked
+    }
+
+    /// Ответ на страницу `offset`: `n` людей. `false` — не та страница (устарела).
+    pub(crate) fn got(&mut self, offset: u32, n: u32, total: Option<u32>, search_only: bool) -> bool {
+        if self.asked != Some(offset) {
+            return false;
+        }
+        self.asked = None;
+        self.next = offset + n;
+        self.total = total;
+        self.search_only = search_only;
+        self.done = search_only || n < DIR_PAGE || total.is_some_and(|t| self.next >= t);
+        true
+    }
+}
+
 /// Что раздел просит у экрана: сервер, письмо, встреча, тост.
 pub(crate) enum ContactsAction {
     /// Перечитать контакты и справочник (`Command::Contacts`).
     Load,
+    /// Страница справочника (T1-25г, `Command::DirectoryPage`).
+    DirectoryPage(u32),
     /// Подробности человека справочника при открытии карточки (`Command::PersonDetails`, S7-08б): телефон, которого
     /// не дал поиск (у Exchange — `ResolveNames`).
     PersonDetails(String),
@@ -513,6 +557,8 @@ pub(crate) struct ContactsView {
     pool: Vec<Entry>,
     /// Ждём контакты с сервера.
     loading: bool,
+    /// Справочник страницами (T1-25г).
+    pages: DirPages,
     /// Контакты пришли с сервера (снимки `--screens --live` ждут их).
     pub(crate) loaded: bool,
     pub(crate) search: Entity<InputState>,
@@ -572,6 +618,7 @@ impl ContactsView {
             order_menu: false,
             pool: Vec::new(),
             loading: false,
+            pages: DirPages::default(),
             loaded: false,
             search,
             query: String::new(),
@@ -617,7 +664,20 @@ impl ContactsView {
         if self.live {
             self.loading = true;
             cx.emit(ContactsAction::Load);
+            // Справочник — с первой страницы (T1-25г).
+            self.pages = DirPages::default();
+            self.next_page(cx);
             cx.notify();
+        }
+    }
+
+    /// Следующая страница справочника, если её ещё не просили (T1-25г).
+    fn next_page(&mut self, cx: &mut Context<Self>) {
+        if !self.live {
+            return;
+        }
+        if let Some(offset) = self.pages.want() {
+            cx.emit(ContactsAction::DirectoryPage(offset));
         }
     }
 
@@ -1193,6 +1253,18 @@ impl ContactsView {
                 self.directory = people.iter().cloned().map(Entry::from_principal).collect();
                 sort(&mut self.directory);
             }
+            // Страница справочника (T1-25г): к показанному, без повторов.
+            SyncEvent::DirectoryPage { offset, people, total, search_only, .. } if self.live => {
+                if !self.pages.got(*offset, people.len() as u32, *total, *search_only) {
+                    return;
+                }
+                for p in people {
+                    if !self.directory.iter().any(|e| e.card.id == p.id) {
+                        self.directory.push(Entry::from_principal(p.clone()));
+                    }
+                }
+                sort(&mut self.directory);
+            }
             // Найденное поиском в справочнике (Exchange) — к уже показанному, без повторов.
             SyncEvent::PeopleFound { people, .. } if self.live && !people.is_empty() => {
                 for p in people {
@@ -1307,7 +1379,7 @@ impl ContactsView {
             .child(div().text_size(px(12.)).text_color(l.text2()).px(px(8.)).pt(px(8.)).pb(px(4.)).child(tr!("contacts-favorites")))
             .child(item("src-freq", "contacts-frequent", self.frequent.len(), Source::Frequent, cx))
             .child(div().text_size(px(12.)).text_color(l.text2()).px(px(8.)).pt(px(12.)).pb(px(4.)).truncate().child(account))
-            .child(item("src-dir", "contacts-directory", self.directory.len(), Source::Directory, cx))
+            .child(item("src-dir", "contacts-directory", self.pages.total.map_or(self.directory.len(), |t| t as usize), Source::Directory, cx))
             .child(item("src-mine", "contacts-mine", self.mine.len(), Source::Mine, cx))
             .when(self.loading, |d| d.child(div().px(px(8.)).pt(px(6.)).text_size(px(12.)).text_color(l.text2()).child(tr!("contacts-loading"))))
             .child(div().flex_1())
@@ -1344,7 +1416,10 @@ impl ContactsView {
             Source::Frequent => tr!("contacts-frequent-summary", days = postman_core::contacts::FREQUENT_DAYS),
             _ => tr!("contacts-count", n = self.entries().len()),
         };
-        let note = if self.loading && self.entries().is_empty() {
+        let note = if self.source == Source::Directory && !searching && self.pages.search_only && self.directory.is_empty() {
+            // Справочник Exchange — только поиском (T1-25г): строка и поле поиска.
+            Some(tr!("contacts-directory-search-only"))
+        } else if self.loading && self.entries().is_empty() {
             Some(tr!("contacts-loading"))
         } else if self.shown.is_empty() {
             Some(tr!(if self.entries().is_empty() { "contacts-empty" } else { "contacts-nothing" }))
@@ -1481,6 +1556,13 @@ impl ContactsView {
 
     fn item(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let l = crate::roles::look(cx);
+        // Конец прокрутки справочника — следующая страница (T1-25г; после кадра, один раз).
+        if self.live && self.source == Source::Directory && !self.searching() && ix + 10 >= self.items.len() {
+            let this = cx.entity().downgrade();
+            cx.defer(move |cx| {
+                this.update(cx, |this, cx| this.next_page(cx)).ok();
+            });
+        }
         match self.items.get(ix).copied() {
             Some(Item::Letter(c, n)) => div()
                 .w_full()
@@ -2069,6 +2151,7 @@ impl crate::Mailer {
     pub(crate) fn on_contacts(&mut self, action: &ContactsAction, cx: &mut Context<Self>) {
         let command = match action {
             ContactsAction::Load => Command::Contacts,
+            ContactsAction::DirectoryPage(offset) => Command::DirectoryPage { account: None, offset: *offset, max: DIR_PAGE },
             ContactsAction::Save { card, old, ticket } => Command::SaveContact { card: card.clone(), old: old.clone(), ticket: *ticket },
             ContactsAction::Delete { id, ticket } => Command::DeleteContact { id: id.clone(), ticket: *ticket },
             ContactsAction::PersonDetails(email) => Command::PersonDetails { email: email.clone() },
@@ -2365,6 +2448,25 @@ mod tests {
         assert_eq!(menu_items(&no_mail, true, true), [vec![Edit, Delete]]);
         assert!([Write, Meet, Copy].iter().all(|it| !it.selects()), "панель остаётся на своей записи");
         assert!([Edit, Delete, AddMine].iter().all(|it| it.selects()), "форма и подтверждение — в карточке строки");
+    }
+
+    /// Справочник страницами (T1-25г): следующая страница — один запрос, пока нет ответа; неполная — последняя;
+    /// `search_only` — страниц нет.
+    #[test]
+    fn directory_pages() {
+        use super::{DIR_PAGE, DirPages};
+        let mut p = DirPages::default();
+        assert_eq!(p.want(), Some(0));
+        assert_eq!(p.want(), None, "та же страница не уходит дважды");
+        assert!(!p.got(100, 5, None, false), "чужой ответ");
+        assert!(p.got(0, DIR_PAGE, Some(150), false));
+        assert_eq!(p.want(), Some(DIR_PAGE));
+        assert!(p.got(DIR_PAGE, 50, Some(150), false));
+        assert_eq!(p.want(), None, "всё прочитано");
+        let mut ews = DirPages::default();
+        assert_eq!(ews.want(), Some(0));
+        assert!(ews.got(0, 0, None, true));
+        assert!(ews.search_only && ews.want().is_none());
     }
 
     /// Четыре порядка «Часто пишу» (T1-24) на одном наборе: частота — как дала адресная книга; имя — без регистра,

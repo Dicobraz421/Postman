@@ -6,6 +6,7 @@ contacts-nav-note = Справочник приходит с сервера и �
 contacts-search-placeholder = Поиск в контактах
 contacts-new = Новый контакт
 contacts-loading = Загрузка контактов…
+contacts-directory-search-only = Справочник доступен поиском: наберите имя или адрес в поле «Поиск в контактах».
 contacts-empty = Здесь пока никого нет.
 contacts-nothing = Никого не нашлось
 contacts-favorites = Избранное
