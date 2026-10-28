@@ -1,15 +1,19 @@
 //! Панель папок (разделы — рейл модулей, `chrome.rs`). Общие ящики (S4-06) — свёртываемые ветки
 //! с именем аккаунта под своими папками; своя учётная запись сворачивается так же (T1-06). Воронка у открытой папки
-//! переключает панель на фильтры (S5-03, `filters.rs`). Меню папки (ПКМ) — T1-04д; «Вид беседы» — в меню письма (T1-14).
+//! переключает панель на фильтры (S5-03, `filters.rs`). Меню папки (ПКМ, T1-04д) — «Новая папка», «Переименовать»: имя
+//! — полем в строке дерева (Enter — сохранить, Esc — отмена); перенос — перетаскиванием на папку или на имя учётки.
+//! Ролевые папки не переименовываются и не переносятся. «Вид беседы» — в меню письма (T1-14).
 //! Дерево прокручивается с полосой при наведении, открытая папка — в видимой области (T1-07).
 
 use std::collections::HashSet;
 
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use pets_i18n::tr;
 use postman_cache::{AccountRow, MailboxRow, account_of};
+use postman_core::sync::Command;
 
 use pets_ui::theme::{Metric, Role};
 
@@ -39,6 +43,10 @@ pub(crate) struct Folders {
     pub(crate) offline: bool,
     /// Прокрутка дерева (T1-07): полоса и открытая папка в видимой области.
     scroll: ScrollHandle,
+    /// Новая папка или новое имя — полем в строке дерева (T1-04д).
+    edit: Option<Edit>,
+    /// Меню папки (ПКМ, T1-04д).
+    menu: Option<FolderMenu>,
     _watch: Option<Subscription>,
 }
 
@@ -113,6 +121,111 @@ pub(crate) fn tree<'a>(folders: &[&'a MailboxRow], folded: &HashSet<String>) -> 
 
 pub(crate) enum FolderEvent {
     Open(String),
+    /// Создать, переименовать или перенести папку (T1-04д) — команда синхронизации (`Command` не копируется: экран
+    /// забирает её из ячейки).
+    Command(std::cell::RefCell<Option<Command>>),
+    /// Подсказка тостом (ролевую папку не изменить).
+    Toast(String),
+}
+
+/// Что правится полем в дереве.
+#[derive(Clone, Debug, PartialEq)]
+enum EditKind {
+    /// Новая папка в аккаунте (`None` — свой) под `parent` (`None` — верхний уровень).
+    New {
+        account: Option<String>,
+        parent: Option<String>,
+    },
+    Rename(String),
+}
+
+struct Edit {
+    what: EditKind,
+    input: Entity<InputState>,
+    _sub: Subscription,
+}
+
+/// Пункт меню папки.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MenuItem {
+    New,
+    Rename,
+}
+
+const MENU: [MenuItem; 2] = [MenuItem::New, MenuItem::Rename];
+
+struct FolderMenu {
+    id: String,
+    at: Point<Pixels>,
+    cursor: usize,
+    focus: FocusHandle,
+    focus_pending: bool,
+}
+
+/// Перетаскиваемая папка (T1-04д) и её вид под курсором.
+#[derive(Clone)]
+pub(crate) struct DraggedFolder {
+    id: String,
+    name: String,
+}
+
+impl Render for DraggedFolder {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let l = look(cx);
+        div()
+            .px(px(10.))
+            .py(px(4.))
+            .rounded(l.px(Metric::RadiusControl))
+            .bg(l.c(Role::LayerOverlay))
+            .border_1()
+            .border_color(l.c(Role::StrokeCard))
+            .shadow_md()
+            .text_color(l.text())
+            .child(self.name.clone())
+    }
+}
+
+/// Папку можно переименовать и перенести: не ролевая (Входящие, Отправленные, …).
+pub(crate) fn changeable(m: &MailboxRow) -> bool {
+    m.role.is_none()
+}
+
+/// Новая папка: имя без пробелов по краям, пустое — нет команды.
+pub(crate) fn new_folder(account: Option<&str>, parent: Option<&str>, name: &str) -> Option<Command> {
+    let name = name.trim();
+    (!name.is_empty()).then(|| Command::CreateFolder {
+        account: account.map(str::to_owned),
+        parent: parent.map(str::to_owned),
+        name: name.to_owned(),
+    })
+}
+
+/// Новое имя папки: ролевую — нельзя, то же имя или пустое — нет команды.
+pub(crate) fn rename(m: &MailboxRow, name: &str) -> Option<Command> {
+    let name = name.trim();
+    (changeable(m) && !name.is_empty() && name != m.name).then(|| Command::RenameFolder { mailbox: m.id.clone(), name: name.to_owned() })
+}
+
+/// Куда бросили папку: на другую папку или на имя учётки (`Account` — верхний уровень, `None` — своя).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum DropTarget<'a> {
+    Folder(&'a MailboxRow),
+    Account(Option<&'a str>),
+}
+
+/// Перенос перетаскиванием: ролевую — нельзя; в саму себя, к прежнему родителю и в другую учётку — нет команды
+/// (другую учётку и подпапку ядро отклонит и само — `sync::admit`).
+pub(crate) fn drop_on(dragged: &MailboxRow, target: DropTarget<'_>) -> Option<Command> {
+    if !changeable(dragged) {
+        return None;
+    }
+    let account = account_of(&dragged.id);
+    let parent = match target {
+        DropTarget::Folder(t) if t.id != dragged.id && account_of(&t.id) == account => Some(t.id.clone()),
+        DropTarget::Account(a) if a == account => None,
+        _ => return None,
+    };
+    (dragged.parent_id != parent).then(|| Command::MoveFolder { mailbox: dragged.id.clone(), parent })
 }
 
 impl EventEmitter<FolderEvent> for Folders {}
@@ -131,6 +244,8 @@ impl Folders {
             own: None,
             offline: false,
             scroll: ScrollHandle::new(),
+            edit: None,
+            menu: None,
             _watch: None,
         }
     }
@@ -152,6 +267,182 @@ impl Folders {
     pub(crate) fn read_only(&self, account: &AccountRow) -> bool {
         let mut folders = self.of(Some(&account.id)).peekable();
         account.read_only || (folders.peek().is_some() && folders.all(|m| m.rights.read_only()))
+    }
+
+    /// ПКМ по папке: её меню у точки `at`.
+    fn open_menu(&mut self, id: String, at: Point<Pixels>, cx: &mut Context<Self>) {
+        self.menu = Some(FolderMenu { id, at, cursor: 0, focus: cx.focus_handle(), focus_pending: true });
+        cx.notify();
+    }
+
+    /// Снимок `folder-menu`: меню у папки `id`.
+    pub(crate) fn screen_menu(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.open_menu(id.to_owned(), point(px(160.), px(240.)), cx);
+    }
+
+    pub(crate) fn menu_open(&self) -> bool {
+        self.menu.is_some()
+    }
+
+    /// Esc: меню, затем поле правки. `false` — закрывать было нечего.
+    pub(crate) fn escape(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.menu.take().is_some() || self.edit.take().is_some() {
+            cx.notify();
+            return true;
+        }
+        false
+    }
+
+    fn choose(&mut self, it: MenuItem, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(m) = self.menu.take() else { return };
+        match it {
+            MenuItem::New => {
+                let account = account_of(&m.id).map(str::to_owned);
+                self.start(EditKind::New { account, parent: Some(m.id) }, window, cx);
+            }
+            MenuItem::Rename => self.start_rename(&m.id, window, cx),
+        }
+        cx.notify();
+    }
+
+    /// `folder.new`: новая папка в открытой (или верхнего уровня своего ящика).
+    pub(crate) fn new_here(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let parent = self.current.clone();
+        let account = parent.as_deref().and_then(account_of).map(str::to_owned);
+        self.start(EditKind::New { account, parent }, window, cx);
+    }
+
+    /// `folder.rename`: открытая папка; ролевая — подсказка тостом.
+    pub(crate) fn rename_current(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(id) = self.current.clone() {
+            self.start_rename(&id, window, cx);
+        }
+    }
+
+    fn start_rename(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        match self.mailboxes.iter().find(|m| m.id == id) {
+            Some(m) if changeable(m) => self.start(EditKind::Rename(id.to_owned()), window, cx),
+            Some(_) => cx.emit(FolderEvent::Toast(tr!("folder-role-fixed"))),
+            None => {}
+        }
+    }
+
+    fn start(&mut self, what: EditKind, window: &mut Window, cx: &mut Context<Self>) {
+        let value = match &what {
+            EditKind::Rename(id) => self.mailboxes.iter().find(|m| &m.id == id).map(|m| m.name.clone()).unwrap_or_default(),
+            EditKind::New { parent, .. } => {
+                // Родитель — развернуть: поле — под ним.
+                if let Some(p) = parent {
+                    self.folded.remove(p);
+                }
+                String::new()
+            }
+        };
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(value).placeholder(tr!("folder-new-placeholder")));
+        input.update(cx, |s, cx| s.focus(window, cx));
+        let sub = cx.subscribe(&input, |this: &mut Self, state, ev: &InputEvent, cx| {
+            if let InputEvent::PressEnter { .. } = ev {
+                let text = state.read(cx).value().to_string();
+                this.commit(&text, cx);
+            }
+        });
+        self.edit = Some(Edit { what, input, _sub: sub });
+        cx.notify();
+    }
+
+    /// Enter в поле: команда серверу (дерево перечитается по `MailboxesChanged`), поле закрыто.
+    fn commit(&mut self, text: &str, cx: &mut Context<Self>) {
+        let Some(e) = self.edit.take() else { return };
+        let command = match &e.what {
+            EditKind::New { account, parent } => new_folder(account.as_deref(), parent.as_deref(), text),
+            EditKind::Rename(id) => self.mailboxes.iter().find(|m| &m.id == id).and_then(|m| rename(m, text)),
+        };
+        if let Some(c) = command {
+            cx.emit(FolderEvent::Command(Some(c).into()));
+        }
+        cx.notify();
+    }
+
+    /// Папку бросили на `target`.
+    fn dropped(&mut self, dragged: &DraggedFolder, target: DropTarget<'_>, cx: &mut Context<Self>) {
+        let Some(m) = self.mailboxes.iter().find(|m| m.id == dragged.id) else { return };
+        if let Some(c) = drop_on(m, target) {
+            cx.emit(FolderEvent::Command(Some(c).into()));
+        }
+    }
+
+    /// Поле правки (новая папка — под родителем, новое имя — на месте строки).
+    fn edit_row(&self, depth: usize, indent: bool, l: &Look) -> Option<AnyElement> {
+        let e = self.edit.as_ref()?;
+        Some(
+            div()
+                .h(px(row_h(l)))
+                .flex_none()
+                .flex()
+                .items_center()
+                .pl(px(if indent { 22. } else { 4. } + 16. * depth as f32 + 22.))
+                .pr(px(4.))
+                .child(div().flex_1().child(Input::new(&e.input)))
+                .into_any_element(),
+        )
+    }
+
+    /// Меню папки поверх экрана: тот же слой, что у меню письма.
+    fn menu_layer(&mut self, window: &mut Window, l: &Look, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let m = self.menu.as_mut()?;
+        if std::mem::take(&mut m.focus_pending) {
+            window.focus(&m.focus, cx);
+        }
+        let m = self.menu.as_ref()?;
+        let fixed = self.mailboxes.iter().find(|f| f.id == m.id).is_some_and(|f| !changeable(f));
+        let items = MENU.iter().enumerate().map(|(k, &it)| {
+            let off = it == MenuItem::Rename && fixed;
+            let (glyph, key) = match it {
+                MenuItem::New => (crate::chrome::glyph::FOLDER, "folder-menu-new"),
+                MenuItem::Rename => (crate::chrome::glyph::EDIT, "folder-menu-rename"),
+            };
+            crate::bulk::menu_line(("folder-menu-item", k), l)
+                .when(m.cursor == k && !off, |d| d.bg(l.hover()))
+                .when(off, |d| d.text_color(l.c(Role::TextDisabled)).cursor_default())
+                .child(crate::chrome::icon(glyph, 16.).text_color(if off { l.c(Role::TextDisabled) } else { l.text2() }))
+                .child(div().flex_1().child(tr!(key)))
+                .when(!off, |d| d.on_click(cx.listener(move |this, _, window, cx| this.choose(it, window, cx))))
+        });
+        let body = div()
+            .id("folder-menu")
+            .key_context("ContextMenu")
+            .track_focus(&m.focus)
+            .occlude()
+            .w(px(220.))
+            .p(px(4.))
+            .rounded(l.px(Metric::RadiusOverlay))
+            .border_1()
+            .border_color(l.c(Role::StrokeCard))
+            .bg(l.c(Role::LayerOverlay))
+            .shadow_lg()
+            .text_size(px(13.))
+            .text_color(l.text())
+            .children(items)
+            .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, window, cx| {
+                let Some(m) = &mut this.menu else { return };
+                match ev.keystroke.key.as_str() {
+                    "down" | "up" => m.cursor = 1 - m.cursor,
+                    "enter" | "space" => {
+                        let it = MENU[m.cursor];
+                        if !(it == MenuItem::Rename && fixed) {
+                            this.choose(it, window, cx);
+                        }
+                    }
+                    _ => return,
+                }
+                cx.stop_propagation();
+                cx.notify();
+            }))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.menu = None;
+                cx.notify();
+            }));
+        Some(deferred(anchored().position(m.at).snap_to_window_with_margin(px(8.)).child(body)).with_priority(2).into_any_element())
     }
 
     /// Свернуть или развернуть подпапки папки `id` (T1-04г).
@@ -241,6 +532,8 @@ impl Folders {
         let selected = self.results.is_none() && self.current.as_deref() == Some(&m.id);
         let id = m.id.clone();
         let fold = m.id.clone();
+        let menu = m.id.clone();
+        let drop = m.id.clone();
         // Шеврон подпапок (T1-04г): место под него — у каждой папки, чтобы значки уровня стояли ровно.
         let open = !self.folded.contains(&m.id);
         let chevron = div().id(SharedString::from(format!("mb-fold-{}", m.id))).w(px(12.)).flex_none().text_color(l.text3()).when(node.parent, |d| {
@@ -271,8 +564,24 @@ impl Folders {
             .when(m.unread > 0, |d| unread(d, m.unread, l))
             // Воронка — у открытой папки.
             .when_some(self.filters.as_ref().filter(|_| selected), |d, f| d.child(crate::filters::funnel(f, f.read(cx), l)))
-            // Меню папки (ПКМ) — с «Новой папкой» и «Переименовать» (T1-04д); «Вид беседы» — в меню письма (T1-14).
             .on_click(cx.listener(move |_, _, _, cx| cx.emit(FolderEvent::Open(id.clone()))))
+            // Меню папки (T1-04д): «Новая папка», «Переименовать»; «Вид беседы» — в меню письма (T1-14).
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    this.open_menu(menu.clone(), ev.position, cx);
+                }),
+            )
+            // Перенос (T1-04д): ролевую не тащить; бросить можно на любую папку своей учётки.
+            .when(changeable(m), |d| d.on_drag(DraggedFolder { id: m.id.clone(), name: m.name.clone() }, |f, _, _, cx| cx.new(|_| f.clone())))
+            .drag_over::<DraggedFolder>(|s, _, _, _| s.bg(crate::roles::now().row_hover()))
+            .on_drop(cx.listener(move |this, d: &DraggedFolder, _, cx| {
+                let target = this.mailboxes.iter().find(|x| x.id == drop).cloned();
+                if let Some(t) = target {
+                    this.dropped(d, DropTarget::Folder(&t), cx);
+                }
+            }))
             .into_any_element()
     }
 
@@ -356,6 +665,9 @@ impl Folders {
                 d.tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(tr!("states-account-offline-hint")).build(window, cx))
             })
             .on_click(cx.listener(|this, _, _, cx| this.toggle(OWN, cx)))
+            // Бросок папки на подпись — верхний уровень своего ящика (T1-04д).
+            .drag_over::<DraggedFolder>(|s, _, _, _| s.bg(crate::roles::now().row_hover()))
+            .on_drop(cx.listener(|this, d: &DraggedFolder, _, cx| this.dropped(d, DropTarget::Account(None), cx)))
             .into_any_element()
     }
 }
@@ -404,8 +716,9 @@ fn unread(d: Stateful<Div>, n: u32, l: &Look) -> Stateful<Div> {
 }
 
 impl Render for Folders {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let l = look(cx);
+        let menu = self.menu_layer(window, &l, cx);
         // Режим фильтров: белая карточка с фильтрами на месте дерева.
         if let Some(f) = self.filters.as_ref().filter(|f| f.read(cx).panel) {
             return div().size_full().pt(px(4.)).pr(px(8.)).text_color(l.text()).child(crate::filters::panel(
@@ -428,27 +741,112 @@ impl Render for Folders {
                     .child(tr!("folders-results", n = n)),
             );
         }
-        let rows: Vec<AnyElement> = self
-            .rows()
-            .into_iter()
-            .map(|r| match r {
+        let edit = self.edit.as_ref().map(|e| e.what.clone());
+        let mut rows: Vec<AnyElement> = Vec::new();
+        for r in self.rows() {
+            match r {
                 // Своя учётная запись — подписью над папками, без связи — с меткой «нет связи» (макет «Состояния»).
-                Row::Own => self.own_header(&l, cx),
-                Row::Branch(a) => self.branch(a, &l, cx),
-                Row::Folder(m, indent, node) => self.folder(m, indent, node, &l, cx),
-            })
-            .collect();
+                Row::Own => rows.push(self.own_header(&l, cx)),
+                Row::Branch(a) => rows.push(self.branch(a, &l, cx)),
+                // Переименование — поле на месте строки; новая папка — поле под родителем.
+                Row::Folder(m, indent, node) if edit == Some(EditKind::Rename(m.id.clone())) => rows.extend(self.edit_row(node.depth, indent, &l)),
+                Row::Folder(m, indent, node) => {
+                    rows.push(self.folder(m, indent, node, &l, cx));
+                    if matches!(&edit, Some(EditKind::New { parent: Some(p), .. }) if *p == m.id) {
+                        rows.extend(self.edit_row(node.depth + 1, indent, &l));
+                    }
+                }
+            }
+        }
+        if matches!(&edit, Some(EditKind::New { parent: None, .. })) {
+            rows.extend(self.edit_row(0, false, &l));
+        }
         let list = div().id("folders").flex().flex_col().gap(px(2.)).size_full().overflow_y_scroll().track_scroll(&self.scroll).children(rows);
         let list = div().relative().flex_1().min_h_0().child(list).child(Scrollbar::vertical(&self.scroll).mode(ScrollbarMode::Hover));
-        col.child(list)
+        col.child(list).children(menu)
+    }
+}
+
+/// Отказ сервера или ядра (`FolderFailed`) — текстом для тоста.
+pub(crate) fn failed_text(error: &str) -> String {
+    use postman_core::sync::{FOLDER_INTO_ITSELF, FOLDER_OTHER_ACCOUNT, FOLDER_UNSUPPORTED};
+    match error {
+        FOLDER_UNSUPPORTED => tr!("folder-unsupported"),
+        FOLDER_INTO_ITSELF => tr!("folder-into-itself"),
+        FOLDER_OTHER_ACCOUNT => tr!("folder-other-account"),
+        e => tr!("folder-failed", error = e.to_owned()),
+    }
+}
+
+impl crate::Mailer {
+    /// Команда папки (T1-04д): серверу; в демо папки не меняются — подсказка.
+    pub(crate) fn folder_command(&mut self, c: Command, cx: &mut Context<Self>) {
+        if !self.backend.is_live() {
+            return self.toast(pets_ui::Level::Info, tr!("folder-demo"), cx);
+        }
+        if !self.backend.send(c) {
+            self.sync_stopped(cx);
+        }
+    }
+}
+
+/// Опись части (ADR 0005, `parts.rs`): команды и сцена папок (T1-04д).
+pub(crate) const PART: crate::part::Part =
+    crate::part::Part { name: "folders", commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
+
+/// Папки (T1-04д): новая и переименовать — без клавиш, кнопками меню и палитрой.
+pub(crate) mod folder {
+    gpui_kit::actions!(folder, [New, Rename]);
+}
+
+const COMMANDS: &[pets_commands::Command] = {
+    use crate::commands::{MAIL, cmd};
+    &[cmd("folder.new", &[], MAIL), cmd("folder.rename", &[], MAIL)]
+};
+
+fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
+    root.on_action(cx.listener(|this, _: &folder::New, window, cx| this.folders.update(cx, |f, cx| f.new_here(window, cx))))
+        .on_action(cx.listener(|this, _: &folder::Rename, window, cx| this.folders.update(cx, |f, cx| f.rename_current(window, cx))))
+}
+
+/// Сцены `--screens` папок.
+pub(crate) mod scenes {
+    use gpui_kit::*;
+
+    use crate::screens::Scene;
+    use crate::{Mailer, Section};
+
+    pub(crate) const SCENES: &[Scene] = &[
+        // Меню папки «Клиенты» (T1-04д): «Новая папка», «Переименовать».
+        Scene::new("folder-menu", menu, menu_ready),
+    ];
+
+    fn menu(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.set_section(Section::Mail, cx);
+        let id = m.folders.read(cx).mailboxes.iter().find(|f| f.role.is_none() && f.parent_id.is_some()).map(|f| f.id.clone());
+        let Some(id) = id else { return Err("no nested folder in the demo".into()) };
+        m.folders.update(cx, |f, cx| f.screen_menu(&id, cx));
+        Ok(())
+    }
+
+    fn menu_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.folders.read(cx).menu_open()
+    }
+
+    /// Меню папки — не дальше своей сцены.
+    pub(crate) fn close(m: &mut Mailer, cx: &mut Context<Mailer>) {
+        m.folders.update(cx, |f, cx| {
+            f.escape(cx);
+        });
     }
 }
 
 #[cfg(test)]
 mod tests {
     // Не `super::*`: из `gpui_kit::*` пришёл бы атрибут `test` gpui вместо встроенного.
-    use super::{Folders, OWN, Row, tree};
+    use super::{DropTarget, Folders, OWN, Row, changeable, drop_on, new_folder, rename, tree};
     use postman_cache::{AccountRow, MailboxRow, Rights};
+    use postman_core::sync::Command;
     use std::collections::HashSet;
 
     /// Строки дерева коротко: `@` — своя подпись, `+id` — ветка, иначе id папки.
@@ -509,6 +907,32 @@ mod tests {
         f.open("a11".into());
         assert!(f.folded.is_empty(), "родители открытой папки развёрнуты");
         assert_eq!(shown(&f), ["a", "a1", "a11", "a2", "b", "orphan", "x", "y"]);
+    }
+
+    /// Команды папок (T1-04д): имя — без пробелов по краям; ролевую не переименовать и не перенести; перенос — на
+    /// другую папку той же учётки или на её подпись, к прежнему родителю и в саму себя — нет.
+    #[test]
+    fn folder_commands() {
+        let mut inbox = mb("in", Rights::ALL);
+        inbox.role = Some("inbox".into());
+        let a = mb("a", Rights::ALL);
+        let b = MailboxRow { parent_id: Some("a".into()), ..mb("b", Rights::ALL) };
+        let other = mb("@2/x", Rights::ALL);
+        assert!(
+            matches!(new_folder(None, Some("a"), "  New "), Some(Command::CreateFolder { account: None, parent: Some(p), name }) if p == "a" && name == "New")
+        );
+        assert!(new_folder(None, None, "  ").is_none());
+        assert!(!changeable(&inbox) && changeable(&a));
+        assert!(rename(&inbox, "x").is_none(), "ролевую — нельзя");
+        assert!(rename(&a, "a").is_none(), "то же имя");
+        assert!(matches!(rename(&a, "Z"), Some(Command::RenameFolder { mailbox, name }) if mailbox == "a" && name == "Z"));
+        assert!(matches!(drop_on(&a, DropTarget::Folder(&b)), Some(Command::MoveFolder { mailbox, parent: Some(p) }) if mailbox == "a" && p == "b"));
+        assert!(drop_on(&b, DropTarget::Folder(&a)).is_none(), "уже там");
+        assert!(matches!(drop_on(&b, DropTarget::Account(None)), Some(Command::MoveFolder { parent: None, .. })));
+        assert!(drop_on(&a, DropTarget::Account(None)).is_none(), "уже наверху");
+        assert!(drop_on(&a, DropTarget::Folder(&a)).is_none());
+        assert!(drop_on(&a, DropTarget::Folder(&other)).is_none(), "другая учётка");
+        assert!(drop_on(&inbox, DropTarget::Folder(&a)).is_none(), "ролевую — нельзя");
     }
 
     /// Ветки дерева (S4-06): папки по аккаунтам; «только чтение» — по сессии или по правам всех папок.

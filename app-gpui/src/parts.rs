@@ -20,6 +20,7 @@ pub(crate) const PARTS: &[Part] = &[
     crate::invite_card::PART,
     crate::settings::PART,
     crate::shared::PART,
+    crate::folders::PART,
     crate::labels::PART,
     crate::filters::PART,
     crate::lifecycle::PART,

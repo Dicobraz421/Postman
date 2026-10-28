@@ -37,41 +37,22 @@ postman-search.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 postman-compose.workspace = true
-pets-commands = { git = "https://github.com/Dicobraz/pets", rev = "7a450e49286553392fc3a494665670162e334793" }
-pets-i18n = { git = "https://github.com/Dicobraz/pets", rev = "7a450e49286553392fc3a494665670162e334793" }
-pets-shell = { git = "https://github.com/Dicobraz/pets", rev = "7a450e49286553392fc3a494665670162e334793" }
-pets-ui = { git = "https://github.com/Dicobraz/pets", rev = "7a450e49286553392fc3a494665670162e334793" }
+pets-commands = { git = "https://github.com/Dicobraz/pets", rev = "1fbd05c0317d69e45aa6b2bc4438f6d6013297db" }
+pets-i18n = { git = "https://github.com/Dicobraz/pets", rev = "1fbd05c0317d69e45aa6b2bc4438f6d6013297db" }
+pets-shell = { git = "https://github.com/Dicobraz/pets", rev = "1fbd05c0317d69e45aa6b2bc4438f6d6013297db" }
+pets-ui = { git = "https://github.com/Dicobraz/pets", rev = "1fbd05c0317d69e45aa6b2bc4438f6d6013297db" }
 futures = "0.3"
 tracing = "0.1"
-# Снимки экранов (`--screens`, S2-05): дескриптор окна и запись PNG.
-raw-window-handle = "0.6"
+# Снимки экранов (`--screens`, S2-05): запись PNG.
 png = "0.17"
 # Картинки `cid:` (S3-03): воркер отдаёт готовые пиксели RGBA, здесь — только кадр для gpui, без декодеров.
 image = { version = "0.25", default-features = false }
 
-[target.'cfg(windows)'.dependencies.windows-sys]
-version = "0.61"
-features = [
-    "Win32_Foundation",
-    "Win32_Globalization",
-    "Win32_Graphics_Gdi",
-    "Win32_Security",
-    "Win32_Security_Credentials",
-    "Win32_Storage_FileSystem",
-    "Win32_Storage_Xps",
-    "Win32_System_LibraryLoader",
-    "Win32_System_Console",
-    "Win32_System_Memory",
-    "Win32_System_ProcessStatus",
-    "Win32_System_Registry",
-    "Win32_System_Threading",
-    "Win32_UI_WindowsAndMessaging",
-]
-
-# Уведомления Windows (S6-07: напоминания задач при свёрнутом окне) — WinRT, та же версия, что у gpui.
-[target.'cfg(windows)'.dependencies.windows]
-version = "0.61"
-features = ["Data_Xml_Dom", "UI_Notifications"]
+# Платформенный код (окно, перетаскивание, оболочка, учётные данные) — нейтральный API `gpui_windows::pets` патча
+# Windows-платформы gpui (pets-gpui-windows, `[patch]` в корне); версия — как у gpui-kit. Своих `windows`/`windows-sys`
+# у интерфейса нет (решение владельца 2026-10-28).
+[target.'cfg(windows)'.dependencies]
+gpui-pre-windows = "=0.3.9"
 
 # Значок, версия и манифест exe (build.rs, rc.exe из Windows SDK).
 [build-dependencies]

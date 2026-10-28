@@ -267,6 +267,7 @@ settings-conv-folders = View per folder
 settings-conv-folders-hint = A conversation view of its own for some folders — on top of the general one.
 settings-folder-inherit = As everywhere
 settings-pane-group = Reading pane
+settings-thread-order = Conversation order
 settings-pane = Position
 settings-pane-hint = “Hidden” — a message opens in place of the list, Esc goes back.
 settings-pane-right = Right

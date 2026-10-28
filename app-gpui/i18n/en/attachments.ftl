@@ -46,6 +46,7 @@ att-pv-archive-danger = { $n ->
 att-pv-archive-encrypted = Some files are encrypted — their contents cannot be checked
 att-pv-archive-bomb = Suspiciously high compression (possible zip bomb) — do not extract
 att-pv-text-cut = Showing the beginning of the file — { $size }
+att-pv-doc-cut = Showing the beginning of the document
 att-pv-none = There is no built-in preview for this file type.
 att-pv-office-clean = No macros found. The built-in preview does not show document contents.
 att-pv-blocked = Opening blocked
@@ -64,3 +65,7 @@ att-pv-why-macros = Macros run code on the computer. Such files are not opened f
 att-pv-why-exe = Programs and scripts from mail are not started.
 att-pv-save-warning = The file is saved marked “from the Internet”: Office opens it in Protected View with macros disabled.
 att-pv-save-off = Saving files with macros is turned off (Settings → Security).
+
+# Dragging an attachment to another app (T1-18).
+att-drag-ready = “{ $name }” is downloaded — drag it again
+att-drag-failed = Could not drag “{ $name }”: { $error }

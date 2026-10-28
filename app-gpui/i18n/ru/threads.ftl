@@ -1,6 +1,8 @@
 # Беседа в области чтения (S5-05).
 thread-toggle = Беседа ({ $n })
 thread-quotes-show = Показать цитаты
+thread-order-oldest = Сначала старые
+thread-order-newest = Сначала новые
 thread-quotes-hide = Скрыть цитаты
 thread-quotes-hidden = … цитата скрыта
 thread-loading = загрузка беседы…
@@ -36,6 +38,15 @@ thread-prev = ← пред.
 thread-next = след. →
 thread-position = { $at } из { $n }
 folder-menu-view = Вид беседы
+folder-menu-new = Новая папка
+folder-menu-rename = Переименовать
+folder-new-placeholder = Имя папки
+folder-role-fixed = Системную папку нельзя переименовать или перенести
+folder-demo = В демо папки не меняются
+folder-unsupported = Сервер не умеет менять папки
+folder-into-itself = Папку нельзя перенести в саму себя или в её подпапку
+folder-other-account = Папку нельзя перенести в другую учётную запись
+folder-failed = Папка не изменена: { $error }
 thread-view-feed = Лента
 thread-view-stack = Стопка
 thread-view-outlook = Как Outlook
