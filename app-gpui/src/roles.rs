@@ -193,6 +193,8 @@ pub(crate) fn base(density: Option<Density>, accent: Accent, gray: bool) -> Them
             CORE.iter().map(|&(r, l, d)| (r.name().to_owned(), if dark { d } else { l })).collect();
         if gray && !dark {
             t.extend(GRAY_CORE.iter().map(|&(r, v)| (r.name().to_owned(), v)));
+            // Нерабочие часы календаря (T1-09) — темнее карточки #EDEDED: наведение «Серой» из таблицы.
+            t.insert(pm_name(Pm::CalOff).to_owned(), c(0xE5E5E5));
         }
         if let Some(&(_, light, dark_t, gray_t)) = ROWS.iter().find(|(a, ..)| *a == accent) {
             let [hover, selected] = match (dark, gray) {
