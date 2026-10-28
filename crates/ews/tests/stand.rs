@@ -431,6 +431,7 @@ fn ews_mail_folders() {
         assert!(roles.iter().any(|(r, _)| *r == MailRole::Inbox), "роль «Входящие»");
         let mut state = None;
         let mut all = Vec::new();
+        let mut via = "SyncFolderHierarchy";
         for _ in 0..25 {
             match c.sync_folders(state.as_ref(), &roles).await {
                 Ok(ch) => {
@@ -446,6 +447,7 @@ fn ews_mail_folders() {
                 // docs/EXCHANGE.md); роли из GetFolder при этом работают.
                 Err(e) if e.code() == Some("ErrorInternalServerError") => {
                     // Запасной путь — FindFolder (Deep).
+                    via = "FindFolder";
                     all = c.find_folders(&roles).await.unwrap();
                     break;
                 }
@@ -455,7 +457,7 @@ fn ews_mail_folders() {
         assert!(all.iter().any(|f| f.role == Some(MailRole::Inbox)), "«Входящие» в дереве");
         let (page, _) = c.mail_page(&FolderRef::WellKnown(WellKnown::Inbox), 0, 5).await.unwrap();
         assert!(page.len() <= 5);
-        println!("папок: {}; ролей: {}", all.len(), roles.len());
+        println!("дерево — {via}: папок {}, вложенных {}; ролей {}", all.len(), all.iter().filter(|f| f.parent.is_some()).count(), roles.len());
     });
 }
 
@@ -546,5 +548,37 @@ fn ews_mail_draft() {
             println!("черновик: сохранён, найден, удалён");
         })
         .await;
+    });
+}
+
+/// Папка: создать в корне ящика → переименовать → перенести во «Входящие» → удалить насовсем (T1-04а). Имя — с
+/// меткой прогона; папка удаляется и при падении теста.
+#[test]
+#[ignore = "боевой Exchange: S7 «Проверка на боевом Exchange»"]
+fn ews_mail_folder_ops() {
+    rt().block_on(async {
+        let mut c = client(&first()).await;
+        let tag = tag();
+        let roles = c.mail_roles().await.unwrap();
+        let inbox = roles.iter().find(|(r, _)| *r == MailRole::Inbox).map(|(_, id)| id.clone()).expect("«Входящие»");
+        let id = c.create_folder(&FolderRef::WellKnown(WellKnown::Root), &format!("{tag} folder")).await.unwrap();
+        let result = std::panic::AssertUnwindSafe(async {
+            let again = c.create_folder(&FolderRef::WellKnown(WellKnown::Root), &format!("{tag} folder")).await.unwrap_err();
+            assert_eq!(again.code(), Some("ErrorFolderExists"), "то же имя");
+            let id = c.rename_folder(&id, &format!("{tag} renamed")).await.unwrap();
+            let id = c.move_folder(&id, &FolderRef::Id(inbox.clone())).await.unwrap();
+            let tree = c.find_folders(&roles).await.unwrap();
+            let f = tree.iter().find(|f| f.name == format!("{tag} renamed")).expect("папка в дереве под новым именем");
+            assert_eq!(f.parent.as_deref(), Some(inbox.id.as_str()), "родитель — «Входящие»");
+            id
+        })
+        .catch_unwind()
+        .await;
+        let last = result.as_ref().map(|id| id.clone()).unwrap_or(id);
+        c.delete_folder(&last, DeleteMode::HardDelete).await.unwrap_or_else(|e| eprintln!("уборка папки: {}", e.code().unwrap_or("ошибка")));
+        if let Err(p) = result {
+            std::panic::resume_unwind(p);
+        }
+        println!("папка: создана, имя занято, переименована, перенесена, удалена");
     });
 }
