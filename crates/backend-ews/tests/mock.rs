@@ -676,3 +676,57 @@ fn windows_sign_in_refused() {
     assert!(live.events.try_iter().all(|e| !matches!(e, Event::Error(_))), "одна ошибка, без повторов");
     assert!(log.lock().unwrap().iter().all(|b| b != "NTLM AUTHENTICATE"), "не вошли");
 }
+
+// --- Удалено в другом клиенте (T1-20). ---
+
+/// `SyncFolderItems` с состоянием (опрос после первой загрузки): во «Входящих» оба письма корпуса удалены — одно
+/// насовсем, другое перенесено в «Удалённые» (у EWS перенос из папки — тоже `Delete` в ней). Другие папки — без
+/// изменений.
+fn deleted_elsewhere(body: &str) -> Option<String> {
+    if !(body.contains("<m:SyncFolderItems") && body.contains("<m:SyncState>")) {
+        return None;
+    }
+    let changes = if body.contains("AAMkADinbox") {
+        r#"<t:Delete><t:ItemId Id="AAMkADmsg1" ChangeKey="CQAAAA=="/></t:Delete><t:Delete><t:ItemId Id="AAMkADmsg2" ChangeKey="CQAAAB=="/></t:Delete>"#
+    } else {
+        ""
+    };
+    Some(format!(
+        r#"<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><m:SyncFolderItemsResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><m:ResponseMessages><m:SyncFolderItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>c3RhdGUy</m:SyncState><m:IncludesLastItemInRange>true</m:IncludesLastItemInRange><m:Changes>{changes}</m:Changes></m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse></s:Body></s:Envelope>"#
+    ))
+}
+
+/// Удаление и перенос на сервере → письма уходят из кэша за один опрос (сверка «снова на связи» — тот же опрос).
+#[test]
+fn letters_deleted_elsewhere_leave_the_cache() {
+    let (url, _log) = server_with(deleted_elsewhere);
+    let live = ready(&url);
+    let inbox = live.cache.mailboxes().unwrap().into_iter().find(|b| b.role.as_deref() == Some("inbox")).unwrap().id;
+    assert_eq!(live.cache.page(&inbox, 0, 50).unwrap().len(), 2, "первая загрузка");
+    live.commands.send(Command::Reconnect).unwrap();
+    live.wait("EmailsChanged", |e| matches!(e, Event::EmailsChanged));
+    assert!(live.cache.page(&inbox, 0, 50).unwrap().is_empty(), "удалённые другим клиентом — не в кэше");
+    assert_eq!(live.cache.mailboxes().unwrap().into_iter().find(|b| b.id == inbox).unwrap().total, 0, "счётчик папки");
+}
+
+/// `GetItem` письма, которого уже нет на сервере.
+const ITEM_GONE: &str = r#"<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><m:GetItemResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><m:ResponseMessages><m:GetItemResponseMessage ResponseClass="Error"><m:MessageText>The specified object was not found in the store.</m:MessageText><m:ResponseCode>ErrorItemNotFound</m:ResponseCode><m:DescriptiveLinkKey>0</m:DescriptiveLinkKey><m:Items/></m:GetItemResponseMessage></m:ResponseMessages></m:GetItemResponse></s:Body></s:Envelope>"#;
+
+/// Открыть письмо, которое удалили в другом клиенте до опроса: оно уходит из кэша, ошибки нет (ни `Body`, ни `Thread`).
+#[test]
+fn opening_a_vanished_letter_drops_it_without_error() {
+    let (url, _log) = server_with(|b| (b.contains("<m:GetItem") && b.contains("IncludeMimeContent")).then(|| ITEM_GONE.to_owned()));
+    let live = ready(&url);
+    let inbox = live.cache.mailboxes().unwrap().into_iter().find(|b| b.role.as_deref() == Some("inbox")).unwrap().id;
+    let rows = live.cache.page(&inbox, 0, 50).unwrap();
+    let (first, second) = (rows[0].clone(), rows[1].clone());
+
+    live.commands.send(Command::Body(first.id.clone())).unwrap();
+    live.wait("MailboxesChanged", |e| matches!(e, Event::MailboxesChanged)); // `Event::Error` — паника в `wait`
+    assert!(live.cache.rows_by_ids(std::slice::from_ref(&first.id)).unwrap().is_empty(), "исчезнувшее — из кэша");
+
+    live.commands.send(Command::Thread(second.thread_id.clone())).unwrap();
+    let Event::ThreadReady { ids, .. } = live.wait("ThreadReady", |e| matches!(e, Event::ThreadReady { .. })) else { unreachable!() };
+    assert!(!ids.contains(&second.id), "в цепочке — без исчезнувшего");
+    assert!(live.cache.rows_by_ids(std::slice::from_ref(&second.id)).unwrap().is_empty());
+}

@@ -658,3 +658,56 @@ fn exchange_meeting_edit_through_commands() {
     let p = person.expect("своя учётка по ResolveNames");
     println!("правка командами: одиночная и серия; карточка: телефон {}, должность {}", !p.phone.is_empty(), !p.title.is_empty());
 }
+
+/// Письмо, удалённое другим клиентом (T1-20): второй клиент EWS переносит одно в «Удалённые» (как Outlook) и удаляет
+/// другое насовсем → после опроса обоих нет во «Входящих» кэша; тело исчезнувшего — без ошибки.
+#[test]
+#[ignore = "боевой Exchange: S7 «Проверка на боевом Exchange»"]
+fn exchange_deleted_elsewhere() {
+    let a = first();
+    rt().block_on(cleanup(&a));
+    let live = Live::start(&a);
+    let tag = tag();
+    let me = test_recipient(&a.email);
+    for (n, what) in [(1, "soft"), (2, "hard")] {
+        let draft = postman_compose::Draft {
+            from: postman_compose::Address::new("", &me),
+            to: vec![postman_compose::Address::new("", &me)],
+            subject: format!("{tag} {what}"),
+            markdown: "Удалить другим клиентом.".into(),
+            ..Default::default()
+        };
+        live.send(Command::Send { draft: Box::new(draft), replace: None, ticket: n, release: postman_core::model::Release::Now });
+        live.wait("Sent", |e| matches!(e, Event::Sent { ticket, .. } if *ticket == n));
+    }
+    let soft = live.arrived(&format!("{tag} soft"));
+    let hard = live.arrived(&format!("{tag} hard"));
+    while live.events.try_recv().is_ok() {}
+
+    // Второй клиент — `crates/ews` напрямую.
+    rt().block_on(async {
+        let mut c = Client::new(&ews_url(&a).await, postman_backend_ews::auth(&a.user, &a.password)).unwrap();
+        for (row, mode) in [(&soft, DeleteMode::MoveToDeletedItems), (&hard, DeleteMode::HardDelete)] {
+            let id = postman_backend_ews::sync::parse_key(&row.id).expect("ключ EWS");
+            c.delete_mail(std::slice::from_ref(&id), mode).await.unwrap();
+        }
+    });
+    // До опроса: открыть перенесённое — оно уходит из кэша, ошибки нет (`wait` падает на `Event::Error`).
+    live.send(Command::Body(soft.id.clone()));
+    live.wait("MailboxesChanged", |e| matches!(e, Event::MailboxesChanged));
+    assert!(live.cache.rows_by_ids(std::slice::from_ref(&soft.id)).unwrap().is_empty(), "открытое исчезнувшее — из кэша");
+    let start = Instant::now();
+    loop {
+        let here: Vec<String> =
+            live.cache.page(&live.inbox(), 0, 500).unwrap().into_iter().filter(|r| r.subject.contains(&tag)).map(|r| r.subject).collect();
+        if here.is_empty() {
+            break;
+        }
+        assert!(start.elapsed() < WAIT, "удалённое другим клиентом осталось во «Входящих»: {}", here.len());
+        live.send(Command::Reconnect);
+        std::thread::sleep(Duration::from_secs(5));
+        while live.events.try_recv().is_ok() {}
+    }
+    println!("удалено другим клиентом: ушло из кэша за {} с", start.elapsed().as_secs());
+    rt().block_on(cleanup(&a));
+}
