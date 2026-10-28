@@ -169,6 +169,8 @@ pub struct Client {
     http: http::Http,
     url: url::Url,
     version: Option<ServerVersion>,
+    /// Id корня почтовых папок (`msgfolderroot`) — после первого запроса дерева.
+    root: Option<String>,
 }
 
 impl std::fmt::Debug for Client {
@@ -188,7 +190,7 @@ impl Client {
         if (url.scheme() != "https" && !plain_ok) || url.host_str().is_none() {
             return Err(Error::Http("EWS needs an https:// URL".into()));
         }
-        Ok(Client { http: http::Http::new(auth), url, version: None })
+        Ok(Client { http: http::Http::new(auth), url, version: None, root: None })
     }
 
     /// Версия сервера — после первого ответа.
