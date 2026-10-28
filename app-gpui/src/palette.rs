@@ -528,6 +528,8 @@ pub(crate) fn command_icon(id: &str) -> Option<char> {
         "mail.reply_all" => REPLY_ALL,
         "mail.forward" => FORWARD,
         "mail.forward_attached" => ATTACH,
+        "folder.new" => FOLDER,
+        "folder.rename" => EDIT,
         "mail.delete" | "compose.discard" | "meeting.discard" | "contacts.delete" => DELETE,
         "mail.due" => CLOCK,
         "mail.remind" | "view.notifications" => RINGER,

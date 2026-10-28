@@ -254,6 +254,7 @@ pub fn drive(m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) {
 fn clean_slate(m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) {
     m.close_menu(cx);
     m.close_picker(cx);
+    crate::folders::scenes::close(m, cx);
     m.close_palette(window, cx);
     m.tabs.activate_kind(crate::tabs::TabKind::Main);
     m.set_section(Section::Mail, cx);

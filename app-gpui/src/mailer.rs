@@ -213,6 +213,12 @@ impl Mailer {
                     this.show_mail_tab(cx);
                     this.open_mailbox(id.clone(), cx)
                 }
+                FolderEvent::Command(c) => {
+                    if let Some(c) = c.borrow_mut().take() {
+                        this.folder_command(c, cx);
+                    }
+                }
+                FolderEvent::Toast(text) => this.toast(pets_ui::Level::Info, text.clone(), cx),
             }),
             cx.subscribe(&reading, |this, _, ev: &ReadingEvent, cx| match ev {
                 ReadingEvent::Sandbox(level) => {
@@ -366,6 +372,10 @@ impl Mailer {
         self.on_send_sync(ev, sent, cx);
         self.cal.update(cx, |c, cx| c.on_sync(ev, cx));
         self.contacts.update(cx, |c, cx| c.on_sync(ev, cx));
+        // Папку не создать, не переименовать, не перенести (T1-04д) — тостом.
+        if let postman_core::sync::Event::FolderFailed { error, .. } = ev {
+            self.toast(pets_ui::Level::Error, crate::folders::failed_text(error), cx);
+        }
         if let postman_core::sync::Event::Tasks(reply) = ev {
             self.tasks.update(cx, |t, cx| t.on_reply(reply, cx));
         }
@@ -610,7 +620,7 @@ impl Mailer {
     /// Выделение без фокуса (T1-D): окно не активно или фокус в поле ввода, письме — строки списков нейтральные.
     /// Открытое меню строки фокус у экрана не отнимает.
     fn sync_focus(&mut self, window: &Window, cx: &mut Context<Self>) {
-        let menu = self.menu.is_some() || self.contacts.read(cx).menu_open();
+        let menu = self.menu.is_some() || self.contacts.read(cx).menu_open() || self.folders.read(cx).menu_open();
         let focused = window.is_window_active() && (self.focus.is_focused(window) || menu);
         if self.list.read(cx).focused != focused {
             self.list.update(cx, |l, cx| {
