@@ -270,6 +270,7 @@ settings-conv-folders = Вид для папки
 settings-conv-folders-hint = Свой вид беседы для отдельных папок — поверх общего.
 settings-folder-inherit = Как везде
 settings-pane-group = Панель чтения
+settings-thread-order = Порядок в беседе
 settings-pane = Расположение
 settings-pane-hint = «Скрыта» — письмо открывается вместо списка, Esc — назад.
 settings-pane-right = Справа
