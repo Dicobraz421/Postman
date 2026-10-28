@@ -210,6 +210,7 @@ settings-hint-vacation = Ответ «Нет на месте» хранится 
 # Общие.
 settings-look = Вид
 settings-theme = Тема
+settings-theme-gray = Серая
 settings-theme-hint = «Как в Windows» следует светлой или тёмной теме и акценту системы.
 settings-density = Плотность
 settings-density-hint = Высота строки списка писем и элементов управления.

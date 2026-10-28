@@ -522,6 +522,7 @@ impl Render for Mailer {
         }
         // Вкладку сменили мимо `sync_mail_tab` (закрыли письмо или встречу) — части почты по активной вкладке.
         self.sync_mail_tab(cx);
+        self.sync_focus(window, cx);
         self.drive_bench(window, cx);
         screens::drive(self, window, cx);
         if std::mem::take(&mut self.refocus) {
@@ -611,6 +612,33 @@ impl Render for Mailer {
 
 // --- раскладка (DESIGN «Главное окно»): рейл | папки | список | чтение ---
 
+impl Mailer {
+    /// Выделение без фокуса (T1-D): окно не активно или фокус в поле ввода, письме — строки списков нейтральные.
+    /// Открытое меню строки фокус у экрана не отнимает.
+    fn sync_focus(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let menu = self.menu.is_some() || self.folder_menu.is_some() || self.contacts.read(cx).menu_open();
+        let focused = window.is_window_active() && (self.focus.is_focused(window) || menu);
+        if self.list.read(cx).focused != focused {
+            self.list.update(cx, |l, cx| {
+                l.focused = focused;
+                cx.notify();
+            });
+        }
+        if self.folders.read(cx).focused != focused {
+            self.folders.update(cx, |f, cx| {
+                f.focused = focused;
+                cx.notify();
+            });
+        }
+        if self.contacts.read(cx).focused != focused {
+            self.contacts.update(cx, |c, cx| {
+                c.focused = focused;
+                cx.notify();
+            });
+        }
+    }
+}
+
 /// Ширина панели папок и карточки списка (макет главного окна).
 pub(crate) const W_FOLDERS: f32 = 236.0;
 pub(crate) const W_LIST: f32 = 452.0;
@@ -652,7 +680,9 @@ impl Mailer {
         }
         let mut body = div().flex().flex_1().min_h_0().pr(px(8.)).child(self.rail(l, cx));
         if mail {
-            body = body.child(self.folders.clone().cached(StyleRefinement::default().w(px(W_FOLDERS)).h_full().flex_none()));
+            let folders = self.folders.clone().cached(StyleRefinement::default().w(px(W_FOLDERS)).h_full().flex_none());
+            // «Серая» (T1-D): панель папок — карточкой, как список и чтение.
+            body = if l.gray() { body.child(card(l).w(px(W_FOLDERS)).flex_none().mr(px(8.)).child(folders)) } else { body.child(folders) };
             let list = || self.list.clone().cached(full());
             // Ответ — в области чтения над письмом (S5-06б): своя кэшируемая view сверху карточки.
             // Выделено несколько писем — сводка на месте письма (S5-08).
