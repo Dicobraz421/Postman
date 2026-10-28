@@ -192,6 +192,11 @@ fn letters(cache: &Cache, folder: &str) -> postman_cache::Result<Vec<EmailRow>> 
     cache.page(folder, 0, n)
 }
 
+/// Письма нет на сервере (удалено или перенесено в другом клиенте).
+fn is_gone(e: &postman_ews::Error) -> bool {
+    e.code() == Some("ErrorItemNotFound")
+}
+
 fn db(e: postman_cache::Error) -> postman_ews::Error {
     postman_ews::Error::Xml(format!("cache: {e}"))
 }
@@ -708,6 +713,16 @@ impl Ews {
         Ok(())
     }
 
+    /// Письма, которых больше нет на сервере: из кэша, счётчики папок заново — событиями, без ошибки.
+    fn vanished(&mut self, keys: &[String], notify: &impl Fn(Event)) -> postman_ews::Result<()> {
+        tracing::info!(count = keys.len(), "ews: letters gone on the server, dropped from the cache");
+        self.cache.delete_emails(keys).map_err(db)?;
+        self.write_folders()?;
+        notify(Event::MailboxesChanged);
+        notify(Event::EmailsChanged);
+        Ok(())
+    }
+
     async fn blob(&mut self, blob_id: &str) -> postman_ews::Result<Vec<u8>> {
         if let Some(b) = self.cache.blob(blob_id).map_err(db)? {
             return Ok(b);
@@ -912,19 +927,30 @@ impl Ews {
 
     async fn handle(&mut self, cmd: Command, notify: &impl Fn(Event)) -> postman_ews::Result<()> {
         match cmd {
-            Command::Body(key) => {
-                self.body(&key).await?;
-                notify(Event::BodyReady(key));
-            }
+            Command::Body(key) => match self.body(&key).await {
+                Ok(()) => notify(Event::BodyReady(key)),
+                // Письма уже нет на сервере (удалено в другом клиенте до опроса): из кэша, без ошибки (T1-20).
+                Err(e) if is_gone(&e) => self.vanished(&[key], notify)?,
+                Err(e) => return Err(e),
+            },
             Command::Thread(thread) => {
                 let mut rows = self.cache.thread(&thread).map_err(db)?;
                 rows.sort_by_key(|r| r.received_at);
+                let mut gone = Vec::new();
                 for r in &rows {
                     if self.cache.body(&r.id).map_err(db)?.is_none() {
-                        self.body(&r.id).await?;
+                        match self.body(&r.id).await {
+                            Ok(()) => {}
+                            Err(e) if is_gone(&e) => gone.push(r.id.clone()),
+                            Err(e) => return Err(e),
+                        }
                     }
                 }
-                notify(Event::ThreadReady { thread, ids: rows.into_iter().map(|r| r.id).collect() });
+                let ids = rows.into_iter().map(|r| r.id).filter(|id| !gone.contains(id)).collect();
+                if !gone.is_empty() {
+                    self.vanished(&gone, notify)?;
+                }
+                notify(Event::ThreadReady { thread, ids });
             }
             Command::Blob { blob_id, .. } => match self.blob(&blob_id).await {
                 Ok(data) => notify(Event::BlobReady { blob_id, data: Arc::new(data) }),
