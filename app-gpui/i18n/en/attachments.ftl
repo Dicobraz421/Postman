@@ -64,3 +64,7 @@ att-pv-why-macros = Macros run code on the computer. Such files are not opened f
 att-pv-why-exe = Programs and scripts from mail are not started.
 att-pv-save-warning = The file is saved marked “from the Internet”: Office opens it in Protected View with macros disabled.
 att-pv-save-off = Saving files with macros is turned off (Settings → Security).
+
+# Dragging an attachment to another app (T1-18).
+att-drag-ready = “{ $name }” is downloaded — drag it again
+att-drag-failed = Could not drag “{ $name }”: { $error }
