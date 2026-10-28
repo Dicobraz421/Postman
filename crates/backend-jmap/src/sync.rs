@@ -1133,8 +1133,9 @@ async fn handle(
         }
         // «Повторить сейчас» — забота цикла синхронизации.
         Command::Reconnect => {}
-        // Папки — T1-04в: пока отказ «not supported», интерфейс не ждёт ответа.
-        cmd @ (Command::CreateFolder { .. } | Command::RenameFolder { .. } | Command::MoveFolder { .. }) => {
+        // Папки — T1-04в, страница справочника — T1-25в: пока отказ «not supported» и пустая страница, интерфейс
+        // не ждёт ответа.
+        cmd @ (Command::CreateFolder { .. } | Command::RenameFolder { .. } | Command::MoveFolder { .. } | Command::DirectoryPage { .. }) => {
             if let Some(e) = cmd.unsupported() {
                 notify(e);
             }

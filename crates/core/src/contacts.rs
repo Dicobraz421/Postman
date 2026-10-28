@@ -108,6 +108,12 @@ impl AddressBook {
         }
     }
 
+    /// Страница справочника (`Event::DirectoryPage`, T1-25б): люди с адресом — к уже известным, без дублей по адресу
+    /// (повтор страницы и человек на двух страницах — одна запись).
+    pub fn add_directory_page(&mut self, people: &[crate::model::Principal]) {
+        self.add_directory(people.iter().filter_map(|p| Some((p.display_name(), p.email.as_deref()?))));
+    }
+
     /// Влить записи другой книги (например, пришедшие раньше контакты с сервера).
     pub fn absorb(&mut self, other: AddressBook) {
         for e in other.entries.into_values() {
@@ -398,6 +404,27 @@ mod tests {
         let e = &b.suggest("мария", 1, NOW)[0];
         assert_eq!(e.display(), "Мария Иванова <m@x.ru>");
         assert_eq!(e.source, Source::Contact);
+    }
+
+    /// Справочник по страницам (T1-25б): две страницы с общим человеком (адрес в другом регистре) — без дублей, их
+    /// люди — в подсказках.
+    #[test]
+    fn directory_pages_are_merged_without_duplicates() {
+        let p = |name: &str, email: Option<&str>| crate::model::Principal {
+            id: name.into(),
+            name: name.into(),
+            email: email.map(str::to_string),
+            kind: "individual".into(),
+            ..Default::default()
+        };
+        let mut b = AddressBook::default();
+        b.add_directory_page(&[p("Анна Смирнова", Some("anna@corp.example")), p("Без адреса", None), p("Борис", Some("boris@corp.example"))]);
+        b.add_directory_page(&[p("Борис Петров", Some("Boris@corp.example")), p("Вера", Some("vera@corp.example"))]);
+        assert_eq!(b.len(), 3);
+        assert_eq!(emails(&b, "бор"), ["boris@corp.example"]);
+        assert_eq!(b.get("boris@corp.example").map(|e| e.source), Some(Source::Directory));
+        assert_eq!(emails(&b, "вера"), ["vera@corp.example"]);
+        assert!(emails(&b, "без").is_empty());
     }
 
     #[test]

@@ -197,6 +197,13 @@ pub enum Command {
     Settings(settings::Request),
     /// Перечитать личные контакты и справочник → `ContactsLoaded`, `DirectoryLoaded` (и `Contacts` для подсказок).
     Contacts,
+    /// Страница справочника (T1-25б): до `max` людей с `offset` по порядку пути → `Event::DirectoryPage`. `account` —
+    /// учётная запись профиля (`None` — основная).
+    DirectoryPage {
+        account: Option<String>,
+        offset: u32,
+        max: u32,
+    },
     /// Люди справочника по набранной строке → `PeopleFound` (S7-08): поиск людей — функция ядра, каждый путь отвечает
     /// своим поиском (JMAP — `Principal/query`, EWS — `FindPeople`, запасной — `ResolveNames`); справочника нет — пусто.
     FindPeople {
@@ -312,6 +319,7 @@ impl Command {
             Command::Keyword { id, .. } | Command::Move { id, .. } => one(id),
             Command::RenameFolder { mailbox, .. } | Command::MoveFolder { mailbox, .. } => one(mailbox),
             Command::CreateFolder { account, .. } => Target::Profile(postman_cache::profile_of(account.as_deref()).map(str::to_owned)),
+            Command::DirectoryPage { account, .. } => Target::Profile(account.clone()),
             Command::Blob { blob_id, .. } => one(blob_id),
             Command::LoadMore { mailbox } => one(mailbox),
             Command::Unsend { scheduled, .. } => one(&scheduled.submission),
@@ -603,6 +611,16 @@ pub enum Event {
     ContactsLoaded(Vec<ContactCard>),
     /// Справочник: сотрудники, переговорные и ресурсы с адресами (раздел «Контакты», подсказки адресов).
     DirectoryLoaded(Vec<Principal>),
+    /// Страница справочника (`Command::DirectoryPage`, T1-25б): `people` с `offset`; `total` — всего людей, если путь
+    /// знает; `search_only` — справочник у сервера только поиском (`FindPeople`), страниц не будет. Пути без
+    /// справочника — пустая страница ([`Event::no_directory`]).
+    DirectoryPage {
+        account: Option<String>,
+        offset: u32,
+        people: Vec<Principal>,
+        total: Option<u32>,
+        search_only: bool,
+    },
     /// Найдено в справочнике по строке `FindPeople` — к уже загруженному (подсказки адресов, поиск в «Контактах»).
     PeopleFound {
         text: String,
@@ -675,14 +693,30 @@ pub const FOLDER_OTHER_ACCOUNT: &str = "folder cannot be moved to another accoun
 
 impl Command {
     /// Ответ пути, который команду не умеет, — чтобы интерфейс не ждал: у команд над папками — `FolderFailed`
-    /// «not supported». У прочих — `None` (путь пишет в журнал).
+    /// «not supported», у страницы справочника — пустая страница. У прочих — `None` (путь пишет в журнал).
     pub fn unsupported(&self) -> Option<Event> {
         let mailbox = match self {
             Command::CreateFolder { parent, .. } => parent.clone(),
             Command::RenameFolder { mailbox, .. } | Command::MoveFolder { mailbox, .. } => Some(mailbox.clone()),
+            Command::DirectoryPage { account, offset, .. } => return Some(Event::no_directory(account.clone(), *offset)),
             _ => return None,
         };
         Some(Event::FolderFailed { mailbox, error: FOLDER_UNSUPPORTED.into() })
+    }
+}
+
+impl Event {
+    /// Ответ на `DirectoryPage` срезом справочника, загруженного целиком (JMAP: тот же список, что в
+    /// `DirectoryLoaded`): `max` людей с `offset`, `total` — длина списка.
+    pub fn directory_slice(account: Option<String>, all: &[Principal], offset: u32, max: u32) -> Event {
+        let people = all.iter().skip(offset as usize).take(max as usize).cloned().collect();
+        let total = Some(u32::try_from(all.len()).unwrap_or(u32::MAX));
+        Event::DirectoryPage { account, offset, people, total, search_only: false }
+    }
+
+    /// Ответ пути без справочника: пустая страница, больше нет.
+    pub fn no_directory(account: Option<String>, offset: u32) -> Event {
+        Event::DirectoryPage { account, offset, people: Vec::new(), total: Some(0), search_only: false }
     }
 }
 
@@ -997,6 +1031,30 @@ mod tests {
             &notify,
         );
         assert!(matches!(body, Some(Command::Body(_))) && !read.get());
+    }
+
+    /// Справочник по страницам (T1-25б): команда — в свою учётную запись; JMAP отвечает срезом загруженного, путь без
+    /// справочника — пустой страницей.
+    #[test]
+    fn directory_pages_route_and_slice() {
+        let target = |c: Command| c.routes().into_iter().map(|(t, _)| t).collect::<Vec<_>>();
+        let page = |account: Option<&str>| Command::DirectoryPage { account: account.map(str::to_owned), offset: 0, max: 100 };
+        assert_eq!(target(page(None)), [Target::Profile(None)]);
+        assert_eq!(target(page(Some("@2"))), [Target::Profile(Some("@2".into()))]);
+        assert!(page(None).for_each_account().is_none());
+        let all: Vec<Principal> = (0..5).map(|n| Principal { id: n.to_string(), email: Some(format!("p{n}@x.ru")), ..Default::default() }).collect();
+        let ids = |e: Event| match e {
+            Event::DirectoryPage { offset, people, total, search_only, .. } => {
+                (offset, people.into_iter().map(|p| p.id).collect::<Vec<_>>(), total, search_only)
+            }
+            _ => unreachable!(),
+        };
+        assert_eq!(ids(Event::directory_slice(None, &all, 0, 2)), (0, vec!["0".into(), "1".into()], Some(5), false));
+        assert_eq!(ids(Event::directory_slice(None, &all, 4, 2)), (4, vec!["4".into()], Some(5), false));
+        assert_eq!(ids(Event::directory_slice(None, &all, 9, 2)), (9, vec![], Some(5), false));
+        let none = page(Some("@2")).unsupported().unwrap();
+        assert!(matches!(&none, Event::DirectoryPage { account: Some(a), .. } if a == "@2"));
+        assert_eq!(ids(none), (0, vec![], Some(0), false));
     }
 
     /// События дополнительной учётной записи — с её владельцем, как календарь коллеги; основной — как есть.
