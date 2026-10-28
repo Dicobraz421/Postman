@@ -29,7 +29,7 @@ use postman_ews::{Client, DeleteMode, FolderId, FolderRef, ItemId, MailHeader, M
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::areas::EwsAreas;
-use crate::{auth, sync_error};
+use crate::{auth, sign_in_error, sync_error};
 
 /// Писем папки при первом входе — не больше (дальше — «Загрузить ещё»).
 pub const INITIAL: u32 = 500;
@@ -242,6 +242,57 @@ fn host_of(url: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_owned())
 }
 
+/// Имя учётной записи из логина: `DOMAIN\user` → `user`, `user@domain` → `user`; пусто — пользователь Windows
+/// (`USERNAME`, вход без пароля).
+fn account_name(login: &str) -> String {
+    let login = login.trim();
+    let name = login.rsplit_once('\\').map_or(login, |(_, u)| u);
+    let name = name.split_once('@').map_or(name, |(u, _)| u);
+    if name.is_empty() { std::env::var("USERNAME").unwrap_or_default() } else { name.to_owned() }
+}
+
+/// Свой адрес среди найденных `ResolveNames`: точно логин; иначе единственный найденный; иначе тот, чья часть до
+/// `@` — имя учётной записи (одна такая). Не угадать — `None`.
+fn pick_own(people: &[postman_ews::Person], login: &str, account: &str) -> Option<String> {
+    let people: Vec<&postman_ews::Person> = people.iter().filter(|p| !p.group && p.email.contains('@')).collect();
+    if let Some(p) = people.iter().find(|p| p.email.eq_ignore_ascii_case(login.trim())) {
+        return Some(p.email.clone());
+    }
+    if let [only] = people.as_slice() {
+        return Some(only.email.clone());
+    }
+    let local: Vec<&&postman_ews::Person> =
+        people.iter().filter(|p| !account.is_empty() && p.email.split('@').next().is_some_and(|l| l.eq_ignore_ascii_case(account))).collect();
+    match local.as_slice() {
+        [one] => Some(one.email.clone()),
+        _ => None,
+    }
+}
+
+/// Адрес ящика у сервера: `ResolveNames` по логину-адресу, затем по имени учётной записи (T1-02а: логин бывает
+/// `DOMAIN\user` или UPN, а у входа без пароля его может не быть вовсе).
+async fn own_address(client: &mut Client, login: &str) -> Option<String> {
+    let account = account_name(login);
+    let mut queries = Vec::new();
+    if is_mail_address(login) {
+        queries.push(login.trim().to_owned());
+    }
+    if !account.is_empty() {
+        queries.push(account.clone());
+    }
+    for q in queries {
+        match client.resolve_names(&q, 20).await {
+            Ok(people) => {
+                if let Some(email) = pick_own(&people, login, &account) {
+                    return Some(email);
+                }
+            }
+            Err(e) => tracing::debug!(code = e.code().unwrap_or(""), "ews: own address"),
+        }
+    }
+    None
+}
+
 /// Вход: адрес EWS из Autodiscover (логин — адрес почты), иначе адрес учётной записи; роли стандартных папок.
 async fn sign_in(url: &str, user: &str, password: &str) -> Result<(Client, String, Vec<(MailRole, FolderId)>), postman_ews::Error> {
     let a = auth(user, password);
@@ -280,9 +331,17 @@ async fn run(
     notify: &impl Fn(Event),
 ) {
     notify(Event::Status(Status::Connecting { url: host_of(&url).unwrap_or_default() }));
-    let (client, ews_url, roles) = match sign_in(&url, &user, &password).await {
+    let (mut client, ews_url, roles) = match sign_in(&url, &user, &password).await {
         Ok(x) => x,
-        Err(e) => return notify(Event::Error(sync_error(Stage::Connect, &e))),
+        // Отказ входа — один раз, без повторов по кругу (не блокировать учётку).
+        Err(e) => return notify(Event::Error(sign_in_error(Stage::Connect, &auth(&user, &password), &e))),
+    };
+    let email = match own_address(&mut client, &user).await {
+        Some(e) => e,
+        None => {
+            tracing::info!("ews: own address not resolved, using the login");
+            user.clone()
+        }
     };
     if let Some(v) = client.server_version() {
         tracing::info!("exchange {}.{}.{}", v.major, v.minor, v.build);
@@ -290,7 +349,7 @@ async fn run(
     let scope = in_profile(profile.as_deref(), None);
     let mut me = Ews {
         client,
-        email: user.clone(),
+        email,
         profile,
         scope,
         roles,

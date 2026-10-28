@@ -111,16 +111,23 @@ struct Live {
     events: Receiver<Event>,
     cache: Cache,
     features: Features,
+    /// Адрес ящика, который синхронизация нашла у сервера (`Event::Me`).
+    me: String,
 }
 
 impl Live {
     /// Учётка Exchange, как её заводит «Добавить аккаунт»: адрес — URL EWS, вход — логин и пароль.
     fn start(a: &Account2) -> Live {
+        Live::start_with(a, &a.password)
+    }
+
+    /// Учётка с этим паролем; пустой — вход учётной записью Windows без пароля (T1-02а).
+    fn start_with(a: &Account2, password: &str) -> Live {
         worker_next_to_tests();
         let url = rt().block_on(ews_url(a));
         let (tx, events) = std::sync::mpsc::channel();
         let cache = Cache::open_in_memory().unwrap();
-        let account = Account { url, auth: Auth::Basic { user: a.user.clone(), password: a.password.clone() } };
+        let account = Account { url, auth: Auth::Basic { user: a.user.clone(), password: password.to_owned() } };
         let commands = postman_backend_ews::EwsPlugin.spawn(Spawn {
             account,
             profile: None,
@@ -130,9 +137,11 @@ impl Live {
             repaint: Box::new(|| {}),
             areas: Vec::new(),
         });
-        let mut live = Live { commands, events, cache, features: Features::NONE };
+        let mut live = Live { commands, events, cache, features: Features::NONE, me: String::new() };
         let Event::Features(f) = live.wait("Features", |e| matches!(e, Event::Features(_))) else { unreachable!() };
         live.features = f;
+        let Event::Me { address, .. } = live.wait("Me", |e| matches!(e, Event::Me { .. })) else { unreachable!() };
+        live.me = address.email;
         live.wait("Synced", |e| matches!(e, Event::Status(Status::Synced)));
         live
     }
@@ -204,7 +213,28 @@ fn sign_in() {
     for role in ["inbox", "sent", "drafts", "trash"] {
         assert!(boxes.iter().any(|b| b.role.as_deref() == Some(role)), "папка {role}");
     }
+    assert!(live.me.eq_ignore_ascii_case(&first().email), "адрес ящика — у сервера, совпал с учёткой");
     println!("папок: {}", boxes.len());
+}
+
+/// Вход текущим пользователем Windows без пароля (T1-02а): адрес ящика найден у сервера. Только если сам процесс
+/// запущен от тестовой учётки (`runas`): вход Windows на машине владельца — его ящик, тесты его не трогают (S7).
+#[test]
+#[ignore = "боевой Exchange: S7 «Проверка на боевом Exchange»; процесс — от тестовой учётки"]
+fn sign_in_windows() {
+    let a = first();
+    let me = env("USERNAME").unwrap_or_default().to_lowercase();
+    let login = a.user.to_lowercase();
+    let account = login.rsplit_once('\\').map_or(login.as_str(), |(_, u)| u);
+    let account = account.split_once('@').map_or(account, |(u, _)| u);
+    if me.is_empty() || me != account {
+        println!("пропуск: процесс не от тестовой учётки — вход Windows дал бы чужой ящик");
+        return;
+    }
+    let live = Live::start_with(&a, "");
+    assert!(live.me.eq_ignore_ascii_case(&a.email), "адрес ящика — у сервера");
+    assert!(live.cache.mailboxes().unwrap().iter().any(|b| b.role.as_deref() == Some("inbox")));
+    println!("вход Windows: почта есть, адрес найден");
 }
 
 /// Почта через синхронизацию Postman: письмо себе, во «Входящих», тело, «прочитано», удаление.
