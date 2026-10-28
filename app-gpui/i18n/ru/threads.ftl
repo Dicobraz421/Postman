@@ -1,6 +1,8 @@
 # Беседа в области чтения (S5-05).
 thread-toggle = Беседа ({ $n })
 thread-quotes-show = Показать цитаты
+thread-order-oldest = Сначала старые
+thread-order-newest = Сначала новые
 thread-quotes-hide = Скрыть цитаты
 thread-quotes-hidden = … цитата скрыта
 thread-loading = загрузка беседы…

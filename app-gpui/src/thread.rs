@@ -249,9 +249,24 @@ impl ReadingPane {
     }
 
     /// Соседнее письмо беседы от открытого (Ctrl+→ / Ctrl+←).
-    pub(crate) fn thread_neighbor(&self, delta: isize) -> Option<EmailRow> {
+    /// Ctrl+→ / Ctrl+← — по порядку на экране (T1-16б): при «сначала новые» вперёд — к более старому.
+    pub(crate) fn thread_neighbor(&self, delta: isize, newest: bool) -> Option<EmailRow> {
         let id = &self.reading.as_ref()?.row.id;
-        self.feed.as_ref()?.conv.neighbor(id, delta).cloned()
+        self.feed.as_ref()?.conv.neighbor(id, screen_step(delta, newest)).cloned()
+    }
+
+    /// Переключатель порядка в строке беседы (T1-16б): та же настройка, что в «Настройки → Чтение».
+    fn order_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let l = crate::roles::look(cx);
+        let newest = newest_first(cx);
+        crate::buttons::secondary("thread-order", &l)
+            .h(px(26.))
+            .px_2()
+            .child(tr!(if newest { "thread-order-newest" } else { "thread-order-oldest" }))
+            .on_click(cx.listener(|_, _, _, cx| {
+                crate::prefs::update(cx, |p| p.reading.thread_order = flip(p.reading.thread_order));
+                cx.notify();
+            }))
     }
 
     /// Ряд над письмом: «Беседа (N)», в ленте — «Показать цитаты»; у письма без беседы — ничего.
@@ -275,7 +290,9 @@ impl ReadingPane {
                 d.child(button("thread-quotes", quotes, self.quotes).on_click(cx.listener(|this, _, _, cx| this.toggle_quotes(cx))))
             })
             .when(f.waiting, |d| d.child(div().text_color(l.text2()).child(tr!("thread-loading"))))
-            .child(div().flex_1());
+            .child(div().flex_1())
+            // Порядок писем (T1-16б) — у ленты, когда она показана.
+            .when(self.feed_on, |d| d.child(self.order_button(cx)));
         Some(bar.into_any_element())
     }
 
@@ -288,7 +305,7 @@ impl ReadingPane {
         // Картинки `cid:` в ленте не грузим: на их месте подписи; письмо целиком — в обычном виде.
         let images = Images::new();
         let mut col = div().flex().flex_col().gap_2();
-        for item in &f.conv.items {
+        for item in &ordered(&f.conv.items, newest_first(cx)) {
             match *item {
                 Item::Day(day) => {
                     let label = if day == today {
@@ -472,6 +489,7 @@ impl ReadingPane {
                 )
                 .child(div().flex_1())
                 .when(f.waiting, |d| d.child(tr!("thread-loading")))
+                .child(self.order_button(cx))
                 .into_any_element(),
         )
     }
@@ -482,7 +500,11 @@ impl ReadingPane {
         let f = self.feed.as_ref()?;
         let none = Images::new();
         let mut col = div().flex().flex_col();
-        for (n, m) in f.conv.messages.iter().enumerate() {
+        let mut order: Vec<usize> = (0..f.conv.messages.len()).collect();
+        if newest_first(cx) {
+            order.reverse();
+        }
+        for (n, m) in order.into_iter().filter_map(|n| f.conv.messages.get(n).map(|m| (n, m))) {
             let id = m.row.id.clone();
             let current = r.row.id == id;
             let who = if m.mine {
@@ -681,7 +703,7 @@ impl ReadingPane {
                 .child(label)
                 .when(on, |d| {
                     d.on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(row) = this.thread_neighbor(delta) {
+                        if let Some(row) = this.thread_neighbor(delta, false) {
                             cx.emit(ReadingEvent::Open(row));
                         }
                     }))
@@ -714,7 +736,8 @@ impl ReadingPane {
 impl Mailer {
     /// Ctrl+→ / Ctrl+←: следующее или предыдущее письмо беседы — в области чтения (список не трогаем).
     pub(crate) fn thread_step(&mut self, delta: isize, cx: &mut Context<Self>) {
-        if let Some(row) = self.reading.read(cx).thread_neighbor(delta) {
+        let newest = newest_first(cx);
+        if let Some(row) = self.reading.read(cx).thread_neighbor(delta, newest) {
             self.open_letter(row, cx);
         }
     }
@@ -733,6 +756,46 @@ impl Mailer {
     pub(crate) fn thread_arrow(&mut self, how: Fold, cx: &mut Context<Self>) -> bool {
         self.section == crate::Section::Mail && self.list.update(cx, |l, cx| l.fold(how, cx))
     }
+}
+
+/// Порядок в беседе — «сначала новые» (T1-16б, `Reading::thread_order`).
+fn newest_first(cx: &App) -> bool {
+    crate::prefs::get(cx).reading.thread_order == postman_core::prefs::ThreadOrder::NewestFirst
+}
+
+fn flip(o: postman_core::prefs::ThreadOrder) -> postman_core::prefs::ThreadOrder {
+    use postman_core::prefs::ThreadOrder::*;
+    if o == NewestFirst { OldestFirst } else { NewestFirst }
+}
+
+/// Шаг по беседе в порядке хранения (старые первыми) для шага на экране.
+pub(crate) fn screen_step(delta: isize, newest: bool) -> isize {
+    if newest { -delta } else { delta }
+}
+
+/// Лента в порядке на экране: «сначала новые» — дни от нового к старому, в дне — письма от нового к старому.
+pub(crate) fn ordered(items: &[Item], newest: bool) -> Vec<Item> {
+    if !newest {
+        return items.to_vec();
+    }
+    let mut groups: Vec<Vec<Item>> = Vec::new();
+    for it in items {
+        match it {
+            Item::Day(_) => groups.push(vec![*it]),
+            _ => match groups.last_mut() {
+                Some(g) => g.push(*it),
+                None => groups.push(vec![*it]),
+            },
+        }
+    }
+    groups.reverse();
+    groups
+        .into_iter()
+        .flat_map(|g| {
+            let (day, msgs): (Vec<Item>, Vec<Item>) = g.into_iter().partition(|i| matches!(i, Item::Day(_)));
+            day.into_iter().chain(msgs.into_iter().rev())
+        })
+        .collect()
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
@@ -876,5 +939,24 @@ pub(crate) mod scenes {
                 l.select(i, cx);
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ordered, screen_step};
+    use postman_core::thread::Item;
+
+    /// Порядок беседы (T1-16б): «сначала новые» — дни и письма в дне от нового к старому; Ctrl+→ ведёт к более
+    /// старому письму.
+    #[test]
+    fn newest_first_reverses_days_and_letters() {
+        let d1 = jiff::civil::date(2026, 10, 27);
+        let d2 = jiff::civil::date(2026, 10, 28);
+        let items = [Item::Day(d1), Item::Message(0), Item::Message(1), Item::Day(d2), Item::Message(2)];
+        assert_eq!(ordered(&items, false), items);
+        assert_eq!(ordered(&items, true), [Item::Day(d2), Item::Message(2), Item::Day(d1), Item::Message(1), Item::Message(0)]);
+        assert_eq!(screen_step(1, false), 1);
+        assert_eq!(screen_step(1, true), -1, "вперёд на экране — к более старому");
     }
 }

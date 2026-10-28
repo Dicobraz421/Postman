@@ -738,6 +738,17 @@ impl SettingsView {
             }
             folders = folders.child(row(name.clone(), None, seg_group(items, l), l));
         }
+        let orders: Vec<Stateful<Div>> = postman_core::prefs::ThreadOrder::ALL
+            .into_iter()
+            .enumerate()
+            .map(|(i, o)| {
+                let name = tr!(if o == postman_core::prefs::ThreadOrder::NewestFirst { "thread-order-newest" } else { "thread-order-oldest" });
+                seg(("settings-thread-order", i), name, p.thread_order == o, true, l).on_click(cx.listener(move |_, _, _, cx| {
+                    crate::prefs::update(cx, |p| p.reading.thread_order = o);
+                    cx.notify();
+                }))
+            })
+            .collect();
         let panes: Vec<Stateful<Div>> = Pane::ALL
             .into_iter()
             .enumerate()
@@ -769,6 +780,8 @@ impl SettingsView {
                     .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("settings-conv-folders-hint")))
                     .child(folders)
             })
+            // Порядок писем беседы (T1-16б): лента, стопка; тот же переключатель — в строке беседы.
+            .child(row(tr!("settings-thread-order"), None, seg_group(orders, l), l))
             .child(group(tr!("settings-pane-group"), l))
             .child(row(tr!("settings-pane"), Some(tr!("settings-pane-hint")), seg_group(panes, l), l))
             // Приглашение (S5-24): карточка над текстом письма или колонка справа.
