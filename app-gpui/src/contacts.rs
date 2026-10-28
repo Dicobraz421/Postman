@@ -1364,7 +1364,11 @@ impl ContactsView {
             .child(if self.source == Source::Frequent && !searching {
                 self.order_picker(&l, cx).into_any_element()
             } else {
-                div().text_size(px(12.)).text_color(l.text2()).child(tr!(if searching { "contacts-sort-match" } else { "contacts-sort-name" })).into_any_element()
+                div()
+                    .text_size(px(12.))
+                    .text_color(l.text2())
+                    .child(tr!(if searching { "contacts-sort-match" } else { "contacts-sort-name" }))
+                    .into_any_element()
             });
         let list = list(self.list.clone(), cx.processor(|this, ix: usize, _window, cx| this.item(ix, cx))).size_full();
         let letters: Vec<(char, usize)> = self
@@ -1422,12 +1426,13 @@ impl ContactsView {
                     .child(tr!(o.key()))
                     .on_click(cx.listener(move |this, _, _, cx| this.set_order(o, cx)))
             });
-            let menu = crate::composer::menu_box("freq-order-menu", l).top(px(26.)).left_auto().right_0().min_w(px(180.)).children(items).on_mouse_down_out(
-                cx.listener(|this, _, _, cx| {
-                    this.order_menu = false;
-                    cx.notify();
-                }),
-            );
+            let menu =
+                crate::composer::menu_box("freq-order-menu", l).top(px(26.)).left_auto().right_0().min_w(px(180.)).children(items).on_mouse_down_out(
+                    cx.listener(|this, _, _, cx| {
+                        this.order_menu = false;
+                        cx.notify();
+                    }),
+                );
             deferred(menu).with_priority(1)
         });
         div()
@@ -2201,10 +2206,10 @@ pub(crate) mod scenes {
     pub(crate) const SCENES: &[Scene] = &[
         // Раздел «Контакты»: список и карточка первого контакта (S4-02).
         Scene::new("contacts", contacts, contacts_ready).live(),
-        // Форма правки первого контакта (демо).
-        Scene::new("contact-edit", edit, edit_ready).continues(),
         // Контекстное меню строки (T1-23): правая кнопка по коллеге справочника, в панели — другая запись.
         Scene::new("contacts-menu", menu, menu_ready).continues(),
+        // Форма правки первого контакта (демо).
+        Scene::new("contact-edit", edit, edit_ready).continues(),
         // «Часто пишу» (S5-25): адресаты переписки по частоте, первая строка выбрана, выбор порядка открыт (T1-24).
         Scene::new("contacts-frequent", frequent, frequent_ready).continues().wait(frequent_wait),
     ];
@@ -2230,11 +2235,11 @@ pub(crate) mod scenes {
     }
 
     fn menu(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
-        let live = screens::live(m);
+        // Демо — Петров Алексей (справочник); живой ящик — первая другая запись с адресом.
         m.contacts.update(cx, |c, cx| {
-            let other = c.entries().iter().filter(|e| Some(&e.card.id) != c.selected.as_ref()).find(|e| !e.card.emails.is_empty());
-            let email = if live { other.and_then(|e| e.card.emails.first().cloned()) } else { Some("a.petrov@corp.example".into()) };
-            if let Some(email) = email {
+            let demo = c.entries().iter().find(|e| e.card.emails.iter().any(|m| m == "a.petrov@corp.example"));
+            let other = || c.entries().iter().filter(|e| Some(&e.card.id) != c.selected.as_ref()).find(|e| !e.card.emails.is_empty());
+            if let Some(email) = demo.or_else(other).and_then(|e| e.card.emails.first().cloned()) {
                 c.screen_menu(&email, window, cx);
             }
         });
@@ -2284,7 +2289,8 @@ pub(crate) mod scenes {
 mod tests {
     // Не `super::*`: из `gpui_kit::*` пришёл бы атрибут `test` gpui вместо встроенного.
     use super::{
-        ContactCard, Entry, FormError, FormText, Frequent, Item, Kind, MenuItem, Order, demo_directory, demo_mine, filter, frequent, items, menu_items,
+        ContactCard, Entry, FormError, FormText, Frequent, Item, Kind, MenuItem, Order, demo_directory, demo_mine, filter, frequent, items,
+        menu_items,
     };
 
     fn freq(name: &str, email: &str, last: i64) -> Frequent {
@@ -2367,13 +2373,15 @@ mod tests {
             freq("анна", "anna@c.example", 200),
             freq("Егор", "egor@d.example", 400),
         ];
-        let order = |o: Order, ru: bool| -> Vec<String> {
-            frequent(&list, &[], &[], o, ru).into_iter().map(|e| e.card.emails[0].clone()).collect()
-        };
+        let order = |o: Order, ru: bool| -> Vec<String> { frequent(&list, &[], &[], o, ru).into_iter().map(|e| e.card.emails[0].clone()).collect() };
         assert_eq!(order(Order::Frequency, true), ["petr@b.example", "zoe@a.example", "anna@c.example", "egor@d.example"]);
         // «Егор» < «ёлкин» (ё = е, «г» < «л»), кириллица — до латиницы.
         assert_eq!(order(Order::Name, true), ["anna@c.example", "egor@d.example", "petr@b.example", "zoe@a.example"]);
-        assert_eq!(order(Order::Name, false), ["zoe@a.example", "anna@c.example", "egor@d.example", "petr@b.example"], "английский — латиница раньше");
+        assert_eq!(
+            order(Order::Name, false),
+            ["zoe@a.example", "anna@c.example", "egor@d.example", "petr@b.example"],
+            "английский — латиница раньше"
+        );
         assert_eq!(order(Order::Address, true), ["anna@c.example", "egor@d.example", "petr@b.example", "zoe@a.example"]);
         assert_eq!(order(Order::Recent, true), ["egor@d.example", "petr@b.example", "anna@c.example", "zoe@a.example"]);
     }
