@@ -100,6 +100,7 @@ cmd-contacts-delete = Удалить контакт
 cmd-contacts-write = Написать контакту
 cmd-contacts-meeting = Встреча с контактом
 cmd-contacts-copy-address = Копировать адрес контакта
+cmd-contacts-context-menu = Меню контакта
 cmd-task-new = Новая задача
 cmd-task-complete = Выполнить задачу
 cmd-task-due = Срок задачи

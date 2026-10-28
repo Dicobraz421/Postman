@@ -256,6 +256,95 @@ fn sort(entries: &mut [Entry]) {
     entries.sort_by_cached_key(|e| (normalize(&e.name()), e.card.emails.first().cloned()));
 }
 
+/// Пункт контекстного меню строки (T1-23): действия карточки правой панели.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum MenuItem {
+    Write,
+    Meet,
+    Copy,
+    Edit,
+    Delete,
+    AddMine,
+}
+
+impl MenuItem {
+    fn label(self) -> &'static str {
+        match self {
+            MenuItem::Write => "contacts-write",
+            MenuItem::Meet => "contacts-meet",
+            MenuItem::Copy => "contacts-copy",
+            MenuItem::Edit => "contacts-edit",
+            MenuItem::Delete => "contacts-delete",
+            MenuItem::AddMine => "contacts-add-mine",
+        }
+    }
+
+    fn glyph(self) -> char {
+        match self {
+            MenuItem::Write => g::MAIL,
+            MenuItem::Meet => g::CALENDAR,
+            MenuItem::Copy => g::COPY,
+            MenuItem::Edit => g::EDIT,
+            MenuItem::Delete => g::DELETE,
+            MenuItem::AddMine => g::ADD,
+        }
+    }
+
+    /// Команда реестра — клавиша справа.
+    fn command(self) -> &'static str {
+        match self {
+            MenuItem::Write => "contacts.write",
+            MenuItem::Meet => "contacts.meeting",
+            MenuItem::Copy => "contacts.copy_address",
+            MenuItem::Edit | MenuItem::AddMine => "contacts.edit",
+            MenuItem::Delete => "contacts.delete",
+        }
+    }
+
+    /// Пункт выбирает строку в панели: форма правки и строка «Удалить контакт?» живут в карточке справа. Письмо,
+    /// встреча и адрес — над строкой под курсором, панель остаётся на своей записи.
+    fn selects(self) -> bool {
+        matches!(self, MenuItem::Edit | MenuItem::Delete | MenuItem::AddMine)
+    }
+}
+
+/// Пункты меню строки группами, как кнопки карточки: с адресом — «Написать», «Встреча» (`meet` — у сервера есть
+/// календарь), «Копировать адрес»; свой контакт — «Изменить», «Удалить»; справочник и переписка — только чтение,
+/// «Добавить в мои контакты» (`personal` — у сервера есть личные контакты).
+pub(crate) fn menu_items(e: &Entry, personal: bool, meet: bool) -> Vec<Vec<MenuItem>> {
+    let mut groups = Vec::new();
+    if !e.card.emails.is_empty() {
+        let mut g = vec![MenuItem::Write];
+        if meet {
+            g.push(MenuItem::Meet);
+        }
+        g.push(MenuItem::Copy);
+        groups.push(g);
+    }
+    if personal {
+        groups.push(if e.kind == Kind::Contact { vec![MenuItem::Edit, MenuItem::Delete] } else { vec![MenuItem::AddMine] });
+    }
+    groups
+}
+
+/// Открытое контекстное меню строки: у точки окна, над записью `id`.
+struct RowMenu {
+    at: Point<Pixels>,
+    id: String,
+    groups: Vec<Vec<MenuItem>>,
+    cursor: usize,
+    focus: FocusHandle,
+    /// Фокус до меню — вернуть при закрытии.
+    before: Option<FocusHandle>,
+    focus_pending: bool,
+}
+
+impl RowMenu {
+    fn items(&self) -> impl Iterator<Item = MenuItem> + '_ {
+        self.groups.iter().flatten().copied()
+    }
+}
+
 /// Строка списка: буква-заголовок (буква, сколько) или контакт (индекс в источнике).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Item {
@@ -446,6 +535,8 @@ pub(crate) struct ContactsView {
     /// Мой адрес: «Внешний» у чужих доменов, заголовок источников.
     me: Option<String>,
     today: Today,
+    /// Контекстное меню строки (T1-23).
+    menu: Option<RowMenu>,
     /// Адреса, чьи подробности уже спрошены (`PersonDetails`): карточка спрашивает один раз.
     details_asked: std::collections::HashSet<String>,
     tz: TimeZone,
@@ -494,6 +585,7 @@ impl ContactsView {
             want_first: false,
             me: Some(postman_demo::ME.to_string()),
             today: Today::default(),
+            menu: None,
             details_asked: std::collections::HashSet::new(),
             tz: crate::prefs::get(cx).calendar.zone(),
             _subscriptions: vec![on_search],
@@ -572,7 +664,10 @@ impl ContactsView {
     }
 
     fn selected_entry(&self) -> Option<&Entry> {
-        let id = self.selected.as_deref()?;
+        self.entry(self.selected.as_deref()?)
+    }
+
+    fn entry(&self, id: &str) -> Option<&Entry> {
         self.entries().iter().find(|e| e.card.id == id)
     }
 
@@ -740,8 +835,12 @@ impl ContactsView {
         self.search.update(cx, |s, cx| s.focus(window, cx));
     }
 
-    /// Esc: строка подтверждения, затем форма, затем поиск. `false` — сбрасывать было нечего.
+    /// Esc: меню строки, строка подтверждения, затем форма, затем поиск. `false` — сбрасывать было нечего.
     pub(crate) fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.menu.is_some() {
+            self.close_menu(window, cx);
+            return true;
+        }
         match self.mode {
             Mode::Confirm | Mode::Edit(_) => {
                 self.mode = Mode::View;
@@ -780,10 +879,14 @@ impl ContactsView {
         }
     }
 
-    /// Адрес выбранного: (имя, адрес).
-    fn selected_address(&self) -> Option<Address> {
-        let e = self.selected_entry()?;
+    /// Адрес записи: (имя, адрес).
+    fn address(&self, id: &str) -> Option<Address> {
+        let e = self.entry(id)?;
         e.card.emails.first().map(|m| Address::new(&e.card.name, m))
+    }
+
+    fn selected_address(&self) -> Option<Address> {
+        self.address(self.selected.as_deref()?)
     }
 
     pub(crate) fn write(&mut self, cx: &mut Context<Self>) {
@@ -800,9 +903,164 @@ impl ContactsView {
 
     pub(crate) fn copy_address(&mut self, cx: &mut Context<Self>) {
         if let Some(a) = self.selected_address() {
-            cx.write_to_clipboard(ClipboardItem::new_string(a.email.clone()));
-            cx.emit(ContactsAction::Toast(Toast::Info, tr!("contacts-copied", email = a.email)));
+            self.copy(a, cx);
         }
+    }
+
+    fn copy(&mut self, a: Address, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(a.email.clone()));
+        cx.emit(ContactsAction::Toast(Toast::Info, tr!("contacts-copied", email = a.email)));
+    }
+
+    // --- контекстное меню строки (T1-23) ---
+
+    /// Меню над записью `id` у точки окна `at` (правая кнопка; с клавиатуры — у строки).
+    fn open_menu(&mut self, id: String, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(e) = self.entry(&id) else { return };
+        let features = crate::features::get(cx);
+        let groups = menu_items(e, crate::features::available("contacts.new", features), crate::features::available("contacts.meeting", features));
+        if groups.is_empty() {
+            return;
+        }
+        let before = window.focused(cx);
+        self.menu = Some(RowMenu { at, id, groups, cursor: 0, focus: cx.focus_handle(), before, focus_pending: true });
+        cx.notify();
+    }
+
+    /// `contacts.context_menu` (Shift+F10, «Меню»): у выбранной строки.
+    pub(crate) fn context_menu_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.selected.clone() else { return };
+        let ix = self.items.iter().position(|it| matches!(it, Item::Row(i) if self.entries().get(*i).is_some_and(|e| e.card.id == id)));
+        let at = ix
+            .and_then(|ix| self.list.bounds_for_item(ix))
+            .map(|b| point(b.origin.x + px(140.), b.origin.y + px(ROW_H * 0.6)))
+            .unwrap_or_else(|| point(px(NAV_W + 140.), px(200.)));
+        self.open_menu(id, at, window, cx);
+    }
+
+    /// Снимки: меню у записи с адресом `email` (как правая кнопка по её строке).
+    pub(crate) fn screen_menu(&mut self, email: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let found = self.entries().iter().find(|e| e.card.emails.iter().any(|m| m.eq_ignore_ascii_case(email))).map(|e| e.card.id.clone());
+        let Some(id) = found else { return };
+        let ix = self.items.iter().position(|it| matches!(it, Item::Row(i) if self.entries().get(*i).is_some_and(|e| e.card.id == id)));
+        let at = ix
+            .and_then(|ix| self.list.bounds_for_item(ix))
+            .map(|b| point(b.origin.x + px(180.), b.origin.y + px(ROW_H * 0.6)))
+            .unwrap_or_else(|| point(px(NAV_W + 180.), px(260.)));
+        self.open_menu(id, at, window, cx);
+    }
+
+    pub(crate) fn menu_open(&self) -> bool {
+        self.menu.is_some()
+    }
+
+    fn close_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(m) = self.menu.take() {
+            if let Some(f) = m.before {
+                window.focus(&f, cx);
+            }
+            cx.notify();
+        }
+    }
+
+    /// Пункт выбран: письмо, встреча и адрес — над строкой меню, без смены записи в панели; правка и удаление —
+    /// в карточке этой записи.
+    fn choose(&mut self, it: MenuItem, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.menu.as_ref().map(|m| m.id.clone()) else { return };
+        self.close_menu(window, cx);
+        if it.selects() {
+            self.select(id.clone(), cx);
+        }
+        match it {
+            MenuItem::Write | MenuItem::Meet | MenuItem::Copy => {
+                let Some(a) = self.address(&id) else { return };
+                match it {
+                    MenuItem::Write => cx.emit(ContactsAction::Write(a)),
+                    MenuItem::Meet => cx.emit(ContactsAction::Meet(a)),
+                    _ => self.copy(a, cx),
+                }
+            }
+            MenuItem::Edit | MenuItem::AddMine => self.edit(window, cx),
+            MenuItem::Delete => self.ask_delete(cx),
+        }
+    }
+
+    /// Клавиши меню, как у меню письма: стрелки, Home/End, Enter и пробел — выполнить (Esc — `search.clear`, `escape`).
+    fn menu_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(m) = &mut self.menu else { return };
+        let n = m.items().count();
+        let chosen = m.items().nth(m.cursor);
+        match ev.keystroke.key.as_str() {
+            "down" => m.cursor = (m.cursor + 1) % n,
+            "up" => m.cursor = (m.cursor + n - 1) % n,
+            "home" => m.cursor = 0,
+            "end" => m.cursor = n - 1,
+            "enter" | "space" => {
+                if let Some(it) = chosen {
+                    self.choose(it, window, cx);
+                }
+            }
+            _ => return,
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    /// Меню поверх экрана: слой и строки — как у контекстного меню письма (`menu.rs`).
+    fn row_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let m = self.menu.as_mut()?;
+        if std::mem::take(&mut m.focus_pending) {
+            window.focus(&m.focus, cx);
+        }
+        let l = crate::roles::look(cx);
+        let m = self.menu.as_ref()?;
+        let mut col = div().flex().flex_col();
+        let mut i = 0usize;
+        for (k, group) in m.groups.iter().enumerate() {
+            if k > 0 {
+                col = col.child(crate::bulk::separator(&l));
+            }
+            for &it in group {
+                let n = i;
+                i += 1;
+                let key = crate::bulk::key_hint(it.command(), cx);
+                col = col.child(
+                    crate::bulk::menu_line(("contact-menu-item", n), &l)
+                        .when(m.cursor == n, |d| d.bg(l.hover()))
+                        .child(icon(it.glyph(), 16.).text_color(l.text2()))
+                        .child(div().flex_1().min_w_0().truncate().child(tr!(it.label())))
+                        .when(!key.is_empty(), |d| d.child(div().text_size(px(11.)).text_color(l.text3()).child(key)))
+                        .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                            if let Some(m) = &mut this.menu
+                                && *hovered
+                                && m.cursor != n
+                            {
+                                m.cursor = n;
+                                cx.notify();
+                            }
+                        }))
+                        .on_click(cx.listener(move |this, _, window, cx| this.choose(it, window, cx))),
+                );
+            }
+        }
+        let body = div()
+            .id("contact-menu")
+            .key_context("ContextMenu")
+            .track_focus(&m.focus)
+            .occlude()
+            .w(px(260.))
+            .p(px(4.))
+            .rounded(l.px(Metric::RadiusOverlay))
+            .border_1()
+            .border_color(l.c(pets_ui::theme::Role::StrokeCard))
+            .bg(l.c(pets_ui::theme::Role::LayerOverlay))
+            .shadow_lg()
+            .text_size(px(13.))
+            .text_color(l.text())
+            .child(col)
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| this.menu_key(ev, window, cx)))
+            .on_mouse_down_out(cx.listener(|this, _, window, cx| this.close_menu(window, cx)));
+        Some(deferred(anchored().position(m.at).snap_to_window_with_margin(px(8.)).child(body)).with_priority(2))
     }
 
     /// Сотрудник справочника → новый личный контакт (форма с его именем и адресом).
@@ -1627,6 +1885,7 @@ fn row(ix: usize, e: &Entry, selected: bool, external: bool, l: &Look, cx: &mut 
     };
     let second = if second.is_empty() { e.kind.label() } else { second };
     let id = e.card.id.clone();
+    let menu_id = id.clone();
     div()
         .id(("contact", ix))
         .w_full()
@@ -1656,11 +1915,20 @@ fn row(ix: usize, e: &Entry, selected: bool, external: bool, l: &Look, cx: &mut 
         .when(matches!(e.kind, Kind::Room | Kind::Resource), |d| d.child(icon(g::PIN, 12.).text_color(l.text2())))
         .when(external, |d| d.child(chip_outline(tr!("cal-external"), l)))
         .on_click(cx.listener(move |this, _, _, cx| this.select(id.clone(), cx)))
+        // Правая кнопка — меню действий карточки над этой строкой (T1-23); выбор в панели не меняется.
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                cx.stop_propagation();
+                this.open_menu(menu_id.clone(), ev.position, window, cx);
+            }),
+        )
         .into_any_element()
 }
 
 impl Render for ContactsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let menu = self.row_menu(window, cx);
         let l = crate::roles::look(cx);
         let pane = match &self.mode {
             Mode::Edit(f) => self.form_pane(f, cx),
@@ -1687,6 +1955,7 @@ impl Render for ContactsView {
             .child(self.nav(cx))
             .child(self.list_card(cx))
             .child(crate::mailer::card(&l).flex_1().child(pane))
+            .children(menu)
     }
 }
 
@@ -1891,6 +2160,9 @@ fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
     .on_action(cx.listener(|this, _: &contacts::CopyAddress, _, cx| {
         this.contacts.update(cx, |c, cx| c.copy_address(cx));
     }))
+    .on_action(cx.listener(|this, _: &contacts::ContextMenu, window, cx| {
+        this.contacts.update(cx, |c, cx| c.context_menu_key(window, cx));
+    }))
 }
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
@@ -1900,7 +2172,7 @@ const TEXTS: &[pets_i18n::Resource] = &[("ru", include_str!("../i18n/ru/contacts
 // Имя — область действий (`contacts::…`), как в id команд: так обработчики читаются и их находит `docs/PARITY.md`.
 #[allow(clippy::module_inception)]
 pub(crate) mod contacts {
-    gpui_kit::actions!(contacts, [New, Edit, Delete, Write, Meeting, CopyAddress]);
+    gpui_kit::actions!(contacts, [New, Edit, Delete, Write, Meeting, CopyAddress, ContextMenu]);
 }
 
 /// Команды части (`commands.rs`: контексты и `cmd`).
@@ -1914,6 +2186,8 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("contacts.write", &[], CONTACTS_ANY),
         cmd("contacts.meeting", &[], CONTACTS_ANY),
         cmd("contacts.copy_address", &[], CONTACTS_ANY),
+        // Меню строки (T1-23): как у письма — Shift+F10 и клавиша «Меню».
+        cmd("contacts.context_menu", &["shift-f10", "menu"], CONTACTS),
     ]
 };
 
@@ -1929,6 +2203,8 @@ pub(crate) mod scenes {
         Scene::new("contacts", contacts, contacts_ready).live(),
         // Форма правки первого контакта (демо).
         Scene::new("contact-edit", edit, edit_ready).continues(),
+        // Контекстное меню строки (T1-23): правая кнопка по коллеге справочника, в панели — другая запись.
+        Scene::new("contacts-menu", menu, menu_ready).continues(),
         // «Часто пишу» (S5-25): адресаты переписки по частоте, первая строка выбрана, выбор порядка открыт (T1-24).
         Scene::new("contacts-frequent", frequent, frequent_ready).continues().wait(frequent_wait),
     ];
@@ -1953,7 +2229,24 @@ pub(crate) mod scenes {
         m.section == Section::Contacts && m.contacts.read(cx).ready()
     }
 
+    fn menu(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        let live = screens::live(m);
+        m.contacts.update(cx, |c, cx| {
+            let other = c.entries().iter().filter(|e| Some(&e.card.id) != c.selected.as_ref()).find(|e| !e.card.emails.is_empty());
+            let email = if live { other.and_then(|e| e.card.emails.first().cloned()) } else { Some("a.petrov@corp.example".into()) };
+            if let Some(email) = email {
+                c.screen_menu(&email, window, cx);
+            }
+        });
+        Ok(())
+    }
+
+    fn menu_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.section == Section::Contacts && m.contacts.read(cx).menu_open()
+    }
+
     fn edit(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.contacts.update(cx, |c, cx| c.close_menu(window, cx));
         m.contacts.update(cx, |c, cx| c.edit_selected(window, cx));
         Ok(())
     }
@@ -1990,7 +2283,9 @@ pub(crate) mod scenes {
 #[cfg(test)]
 mod tests {
     // Не `super::*`: из `gpui_kit::*` пришёл бы атрибут `test` gpui вместо встроенного.
-    use super::{ContactCard, Entry, FormError, FormText, Frequent, Item, Kind, Order, demo_directory, demo_mine, filter, frequent, items};
+    use super::{
+        ContactCard, Entry, FormError, FormText, Frequent, Item, Kind, MenuItem, Order, demo_directory, demo_mine, filter, frequent, items, menu_items,
+    };
 
     fn freq(name: &str, email: &str, last: i64) -> Frequent {
         Frequent { name: name.into(), email: email.into(), last }
@@ -2041,6 +2336,25 @@ mod tests {
         assert!(filter(&f, "gfhn").contains(&0));
         assert!(filter(&f, "партн").contains(&0));
         assert!(!filter(&f, "gfhn").contains(&1), "сотрудник не подходит");
+    }
+
+    /// Меню строки (T1-23): у справочника — письмо, встреча, адрес и «Добавить в мои контакты» (только чтение); у
+    /// своего контакта — ещё «Изменить» и «Удалить»; без календаря — без встречи, без личных контактов — без правки.
+    /// Письмо, встреча и адрес выбранную запись панели не меняют.
+    #[test]
+    fn row_menu_items() {
+        let dir = demo_directory();
+        let colleague = dir.iter().find(|e| e.kind == Kind::Person && !e.card.emails.is_empty()).unwrap();
+        let mine = demo_mine();
+        let friend = mine.iter().find(|e| !e.card.emails.is_empty()).unwrap();
+        use MenuItem::*;
+        assert_eq!(menu_items(colleague, true, true), [vec![Write, Meet, Copy], vec![AddMine]]);
+        assert_eq!(menu_items(friend, true, true), [vec![Write, Meet, Copy], vec![Edit, Delete]]);
+        assert_eq!(menu_items(friend, false, false), [vec![Write, Copy]]);
+        let no_mail = Entry::new(ContactCard { id: "x".into(), name: "x".into(), ..Default::default() }, Kind::Contact);
+        assert_eq!(menu_items(&no_mail, true, true), [vec![Edit, Delete]]);
+        assert!([Write, Meet, Copy].iter().all(|it| !it.selects()), "панель остаётся на своей записи");
+        assert!([Edit, Delete, AddMine].iter().all(|it| it.selects()), "форма и подтверждение — в карточке строки");
     }
 
     /// Четыре порядка «Часто пишу» (T1-24) на одном наборе: частота — как дала адресная книга; имя — без регистра,
