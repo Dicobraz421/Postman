@@ -216,7 +216,7 @@ fn exchange_mail_through_the_plugin() {
 
     // Справочник — FindPeople по GAL: должность и отдел (телефонов FindPeople у Exchange 2013 не отдаёт).
     let n = log.lock().unwrap().len();
-    live.commands.send(Command::FindPeople { text: "Петр".into() }).unwrap();
+    live.commands.send(Command::FindPeople { text: "Петр".into(), offset: 0 }).unwrap();
     let Event::PeopleFound { people, .. } = live.wait("PeopleFound", |e| matches!(e, Event::PeopleFound { .. })) else { unreachable!() };
     assert_eq!(people.len(), 3);
     let anna = &people[0];
@@ -459,7 +459,7 @@ fn people_fall_back_to_resolve_names() {
     let live = ready(&url);
     let n = log.lock().unwrap().len();
     for text in ["Петр", "Анна"] {
-        live.commands.send(Command::FindPeople { text: text.into() }).unwrap();
+        live.commands.send(Command::FindPeople { text: text.into(), offset: 0 }).unwrap();
         let Event::PeopleFound { people, .. } = live.wait("PeopleFound", |e| matches!(e, Event::PeopleFound { .. })) else { unreachable!() };
         assert_eq!(people.len(), 3);
         assert_eq!((people[0].department.as_str(), people[0].phone.as_str()), ("Отдел разработки", "+7 495 000-00-01"), "у ResolveNames — и телефон");
@@ -987,4 +987,32 @@ fn exchange_contacts_and_directory() {
         assert_eq!((got, people.len(), search_only), (offset, 0, true), "справочник Exchange — поиском с подсказкой");
     }
     assert!(requests(&log, 0, "FindPeople").is_empty(), "без строки GAL не читается");
+}
+
+/// Поиск в справочнике страницами (решение владельца 2026-10-28): `FindPeople` с `offset` → `Offset` в запросе,
+/// `more` — по `TotalNumberOfPeopleInView`; у запасного `ResolveNames` страниц нет — дальше пусто.
+#[test]
+fn people_search_pages() {
+    let (url, log) = server_with(|b| {
+        b.contains("<m:FindPeople").then(|| fixture("find_people.xml").replace("<TotalNumberOfPeopleInView>4<", "<TotalNumberOfPeopleInView>57<"))
+    });
+    let live = ready(&url);
+    for (offset, expect_more) in [(0, true), (20, true), (56, false)] {
+        live.commands.send(Command::FindPeople { text: "Петр".into(), offset }).unwrap();
+        let Event::PeopleFound { offset: got, people, more, .. } = live.wait("PeopleFound", |e| matches!(e, Event::PeopleFound { .. })) else {
+            unreachable!()
+        };
+        assert_eq!((got, people.len(), more), (offset, 3, expect_more), "страница с {offset}");
+        let req = requests(&log, 0, "FindPeople").pop().unwrap();
+        assert!(req.contains(&format!(r#"Offset="{offset}""#)), "{req}");
+    }
+
+    let (url, _) = server_with(|b| b.contains("<m:FindPeople").then(|| fixture("fault_schema.xml")));
+    let live = ready(&url);
+    live.commands.send(Command::FindPeople { text: "Петр".into(), offset: 0 }).unwrap();
+    let Event::PeopleFound { people, more, .. } = live.wait("PeopleFound", |e| matches!(e, Event::PeopleFound { .. })) else { unreachable!() };
+    assert_eq!((people.len(), more), (3, false), "ResolveNames — всё сразу");
+    live.commands.send(Command::FindPeople { text: "Петр".into(), offset: 20 }).unwrap();
+    let Event::PeopleFound { people, more, .. } = live.wait("PeopleFound", |e| matches!(e, Event::PeopleFound { .. })) else { unreachable!() };
+    assert!(people.is_empty() && !more, "у ResolveNames страниц нет");
 }

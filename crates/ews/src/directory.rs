@@ -105,10 +105,10 @@ const PERSONA: &[&str] = &[
     "persona:OfficeLocations",
 ];
 
-pub(crate) fn find_request(query: &str, max: usize) -> String {
+pub(crate) fn find_request(query: &str, offset: u32, max: usize) -> String {
     let props: String = PERSONA.iter().map(|p| format!(r#"<t:FieldURI FieldURI="{p}"/>"#)).collect();
     format!(
-        r#"<m:FindPeople><m:PersonaShape><t:BaseShape>IdOnly</t:BaseShape><t:AdditionalProperties>{props}</t:AdditionalProperties></m:PersonaShape><m:IndexedPageItemView BasePoint="Beginning" MaxEntriesReturned="{}" Offset="0"/><m:ParentFolderId><t:DistinguishedFolderId Id="directory"/></m:ParentFolderId><m:QueryString>{}</m:QueryString></m:FindPeople>"#,
+        r#"<m:FindPeople><m:PersonaShape><t:BaseShape>IdOnly</t:BaseShape><t:AdditionalProperties>{props}</t:AdditionalProperties></m:PersonaShape><m:IndexedPageItemView BasePoint="Beginning" MaxEntriesReturned="{}" Offset="{offset}"/><m:ParentFolderId><t:DistinguishedFolderId Id="directory"/></m:ParentFolderId><m:QueryString>{}</m:QueryString></m:FindPeople>"#,
         max.clamp(1, 100),
         esc(query)
     )
@@ -219,10 +219,22 @@ impl Client {
         if query.is_empty() {
             return Ok(Vec::new());
         }
-        let resp = self.call("FindPeople", &find_request(query, max)).await?;
+        let resp = self.call("FindPeople", &find_request(query, 0, max)).await?;
         let people = find_parse(&resp, max)?;
         tracing::debug!(found = people.len(), "ews find people");
         Ok(people)
+    }
+
+    /// Найденное по строке страницей с `offset` (подгрузка по прокрутке): люди, следующее смещение, всего. Сервер без
+    /// `FindPeople` — ошибка, как у [`Client::find_people`].
+    pub async fn search_people(&mut self, query: &str, offset: u32, max: usize) -> Result<PeoplePage> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Ok(PeoplePage { offset, next: offset, total: Some(0), ..PeoplePage::default() });
+        }
+        let page = page_parse(&self.call("FindPeople", &find_request(query, offset, max)).await?, offset)?;
+        tracing::debug!(offset, found = page.people.len(), "ews search people");
+        Ok(page)
     }
 
     /// Справочник списком: страница с `offset`, не больше `max` (до [`PAGE_MAX`]) — подгрузка по прокрутке
@@ -292,12 +304,13 @@ mod tests {
     #[test]
     fn query_is_escaped() {
         assert!(request("a<b").contains("<m:UnresolvedEntry>a&lt;b</m:UnresolvedEntry>"));
-        assert!(find_request("a<b", 20).contains("<m:QueryString>a&lt;b</m:QueryString>"));
+        assert!(find_request("a<b", 0, 20).contains("<m:QueryString>a&lt;b</m:QueryString>"));
+        assert!(find_request("a", 40, 20).contains(r#"Offset="40""#), "страница поиска");
     }
 
     #[test]
     fn find_people_request_shape() {
-        let r = find_request("Петр", 500);
+        let r = find_request("Петр", 0, 500);
         let x = xml(format!(r#"<x xmlns:m="m" xmlns:t="t">{r}</x>"#).as_bytes()).unwrap();
         let f = x.child("FindPeople").unwrap();
         let order: Vec<&str> = f.children.iter().map(|e| e.name.as_str()).collect();

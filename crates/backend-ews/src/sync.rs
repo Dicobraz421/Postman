@@ -1482,7 +1482,7 @@ impl Ews {
         }
         match cmd {
             // Без областей (календарь не подключился) справочник пуст.
-            Command::FindPeople { text } => notify(Event::PeopleFound { text, people: Vec::new() }),
+            Command::FindPeople { text, offset } => notify(Event::PeopleFound { text, offset, people: Vec::new(), more: false }),
             Command::PersonDetails { email } => notify(Event::PersonDetails { email, person: None }),
             other => tracing::debug!("ews: command not supported: {}", name(&other)),
         }
