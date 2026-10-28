@@ -427,7 +427,9 @@ impl MailList {
                     .child(button("bulk-due", glyph::CLOCK, tr!("bulk-due-plain"), false, true).on_click(ask(Ask::Lifecycle(Kind::Due))))
             })
             // Переслать вложениями (T1-17) — от двух писем; одно — меню строки.
-            .when(n >= 2, |d| d.child(button("bulk-forward", glyph::FORWARD, tr!("bulk-forward-attached"), false, false).on_click(ask(Ask::ForwardAttached))))
+            .when(n >= 2, |d| {
+                d.child(button("bulk-forward", glyph::FORWARD, tr!("bulk-forward-attached"), false, false).on_click(ask(Ask::ForwardAttached)))
+            })
             .child(button("bulk-move", glyph::MOVE, tr!("bulk-move-plain"), open == Some(Drop::Folder), true).on_click(drop(Drop::Folder)))
             .child(button("bulk-archive", glyph::ARCHIVE, tr!("bulk-archive"), false, false).on_click(ask(Ask::Archive)))
             .child(button("bulk-delete", glyph::DELETE, tr!("bulk-delete"), false, false).on_click(ask(Ask::Trash)));

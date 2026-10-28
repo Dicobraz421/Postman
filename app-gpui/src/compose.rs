@@ -1508,7 +1508,13 @@ mod tests {
         // Отправка скачала письма по `blob_id`: байты — настоящие письма RFC 5322.
         let me = Address::new("Я", "me@corp.example");
         for (i, a) in d.attachments.iter_mut().enumerate() {
-            let inner = Draft { from: Address::new("Анна", "anna@corp.example"), to: vec![me.clone()], subject: format!("Письмо {i}"), markdown: "текст".into(), ..Default::default() };
+            let inner = Draft {
+                from: Address::new("Анна", "anna@corp.example"),
+                to: vec![me.clone()],
+                subject: format!("Письмо {i}"),
+                markdown: "текст".into(),
+                ..Default::default()
+            };
             a.data = postman_compose::build(&inner, 10, &format!("m{i}@corp.example")).unwrap();
         }
         d.from = me.clone();
