@@ -719,3 +719,34 @@ fn ews_directory_page() {
         assert!(page.people.len() <= 20 && page.next - page.offset <= 20);
     });
 }
+
+/// Крупные письма в «Отправленных» (T1-22): список — заголовки без тел. Шесть писем по ~3 МБ (черновиками,
+/// перенесёнными в «Отправленные», — без отправки) одной пачкой `mail_headers`: ответ без тел — маленький, не «response
+/// too large». Метка в теме, уборка — по ней.
+#[test]
+#[ignore = "боевой Exchange: S7 «Проверка на боевом Exchange»"]
+fn ews_sent_headers_of_large_letters() {
+    rt().block_on(async {
+        let a = first();
+        let tag = tag();
+        guarded(&tag, &[&a], async {
+            let mut c = client(&a).await;
+            let line = "Postman: крупное письмо для проверки списка «Отправленных».\r\n";
+            let body: String = line.repeat(3_000_000 / line.len());
+            let mut ids = Vec::new();
+            for n in 0..6 {
+                let mime =
+                    format!("From: <{0}>\r\nTo: <{0}>\r\nSubject: {tag} large {n}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n{body}", a.email);
+                ids.push(c.save_draft(mime.as_bytes(), None).await.unwrap());
+            }
+            let sent = c.move_mail(&ids, &FolderRef::WellKnown(WellKnown::SentItems)).await.unwrap();
+            assert_eq!(sent.len(), 6);
+            let started = Instant::now();
+            let headers = c.mail_headers(&sent).await.unwrap_or_else(|e| panic!("mail_headers: {e}"));
+            assert_eq!(headers.len(), 6, "все заголовки");
+            assert!(headers.iter().all(|h| h.subject.contains(&tag) && h.size > 2_000_000));
+            println!("«Отправленные»: 6 писем по ~3 МБ — заголовки за {} мс", started.elapsed().as_millis());
+        })
+        .await;
+    });
+}
