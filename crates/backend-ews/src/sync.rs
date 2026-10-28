@@ -17,7 +17,11 @@
 //! - **Поиск и фильтры** — `FindItem` с AQS по папкам.
 //! - **Папки** — создать, переименовать, перенести (T1-04в): `CreateFolder`, `UpdateFolder`, `MoveFolder`, затем дерево
 //!   заново. Ключ папки — хэш `Id`, при переименовании и переносе тот же: состояние `SyncFolderItems` и письма остаются.
-//! - **Изменения** — опрос по таймеру ([`POLL`]); календарь, занятость и справочник — области ([`crate::areas`]).
+//! - **Изменения** — по событиям сервера (T1-21б, [`watch`]): подписка на все папки ящика, streaming (запасной —
+//!   pull); изменились письма папки — сверка только её, дерево — одно чтение дерева (`SyncFolderHierarchy` с прошлого
+//!   состояния), обрыв подписки — переподписка и одна полная сверка. Без подписки — опрос ([`POLL`]): письма всех
+//!   папок, дерево — не чаще [`TREE_EVERY`] и сразу после своих правок папок. Календарь, занятость, справочник —
+//!   области ([`crate::areas`]).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -27,7 +31,9 @@ use postman_cache::{AccountRow, Addr, AttachmentRow, BodyRow, Cache, EmailRow, M
 use postman_compose::{Address, Draft};
 use postman_core::backend::{AreaCtx, Spawn};
 use postman_core::sync::{Command, ErrorKind, Event, Sender, Stage, Status, SyncError};
-use postman_ews::{Client, DeleteMode, FolderId, FolderRef, ItemId, MailHeader, MailRole, SyncState, WellKnown};
+use postman_ews::{
+    Change, Client, DeleteMode, FolderId, FolderRef, ItemId, MailFolder, MailHeader, MailRole, Mode, Subscription, SyncState, WellKnown,
+};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::areas::EwsAreas;
@@ -37,8 +43,15 @@ use crate::{auth, sign_in_error, sync_error};
 pub const INITIAL: u32 = 500;
 /// Догрузка при прокрутке.
 const PAGE: u32 = 500;
-/// Опрос изменений (push у EWS — streaming, его не берём: S7 «Вне сессии»).
+/// Опрос изменений без подписки на события (и календаря областей).
 pub const POLL: Duration = Duration::from_secs(120);
+/// Дерево папок без подписки — не чаще (T1-21б).
+pub const TREE_EVERY: Duration = Duration::from_secs(15 * 60);
+/// Pull-подписка: `GetEvents` раз в столько.
+const PULL_EVERY: Duration = Duration::from_secs(60);
+/// Подписка не открылась или оборвалась — повтор через столько (удваивается до [`WATCH_RETRY_MAX`]).
+const WATCH_RETRY: Duration = Duration::from_secs(30);
+const WATCH_RETRY_MAX: Duration = Duration::from_secs(10 * 60);
 /// Изменений за один `SyncFolderItems`.
 const SYNC_PAGE: u32 = 512;
 /// Страниц изменений за опрос.
@@ -227,6 +240,15 @@ struct Ews {
     folders: Vec<Folder>,
     /// `SyncFolderHierarchy` не работает на этом сервере — дерево обходом `FindFolder`.
     find_folders: bool,
+    /// Дерево с сервера и состояние `SyncFolderHierarchy`: следующее чтение — только изменения.
+    tree: Vec<MailFolder>,
+    hierarchy: Option<SyncState>,
+    /// Когда дерево читалось в последний раз.
+    tree_at: Option<tokio::time::Instant>,
+    /// Изменения идут событиями сервера: опрос не нужен.
+    subscribed: bool,
+    /// Подписки не было какое-то время: события могли пропасть — сверить, когда она вернётся.
+    missed: bool,
     cache: Cache,
     worker: Option<postman_worker::Client>,
     held: Vec<Held>,
@@ -367,6 +389,11 @@ async fn run(
         roles,
         folders: Vec::new(),
         find_folders: false,
+        tree: Vec::new(),
+        hierarchy: None,
+        tree_at: None,
+        subscribed: false,
+        missed: false,
         cache,
         worker: None,
         held: Vec::new(),
@@ -398,7 +425,11 @@ async fn run(
     if let Err(e) = me.cache.replace_accounts_of(me.profile.as_deref(), &rows) {
         return notify(Event::Error(sync_error(Stage::Load, &db(e))));
     }
-    if let Err(e) = me.refresh_all(notify).await {
+    // Подписка — своим клиентом и соединением (поток держит его до получаса); до первой сверки, чтобы не пропустить
+    // изменения между ними.
+    let (watch_tx, mut watch_rx) = unbounded_channel();
+    tokio::spawn(watch(ews_url.clone(), auth(&user, &password), watch_tx));
+    if let Err(e) = me.refresh_all(true, notify).await {
         let stop = e.kind == ErrorKind::Auth;
         notify(Event::Error(e));
         if stop {
@@ -425,8 +456,11 @@ async fn run(
                 }
             }
             () = held_until(me.held.iter().map(|h| h.at).min()) => me.release_held(false, notify).await,
+            Some(w) = watch_rx.recv() => me.on_watch(w, notify).await,
             _ = poll.tick() => {
-                if let Err(e) = me.refresh_all(notify).await {
+                if let Some(tree) = poll_plan(me.subscribed, me.tree_at, tokio::time::Instant::now())
+                    && let Err(e) = me.refresh_all(tree, notify).await
+                {
                     notify(Event::Error(e));
                 }
                 if let Some(a) = me.areas.as_mut() {
@@ -436,6 +470,143 @@ async fn run(
                         Err(e) => tracing::debug!("ews calendar poll: {e}"),
                     }
                 }
+            }
+        }
+    }
+}
+
+/// Что делать по таймеру опроса: `None` — изменения идут событиями, письма и дерево не опрашиваются; `Some(tree)` —
+/// сверить письма всех папок, дерево — если пора (не чаще [`TREE_EVERY`]).
+fn poll_plan(subscribed: bool, tree_at: Option<tokio::time::Instant>, now: tokio::time::Instant) -> Option<bool> {
+    (!subscribed).then(|| tree_at.is_none_or(|t| now.saturating_duration_since(t) >= TREE_EVERY))
+}
+
+/// Весть от подписки на события.
+#[derive(Debug)]
+enum Watch {
+    /// Подписка открыта: изменения — событиями.
+    Up(Mode),
+    /// Подписки нет (сервер не дал, связь пропала): изменения — опросом.
+    Down,
+    Changes(Vec<Change>),
+}
+
+/// Чем кончилась подписка.
+enum Ended {
+    /// Синхронизация закрылась.
+    Closed,
+    /// Подписки больше нет: переподписаться и сверить всё.
+    Lost,
+    /// Сеть или сервер: пауза, затем заново.
+    Failed(postman_ews::Error),
+}
+
+/// Подписка на все папки ящика: streaming, сервер не дал — pull.
+async fn subscribe(client: &mut Client) -> postman_ews::Result<Subscription> {
+    match client.subscribe_streaming(&[]).await {
+        Ok(s) => Ok(s),
+        Err(e @ postman_ews::Error::Ews { .. }) => {
+            tracing::info!(code = e.code().unwrap_or(""), "ews: streaming refused, trying pull");
+            client.subscribe_pull(&[], None).await
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Поток событий: открыть, читать до `Closed` сервера, открыть снова по той же подписке. Ожидание — без цикла.
+async fn stream_events(client: &mut Client, sub: &Subscription, tx: &UnboundedSender<Watch>) -> Ended {
+    loop {
+        let mut s = match client.open_stream(sub, postman_ews::notify::STREAM_MINUTES).await {
+            Ok(s) => s,
+            Err(e) if e.is_subscription_lost() => return Ended::Lost,
+            Err(e) => return Ended::Failed(e),
+        };
+        loop {
+            match s.next().await {
+                Ok(Some(events)) => {
+                    let ch = postman_ews::changes(&events);
+                    if !ch.is_empty() && tx.send(Watch::Changes(ch)).is_err() {
+                        return Ended::Closed;
+                    }
+                }
+                Ok(None) => break,
+                Err(e) if e.is_subscription_lost() => return Ended::Lost,
+                Err(e) => return Ended::Failed(e),
+            }
+        }
+        if tx.is_closed() {
+            return Ended::Closed;
+        }
+    }
+}
+
+/// Pull: `GetEvents` раз в [`PULL_EVERY`].
+async fn pull_events(client: &mut Client, mut sub: Subscription, tx: &UnboundedSender<Watch>) -> Ended {
+    loop {
+        match client.get_events(&mut sub).await {
+            Ok(events) => {
+                let ch = postman_ews::changes(&events);
+                if !ch.is_empty() && tx.send(Watch::Changes(ch)).is_err() {
+                    return Ended::Closed;
+                }
+            }
+            Err(e) if e.is_subscription_lost() => return Ended::Lost,
+            Err(e) => return Ended::Failed(e),
+        }
+        tokio::time::sleep(PULL_EVERY).await;
+        if tx.is_closed() {
+            return Ended::Closed;
+        }
+    }
+}
+
+/// Подписка на события сервера (T1-21б): свой клиент, вести — в канал синхронизации. Не открылась или оборвалась —
+/// `Down` и повтор с паузой; потеряна — переподписка и `Change::Resync`.
+async fn watch(url: String, auth: postman_ews::Auth, tx: UnboundedSender<Watch>) {
+    let mut client = match Client::new(&url, auth) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("ews watch: {e}");
+            let _ = tx.send(Watch::Down);
+            return;
+        }
+    };
+    let mut wait = WATCH_RETRY;
+    let mut lost = false;
+    loop {
+        let sub = match subscribe(&mut client).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::debug!(code = e.code().unwrap_or(""), "ews: no subscription: {e}");
+                if tx.send(Watch::Down).is_err() {
+                    return;
+                }
+                tokio::time::sleep(wait).await;
+                wait = (wait * 2).min(WATCH_RETRY_MAX);
+                lost = true;
+                continue;
+            }
+        };
+        let mode = if sub.streaming { Mode::Streaming } else { Mode::Pull };
+        if tx.send(Watch::Up(mode)).is_err() || (std::mem::take(&mut lost) && tx.send(Watch::Changes(vec![Change::Resync])).is_err()) {
+            return;
+        }
+        wait = WATCH_RETRY;
+        let ended = if sub.streaming { stream_events(&mut client, &sub, &tx).await } else { pull_events(&mut client, sub, &tx).await };
+        match ended {
+            Ended::Closed => return,
+            Ended::Lost => {
+                tracing::info!("ews: subscription lost, resubscribing");
+                lost = true;
+            }
+            Ended::Failed(e) => {
+                tracing::debug!("ews: events failed: {e}");
+                lost = true;
+                if tx.send(Watch::Down).is_err() {
+                    return;
+                }
+                tokio::time::sleep(wait).await;
+                wait = (wait * 2).min(WATCH_RETRY_MAX);
             }
         }
     }
@@ -525,9 +696,100 @@ impl Ews {
         Ok(())
     }
 
-    /// Папки заново и каждая сверена; итог — событиями.
-    async fn refresh_all(&mut self, notify: &impl Fn(Event)) -> Result<(), SyncError> {
-        self.load_folders().await.map_err(|e| sync_error(Stage::Load, &e))?;
+    /// Весть подписки: открылась — опрос не нужен (после перерыва — одна сверка); пропала — опрос; изменения —
+    /// сверка только изменённого.
+    async fn on_watch(&mut self, w: Watch, notify: &impl Fn(Event)) {
+        match w {
+            Watch::Up(mode) => {
+                if !self.subscribed {
+                    tracing::info!(?mode, "ews: changes by server events");
+                    self.subscribed = true;
+                }
+                if std::mem::take(&mut self.missed)
+                    && let Err(e) = self.refresh_all(false, notify).await
+                {
+                    notify(Event::Error(e));
+                }
+            }
+            Watch::Down => {
+                if self.subscribed {
+                    tracing::info!("ews: no server events, polling");
+                }
+                self.subscribed = false;
+                self.missed = true;
+            }
+            Watch::Changes(list) => self.apply_changes(&list, notify).await,
+        }
+    }
+
+    /// Изменения по событиям: письма папки — `SyncFolderItems` только по ней; дерево — одно чтение; обрыв подписки —
+    /// полная сверка; папки не почты (календарь, контакты) — опрос областей.
+    async fn apply_changes(&mut self, list: &[Change], notify: &impl Fn(Event)) {
+        if list.contains(&Change::Resync) {
+            if let Err(e) = self.refresh_all(true, notify).await {
+                notify(Event::Error(e));
+            }
+            return self.poll_areas(notify).await;
+        }
+        let mut tree = list.contains(&Change::Tree);
+        let mut mail: Vec<Folder> = Vec::new();
+        let mut areas = false;
+        for c in list {
+            let (Change::Mail(id) | Change::Folder(id)) = c else { continue };
+            match self.folders.iter().find(|f| f.fid.id == *id) {
+                Some(f) => {
+                    if !mail.iter().any(|m| m.key == f.key) {
+                        mail.push(f.clone());
+                    }
+                    // Свойства папки (имя): с `SyncFolderHierarchy` — дешёвое чтение изменений дерева.
+                    tree |= matches!(c, Change::Folder(_)) && !self.find_folders;
+                }
+                None => areas = true,
+            }
+        }
+        if tree {
+            match self.load_folders().await {
+                Ok(()) => notify(Event::MailboxesChanged),
+                Err(e) => tracing::warn!("ews tree: {e}"),
+            }
+        }
+        let mut changed = false;
+        for f in &mail {
+            match self.refresh(f).await {
+                Ok(c) => changed |= c,
+                Err(e) => tracing::warn!("ews folder: {e}"),
+            }
+        }
+        if !mail.is_empty() {
+            if let Err(e) = self.write_folders() {
+                tracing::warn!("ews folders: {e}");
+            }
+            notify(Event::MailboxesChanged);
+        }
+        if changed {
+            notify(Event::EmailsChanged);
+        }
+        if areas {
+            self.poll_areas(notify).await;
+        }
+    }
+
+    /// Опрос областей: календарь изменился — `CalendarChanged`.
+    async fn poll_areas(&mut self, notify: &impl Fn(Event)) {
+        if let Some(a) = self.areas.as_mut() {
+            match a.poll().await {
+                Ok(true) => notify(Event::CalendarChanged),
+                Ok(false) => {}
+                Err(e) => tracing::debug!("ews calendar poll: {e}"),
+            }
+        }
+    }
+
+    /// Папки сверены (дерево — заново, если `tree`); итог — событиями.
+    async fn refresh_all(&mut self, tree: bool, notify: &impl Fn(Event)) -> Result<(), SyncError> {
+        if tree || self.folders.is_empty() {
+            self.load_folders().await.map_err(|e| sync_error(Stage::Load, &e))?;
+        }
         notify(Event::MailboxesChanged);
         let mut changed = false;
         for f in self.folders.clone() {
@@ -556,35 +818,19 @@ impl Ews {
         let list = if self.find_folders {
             self.client.find_folders(&self.roles).await?
         } else {
-            let mut all = Vec::new();
-            let mut state: Option<SyncState> = None;
-            let mut failed = false;
-            for _ in 0..SYNC_PAGES {
-                match self.client.sync_folders(state.as_ref(), &self.roles).await {
-                    Ok(ch) => {
-                        all.extend(ch.created);
-                        all.extend(ch.updated);
-                        let done = ch.done;
-                        state = Some(ch.state);
-                        if done {
-                            break;
-                        }
-                    }
-                    Err(e) if e.code() == Some("ErrorInternalServerError") => {
-                        failed = true;
-                        break;
-                    }
-                    Err(e) => return Err(e),
+            match self.sync_tree().await {
+                Ok(list) => list,
+                Err(e) if e.code() == Some("ErrorInternalServerError") => {
+                    tracing::info!("ews: SyncFolderHierarchy unavailable, using FindFolder");
+                    self.find_folders = true;
+                    self.hierarchy = None;
+                    self.client.find_folders(&self.roles).await?
                 }
-            }
-            if failed {
-                tracing::info!("ews: SyncFolderHierarchy unavailable, using FindFolder");
-                self.find_folders = true;
-                self.client.find_folders(&self.roles).await?
-            } else {
-                all
+                Err(e) => return Err(e),
             }
         };
+        self.tree_at = Some(tokio::time::Instant::now());
+        self.tree = list.clone();
         let scope = self.scope.clone();
         let key = |id: &str| scoped(scope.as_deref(), &format!("f{}", hash(id)));
         let ids: HashSet<&str> = list.iter().map(|f| f.id.id.as_str()).collect();
@@ -601,6 +847,35 @@ impl Ews {
             })
             .collect();
         self.write_folders()
+    }
+
+    /// Дерево `SyncFolderHierarchy` с прошлого состояния: только изменения (первый раз и после сброса — целиком).
+    async fn sync_tree(&mut self) -> postman_ews::Result<Vec<MailFolder>> {
+        let mut state = self.hierarchy.clone();
+        let mut tree: Vec<MailFolder> = if state.is_some() { self.tree.clone() } else { Vec::new() };
+        for _ in 0..SYNC_PAGES {
+            let ch = match self.client.sync_folders(state.as_ref(), &self.roles).await {
+                Err(e) if e.is_invalid_sync_state() && state.is_some() => {
+                    state = None;
+                    tree.clear();
+                    continue;
+                }
+                r => r?,
+            };
+            for f in ch.created.into_iter().chain(ch.updated) {
+                match tree.iter_mut().find(|o| o.id.id == f.id.id) {
+                    Some(o) => *o = f,
+                    None => tree.push(f),
+                }
+            }
+            tree.retain(|o| !ch.deleted.contains(&o.id.id));
+            state = Some(ch.state);
+            if ch.done {
+                break;
+            }
+        }
+        self.hierarchy = state;
+        Ok(tree)
     }
 
     /// Папки — в кэш, счётчики — по письмам в кэше.
@@ -1140,7 +1415,7 @@ impl Ews {
                 self.folder_command(cmd, notify).await
             }
             Command::Reconnect => {
-                if let Err(e) = self.refresh_all(notify).await {
+                if let Err(e) = self.refresh_all(true, notify).await {
                     notify(Event::Error(e));
                 }
             }
@@ -1227,6 +1502,17 @@ fn name(c: &Command) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Опрос (T1-21б): с подпиской — ничего; без неё — письма всех папок, дерево — не чаще раза в 15 мин.
+    #[test]
+    fn poll_follows_the_subscription() {
+        let t0 = tokio::time::Instant::now();
+        assert_eq!(poll_plan(true, Some(t0), t0 + TREE_EVERY * 2), None, "события — опрос не нужен");
+        assert_eq!(poll_plan(false, None, t0), Some(true), "дерева ещё не было");
+        assert_eq!(poll_plan(false, Some(t0), t0 + POLL), Some(false), "через 2 мин — только письма");
+        assert_eq!(poll_plan(false, Some(t0), t0 + TREE_EVERY - Duration::from_secs(1)), Some(false));
+        assert_eq!(poll_plan(false, Some(t0), t0 + TREE_EVERY), Some(true), "через 15 мин — и дерево");
+    }
 
     #[test]
     fn keys_round_trip() {

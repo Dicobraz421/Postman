@@ -102,6 +102,9 @@ async fn serve(mut s: TcpStream, log: Arc<Mutex<Vec<String>>>, extra: Extra) {
         let body = String::from_utf8(body).unwrap();
         let reply = extra(&body).unwrap_or_else(|| answer(&body));
         log.lock().unwrap().push(body);
+        if reply == STREAM {
+            return stream(s).await;
+        }
         let out = format!("HTTP/1.1 200 OK\r\nContent-Type: text/xml; charset=utf-8\r\nContent-Length: {}\r\n\r\n{reply}", reply.len());
         s.write_all(out.as_bytes()).await.unwrap();
     }
@@ -827,4 +830,84 @@ fn folder_into_its_subfolder_is_refused_before_the_server() {
     };
     assert_eq!(failed, (Some(inbox), postman_core::sync::FOLDER_INTO_ITSELF.to_owned()));
     assert!(requests(&log, 0, "MoveFolder").is_empty(), "на сервер не ушло");
+}
+
+// --- Изменения по событиям сервера (T1-21б). ---
+
+/// Ответ подменного сервера «поток»: `GetStreamingEvents` — кусками, из [`FRAMES`] по мере того, как тест их кладёт.
+const STREAM: &str = "<!-- stream -->";
+/// Куски потока, которые ещё не ушли (только у `events_drive_the_sync`; nextest — процесс на тест).
+static FRAMES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Конверт потока `GetStreamingEvents` с этим содержимым сообщения.
+fn frame(inner: &str) -> String {
+    format!(
+        r#"<Envelope xmlns="http://schemas.xmlsoap.org/soap/envelope/"><soap11:Body xmlns:soap11="http://schemas.xmlsoap.org/soap/envelope/"><m:GetStreamingEventsResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><m:ResponseMessages><m:GetStreamingEventsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode>{inner}</m:GetStreamingEventsResponseMessage></m:ResponseMessages></m:GetStreamingEventsResponse></soap11:Body></Envelope>"#
+    )
+}
+
+fn events(inner: &str) -> String {
+    frame(&format!(
+        "<m:Notifications><m:Notification><t:SubscriptionId>JwBkYjVwcjA2bWIxMTQ=</t:SubscriptionId>{inner}</m:Notification></m:Notifications>"
+    ))
+}
+
+/// Ответ chunked: «OK», затем куски из [`FRAMES`]; соединение — до конца теста.
+async fn stream(mut s: TcpStream) {
+    let chunk = |data: &str| format!("{:x}\r\n{data}\r\n", data.len());
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: text/xml; charset=utf-8\r\nTransfer-Encoding: chunked\r\n\r\n";
+    if s.write_all(format!("{head}{}", chunk(&frame("<m:ConnectionStatus>OK</m:ConnectionStatus>"))).as_bytes()).await.is_err() {
+        return;
+    }
+    loop {
+        let next: Vec<String> = std::mem::take(&mut *FRAMES.lock().unwrap());
+        for f in next {
+            if s.write_all(chunk(&f).as_bytes()).await.is_err() {
+                return;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Сервер со streaming-подпиской: `Subscribe` — подписка корпуса, `GetStreamingEvents` — поток.
+fn streaming(body: &str) -> Option<String> {
+    if body.contains("<m:StreamingSubscriptionRequest") {
+        Some(fixture("subscribe_streaming.xml"))
+    } else if body.contains("<m:GetStreamingEvents") {
+        Some(STREAM.to_owned())
+    } else {
+        None
+    }
+}
+
+/// С подпиской: событие писем «Входящих» → `SyncFolderItems` только по ним, дерево не читается (опроса нет — у
+/// `POLL` и дерева — `poll_plan`); событие дерева (создана папка) → одно чтение дерева, письма не сверяются.
+#[test]
+fn events_drive_the_sync() {
+    let (url, log) = server_with(streaming);
+    let live = ready(&url);
+    let start = Instant::now();
+    while requests(&log, 0, "GetStreamingEvents").is_empty() {
+        assert!(start.elapsed() < Duration::from_secs(10), "поток не открылся");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    while live.events.try_recv().is_ok() {}
+
+    let n = log.lock().unwrap().len();
+    FRAMES.lock().unwrap().push(events(
+        r#"<t:NewMailEvent><t:TimeStamp>2026-10-28T09:00:00Z</t:TimeStamp><t:ItemId Id="AAMkADmsg9" ChangeKey="CQ"/><t:ParentFolderId Id="AAMkADinbox" ChangeKey="AQ"/></t:NewMailEvent><t:ModifiedEvent><t:TimeStamp>2026-10-28T09:00:00Z</t:TimeStamp><t:FolderId Id="AAMkADinbox" ChangeKey="AQ"/><t:ParentFolderId Id="AAMkADroot" ChangeKey="AQ"/><t:UnreadCount>4</t:UnreadCount></t:ModifiedEvent>"#,
+    ));
+    live.wait("MailboxesChanged", |e| matches!(e, Event::MailboxesChanged));
+    let syncs = requests(&log, n, "SyncFolderItems");
+    assert!(!syncs.is_empty() && syncs.iter().all(|b| b.contains("AAMkADinbox")), "сверены только «Входящие»: {}", syncs.len());
+    assert!(requests(&log, n, "FindFolder").is_empty() && requests(&log, n, "SyncFolderHierarchy").is_empty(), "дерево не читалось");
+
+    let n = log.lock().unwrap().len();
+    FRAMES.lock().unwrap().push(events(
+        r#"<t:CreatedEvent><t:TimeStamp>2026-10-28T09:01:00Z</t:TimeStamp><t:FolderId Id="AAMkADnewfolder" ChangeKey="AQ"/><t:ParentFolderId Id="AAMkADinbox" ChangeKey="AQ"/></t:CreatedEvent>"#,
+    ));
+    live.wait("MailboxesChanged", |e| matches!(e, Event::MailboxesChanged));
+    assert_eq!(requests(&log, n, "FindFolder").len(), 1, "дерево — одно чтение");
+    assert!(requests(&log, n, "SyncFolderItems").is_empty(), "письма не сверялись");
 }

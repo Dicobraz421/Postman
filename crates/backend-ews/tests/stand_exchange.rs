@@ -711,3 +711,36 @@ fn exchange_deleted_elsewhere() {
     println!("удалено другим клиентом: ушло из кэша за {} с", start.elapsed().as_secs());
     rt().block_on(cleanup(&a));
 }
+
+/// Изменения по событиям (T1-21б): письмо себе появляется во «Входящих» кэша без «снова на связи» и раньше опроса
+/// (`POLL`, 2 мин) — по подписке.
+#[test]
+#[ignore = "боевой Exchange: S7 «Проверка на боевом Exchange»"]
+fn exchange_events_bring_mail() {
+    let a = first();
+    rt().block_on(cleanup(&a));
+    let live = Live::start(&a);
+    // Подписка открывается рядом с первой сверкой.
+    std::thread::sleep(Duration::from_secs(3));
+    let tag = tag();
+    let me = test_recipient(&a.email);
+    let draft = postman_compose::Draft {
+        from: postman_compose::Address::new("", &me),
+        to: vec![postman_compose::Address::new("", &me)],
+        subject: format!("{tag} events"),
+        markdown: "Письмо по событию сервера.".into(),
+        ..Default::default()
+    };
+    live.send(Command::Send { draft: Box::new(draft), replace: None, ticket: 1, release: postman_core::model::Release::Now });
+    live.wait("Sent", |e| matches!(e, Event::Sent { ticket: 1, .. }));
+    let start = Instant::now();
+    loop {
+        if live.cache.page(&live.inbox(), 0, 200).unwrap().iter().any(|r| r.subject.contains(&tag)) {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(90), "письмо не пришло событием за 90 с (опрос — 120 с)");
+        let _ = live.events.recv_timeout(Duration::from_secs(1));
+    }
+    println!("событие: письмо в кэше через {} с", start.elapsed().as_secs());
+    rt().block_on(cleanup(&a));
+}
