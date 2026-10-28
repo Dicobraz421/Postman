@@ -10,6 +10,7 @@
 
 use std::rc::Rc;
 
+use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use pets_i18n::tr;
@@ -126,6 +127,8 @@ impl SettingsView {
             .hover(|d| d.bg(l.hover()))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.cal_menu = if this.cal_menu == Some(menu) { None } else { Some(menu) };
+                // Новый список — сверху.
+                this.cal_scroll.set_offset(point(px(0.), px(0.)));
                 cx.notify();
             }))
             .child(div().min_w_0().overflow_hidden().whitespace_nowrap().child(label))
@@ -152,26 +155,33 @@ impl SettingsView {
                         cx.notify();
                     }))
             });
+            // Список длиннее 336 px прокручивается с полосой при наведении (T1-08); полоса — поверх рамки списка.
+            let scroll = self.cal_scroll.clone();
             deferred(
                 div()
-                    .id(("settings-cal-menu", menu as usize))
                     .absolute()
                     .top(px(32.))
                     .right_0()
                     .min_w(px(width))
-                    .max_h(px(336.))
-                    .overflow_y_scroll()
                     .occlude()
-                    .flex()
-                    .flex_col()
-                    .p(px(4.))
                     .rounded(l.px(Metric::RadiusOverlay))
                     .border_1()
                     .border_color(l.c(Role::StrokeCard))
                     .bg(l.c(Role::LayerOverlay))
                     .text_color(l.text())
                     .shadow_lg()
-                    .children(rows)
+                    .child(
+                        div()
+                            .id(("settings-cal-menu", menu as usize))
+                            .max_h(px(336.))
+                            .overflow_y_scroll()
+                            .track_scroll(&scroll)
+                            .flex()
+                            .flex_col()
+                            .p(px(4.))
+                            .children(rows),
+                    )
+                    .child(Scrollbar::vertical(&scroll).mode(ScrollbarMode::Hover))
                     .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                         this.cal_menu = None;
                         cx.notify();
