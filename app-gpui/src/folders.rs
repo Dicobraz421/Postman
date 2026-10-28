@@ -1,6 +1,6 @@
 //! Панель папок (разделы — рейл модулей, `chrome.rs`). Общие ящики (S4-06) — свёртываемые ветки
 //! с именем аккаунта под своими папками; своя учётная запись сворачивается так же (T1-06). Воронка у открытой папки
-//! переключает панель на фильтры (S5-03, `filters.rs`). Правая кнопка по папке — её меню (`folder_menu.rs`, S5-05б).
+//! переключает панель на фильтры (S5-03, `filters.rs`). Меню папки (ПКМ) — T1-04д; «Вид беседы» — в меню письма (T1-14).
 //! Дерево прокручивается с полосой при наведении, открытая папка — в видимой области (T1-07).
 
 use std::collections::HashSet;
@@ -113,11 +113,6 @@ pub(crate) fn tree<'a>(folders: &[&'a MailboxRow], folded: &HashSet<String>) -> 
 
 pub(crate) enum FolderEvent {
     Open(String),
-    /// Правая кнопка по папке (S5-05б): меню папки у точки `at`.
-    Menu {
-        id: String,
-        at: Point<Pixels>,
-    },
 }
 
 impl EventEmitter<FolderEvent> for Folders {}
@@ -245,7 +240,6 @@ impl Folders {
     fn folder(&self, m: &MailboxRow, indent: bool, node: Node, l: &Look, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.results.is_none() && self.current.as_deref() == Some(&m.id);
         let id = m.id.clone();
-        let menu = m.id.clone();
         let fold = m.id.clone();
         // Шеврон подпапок (T1-04г): место под него — у каждой папки, чтобы значки уровня стояли ровно.
         let open = !self.folded.contains(&m.id);
@@ -277,14 +271,8 @@ impl Folders {
             .when(m.unread > 0, |d| unread(d, m.unread, l))
             // Воронка — у открытой папки.
             .when_some(self.filters.as_ref().filter(|_| selected), |d, f| d.child(crate::filters::funnel(f, f.read(cx), l)))
+            // Меню папки (ПКМ) — с «Новой папкой» и «Переименовать» (T1-04д); «Вид беседы» — в меню письма (T1-14).
             .on_click(cx.listener(move |_, _, _, cx| cx.emit(FolderEvent::Open(id.clone()))))
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(move |_, ev: &MouseDownEvent, _, cx| {
-                    cx.stop_propagation();
-                    cx.emit(FolderEvent::Menu { id: menu.clone(), at: ev.position });
-                }),
-            )
             .into_any_element()
     }
 

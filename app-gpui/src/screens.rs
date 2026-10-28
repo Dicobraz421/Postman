@@ -16,7 +16,7 @@
 //! сервера, `meeting` — после ответа о занятости участников из `POSTMAN_SCREENS_ATTENDEES` (адреса через `;`, S3-05),
 //! `contacts` — после контактов и справочника с сервера (S4-02);
 //! `vacation` и `rules` — после автоответа и правил с сервера (S4-05, S4-07), `shared` — «Входящие» общего ящика (S4-06);
-//! `thread` (лента беседы, S5-05), `folder-menu`, `thread-stack`, `thread-list` (виды беседы, S5-05б), `lifecycle` и
+//! `thread` (лента беседы, S5-05), `thread-view-menu`, `thread-stack`, `thread-list` (виды беседы, S5-05б), `lifecycle` и
 //! `overdue` (сроки, S5-04), `search`, `search-letter`, `palette` и `palette-query` (поиск и палитра команд, S5-10),
 //! `search-next` (F3 прокручивает к совпадению, S5-14) —
 //! только демо;
@@ -254,7 +254,6 @@ pub fn drive(m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) {
 fn clean_slate(m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) {
     m.close_menu(cx);
     m.close_picker(cx);
-    m.close_folder_menu(cx);
     m.close_palette(window, cx);
     m.tabs.activate_kind(crate::tabs::TabKind::Main);
     m.set_section(Section::Mail, cx);
