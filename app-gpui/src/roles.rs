@@ -193,8 +193,8 @@ pub(crate) fn base(density: Option<Density>, accent: Accent, gray: bool) -> Them
             CORE.iter().map(|&(r, l, d)| (r.name().to_owned(), if dark { d } else { l })).collect();
         if gray && !dark {
             t.extend(GRAY_CORE.iter().map(|&(r, v)| (r.name().to_owned(), v)));
-            // Нерабочие часы календаря (T1-09) — темнее карточки #EDEDED: наведение «Серой» из таблицы.
-            t.insert(pm_name(Pm::CalOff).to_owned(), c(0xE5E5E5));
+            // Нерабочие часы календаря (T1-09, DESIGN «Токены цвета», #153) — темнее карточки #EDEDED.
+            t.insert(pm_name(Pm::CalOff).to_owned(), c(0xE2E2E2));
         }
         if let Some(&(_, light, dark_t, gray_t)) = ROWS.iter().find(|(a, ..)| *a == accent) {
             let [hover, selected] = match (dark, gray) {
@@ -301,7 +301,7 @@ const FIXED: &[(Pm, &str, Color, Color, Role)] = &[
     (Pm::SecondaryHover, "app.button.secondary.hover", c(0xD0E6FA), c(0x2C4466), Role::AccentFillHover),
     (Pm::OkBg, "app.ok.bg", c(0xE5F4DD), c(0x2A3B20), Role::LayerPanel),
     (Pm::OkFg, "app.ok.fg", c(0x34591B), c(0xBAD9AB), Role::SuccessFg),
-    (Pm::CalOff, "app.cal.off", c(0xFAFAFA), c(0x272727), Role::LayerPanel),
+    (Pm::CalOff, "app.cal.off", c(0xF6F6F6), c(0x232323), Role::LayerPanel),
     (Pm::Phish, "app.phish", c(0xCD605A), c(0xD47C76), Role::CriticalFg),
     (Pm::SearchHit, "app.search.hit", c(0xF9EDD5), c(0x413315), Role::AccentSubtle),
     // Статусы поручения — по макетам «Поручил я» и «Поручено мне».
@@ -952,8 +952,6 @@ mod tests {
         ("#DFC1EE", "app.conflict.fg, тёмная"),
         ("#F3EEFA", "app.conflict.bg, светлая"),
         ("#3F2D47", "app.conflict.bg, тёмная"),
-        ("#FAFAFA", "app.cal.off, светлая: нерабочие часы"),
-        ("#272727", "app.cal.off, тёмная"),
         ("#F9EDD5", "app.search.hit, светлая: совпадение поиска"),
         ("#413315", "app.search.hit, тёмная"),
         ("#F8CDE1", "app.fb.free.brand.hover, светлая"),
