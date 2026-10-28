@@ -103,7 +103,8 @@ impl Pv {
             Viewer::Pdf => Some(PreviewKind::Pdf),
             Viewer::Archive => Some(PreviewKind::Archive),
             Viewer::Text => Some(PreviewKind::Text),
-            Viewer::Office | Viewer::None => None,
+            // Документ Word — карточкой проверки, как Office, пока нет просмотра (T1-13в).
+            Viewer::Office | Viewer::Document | Viewer::None => None,
         }
     }
 }
@@ -183,7 +184,7 @@ impl ReadingPane {
         let mut fetch = false;
         match item.viewer {
             Viewer::None => pv.state = PvState::Ready(Shown::Card),
-            Viewer::Office => match r.scans.get(blob) {
+            Viewer::Office | Viewer::Document => match r.scans.get(blob) {
                 Some(s) => pv.state = PvState::Ready(Shown::Office(s.clone())),
                 None => {
                     r.scanning.insert(blob.to_string());
@@ -287,7 +288,7 @@ impl ReadingPane {
                     Ok(_) => Err(tr!("att-pv-failed", error = "?")),
                     Err(e) => Err(e),
                 };
-                let waiting = r.preview.as_mut().filter(|p| p.row.blob_id == blob && p.viewer == Viewer::Office);
+                let waiting = r.preview.as_mut().filter(|p| p.row.blob_id == blob && matches!(p.viewer, Viewer::Office | Viewer::Document));
                 match scan {
                     Ok(s) => {
                         if let Some(p) = waiting {
@@ -472,7 +473,7 @@ impl ReadingPane {
         let l = crate::roles::look(cx);
         let note = match (&p.state, p.viewer) {
             (_, Viewer::Archive) => tr!("att-pv-note-archive"),
-            (_, Viewer::Office | Viewer::None) => tr!("att-pv-note-check"),
+            (_, Viewer::Office | Viewer::Document | Viewer::None) => tr!("att-pv-note-check"),
             _ => tr!("att-pv-note-builtin"),
         };
         let header = div()
