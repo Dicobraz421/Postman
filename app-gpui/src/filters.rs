@@ -780,11 +780,13 @@ impl crate::Mailer {
         if pane == Pane::Hidden && self.reading_instead_of_list(cx) {
             return None;
         }
-        let left = crate::chrome::W_RAIL + crate::mailer::W_FOLDERS;
+        // Ширины панелей — текущие (T1-05б), с разделителем между папками и списком.
+        let (w_folders, w_list) = self.panes;
+        let left = crate::chrome::W_RAIL + w_folders + 8.;
         let overlay = div().absolute().left(px(left)).right(px(8.));
         let overlay = if pane == Pane::Bottom { overlay.bottom(relative(0.55)) } else { overlay.bottom_0() };
         // Ширина закладок — карточка списка без рамки.
-        Some(overlay.child(quick(&self.filters, m, &tabs, l, crate::mailer::W_LIST - 2.)).into_any_element())
+        Some(overlay.child(quick(&self.filters, m, &tabs, l, w_list - 2.)).into_any_element())
     }
 
     /// Меню сортировки над списком.

@@ -60,6 +60,10 @@ pub(crate) struct Mailer {
     /// Контекстное меню письма (S5-08, `menu.rs`); после закрытия — фокус обратно экрану.
     pub(crate) menu: Option<crate::menu::Menu>,
     pub(crate) refocus: bool,
+    /// Ширины папок и списка в этом кадре (T1-05б): из настроек или перетаскивания, ужаты окном.
+    pub(crate) panes: (f32, f32),
+    /// Тянется разделитель панелей (T1-05б).
+    pub(crate) split: SplitDrag,
     /// Связи с сервером нет (S5-08, `states.rs`): строка состояния, метка у аккаунта, полоса над списком.
     pub(crate) offline: crate::states::Offline,
     /// Таймер обратного отсчёта «повтор через N с» стоит.
@@ -306,6 +310,8 @@ impl Mailer {
             summary,
             menu: None,
             refocus: false,
+            panes: (W_FOLDERS, W_LIST),
+            split: SplitDrag::default(),
             offline: Default::default(),
             offline_ticking: false,
             backend: Backend::Demo,
@@ -528,6 +534,10 @@ impl Render for Mailer {
         }
         // Вкладку сменили мимо `sync_mail_tab` (закрыли письмо или встречу) — части почты по активной вкладке.
         self.sync_mail_tab(cx);
+        // Ширины панелей (T1-05б): настройки или идущее перетаскивание, ужатые окном (сначала чтение, затем список).
+        let avail = panes_room(f32::from(window.viewport_size().width));
+        let (f, li) = self.split.layout.unwrap_or(crate::prefs::get(cx).layout).widths(avail);
+        self.panes = (f32::from(f), f32::from(li));
         self.sync_focus(window, cx);
         self.drive_bench(window, cx);
         screens::drive(self, window, cx);
@@ -570,6 +580,9 @@ impl Render for Mailer {
             .fold(div(), |root, p| (p.handlers)(root, cx))
             .key_context(context)
             .track_focus(&self.focus)
+            // Разделители панелей (T1-05б): движение и отпускание — по всему окну.
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| this.split_move(ev.position.x, cx)))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| this.split_end(cx)))
             // KeyTips (S5-18): удержание одного Ctrl.
             .on_modifiers_changed(cx.listener(|this, ev: &ModifiersChangedEvent, _, cx| this.keytips_modifiers(ev.modifiers, cx)))
             .size_full()
@@ -643,6 +656,105 @@ impl Mailer {
     }
 }
 
+/// Разделитель панелей (T1-05б).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Split {
+    Folders,
+    List,
+}
+
+/// Перетаскивание разделителя: ширины меняются на лету, в настройки — один раз, по отпусканию.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct SplitDrag {
+    /// Какой разделитель, x нажатия, ширина панели при нажатии, место трёх панелей.
+    on: Option<(Split, f32, f32, u16)>,
+    /// Ширины на время перетаскивания.
+    layout: Option<postman_core::prefs::Layout>,
+}
+
+impl SplitDrag {
+    pub(crate) fn begin(&mut self, split: Split, x: f32, width: f32, room: u16, now: postman_core::prefs::Layout) {
+        self.on = Some((split, x, width, room));
+        self.layout = Some(now);
+    }
+
+    /// Движение: новые ширины (ужатые минимумами); `false` — не тянем.
+    pub(crate) fn moved(&mut self, x: f32) -> bool {
+        let (Some((split, x0, w0, room)), Some(l)) = (self.on, self.layout) else { return false };
+        let w = Some((w0 + x - x0).round().max(0.) as u16);
+        let next = match split {
+            Split::Folders => postman_core::prefs::Layout { folders: w, ..l },
+            Split::List => postman_core::prefs::Layout { list: w, ..l },
+        };
+        self.layout = Some(next.clamp(room));
+        true
+    }
+
+    /// Кнопку отпустили: ширины — в настройки (один раз), перетаскивание кончилось.
+    pub(crate) fn end(&mut self) -> Option<postman_core::prefs::Layout> {
+        self.on.take()?;
+        self.layout.take()
+    }
+}
+
+/// Место трёх панелей (px при 100 %): окно без рейла, отступов и разделителей.
+fn panes_room(viewport: f32) -> u16 {
+    (viewport - crate::chrome::W_RAIL - 8. - 16.).clamp(0., f32::from(u16::MAX)) as u16
+}
+
+/// Двойной щелчок по разделителю: ширина макета.
+pub(crate) fn reset_split(l: postman_core::prefs::Layout, split: Split) -> postman_core::prefs::Layout {
+    match split {
+        Split::Folders => postman_core::prefs::Layout { folders: None, ..l },
+        Split::List => postman_core::prefs::Layout { list: None, ..l },
+    }
+}
+
+impl Mailer {
+    /// Разделитель 4 px: тянется мышью, двойной щелчок — ширина макета.
+    fn splitter(&self, split: Split, l: &crate::roles::Look, cx: &mut Context<Self>) -> Stateful<Div> {
+        let on = self.split.on.is_some_and(|(s, ..)| s == split);
+        div()
+            .id(("pane-split", split as usize))
+            .w(px(8.))
+            .h_full()
+            .flex_none()
+            .flex()
+            .justify_center()
+            .cursor(CursorStyle::ResizeLeftRight)
+            .child(div().w(px(4.)).h_full().rounded(px(2.)).when(on, |d| d.bg(l.border())))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    let layout = crate::prefs::get(cx).layout;
+                    if ev.click_count >= 2 {
+                        this.split = SplitDrag::default();
+                        crate::prefs::update(cx, |p| p.layout = reset_split(layout, split));
+                    } else {
+                        let width = if split == Split::Folders { this.panes.0 } else { this.panes.1 };
+                        let room = panes_room(f32::from(window.viewport_size().width));
+                        this.split.begin(split, f32::from(ev.position.x), width, room, layout);
+                    }
+                    cx.notify();
+                }),
+            )
+    }
+
+    fn split_move(&mut self, x: Pixels, cx: &mut Context<Self>) {
+        if self.split.moved(f32::from(x)) {
+            cx.notify();
+        }
+    }
+
+    fn split_end(&mut self, cx: &mut Context<Self>) {
+        if let Some(l) = self.split.end() {
+            crate::prefs::update(cx, |p| p.layout = l);
+            cx.notify();
+        }
+    }
+}
+
 /// Ширина панели папок и карточки списка (макет главного окна).
 pub(crate) const W_FOLDERS: f32 = 236.0;
 pub(crate) const W_LIST: f32 = 452.0;
@@ -670,7 +782,7 @@ impl Mailer {
         crate::prefs::get(cx).reading.pane == postman_core::prefs::Pane::Hidden && self.reading.read(cx).reading.is_some()
     }
 
-    fn body(&self, l: &crate::roles::Look, settings: Option<AnyView>, free: bool, cx: &App) -> Div {
+    fn body(&self, l: &crate::roles::Look, settings: Option<AnyView>, free: bool, cx: &mut Context<Self>) -> Div {
         use postman_core::prefs::Pane;
         let full = || StyleRefinement::default().size_full();
         let mail = free && self.section == Section::Mail;
@@ -684,9 +796,12 @@ impl Mailer {
         }
         let mut body = div().flex().flex_1().min_h_0().pr(px(8.)).child(self.rail(l, cx));
         if mail {
-            let folders = self.folders.clone().cached(StyleRefinement::default().w(px(W_FOLDERS)).h_full().flex_none());
+            let (w_folders, w_list) = self.panes;
+            let folders = self.folders.clone().cached(StyleRefinement::default().w(px(w_folders)).h_full().flex_none());
             // «Серая» (T1-D): панель папок — карточкой, как список и чтение.
-            body = if l.gray() { body.child(card(l).w(px(W_FOLDERS)).flex_none().mr(px(8.)).child(folders)) } else { body.child(folders) };
+            body = if l.gray() { body.child(card(l).w(px(w_folders)).flex_none().child(folders)) } else { body.child(folders) };
+            body = body.child(self.splitter(Split::Folders, l, cx));
+            let list_split = self.splitter(Split::List, l, cx);
             let list = || self.list.clone().cached(full());
             // Ответ — в области чтения над письмом (S5-06б): своя кэшируемая view сверху карточки.
             // Выделено несколько писем — сводка на месте письма (S5-08).
@@ -701,7 +816,7 @@ impl Mailer {
             };
             // Панель чтения — справа, снизу или скрыта (Настройки → Чтение).
             return match crate::prefs::get(cx).reading.pane {
-                Pane::Right => body.child(card(l).w(px(W_LIST)).flex_none().mr(px(8.)).child(list())).child(reading()),
+                Pane::Right => body.child(card(l).w(px(w_list)).flex_none().child(list())).child(list_split).child(reading()),
                 Pane::Bottom => body.child(
                     div()
                         .flex_1()
@@ -789,5 +904,29 @@ impl Mailer {
             }
         }
         window.request_animation_frame();
+    }
+}
+
+#[cfg(test)]
+mod split_tests {
+    use super::{Split, SplitDrag, reset_split};
+    use postman_core::prefs::Layout;
+
+    /// Разделители панелей (T1-05б): ширина — не меньше минимума; запись в настройки — одна, по отпусканию; двойной
+    /// щелчок — ширина макета.
+    #[test]
+    fn splitter_clamps_and_saves_once() {
+        let mut d = SplitDrag::default();
+        assert!(!d.moved(10.), "не тянем — ничего");
+        d.begin(Split::Folders, 300., 236., 1400, Layout::default());
+        assert!(d.moved(250.));
+        assert!(d.moved(100.), "уже минимума");
+        let l = d.end().unwrap();
+        assert_eq!(l.folders, Some(Layout::MIN_FOLDERS));
+        assert_eq!(d.end(), None, "запись — один раз");
+        d.begin(Split::List, 700., 452., 1400, l);
+        d.moved(760.);
+        assert_eq!(d.end().unwrap().list, Some(512));
+        assert_eq!(reset_split(Layout { folders: Some(200), list: Some(500) }, Split::List), Layout { folders: Some(200), list: None });
     }
 }
