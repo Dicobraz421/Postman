@@ -1,5 +1,6 @@
 //! Минимальный EWS для Exchange on-prem (best effort; ADR 0003, S7-06): календарь и ответы на встречи, занятость
-//! (`GetUserAvailability`), справочник (`FindPeople`, `ResolveNames`) и почта (`mail`). Почта Exchange идёт по EWS — решение
+//! (`GetUserAvailability`), справочник (`FindPeople`, `ResolveNames`), личные контакты (`contacts`) и почта (`mail`).
+//! Почта Exchange идёт по EWS — решение
 //! владельца 2026-10-23 (у Exchange компании IMAP4 и приём SMTP выключены, `docs/EXCHANGE.md`). Без надстроек
 //! Microsoft: ни правил, ни главного списка категорий, ни OOF, ни задач, ни общих ящиков. Изменения — опросом
 //! `SyncFolderItems`/`SyncFolderHierarchy`, а что и когда опрашивать — по уведомлениям сервера (`notify`: streaming,
@@ -19,6 +20,7 @@ mod auth;
 pub mod autodiscover;
 pub mod availability;
 pub mod calendar;
+pub mod contacts;
 pub mod directory;
 mod http;
 pub mod mail;
@@ -36,7 +38,8 @@ pub use calendar::{
     Attendee, CalendarItem, Changes, DayOfWeek, DeleteMode, Folder, FolderId, FolderRef, ItemId, ItemKind, ItemRef, NewItem, Notify, Occurrence,
     Pattern, Range, Recurrence, Reply, SyncChanges, SyncState, WeekIndex, WellKnown,
 };
-pub use directory::Person;
+pub use contacts::{Contact, ContactData, ContactFolder, Member, Phone, PhoneKind};
+pub use directory::{PeoplePage, Person};
 pub use mail::{Attachment, Disposition, HierarchyChanges, MailFolder, MailHeader, MailItem, MailRole, MailSync, apply_roles};
 pub use notify::{Change, Event, EventKind, EventStream, Mode, Notifier, Subscription, changes};
 

@@ -84,8 +84,19 @@ fn now() -> i64 {
 }
 
 /// Всё с меткой — насовсем, без рассылки: календарь, «Входящие» (приглашения, ответы, отмены), «Отправленные»,
-/// «Удалённые».
+/// «Удалённые»; контакты — по «Хранить как» (тема у контакта EWS пустая) в «Контактах» и «Удалённых».
 async fn cleanup(c: &mut Client, tag: &str) {
+    for folder in [WellKnown::Contacts, WellKnown::DeletedItems] {
+        match c.find_contacts(&FolderRef::WellKnown(folder), tag, 20).await {
+            Ok(ids) if !ids.is_empty() => {
+                if let Err(e) = c.delete(&ids, DeleteMode::HardDelete, Notify::None).await {
+                    eprintln!("уборка контактов: {:?} — {}", folder, e.code().unwrap_or("ошибка"));
+                }
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("уборка контактов: {:?} — {}", folder, e.code().unwrap_or("ошибка")),
+        }
+    }
     for folder in [WellKnown::Calendar, WellKnown::Inbox, WellKnown::Drafts, WellKnown::SentItems, WellKnown::DeletedItems] {
         match c.find_by_subject(folder, tag, 20).await {
             Ok(ids) if !ids.is_empty() => {
@@ -627,5 +638,84 @@ fn ews_notify_new_mail() {
             println!("pull: событий {events}, подписка снята");
         })
         .await;
+    });
+}
+
+/// Личный контакт (T1-25а): создан → прочитан (и виден в изменениях папки) → изменён → удалён в «Удалённые».
+/// Имя — с меткой прогона; уборка — по ней.
+#[test]
+#[ignore = "боевой Exchange: S7 «Проверка на боевом Exchange»"]
+fn ews_contacts_round_trip() {
+    use postman_ews::{ContactData, Phone, PhoneKind};
+    rt().block_on(async {
+        let a = first();
+        let tag = tag();
+        guarded(&tag, &[&a], async {
+            let mut c = client(&a).await;
+            let folders = c.contact_folders().await.unwrap();
+            assert!(folders.first().is_some_and(|f| f.parent.is_none()), "папка «Контакты»");
+            let contacts = FolderRef::WellKnown(WellKnown::Contacts);
+            let (_, base) = {
+                let mut state = None;
+                for _ in 0..25 {
+                    let ch = c.sync_contacts(&contacts, state.as_ref(), 100).await.unwrap();
+                    let done = ch.done;
+                    state = Some(ch.state);
+                    if done {
+                        break;
+                    }
+                }
+                ((), state)
+            };
+            let data = ContactData {
+                display_name: format!("{tag} contact"),
+                given_name: "Тест".into(),
+                surname: "Проверка".into(),
+                emails: vec!["postman-test@example.test".into()],
+                phones: vec![Phone { kind: PhoneKind::Business, number: "+7 000 000-00-01".into() }],
+                company: "Postman".into(),
+                job_title: "Тестовый".into(),
+                department: String::new(),
+                notes: "Создан тестом.".into(),
+            };
+            let id = c.create_contact(&contacts, &data).await.unwrap();
+            let got = c.get_contacts(std::slice::from_ref(&id)).await.unwrap().pop().expect("контакт прочитан");
+            assert_eq!(got.data, data, "карточка как записана");
+            let ch = c.sync_contacts(&contacts, base.as_ref(), 100).await.unwrap();
+            assert!(ch.created.iter().any(|i| i.id == id.id), "новый — в изменениях папки");
+
+            let mut changed = data.clone();
+            changed.job_title = "Изменённый".into();
+            changed.phones.clear();
+            changed.emails.push("postman-test2@example.test".into());
+            changed.notes.clear();
+            let id = c.update_contact(&got.id, &changed).await.unwrap();
+            let got = c.get_contacts(std::slice::from_ref(&id)).await.unwrap().pop().expect("контакт после правки");
+            assert_eq!(got.data, changed, "правка целиком: телефон и заметки сняты, адрес добавлен");
+
+            c.delete_contacts(std::slice::from_ref(&id)).await.unwrap();
+            assert!(c.get_contacts(std::slice::from_ref(&id)).await.unwrap().is_empty(), "в «Контактах» нет");
+            let trash = c.find_contacts(&FolderRef::WellKnown(WellKnown::DeletedItems), &tag, 5).await.unwrap();
+            assert_eq!(trash.len(), 1, "контакт — в «Удалённых»");
+            println!("контакт: создан, прочитан, изменён, удалён в «Удалённые»; папок контактов {}", folders.len());
+        })
+        .await;
+    });
+}
+
+/// Справочник списком (T1-25а): первая страница GAL — не больше 20 (правило S7), или «только поиском».
+#[test]
+#[ignore = "боевой Exchange: S7 «Проверка на боевом Exchange»"]
+fn ews_directory_page() {
+    rt().block_on(async {
+        let page = client(&first()).await.find_people_page(0, 20).await.unwrap_or_else(|e| panic!("FindPeople: {}", e.code().unwrap_or("ошибка")));
+        println!(
+            "справочник: только поиском {}, на странице {}, строк {}, всего известно {}",
+            page.search_only,
+            page.people.len(),
+            page.next - page.offset,
+            page.total.is_some()
+        );
+        assert!(page.people.len() <= 20 && page.next - page.offset <= 20);
     });
 }
