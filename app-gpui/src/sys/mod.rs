@@ -1,6 +1,6 @@
 //! Платформенный код интерфейса — прослойка над нейтральным API pets (решение владельца 2026-10-28): окно —
-//! `gpui_windows::pets` (pets-gpui-windows), без UI — `pets_shell`. Вызовов ОС здесь нет, на других ОС — заглушки. `unsafe` — только счётчик кучи (`alloc`) и
-//! `set_var` в начале `main` (`shell::default_env`).
+//! `gpui_windows::pets` (pets-gpui-windows), без UI — `pets_shell`. Вызовов ОС здесь нет, на других ОС — заглушки.
+//! `unsafe` — только счётчик кучи (`alloc`) и `set_var` в начале `main` (`shell::default_env`).
 
 use gpui_kit::Window;
 #[cfg(windows)]
