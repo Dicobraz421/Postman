@@ -539,7 +539,11 @@ impl Client {
 
     /// Удалить папку (`DeleteFolder`): в «Удалённые» или насовсем. Уже удалённая — не ошибка.
     pub async fn delete_folder(&mut self, id: &FolderId, mode: crate::DeleteMode) -> Result<()> {
-        let body = format!(r#"<m:DeleteFolder DeleteType="{}"><m:FolderIds>{}</m:FolderIds></m:DeleteFolder>"#, mode.ews(), soap::id_el("t:FolderId", &id.id, None));
+        let body = format!(
+            r#"<m:DeleteFolder DeleteType="{}"><m:FolderIds>{}</m:FolderIds></m:DeleteFolder>"#,
+            mode.ews(),
+            soap::id_el("t:FolderId", &id.id, None)
+        );
         let resp = self.call("DeleteFolder", &body).await?;
         for msg in soap::messages(&resp) {
             if soap::code(msg) != "ErrorItemNotFound" && soap::code(msg) != "ErrorFolderNotFound" {

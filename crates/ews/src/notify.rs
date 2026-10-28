@@ -163,7 +163,9 @@ pub(crate) mod req {
 
     pub(crate) fn subscribe_streaming(folders: &[FolderRef]) -> String {
         let (all, inner) = scope(folders);
-        format!(r#"<m:Subscribe><m:StreamingSubscriptionRequest SubscribeToAllFolders="{all}">{inner}</m:StreamingSubscriptionRequest></m:Subscribe>"#)
+        format!(
+            r#"<m:Subscribe><m:StreamingSubscriptionRequest SubscribeToAllFolders="{all}">{inner}</m:StreamingSubscriptionRequest></m:Subscribe>"#
+        )
     }
 
     pub(crate) fn subscribe_pull(folders: &[FolderRef], watermark: Option<&str>) -> String {
@@ -564,7 +566,10 @@ mod tests {
         let kinds: Vec<EventKind> = p.events.iter().map(|e| e.kind).collect();
         assert_eq!(kinds, [EventKind::Status, EventKind::NewMail, EventKind::Moved, EventKind::Created, EventKind::Modified]);
         let moved = &p.events[2];
-        assert_eq!((moved.item.as_deref(), moved.parent.as_deref(), moved.old_parent.as_deref()), (Some("AAMkADmsg2"), Some("AAMkADtrash"), Some("AAMkADinbox")));
+        assert_eq!(
+            (moved.item.as_deref(), moved.parent.as_deref(), moved.old_parent.as_deref()),
+            (Some("AAMkADmsg2"), Some("AAMkADtrash"), Some("AAMkADinbox"))
+        );
         assert_eq!((p.events[3].folder.as_deref(), p.events[3].parent.as_deref()), (Some("AAMkADnew"), Some("AAMkADinbox")));
         assert_eq!(
             changes(&p.events),

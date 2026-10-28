@@ -209,7 +209,8 @@ pub(crate) mod parse {
     /// Папка «Контакты» (`GetFolder`) и подпапки контактов (`FindFolder`): сама папка — без родителя.
     pub(crate) fn folders(root: &El, sub: &El) -> Result<Vec<ContactFolder>> {
         let msg = soap::single(root)?;
-        let mut top = msg.child("Folders").and_then(|f| f.children.first()).and_then(folder).ok_or_else(|| Error::Xml("GetFolder: no folder".into()))?;
+        let mut top =
+            msg.child("Folders").and_then(|f| f.children.first()).and_then(folder).ok_or_else(|| Error::Xml("GetFolder: no folder".into()))?;
         top.parent = None;
         let msg = soap::single(sub)?;
         let mut out = vec![top];
@@ -293,7 +294,10 @@ pub(crate) mod req {
         c.push_str(&opt("t:Department", &d.department));
         c.push_str(&opt("t:JobTitle", &d.job_title));
         c.push_str(&opt("t:Surname", &d.surname));
-        format!("<m:CreateItem><m:SavedItemFolderId>{}</m:SavedItemFolderId><m:Items><t:Contact>{c}</t:Contact></m:Items></m:CreateItem>", folder.xml())
+        format!(
+            "<m:CreateItem><m:SavedItemFolderId>{}</m:SavedItemFolderId><m:Items><t:Contact>{c}</t:Contact></m:Items></m:CreateItem>",
+            folder.xml()
+        )
     }
 
     fn set(uri: &str, inner: String) -> String {
@@ -468,9 +472,15 @@ mod tests {
         assert_eq!(a.data.emails, ["anna@example.test", "a.petrova@example.test"], "по ключам, без X500");
         assert_eq!(
             a.data.phones,
-            [Phone { kind: PhoneKind::Business, number: "+7 495 000-00-01".into() }, Phone { kind: PhoneKind::Mobile, number: "+7 900 000-00-01".into() }]
+            [
+                Phone { kind: PhoneKind::Business, number: "+7 495 000-00-01".into() },
+                Phone { kind: PhoneKind::Mobile, number: "+7 900 000-00-01".into() }
+            ]
         );
-        assert_eq!((a.data.company.as_str(), a.data.job_title.as_str(), a.data.department.as_str()), ("Пример", "Ведущий инженер", "Отдел разработки"));
+        assert_eq!(
+            (a.data.company.as_str(), a.data.job_title.as_str(), a.data.department.as_str()),
+            ("Пример", "Ведущий инженер", "Отдел разработки")
+        );
         assert_eq!(a.data.notes, "Коллега по проекту.");
         assert!(a.members.is_none());
         let dl = &c[1];
