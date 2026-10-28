@@ -40,6 +40,10 @@ pub(crate) fn handlers(root: Div, cx: &mut Context<Mailer>) -> Div {
     root.on_action(cx.listener(|this, _: &mail::Reply, _, cx| this.respond(Mode::Reply, cx)))
         .on_action(cx.listener(|this, _: &mail::ReplyAll, _, cx| this.respond(Mode::ReplyAll, cx)))
         .on_action(cx.listener(|this, _: &mail::Forward, _, cx| this.respond(Mode::Forward, cx)))
+        .on_action(cx.listener(|this, _: &mail::ForwardAttached, _, cx| {
+            let ids = this.targets(cx);
+            this.forward_attached(ids, cx);
+        }))
         .on_action(cx.listener(|this, _: &mail::Delete, _, cx| this.delete_selected(cx)))
         .on_action(cx.listener(|this, _: &mail::Next, _, cx| this.step(|_| 1, cx)))
         .on_action(cx.listener(|this, _: &mail::Prev, _, cx| this.step(|_| -1, cx)))
@@ -340,6 +344,7 @@ pub(crate) mod mail {
             Reply,
             ReplyAll,
             Forward,
+            ForwardAttached,
             Delete,
             Due,
             Remind,
@@ -390,6 +395,8 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("mail.reply", &["ctrl-r"], MAIL),
         cmd("mail.reply_all", &["ctrl-shift-r"], MAIL),
         cmd("mail.forward", &["ctrl-f"], MAIL),
+        // Переслать вложениями (T1-17, Outlook «Переслать как вложение» — без клавиши): выделение или открытое письмо.
+        cmd("mail.forward_attached", &[], MAIL),
         cmd("mail.delete", &["delete"], LIST),
         // Жизненный цикл (S5-04): выбор — панелью на месте. «Срок…» — Insert (DESIGN «Хоткеи»: действие над выделенным;
         // в classic Outlook Insert — флаг, у нас срок вместо флага); у «Напомнить», «Ждать ответа», «Исчезнет» клавиш нет.

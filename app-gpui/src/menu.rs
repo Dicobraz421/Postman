@@ -38,6 +38,7 @@ enum Item {
     Reply,
     ReplyAll,
     Forward,
+    ForwardAttached,
     Seen,
     Flag,
     Category,
@@ -53,7 +54,7 @@ enum Item {
 
 /// Пункты группами (разделитель между группами), порядок — S5-08.
 const GROUPS: &[&[Item]] = &[
-    &[Item::Reply, Item::ReplyAll, Item::Forward],
+    &[Item::Reply, Item::ReplyAll, Item::Forward, Item::ForwardAttached],
     &[Item::Seen, Item::Flag, Item::Category],
     &[Item::Due, Item::Remind, Item::Wait, Item::Expire],
     &[Item::Move, Item::Archive, Item::Delete],
@@ -95,6 +96,7 @@ impl Item {
             Item::Reply => glyph::REPLY,
             Item::ReplyAll => glyph::REPLY_ALL,
             Item::Forward => glyph::FORWARD,
+            Item::ForwardAttached => glyph::ATTACH,
             Item::Seen => glyph::READ,
             Item::Flag => glyph::FLAG,
             Item::Category => glyph::TAG,
@@ -115,6 +117,7 @@ impl Item {
             Item::Reply => "mail.reply",
             Item::ReplyAll => "mail.reply_all",
             Item::Forward => "mail.forward",
+            Item::ForwardAttached => "mail.forward_attached",
             Item::Seen if unread => "mail.mark_read",
             Item::Seen => "mail.mark_unread",
             Item::Flag => "mail.toggle_flag",
@@ -294,6 +297,8 @@ impl Mailer {
             Item::Reply => respond(Mode::Reply, self, cx),
             Item::ReplyAll => respond(Mode::ReplyAll, self, cx),
             Item::Forward => respond(Mode::Forward, self, cx),
+            // Одно письмо или выделение (беседа — все её письма в папке) — вложениями.
+            Item::ForwardAttached => self.forward_attached(ids, cx),
             Item::Seen => self.ask(ids, Ask::Seen(Some(unread)), cx),
             Item::Flag => self.ask(ids, Ask::Flag(Some(unflagged)), cx),
             Item::Due => self.ask(ids, Ask::Lifecycle(Kind::Due), cx),
@@ -426,6 +431,7 @@ impl Mailer {
                     Item::Reply => tr!("menu-reply"),
                     Item::ReplyAll => tr!("menu-reply-all"),
                     Item::Forward => tr!("menu-forward"),
+                    Item::ForwardAttached => tr!("menu-forward-attached"),
                     Item::Seen if m.unread => tr!("menu-read"),
                     Item::Seen => tr!("menu-unread"),
                     Item::Flag if m.unflagged => tr!("menu-flag"),
