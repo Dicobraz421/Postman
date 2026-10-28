@@ -320,7 +320,7 @@ impl ReadingPane {
                                 .flex()
                                 .flex_col()
                                 .gap_1()
-                                .children(ir_view::blocks(blocks, &format!("feed{n}"), &images, cx))
+                                .children(ir_view::blocks(blocks, &format!("feed{n}"), &images, self.column.get(), cx))
                                 .when(hidden, |d| d.child(div().text_color(l.text2()).child(tr!("thread-quotes-hidden"))))
                                 .into_any_element()
                         }
@@ -609,7 +609,7 @@ impl ReadingPane {
                 let fresh = if whole { &d.blocks[..] } else { d.new_text() };
                 let history = &d.blocks[fresh.len()..];
                 let key = format!("stack{n}");
-                let mut col = div().flex().flex_col().gap_1().children(ir_view::blocks(fresh, &key, images, cx));
+                let mut col = div().flex().flex_col().gap_1().children(ir_view::blocks(fresh, &key, images, self.column.get(), cx));
                 if !history.is_empty() {
                     let label = if quoted { tr!("thread-quote-hide") } else { tr!("thread-quote-show") };
                     let qid = id.clone();
@@ -644,7 +644,7 @@ impl ReadingPane {
                                 .flex()
                                 .flex_col()
                                 .gap_1()
-                                .children(ir_view::blocks(history, &format!("{key}q"), images, cx)),
+                                .children(ir_view::blocks(history, &format!("{key}q"), images, self.column.get(), cx)),
                         );
                     }
                 }
