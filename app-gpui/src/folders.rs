@@ -132,7 +132,10 @@ pub(crate) enum FolderEvent {
 #[derive(Clone, Debug, PartialEq)]
 enum EditKind {
     /// Новая папка в аккаунте (`None` — свой) под `parent` (`None` — верхний уровень).
-    New { account: Option<String>, parent: Option<String> },
+    New {
+        account: Option<String>,
+        parent: Option<String>,
+    },
     Rename(String),
 }
 
@@ -190,7 +193,11 @@ pub(crate) fn changeable(m: &MailboxRow) -> bool {
 /// Новая папка: имя без пробелов по краям, пустое — нет команды.
 pub(crate) fn new_folder(account: Option<&str>, parent: Option<&str>, name: &str) -> Option<Command> {
     let name = name.trim();
-    (!name.is_empty()).then(|| Command::CreateFolder { account: account.map(str::to_owned), parent: parent.map(str::to_owned), name: name.to_owned() })
+    (!name.is_empty()).then(|| Command::CreateFolder {
+        account: account.map(str::to_owned),
+        parent: parent.map(str::to_owned),
+        name: name.to_owned(),
+    })
 }
 
 /// Новое имя папки: ролевую — нельзя, то же имя или пустое — нет команды.
@@ -567,9 +574,7 @@ impl Folders {
                 }),
             )
             // Перенос (T1-04д): ролевую не тащить; бросить можно на любую папку своей учётки.
-            .when(changeable(m), |d| {
-                d.on_drag(DraggedFolder { id: m.id.clone(), name: m.name.clone() }, |f, _, _, cx| cx.new(|_| f.clone()))
-            })
+            .when(changeable(m), |d| d.on_drag(DraggedFolder { id: m.id.clone(), name: m.name.clone() }, |f, _, _, cx| cx.new(|_| f.clone())))
             .drag_over::<DraggedFolder>(|s, _, _, _| s.bg(crate::roles::now().row_hover()))
             .on_drop(cx.listener(move |this, d: &DraggedFolder, _, cx| {
                 let target = this.mailboxes.iter().find(|x| x.id == drop).cloned();
@@ -840,8 +845,8 @@ pub(crate) mod scenes {
 mod tests {
     // Не `super::*`: из `gpui_kit::*` пришёл бы атрибут `test` gpui вместо встроенного.
     use super::{DropTarget, Folders, OWN, Row, changeable, drop_on, new_folder, rename, tree};
-    use postman_core::sync::Command;
     use postman_cache::{AccountRow, MailboxRow, Rights};
+    use postman_core::sync::Command;
     use std::collections::HashSet;
 
     /// Строки дерева коротко: `@` — своя подпись, `+id` — ветка, иначе id папки.
@@ -913,7 +918,9 @@ mod tests {
         let a = mb("a", Rights::ALL);
         let b = MailboxRow { parent_id: Some("a".into()), ..mb("b", Rights::ALL) };
         let other = mb("@2/x", Rights::ALL);
-        assert!(matches!(new_folder(None, Some("a"), "  New "), Some(Command::CreateFolder { account: None, parent: Some(p), name }) if p == "a" && name == "New"));
+        assert!(
+            matches!(new_folder(None, Some("a"), "  New "), Some(Command::CreateFolder { account: None, parent: Some(p), name }) if p == "a" && name == "New")
+        );
         assert!(new_folder(None, None, "  ").is_none());
         assert!(!changeable(&inbox) && changeable(&a));
         assert!(rename(&inbox, "x").is_none(), "ролевую — нельзя");
