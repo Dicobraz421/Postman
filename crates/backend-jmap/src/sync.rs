@@ -1139,11 +1139,14 @@ async fn handle(
         cmd @ (Command::CreateFolder { .. } | Command::RenameFolder { .. } | Command::MoveFolder { .. }) => {
             folder_command(accounts, cache, cmd, notify).await;
         }
-        // Страница справочника — T1-25в: пока пустая страница, интерфейс не ждёт ответа.
-        cmd @ Command::DirectoryPage { .. } => {
-            if let Some(e) = cmd.unsupported() {
-                notify(e);
+        // Страница справочника (T1-25в): срез того же списка, что в `DirectoryLoaded`.
+        Command::DirectoryPage { account, offset, max } => {
+            if !client.has(postman_jmap::PRINCIPALS) {
+                notify(Event::no_directory(account, offset));
+                return Ok(());
             }
+            let people = postman_core::contacts::directory(client.directory(DIRECTORY_LIMIT).await?.into_iter().map(Principal::from_jmap).collect());
+            notify(Event::directory_slice(account, &people, offset, max));
         }
     }
     Ok(())

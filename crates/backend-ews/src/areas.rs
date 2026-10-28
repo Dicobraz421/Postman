@@ -1,5 +1,5 @@
-//! Области Exchange по EWS (ADR 0004, `Areas`): календарь, ответы на встречи, занятость и справочник (GAL) — тем же
-//! договором событий, что у JMAP и CalDAV; экраны те же, чего нет (задач, личных контактов) — скрыто по `Features`.
+//! Области Exchange по EWS (ADR 0004, `Areas`): календарь, ответы на встречи, занятость, личные контакты и справочник
+//! (GAL) — тем же договором событий, что у JMAP и CalDAV; экраны те же, чего нет (задач) — скрыто по `Features`.
 //!
 //! - **Неделя** — `FindItem` + `CalendarView`: повторы разворачивает сервер (экземпляры и изменённые экземпляры —
 //!   отдельными событиями со своим id и общим UID серии; удалённые экземпляры сервер не показывает), подробности —
@@ -14,15 +14,20 @@
 //!   на один экземпляр (`recurrenceId`) — по экземпляру. Встречи с этим UID нет — ответ письмом iMIP (почтовый путь).
 //! - **Занятость** — `GetUserAvailability` (моя — тем же запросом); ошибка по адресу — «нет данных», не «свободен».
 //! - **Справочник** — `FindPeople` по GAL (`Command::FindPeople` → `PeopleFound`) с должностью, отделом и телефоном;
-//!   сервер его не знает — `ResolveNames`. GAL целиком EWS не отдаёт, `DirectoryLoaded` — пустой. Телефон для
-//!   карточки — `ResolveNames` по адресу (`Command::PersonDetails`): `FindPeople` у Exchange 2013 его не отдаёт.
-//! - **Изменения** — опрос `SyncFolderItems` календаря по таймеру синхронизации → `CalendarChanged`.
+//!   сервер его не знает — `ResolveNames`. Справочник у Exchange — поиск с подсказкой (решение владельца 2026-10-28):
+//!   без строки — пусто, `DirectoryLoaded` пустой, страница (`DirectoryPage`) — `search_only`; GAL целиком не читаем.
+//!   Телефон для карточки — `ResolveNames` по адресу (`Command::PersonDetails`): `FindPeople` у Exchange 2013 его не отдаёт.
+//! - **Мои контакты** (T1-25в) — папка «Контакты»: `FindItem` по страницам и `GetItem` (`ContactsLoaded`), запись —
+//!   `CreateItem`, `UpdateItem` (поля карточки поверх прочитанного с сервера), `DeleteItem` в «Удалённые». Списки
+//!   рассылки — не карточки (только чтение у сервера), в список не идут.
+//! - **Изменения** — опрос `SyncFolderItems` календаря и контактов по таймеру синхронизации и по событиям сервера →
+//!   `CalendarChanged`, `ContactsLoaded`.
 
 use std::collections::HashMap;
 
 use postman_calendar::{Busy, Event, EventStatus, Invitation, Partstat, Span};
 use postman_core::backend::{AreaCtx, Areas, BoxFuture};
-use postman_core::model::{Feature, Features, Principal};
+use postman_core::model::{ContactCard, Feature, Features, Principal};
 use postman_core::schedule::{Meeting, SEARCH_LIMIT};
 use postman_core::sync::{Command, Event as SyncEvent, owned_by};
 use postman_ews::{CalendarItem, Changes, Client, DeleteMode, Error, FolderRef, ItemId, ItemKind, NewItem, Notify, Reply, SyncState, WellKnown};
@@ -60,6 +65,50 @@ pub struct EwsAreas {
     items: HashMap<String, Known>,
     /// `FindPeople` работает на этом сервере; отказал однажды — справочник по `ResolveNames`.
     find_people: bool,
+    /// Состояние `SyncFolderItems` папки «Контакты»: изменились ли контакты.
+    contacts: Option<SyncState>,
+}
+
+/// Контактов папки «Контакты» — не больше (страницами по [`CONTACT_PAGE`]).
+const CONTACTS_LIMIT: u32 = 5000;
+const CONTACT_PAGE: u32 = 100;
+
+/// Контакт Exchange → карточка Postman: отображаемое имя, адреса, телефоны, компания, должность. Списков рассылки
+/// нет (`None`).
+pub fn card(c: postman_ews::Contact) -> Option<ContactCard> {
+    if c.members.is_some() {
+        return None;
+    }
+    Some(ContactCard {
+        id: c.id.id,
+        name: c.data.shown_name(),
+        emails: c.data.emails,
+        phones: c.data.phones.into_iter().map(|p| p.number).collect(),
+        organization: c.data.company,
+        title: c.data.job_title,
+    })
+}
+
+/// Карточка Postman → поля контакта Exchange поверх прежних (`base`: имя и фамилия, отдел, заметки, виды телефонов
+/// остаются): телефон на своём месте — с прежним видом, новый — рабочий, мобильный, домашний, другой.
+pub fn contact_data(card: &ContactCard, base: Option<&postman_ews::ContactData>) -> postman_ews::ContactData {
+    use postman_ews::{Phone, PhoneKind};
+    let mut d = base.cloned().unwrap_or_default();
+    d.display_name = card.name.trim().to_owned();
+    d.emails = card.emails.iter().map(|e| e.trim().to_owned()).filter(|e| !e.is_empty()).take(postman_ews::contacts::MAX_EMAILS).collect();
+    let old: Vec<PhoneKind> = base.map(|b| b.phones.iter().map(|p| p.kind).collect()).unwrap_or_default();
+    let mut free = [PhoneKind::Business, PhoneKind::Mobile, PhoneKind::Home, PhoneKind::Other].into_iter().filter(|k| !old.contains(k));
+    d.phones = card
+        .phones
+        .iter()
+        .map(|n| n.trim())
+        .filter(|n| !n.is_empty())
+        .enumerate()
+        .map(|(i, n)| Phone { kind: old.get(i).copied().or_else(|| free.next()).unwrap_or(PhoneKind::Other), number: n.to_owned() })
+        .collect();
+    d.company = card.organization.trim().to_owned();
+    d.job_title = card.title.trim().to_owned();
+    d
 }
 
 impl std::fmt::Debug for EwsAreas {
@@ -185,14 +234,74 @@ impl EwsAreas {
     pub async fn connect(url: &str, user: &str, password: &str, email: &str) -> Result<EwsAreas, Error> {
         let mut client = Client::new(url, crate::auth(user, password))?;
         client.calendar_folder().await?;
-        let mut a = EwsAreas { client, me: email.to_owned(), state: None, items: HashMap::new(), find_people: true };
+        let mut a = EwsAreas { client, me: email.to_owned(), state: None, items: HashMap::new(), find_people: true, contacts: None };
         a.poll().await?;
         Ok(a)
     }
 
-    /// Календарь, занятость, справочник. Задач, личных контактов, правил и автоответа по EWS у Postman нет.
+    /// Календарь, занятость, личные контакты, справочник. Задач, правил и автоответа по EWS у Postman нет.
     pub fn features(&self) -> Features {
-        Features::NONE.with(Feature::Calendar, true).with(Feature::FreeBusy, true).with(Feature::Directory, true)
+        Features::NONE.with(Feature::Calendar, true).with(Feature::FreeBusy, true).with(Feature::Contacts, true).with(Feature::Directory, true)
+    }
+
+    /// Личные контакты папки «Контакты» — карточками (страницами `FindItem`, затем `GetItem`).
+    pub async fn load_contacts(&mut self) -> Result<Vec<ContactCard>, Error> {
+        let folder = FolderRef::WellKnown(WellKnown::Contacts);
+        let mut ids = Vec::new();
+        while (ids.len() as u32) < CONTACTS_LIMIT {
+            let (page, more) = self.client.contacts_page(&folder, ids.len() as u32, CONTACT_PAGE).await?;
+            let got = page.len();
+            ids.extend(page);
+            if !more || got == 0 {
+                break;
+            }
+        }
+        let mut cards: Vec<ContactCard> = self.client.get_contacts(&ids).await?.into_iter().filter_map(card).collect();
+        cards.sort_by_key(|c| c.name.to_lowercase());
+        Ok(cards)
+    }
+
+    /// Изменились ли контакты с прошлого раза (`SyncFolderItems` папки «Контакты»). Первый вызов — только состояние.
+    pub async fn poll_contacts(&mut self) -> Result<bool, Error> {
+        let first = self.contacts.is_none();
+        let mut changed = false;
+        for _ in 0..SYNC_PAGES {
+            let page = match self.client.sync_contacts(&FolderRef::WellKnown(WellKnown::Contacts), self.contacts.as_ref(), SYNC_PAGE).await {
+                Err(e) if e.is_invalid_sync_state() && self.contacts.is_some() => {
+                    self.contacts = None;
+                    changed = true;
+                    continue;
+                }
+                r => r?,
+            };
+            changed |= !page.created.is_empty() || !page.updated.is_empty() || !page.deleted.is_empty();
+            self.contacts = Some(page.state);
+            if page.done {
+                break;
+            }
+        }
+        Ok(changed && !first)
+    }
+
+    /// Записать карточку: новая — `CreateItem` в «Контакты», правка — поверх прочитанной с сервера → id.
+    async fn save_contact(&mut self, card: &ContactCard, old: Option<&ContactCard>) -> Result<String, Error> {
+        let Some(old) = old.filter(|o| !o.id.is_empty()) else {
+            let id = self.client.create_contact(&FolderRef::WellKnown(WellKnown::Contacts), &contact_data(card, None)).await?;
+            return Ok(id.id);
+        };
+        let id = ItemId::new(old.id.clone());
+        let base = self.client.get_contacts(std::slice::from_ref(&id)).await?.into_iter().find(|c| c.id.id == id.id && c.members.is_none());
+        let base = base.ok_or_else(|| Error::Ews { code: "ErrorItemNotFound".into(), message: String::new() })?;
+        self.client.update_contact(&id, &contact_data(card, Some(&base.data))).await?;
+        Ok(old.id.clone())
+    }
+
+    /// Контакты заново → `ContactsLoaded`, ошибка — `ContactFailed` с `ticket`.
+    async fn contacts_loaded(&mut self, ticket: u64, notify: &dyn Fn(SyncEvent)) {
+        match self.load_contacts().await {
+            Ok(cards) => notify(SyncEvent::ContactsLoaded(cards)),
+            Err(e) => notify(SyncEvent::ContactFailed { ticket, error: e.to_string() }),
+        }
     }
 
     /// Изменился ли календарь с прошлого раза (`SyncFolderItems`). Первый вызов — только состояние.
@@ -448,10 +557,27 @@ impl EwsAreas {
                 notify(SyncEvent::PersonDetails { email, person });
             }
             Command::Contacts => {
-                // Личных контактов по EWS нет; справочник — только поиском (`FindPeople`).
-                notify(SyncEvent::ContactsLoaded(Vec::new()));
+                self.contacts_loaded(0, notify).await;
+                // Справочник — поиском с подсказкой (`FindPeople`): GAL целиком не читаем.
                 notify(SyncEvent::DirectoryLoaded(Vec::new()));
             }
+            Command::DirectoryPage { account, offset, .. } => {
+                notify(SyncEvent::DirectoryPage { account, offset, people: Vec::new(), total: None, search_only: true });
+            }
+            Command::SaveContact { card, old, ticket } => match self.save_contact(&card, old.as_deref()).await {
+                Ok(id) => {
+                    notify(SyncEvent::ContactSaved { ticket, id });
+                    self.contacts_loaded(ticket, notify).await;
+                }
+                Err(e) => notify(SyncEvent::ContactFailed { ticket, error: e.to_string() }),
+            },
+            Command::DeleteContact { id, ticket } => match self.client.delete_contacts(&[ItemId::new(id.clone())]).await {
+                Ok(()) => {
+                    notify(SyncEvent::ContactDeleted { ticket, id });
+                    self.contacts_loaded(ticket, notify).await;
+                }
+                Err(e) => notify(SyncEvent::ContactFailed { ticket, error: e.to_string() }),
+            },
             Command::FindPeople { text } => match self.find_people(&text).await {
                 Ok(people) => notify(SyncEvent::PeopleFound { text, people }),
                 Err(e) => {
@@ -520,6 +646,37 @@ mod tests {
         let alone = NewItem { required: vec![], optional: vec![], ..it };
         assert_eq!(notify_for(&alone), Notify::None, "своё событие — без рассылки");
         assert!(bad_time_zone(&Error::Ews { code: "ErrorTimeZone".into(), message: String::new() }));
+    }
+
+    /// Карточка ↔ контакт Exchange (T1-25в): поля модели — свои, остальное (имя, фамилия, отдел, заметки, виды
+    /// телефонов) — с сервера; списки рассылки — не карточки.
+    #[test]
+    fn contact_cards() {
+        use postman_ews::{Contact, ContactData, Phone, PhoneKind};
+        let data = ContactData {
+            display_name: "Петрова Анна".into(),
+            given_name: "Анна".into(),
+            surname: "Петрова".into(),
+            emails: vec!["anna@example.test".into()],
+            phones: vec![Phone { kind: PhoneKind::Mobile, number: "+7 900".into() }],
+            company: "Пример".into(),
+            job_title: "Инженер".into(),
+            department: "Разработка".into(),
+            notes: "Коллега.".into(),
+        };
+        let c = card(Contact { id: ItemId::new("AAMk1"), folder_id: None, data: data.clone(), members: None }).unwrap();
+        assert_eq!((c.id.as_str(), c.name.as_str(), c.organization.as_str(), c.title.as_str()), ("AAMk1", "Петрова Анна", "Пример", "Инженер"));
+        assert_eq!(c.phones, ["+7 900"]);
+        assert!(card(Contact { id: ItemId::new("AAMk2"), folder_id: None, data: data.clone(), members: Some(vec![]) }).is_none(), "список рассылки");
+
+        let edited = ContactCard { phones: vec!["+7 901".into(), "+7 495".into()], title: "Ведущий".into(), ..c };
+        let d = contact_data(&edited, Some(&data));
+        assert_eq!((d.given_name.as_str(), d.department.as_str(), d.notes.as_str()), ("Анна", "Разработка", "Коллега."), "прежние поля");
+        assert_eq!(d.phones.iter().map(|p| p.kind).collect::<Vec<_>>(), [PhoneKind::Mobile, PhoneKind::Business], "вид на месте, новый — рабочий");
+        assert_eq!(d.job_title, "Ведущий");
+        let new =
+            contact_data(&ContactCard { name: " Борис ".into(), emails: vec![" ".into(), "b@example.test".into()], ..Default::default() }, None);
+        assert_eq!((new.display_name.as_str(), new.emails.as_slice()), ("Борис", ["b@example.test".to_owned()].as_slice()));
     }
 
     #[test]
