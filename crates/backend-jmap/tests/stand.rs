@@ -980,3 +980,67 @@ async fn meeting_edit_and_cancel_through_sync() {
         }
     }
 }
+
+/// Папки с меткой прогона — насовсем (вложенные раньше родителей); только у стендового user1.
+async fn remove_test_folders(c: &Client) {
+    let (boxes, _) = c.mailboxes().await.unwrap();
+    let mut tagged: Vec<&postman_jmap::Mailbox> = boxes.iter().filter(|m| m.name.starts_with("[postman-test")).collect();
+    // Сначала те, у кого нет вложенных среди помеченных.
+    while !tagged.is_empty() {
+        let leaf = tagged.iter().position(|m| !tagged.iter().any(|o| o.parent_id.as_deref() == Some(m.id.as_str()))).unwrap_or(0);
+        let m = tagged.remove(leaf);
+        if let Err(e) = c.destroy_mailbox(&m.id).await {
+            eprintln!("уборка папки: {e}");
+        }
+    }
+}
+
+/// T1-04в: папки через синхронизацию — создать две, переименовать, перенести одну в другую; дерево на сервере и в
+/// кэше; перенос в свою подпапку — отказ ядра. Уборка — папки с меткой `[postman-test …]`.
+#[tokio::test]
+#[ignore = "нужен стенд Stalwart: docs/STALWART.md"]
+async fn folders_through_sync() {
+    use postman_core::sync::{Account, Command, Event as SyncEvent, Status};
+    let u = user(1).await;
+    remove_test_folders(&u.client).await;
+    let tag = format!("[postman-test {}]", stamp());
+    let account = Account {
+        url: env("POSTMAN_STAND_URL"),
+        auth: postman_core::model::Auth::Basic { user: u.email.clone(), password: env("POSTMAN_STAND_PASSWORD1") },
+    };
+    let cache = postman_cache::Cache::open_in_memory().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let commands = postman_backend_jmap::spawn(account, cache.clone(), None, tx, || {});
+    wait_for(&rx, "первая синхронизация", |e| matches!(e, SyncEvent::Status(Status::Synced)).then_some(()));
+    let key = |name: &str| cache.mailboxes().unwrap().into_iter().find(|m| m.name == name).map(|m| m.id);
+    // Дерево в кэше — после `MailboxesChanged` команды (до неё бывают и другие, от push).
+    let until = |what: &str, ok: &dyn Fn() -> bool| {
+        let start = Instant::now();
+        while !ok() {
+            assert!(start.elapsed() < DELIVERY, "не дождались: {what}");
+            wait_for(&rx, "MailboxesChanged", |e| matches!(e, SyncEvent::MailboxesChanged).then_some(()));
+        }
+    };
+
+    for name in ["a", "b"] {
+        commands.send(Command::CreateFolder { account: None, parent: None, name: format!("{tag} {name}") }).unwrap();
+        until(name, &|| key(&format!("{tag} {name}")).is_some());
+    }
+    let (a, b) = (key(&format!("{tag} a")).unwrap(), key(&format!("{tag} b")).unwrap());
+    commands.send(Command::RenameFolder { mailbox: a.clone(), name: format!("{tag} a2") }).unwrap();
+    until("a2", &|| key(&format!("{tag} a2")).is_some());
+    assert_eq!(key(&format!("{tag} a2")).as_deref(), Some(a.as_str()), "ключ тот же, имя новое");
+    commands.send(Command::MoveFolder { mailbox: a.clone(), parent: Some(b.clone()) }).unwrap();
+    until("a2 в b", &|| cache.mailboxes().unwrap().into_iter().any(|m| m.id == a && m.parent_id.as_deref() == Some(b.as_str())));
+    let (boxes, _) = u.client.mailboxes().await.unwrap();
+    let server = boxes.iter().find(|m| m.name == format!("{tag} a2")).expect("a2 на сервере");
+    assert_eq!(server.parent_id.as_deref(), Some(b.as_str()), "a2 — в b (сервер)");
+
+    commands.send(Command::MoveFolder { mailbox: b.clone(), parent: Some(a.clone()) }).unwrap();
+    let refused = wait_for(&rx, "FolderFailed", |e| match e {
+        SyncEvent::FolderFailed { error, .. } => Some(error.clone()),
+        _ => None,
+    });
+    assert_eq!(refused, postman_core::sync::FOLDER_INTO_ITSELF);
+    remove_test_folders(&u.client).await;
+}

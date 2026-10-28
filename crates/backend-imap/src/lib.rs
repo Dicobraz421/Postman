@@ -426,6 +426,8 @@ async fn run(
                     me.release_held(true, notify).await;
                     return;
                 };
+                // Перенос папки в себя, в подпапку, в другой аккаунт — отказ ядра до сервера.
+                let Some(cmd) = postman_core::sync::admit(cmd, || me.cache.mailboxes().unwrap_or_default(), notify) else { continue };
                 if let Err(e) = me.handle(cmd, notify).await {
                     tracing::warn!("imap command: {e}");
                     if matches!(e, postman_imap::Error::Io(_) | postman_imap::Error::Timeout | postman_imap::Error::Tls(_)) {
@@ -947,8 +949,112 @@ impl Imap {
         self.after(&folders, notify).await;
     }
 
+    /// Имя папки на сервере по ключу кэша; `None` — верхний уровень ящика.
+    fn raw_of(&self, key: Option<&str>) -> Result<Option<String>, postman_imap::Error> {
+        match key {
+            None => Ok(None),
+            Some(k) => self.folder_by_key(k).map(|f| Some(f.raw.clone())).ok_or_else(|| postman_imap::Error::Protocol("no such folder".into())),
+        }
+    }
+
+    /// Создать, переименовать или перенести папку (T1-04в): `CREATE`, `RENAME` в новый путь; у переименованной —
+    /// ключи кэша её и подпапок (путь — часть ключа), затем папки заново и `MailboxesChanged`; отказ — `FolderFailed`.
+    async fn folder_command(&mut self, cmd: Command, notify: &impl Fn(Event)) {
+        let (mailbox, result) = match cmd {
+            Command::CreateFolder { parent, name, .. } => {
+                let result = match self.raw_of(parent.as_deref()) {
+                    Ok(at) => match self.session().await {
+                        Ok(s) => s.create_folder(at.as_deref(), &name).await.map(|_| ()),
+                        Err(e) => Err(e),
+                    },
+                    Err(e) => Err(e),
+                };
+                (parent, result)
+            }
+            Command::RenameFolder { mailbox, name } => {
+                let result = match self.folder_by_key(&mailbox).cloned() {
+                    Some(f) => match self.raw_of(f.parent.as_deref()) {
+                        Ok(parent) => self.rename(&f, parent.as_deref(), &name).await,
+                        Err(e) => Err(e),
+                    },
+                    None => Err(postman_imap::Error::Protocol("no such folder".into())),
+                };
+                (Some(mailbox), result)
+            }
+            Command::MoveFolder { mailbox, parent } => {
+                let result = match (self.folder_by_key(&mailbox).cloned(), self.raw_of(parent.as_deref())) {
+                    (Some(f), Ok(to)) => {
+                        let leaf = f.name.clone();
+                        self.rename(&f, to.as_deref(), &leaf).await
+                    }
+                    (None, _) => Err(postman_imap::Error::Protocol("no such folder".into())),
+                    (_, Err(e)) => Err(e),
+                };
+                (Some(mailbox), result)
+            }
+            _ => return,
+        };
+        if let Err(e) = result {
+            tracing::info!("imap folder command refused: {e}");
+            return notify(Event::FolderFailed { mailbox, error: e.to_string() });
+        }
+        if let Err(e) = self.load_folders().await {
+            return notify(Event::Error(error(Stage::Load, &e)));
+        }
+        notify(Event::MailboxesChanged);
+        notify(Event::EmailsChanged);
+    }
+
+    /// `RENAME` папки в `name` под `parent`, затем письма её и подпапок — под новые ключи (без перезагрузки с сервера).
+    async fn rename(&mut self, f: &Folder, parent: Option<&str>, name: &str) -> postman_imap::Result<()> {
+        let session = self.session().await?;
+        let delimiter = session.delimiter().await?;
+        let to = session.rename_folder(&f.raw, parent, name).await?;
+        let moved: Vec<(Folder, String)> = self
+            .folders
+            .iter()
+            .filter_map(|g| {
+                let rest = g.raw.strip_prefix(f.raw.as_str())?;
+                let under = rest.is_empty() || delimiter.as_deref().is_some_and(|d| rest.starts_with(d));
+                under.then(|| (g.clone(), format!("{to}{rest}")))
+            })
+            .collect();
+        for (g, raw) in moved {
+            self.rekey(&g, &raw).map_err(db)?;
+        }
+        Ok(())
+    }
+
+    /// Письма папки `g` — под ключи папки с новым именем на сервере `raw` (UID и UIDVALIDITY у `RENAME` те же);
+    /// тела загрузятся при открытии.
+    fn rekey(&self, g: &Folder, raw: &str) -> postman_cache::Result<()> {
+        let id = folder_id(raw);
+        let key = scoped(self.scope(), &id);
+        let old = letters(&self.cache, &g.key)?;
+        let rows: Vec<EmailRow> = old
+            .iter()
+            .filter_map(|r| {
+                let (_, validity, uid) = parse_key(&r.id)?;
+                let mut n = r.clone();
+                n.id = email_key(self.scope(), &id, validity, uid);
+                n.mailbox_ids = vec![key.clone()];
+                Some(n)
+            })
+            .collect();
+        self.cache.delete_emails(&old.into_iter().map(|r| r.id).collect::<Vec<_>>())?;
+        self.cache.upsert_emails(&rows)?;
+        let state = |fid: &str| scoped(self.scope(), &format!("imap.{fid}"));
+        if let Some(s) = self.cache.state(&state(&g.id))? {
+            self.cache.set_state(&state(&id), &s)?;
+        }
+        Ok(())
+    }
+
     async fn handle(&mut self, cmd: Command, notify: &impl Fn(Event)) -> postman_imap::Result<()> {
         match cmd {
+            cmd @ (Command::CreateFolder { .. } | Command::RenameFolder { .. } | Command::MoveFolder { .. }) => {
+                self.folder_command(cmd, notify).await
+            }
             Command::Body(key) => {
                 self.body(&key).await?;
                 notify(Event::BodyReady(key));
