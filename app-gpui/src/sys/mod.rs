@@ -144,6 +144,17 @@ pub fn capture(_window: isize) -> Result<Image, String> {
     Err("window capture is Windows only".into())
 }
 
+/// Свои значки окна, большой и малый (T1-01): заголовок, панель задач, Alt+Tab.
+#[cfg(windows)]
+pub fn set_icons(window: &Window) -> Result<(), String> {
+    windows::set_icons(window_id(window)?)
+}
+
+#[cfg(not(windows))]
+pub fn set_icons(_window: &Window) -> Result<(), String> {
+    Ok(())
+}
+
 #[cfg(all(test, windows))]
 mod tests {
     /// Манифест из build.rs действует, хотя gpui вшивает свой: кодовая страница процесса — UTF-8.

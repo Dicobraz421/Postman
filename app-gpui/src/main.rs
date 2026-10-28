@@ -287,6 +287,9 @@ fn main() {
                 // `postman.exe mailto:…` (клиент по умолчанию, S5-30) — новое письмо; автозапуск — свёрнутым.
                 let (window, mailer) = handle.clone();
                 let _ = window.update(cx, |_, window, cx| {
+                    if let Err(e) = sys::set_icons(window) {
+                        tracing::warn!("window icons: {e}");
+                    }
                     if minimized {
                         window.minimize_window();
                     }

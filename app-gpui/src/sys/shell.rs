@@ -105,14 +105,29 @@ pub fn set_autostart(on: bool) -> Result<(), String> {
     }
 }
 
+/// Значок приложения (T1-01) — файлом для тостов: `IconUri` у AUMID — путь к картинке на диске.
+const ICON: &[u8] = include_bytes!("../../res/postman.ico");
+
 /// Уведомление Windows (S6-07: напоминание задачи, когда окно свёрнуто): тост центра уведомлений от имени Postman.
-/// AUMID без ярлыка в «Пуске» — регистрируется в `HKCU\Software\Classes\AppUserModelId` (имя в уведомлении).
+/// AUMID без ярлыка в «Пуске» — регистрируется в `HKCU\Software\Classes\AppUserModelId`: имя и значок «Ленты»
+/// (T1-01; файл — в каталоге данных, переписывается, если отличается от вшитого).
 pub fn notify(title: &str, body: &str) -> Result<(), String> {
     use windows::Data::Xml::Dom::XmlDocument;
     use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
     use windows::core::HSTRING;
     const AUMID: &str = "Pets.Postman";
-    set_string(&format!(r"Software\Classes\AppUserModelId\{AUMID}"), Some("DisplayName"), APP)?;
+    let key = format!(r"Software\Classes\AppUserModelId\{AUMID}");
+    set_string(&key, Some("DisplayName"), APP)?;
+    let icon = crate::data_dir().join("postman.ico");
+    if std::fs::read(&icon).ok().as_deref() != Some(ICON) {
+        // Без файла тост выйдет со значком по умолчанию — не повод его не показывать.
+        if let Err(e) = std::fs::write(&icon, ICON) {
+            tracing::warn!("toast icon {}: {e}", icon.display());
+        }
+    }
+    if icon.exists() {
+        set_string(&key, Some("IconUri"), &icon.display().to_string())?;
+    }
     let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
     let xml =
         format!("<toast><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual></toast>", esc(title), esc(body));
