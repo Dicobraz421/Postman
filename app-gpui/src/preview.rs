@@ -376,7 +376,14 @@ impl ReadingPane {
     /// Снимок `preview-docx`: документ Word из байтов (`docx` — собран сценой) — через воркер, как вложение.
     pub(crate) fn screen_document(&mut self, docx: Vec<u8>, cx: &mut Context<Self>) {
         let Some(r) = &mut self.reading else { return };
-        let row = AttachmentRow { blob_id: "screen-docx".into(), name: "report.docx".into(), mime: String::new(), size: docx.len() as u64, cid: None, inline: false };
+        let row = AttachmentRow {
+            blob_id: "screen-docx".into(),
+            name: "report.docx".into(),
+            mime: String::new(),
+            size: docx.len() as u64,
+            cid: None,
+            inline: false,
+        };
         let pv = Pv {
             name: row.name.clone(),
             row,

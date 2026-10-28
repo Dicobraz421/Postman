@@ -670,7 +670,9 @@ pub(crate) mod scenes {
     }
 
     fn docx_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
-        screens::reading(m, cx).and_then(|r| r.preview.as_ref()).is_some_and(|p| matches!(p.state, crate::preview::PvState::Ready(crate::preview::Shown::Document { .. })))
+        screens::reading(m, cx)
+            .and_then(|r| r.preview.as_ref())
+            .is_some_and(|p| matches!(p.state, crate::preview::PvState::Ready(crate::preview::Shown::Document { .. })))
     }
 
     /// Документ Word для снимка: заголовок (уровень структуры), два пункта списка, таблица 2×2.
@@ -678,7 +680,8 @@ pub(crate) mod scenes {
         use std::io::Write as _;
         const W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
         let p = |t: &str| format!("<w:p><w:r><w:t>{t}</w:t></w:r></w:p>");
-        let item = |t: &str| format!(r#"<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>{t}</w:t></w:r></w:p>"#);
+        let item =
+            |t: &str| format!(r#"<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>{t}</w:t></w:r></w:p>"#);
         let cell = |t: &str| format!("<w:tc>{}</w:tc>", p(t));
         let doc = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="{W}"><w:body><w:p><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:r><w:t>Quarterly report</w:t></w:r></w:p>{}{}{}<w:tbl><w:tr>{}{}</w:tr><w:tr>{}{}</w:tr></w:tbl></w:body></w:document>"#,
