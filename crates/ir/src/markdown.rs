@@ -114,7 +114,7 @@ fn write_inlines(inlines: &[Inline], out: &mut String) {
         match i {
             Inline::Text { text, marks } => write_text(text, *marks, out),
             Inline::LineBreak => out.push_str("  \n"),
-            Inline::Image { cid, alt } => {
+            Inline::Image { cid, alt, .. } => {
                 out.push_str("![");
                 out.push_str(&escape(alt));
                 out.push_str("](cid:");
