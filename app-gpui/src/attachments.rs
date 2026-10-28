@@ -617,6 +617,8 @@ pub(crate) mod scenes {
         Scene::new("preview-pdf-end", pdf_end, pdf_end_ready).continues(),
         Scene::new("preview-zip", preview, preview_ready).continues(),
         Scene::new("attach-macro", preview, preview_ready).continues(),
+        // Документ Word (T1-13в): заголовок, список и таблица — блоками IR, как текст письма; документ собран сценой.
+        Scene::new("preview-docx", docx, docx_ready).continues(),
         // Письмо с большой картинкой в тексте (S5-07б): кадр 1600 px, уменьшен до ширины области чтения, целиком.
         Scene::new("letter-image", letter, letter_ready),
     ];
@@ -659,6 +661,40 @@ pub(crate) mod scenes {
             let ready = r.preview.as_ref().is_some_and(|p| p.row.blob_id == blob && p.ready());
             ready && (s.name != "attach-macro" || r.scans.contains_key(blob))
         })
+    }
+
+    fn docx(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        let bytes = sample_docx().map_err(|e| e.to_string())?;
+        m.reading.update(cx, |r, cx| r.screen_document(bytes, cx));
+        Ok(())
+    }
+
+    fn docx_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        screens::reading(m, cx).and_then(|r| r.preview.as_ref()).is_some_and(|p| matches!(p.state, crate::preview::PvState::Ready(crate::preview::Shown::Document { .. })))
+    }
+
+    /// Документ Word для снимка: заголовок (уровень структуры), два пункта списка, таблица 2×2.
+    fn sample_docx() -> zip::result::ZipResult<Vec<u8>> {
+        use std::io::Write as _;
+        const W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+        let p = |t: &str| format!("<w:p><w:r><w:t>{t}</w:t></w:r></w:p>");
+        let item = |t: &str| format!(r#"<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>{t}</w:t></w:r></w:p>"#);
+        let cell = |t: &str| format!("<w:tc>{}</w:tc>", p(t));
+        let doc = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="{W}"><w:body><w:p><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:r><w:t>Quarterly report</w:t></w:r></w:p>{}{}{}<w:tbl><w:tr>{}{}</w:tr><w:tr>{}{}</w:tr></w:tbl></w:body></w:document>"#,
+            p("Results of the third quarter."),
+            item("Sales grew by 12%"),
+            item("Two new offices opened"),
+            cell("Region"),
+            cell("Revenue"),
+            cell("North"),
+            cell("1.2M"),
+        );
+        let mut z = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let opts = zip::write::SimpleFileOptions::default();
+        z.start_file("word/document.xml", opts)?;
+        z.write_all(doc.as_bytes())?;
+        Ok(z.finish()?.into_inner())
     }
 
     fn pdf_end(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {

@@ -79,6 +79,11 @@ pub(crate) enum Shown {
         truncated: bool,
     },
     Office(OfficeScan),
+    /// Документ Word (T1-13в): блоки IR, как тело письма; `truncated` — показано начало.
+    Document {
+        blocks: Vec<postman_ir::Block>,
+        truncated: bool,
+    },
     /// Встроенного просмотра нет: карточка (исполняемый файл — блокировка).
     Card,
 }
@@ -103,8 +108,9 @@ impl Pv {
             Viewer::Pdf => Some(PreviewKind::Pdf),
             Viewer::Archive => Some(PreviewKind::Archive),
             Viewer::Text => Some(PreviewKind::Text),
-            // Документ Word — карточкой проверки, как Office, пока нет просмотра (T1-13в).
-            Viewer::Office | Viewer::Document | Viewer::None => None,
+            // Документ Word — текстом IR (T1-13в); с макросами воркер отвечает проверкой Office.
+            Viewer::Document => Some(PreviewKind::Document),
+            Viewer::Office | Viewer::None => None,
         }
     }
 }
@@ -184,7 +190,7 @@ impl ReadingPane {
         let mut fetch = false;
         match item.viewer {
             Viewer::None => pv.state = PvState::Ready(Shown::Card),
-            Viewer::Office | Viewer::Document => match r.scans.get(blob) {
+            Viewer::Office => match r.scans.get(blob) {
                 Some(s) => pv.state = PvState::Ready(Shown::Office(s.clone())),
                 None => {
                     r.scanning.insert(blob.to_string());
@@ -355,6 +361,7 @@ impl ReadingPane {
                     Ok((Preview::Archive(l), _)) => PvState::Ready(Shown::Archive(l)),
                     Ok((Preview::Text { text, truncated }, _)) => PvState::Ready(Shown::Text { text, truncated }),
                     Ok((Preview::Office(s), _)) => PvState::Ready(Shown::Office(s)),
+                    Ok((Preview::Document { blocks, truncated }, _)) => PvState::Ready(Shown::Document { blocks, truncated }),
                     Ok(_) => PvState::Failed("?".into()),
                     Err(e) => PvState::Failed(e),
                 };
@@ -364,6 +371,29 @@ impl ReadingPane {
             .ok();
         })
         .detach();
+    }
+
+    /// Снимок `preview-docx`: документ Word из байтов (`docx` — собран сценой) — через воркер, как вложение.
+    pub(crate) fn screen_document(&mut self, docx: Vec<u8>, cx: &mut Context<Self>) {
+        let Some(r) = &mut self.reading else { return };
+        let row = AttachmentRow { blob_id: "screen-docx".into(), name: "report.docx".into(), mime: String::new(), size: docx.len() as u64, cid: None, inline: false };
+        let pv = Pv {
+            name: row.name.clone(),
+            row,
+            viewer: Viewer::Document,
+            risk: Risk::Safe,
+            page: 0,
+            data: Some(Arc::new(docx)),
+            state: PvState::Loading,
+            busy: false,
+            scroll: ScrollHandle::new(),
+            fit_w: 0,
+        };
+        if let Some(old) = r.preview.replace(pv) {
+            self.retired.extend(old.image());
+        }
+        self.run_preview(cx);
+        cx.notify();
     }
 
     /// Страница PDF: соседняя по кнопке.
@@ -473,7 +503,7 @@ impl ReadingPane {
         let l = crate::roles::look(cx);
         let note = match (&p.state, p.viewer) {
             (_, Viewer::Archive) => tr!("att-pv-note-archive"),
-            (_, Viewer::Office | Viewer::Document | Viewer::None) => tr!("att-pv-note-check"),
+            (_, Viewer::Office | Viewer::None) => tr!("att-pv-note-check"),
             _ => tr!("att-pv-note-builtin"),
         };
         let header = div()
@@ -588,6 +618,23 @@ impl ReadingPane {
                     );
                 }
                 col.child(text.clone()).into_any_element()
+            }
+            PvState::Ready(Shown::Document { blocks, truncated }) => {
+                // Тем же видом, что тело письма (`ir_view::blocks`), с прокруткой; картинок у просмотра нет.
+                let key = format!("pv-doc-{}", p.row.blob_id);
+                let els = crate::ir_view::blocks(blocks, &key, &crate::ir_view::Images::new(), self.column.get(), cx);
+                div()
+                    .id("pv-doc")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .p(px(14.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .when(*truncated, |d| d.child(div().text_size(l.px(Metric::TypeCaption)).text_color(l.text2()).child(tr!("att-pv-doc-cut"))))
+                    .children(els)
+                    .into_any_element()
             }
             PvState::Ready(Shown::Office(scan)) => self.check_card(p, Some(scan), &l, cx),
             PvState::Ready(Shown::Card) => self.check_card(p, None, &l, cx),
