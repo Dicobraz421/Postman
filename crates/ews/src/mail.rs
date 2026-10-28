@@ -153,11 +153,32 @@ impl Disposition {
     }
 }
 
-/// Свойства письма для списка (`mail_headers`): без тела и без MIME.
-/// Доп. свойства списка сверх `Default` (тема, дата, размер, вложения, отправитель, прочитано). `Message-ID`,
-/// `In-Reply-To` и `References` берёт из MIME воркер плагина: `message:*`-свойства GetItem на Exchange 2013 CU23
-/// отвечают `ErrorInternalServerError` (боевой сервер, `docs/EXCHANGE.md`).
-const HEADER_PROPS: &[&str] = &["item:Flag"];
+/// Свойства письма для списка (`mail_headers`): `IdOnly` и только они — без тела и без MIME. `Default` у `GetItem`
+/// отдаёт и тело: пачка крупных писем («Отправленные» с цитатами и картинками) — больше предела ответа, «response too
+/// large» на каждом опросе (T1-22, боевой Exchange). `Message-ID`, `In-Reply-To` и `References` берёт из MIME воркер
+/// плагина: `message:InternetMessageId`/`InReplyTo`/`References` у GetItem на Exchange 2013 CU23 отвечают
+/// `ErrorInternalServerError` (боевой сервер, `docs/EXCHANGE.md`).
+const HEADER_PROPS: &[&str] = &[
+    "item:ParentFolderId",
+    "item:Subject",
+    "message:From",
+    "item:DateTimeReceived",
+    "item:DateTimeSent",
+    "item:DateTimeCreated",
+    "item:Size",
+    "message:IsRead",
+    "item:HasAttachments",
+    "item:Flag",
+];
+
+/// `GetItem` заголовков списка для этих писем.
+pub(crate) fn headers_request(ids: &[ItemId]) -> String {
+    let ids: String = ids.iter().map(|i| i.xml("t:ItemId")).collect();
+    format!(
+        r#"<m:GetItem><m:ItemShape><t:BaseShape>IdOnly</t:BaseShape><t:AdditionalProperties>{}</t:AdditionalProperties></m:ItemShape><m:ItemIds>{ids}</m:ItemIds></m:GetItem>"#,
+        field_uris(HEADER_PROPS)
+    )
+}
 
 fn field_uris(props: &[&str]) -> String {
     props.iter().map(|p| format!(r#"<t:FieldURI FieldURI="{p}"/>"#)).collect()
@@ -584,19 +605,22 @@ impl Client {
         parse::sync(&self.call("SyncFolderItems", &body).await?)
     }
 
-    /// Заголовки писем для списка (пачками по [`BATCH`]); без тела. Удалённые за это время — пропускаются.
+    /// Заголовки писем для списка (пачками по [`BATCH`]); без тела. Удалённые за это время — пропускаются. Ответ
+    /// пачки всё же больше предела — она делится пополам, одно письмо — пропускается (в журнал — только счётчик).
     pub async fn mail_headers(&mut self, ids: &[ItemId]) -> Result<Vec<MailHeader>> {
         let mut out = Vec::with_capacity(ids.len());
-        for chunk in ids.chunks(BATCH) {
-            let ids: String = chunk.iter().map(|i| i.xml("t:ItemId")).collect();
-            let extra = if HEADER_PROPS.is_empty() {
-                String::new()
-            } else {
-                format!("<t:AdditionalProperties>{}</t:AdditionalProperties>", field_uris(HEADER_PROPS))
-            };
-            let body =
-                format!(r#"<m:GetItem><m:ItemShape><t:BaseShape>Default</t:BaseShape>{extra}</m:ItemShape><m:ItemIds>{ids}</m:ItemIds></m:GetItem>"#);
-            out.extend(parse::headers(&self.call("GetItem", &body).await?)?);
+        let mut queue: Vec<&[ItemId]> = ids.chunks(BATCH).rev().collect();
+        while let Some(chunk) = queue.pop() {
+            match self.call("GetItem", &headers_request(chunk)).await {
+                Ok(resp) => out.extend(parse::headers(&resp)?),
+                Err(Error::TooLarge) if chunk.len() > 1 => {
+                    let (a, b) = chunk.split_at(chunk.len() / 2);
+                    queue.push(b);
+                    queue.push(a);
+                }
+                Err(Error::TooLarge) => tracing::warn!("ews: one letter header is too large, skipped"),
+                Err(e) => return Err(e),
+            }
         }
         Ok(out)
     }
@@ -901,6 +925,23 @@ mod tests {
         assert_eq!((a[0].name.as_str(), a[0].content_type.as_str(), a[0].size, a[0].inline), ("отчёт.pdf", "application/pdf", 20480, false));
         let bytes = parse::attachment_content(&resp(include_bytes!("../tests/fixtures/get_attachment.xml"))).unwrap();
         assert_eq!(bytes, b"%PDF-1.4 fake");
+    }
+
+    /// Заголовки списка — `IdOnly` и явные свойства, без тела (T1-22): у `Default` в ответе — тела писем.
+    #[test]
+    fn headers_request_has_no_body() {
+        let r = headers_request(&[ItemId::new("AAMkADmsg1"), ItemId::new("AAMkADmsg2")]);
+        let x = xml(soap::envelope(&r).as_bytes()).unwrap();
+        let shape = x.at(&["Body", "GetItem", "ItemShape"]).unwrap();
+        assert_eq!(shape.text_at(&["BaseShape"]), Some("IdOnly"));
+        let props: Vec<&str> = shape.at(&["AdditionalProperties"]).unwrap().all("FieldURI").filter_map(|f| f.attr("FieldURI")).collect();
+        for p in ["item:Subject", "message:From", "item:DateTimeReceived", "item:Size", "message:IsRead", "item:HasAttachments", "item:Flag"] {
+            assert!(props.contains(&p), "{p}");
+        }
+        for bad in ["item:Body", "item:MimeContent", "message:InternetMessageId", "message:References"] {
+            assert!(!props.contains(&bad), "{bad}");
+        }
+        assert_eq!(x.at(&["Body", "GetItem", "ItemIds"]).unwrap().all("ItemId").count(), 2);
     }
 
     #[test]
