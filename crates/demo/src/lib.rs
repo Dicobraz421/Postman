@@ -668,7 +668,14 @@ pub fn body(id: &str) -> BodyRow {
     };
     let (html, attachments) = if n % 100 == CHART_EVERY {
         // Большая картинка в тексте (S5-07б): кадр больше 1024 px по стороне.
-        (CHART_HTML, vec![att("chart", "chart.png", "image/png", chart().len() as u64, Some("chart@corp"))])
+        // Подпись таблицей с крупным логотипом, у которого в HTML задан размер (T1-10г).
+        (
+            CHART_HTML,
+            vec![
+                att("chart", "chart.png", "image/png", chart().len() as u64, Some("chart@corp")),
+                att("sign-logo", "logo-big.png", "image/png", sign_logo().len() as u64, Some("sign@corp")),
+            ],
+        )
     } else if n % 100 == TASK_EVERY {
         // Поручение письмом (S6-10): VTODO REQUEST — карточка поручения над текстом.
         (TASK_HTML, vec![att("todo", "task.ics", "text/calendar", delegations::letter().len() as u64, None)])
@@ -733,9 +740,21 @@ const TASK_HTML: &str = "<p>Иванова Мария поручила вам з
 const CHART_EVERY: usize = 4;
 const CHART_HTML: &str = r#"<p>Коллеги, график загрузки стенда за неделю — ниже.</p>
 <p><img src="cid:chart@corp" alt="График загрузки"></p>
-<p>Пики — по вторникам, подробности — в отчёте.</p>"#;
+<p>Пики — по вторникам, подробности — в отчёте.</p>
+<table cellpadding=0 cellspacing=0 style='border-collapse:collapse'><tr>
+<td style='padding:0 12px 0 0'><img src="cid:sign@corp" width=180 height=60 style='width:1.875in;height:.625in' alt="Логотип отдела"></td>
+<td><p class=MsoNormal><b>Мария Иванова</b><br>Финансовый отдел<br>+7 000 000-00-00</p></td></tr></table>"#;
 /// Сторона большой картинки: шире предела кадра в тексте письма (1600) — воркер её уменьшает.
 pub const CHART_SIZE: (u32, u32) = (2400, 1500);
+
+/// Кадр логотипа в подписи письма с графиком (T1-10г): крупнее колонки, в HTML задан размер 180×60 — показ в
+/// своём размере выглядел бы огромным.
+pub const SIGN_LOGO_SIZE: (u32, u32) = (1200, 400);
+
+fn sign_logo() -> &'static [u8] {
+    static LOGO: OnceLock<Vec<u8>> = OnceLock::new();
+    LOGO.get_or_init(|| chart_png(SIGN_LOGO_SIZE.0, SIGN_LOGO_SIZE.1).unwrap_or_default())
+}
 
 /// Большая картинка (PNG): рамка и цветные углы — на снимке видно, что кадр целиком и не сдвинут. Собирается один
 /// раз при первом запросе; ошибка кодировщика — пустой файл (просмотр покажет ошибку разбора).
@@ -791,6 +810,7 @@ pub fn blob(blob_id: &str) -> Option<Vec<u8>> {
     match blob_id {
         "logo" => Some(LOGO.to_vec()),
         "chart" => Some(chart().to_vec()),
+        "sign-logo" => Some(sign_logo().to_vec()),
         "ics" => Some(invite()),
         "todo" => Some(delegations::letter()),
         "pdf" => Some(REPORT.to_vec()),
@@ -1474,11 +1494,21 @@ mod tests {
     fn chart_letter_has_a_large_inline_png() {
         let b = body("demo104");
         assert!(b.html.as_deref().is_some_and(|h| h.contains("cid:chart@corp")));
-        assert_eq!(b.attachments.len(), 1);
-        let data = blob("chart").unwrap();
-        assert_eq!(b.attachments[0].size, data.len() as u64);
-        let info = png::Decoder::new(std::io::Cursor::new(data)).read_info().unwrap();
-        assert_eq!((info.info().width, info.info().height), CHART_SIZE);
+        assert_eq!(b.attachments.len(), 2);
+        for (att, blob_id, size) in [(&b.attachments[0], "chart", CHART_SIZE), (&b.attachments[1], "sign-logo", SIGN_LOGO_SIZE)] {
+            let data = blob(blob_id).unwrap();
+            assert_eq!(att.size, data.len() as u64);
+            let info = png::Decoder::new(std::io::Cursor::new(data)).read_info().unwrap();
+            assert_eq!((info.info().width, info.info().height), size);
+        }
+    }
+
+    /// T1-10г: подпись таблицей, логотип со своим размером в HTML меньше кадра.
+    #[test]
+    fn chart_letter_signs_with_a_sized_logo() {
+        let html = body("demo4").html.unwrap_or_default();
+        assert!(html.contains(r#"<img src="cid:sign@corp" width=180 height=60"#), "{html}");
+        assert!(html.contains("<table"));
     }
 
     /// Три учётки демо (S7-09а): основная JMAP, «стандарты», Exchange — у каждой свои функции, адреса вымышленные.
