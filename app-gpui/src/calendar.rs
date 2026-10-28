@@ -41,6 +41,19 @@ use crate::roles::{Look, Pm};
 pub(crate) const FIRST_HOUR: i64 = 8;
 pub(crate) const HOURS: i64 = 11;
 const HOUR_PX: f32 = 60.;
+/// Сетка дня и недели (T1-09, решение владельца 2026-10-28): сутки целиком, с прокруткой; открывается на начале
+/// рабочего дня. Помощник встречи и карточка приглашения — свои часы ([`FIRST_HOUR`], [`HOURS`]).
+const GRID_HOURS: i64 = 24;
+
+/// Минуты от 00:00 → y в сетке дня и недели (единственный пересчёт координат сетки).
+pub(crate) fn minute_y(minutes: i64) -> f32 {
+    minutes as f32 / 60. * HOUR_PX
+}
+
+/// Начальная прокрутка сетки: начало рабочего дня у верхнего края.
+pub(crate) fn work_scroll(start: jiff::civil::Time) -> f32 {
+    minute_y(i64::from(start.hour()) * 60 + i64::from(start.minute()))
+}
 /// Шаг сетки помощника и выравнивание предложенных окон.
 pub(crate) const STEP: i64 = 1800;
 const GUTTER: f32 = 52.;
@@ -456,7 +469,12 @@ impl CalendarView {
             search_gen: 0,
             results_open: false,
             cursor: 0,
-            scroll: ScrollHandle::new(),
+            // Сетка открывается на начале рабочего дня (T1-09).
+            scroll: {
+                let s = ScrollHandle::new();
+                s.set_offset(point(px(0.), px(-work_scroll(cal.work_hours(cal.zone()).start))));
+                s
+            },
             _subscriptions: vec![on_share, on_search, on_prefs],
         }
     }
@@ -570,8 +588,15 @@ impl CalendarView {
         self.go_to(model::shift(self.view, self.anchor, n), cx);
     }
 
+    /// «Сегодня» (Home): сегодняшний период, сетка — на начале рабочего дня.
     pub(crate) fn today(&mut self, cx: &mut Context<Self>) {
         self.go_to(self.now_zoned().date(), cx);
+        self.scroll_to_work();
+    }
+
+    /// Сетка дня и недели — к началу рабочего дня (T1-09).
+    fn scroll_to_work(&self) {
+        self.scroll.set_offset(point(px(0.), px(-work_scroll(self.hours.start))));
     }
 
     /// 1…4 и переключатель над сеткой: вид, та же опорная дата.
@@ -582,6 +607,7 @@ impl CalendarView {
         let before = self.range();
         self.view = view;
         self.period_changed(before, cx);
+        self.scroll_to_work();
         cx.notify();
     }
 
@@ -1369,14 +1395,14 @@ impl CalendarView {
     fn grid(&self, days: &[Date], cx: &mut Context<Self>) -> impl IntoElement {
         let l = crate::roles::look(cx);
         let n = days.len().max(1);
-        let height = HOURS as f32 * HOUR_PX;
+        let height = GRID_HOURS as f32 * HOUR_PX;
         let tz = &self.tz;
         let me = self.me.as_deref();
         let now = self.now();
         let now_z = self.now_zoned();
         let today = now_z.date();
         let now_min = i64::from(now_z.hour()) * 60 + i64::from(now_z.minute());
-        let now_y = ((now_min - FIRST_HOUR * 60) as f32 / 60. * HOUR_PX).clamp(-1., height + 1.);
+        let now_y = minute_y(now_min).clamp(-1., height + 1.);
         let now_visible = (0. ..=height).contains(&now_y);
         let today_shown = days.contains(&today);
         let second = self.second.clone();
@@ -1530,14 +1556,14 @@ impl CalendarView {
         // Время слева: часы и «сейчас»; второй пояс — своей шкалой левее (часы по началу показанного дня).
         let anchor0 = day_start(days.first().copied().unwrap_or(self.anchor), tz);
         let times2 = second.as_ref().map(|z| {
-            div().w(px(GUTTER2)).flex_none().relative().h(px(height)).children((0..HOURS).map(|h| {
+            div().w(px(GUTTER2)).flex_none().relative().h(px(height)).children((0..GRID_HOURS).map(|h| {
                 div()
                     .absolute()
-                    .top(px(h as f32 * HOUR_PX + 3.))
+                    .top(px(minute_y(h * 60) + 3.))
                     .right(px(6.))
                     .text_size(px(11.))
                     .text_color(l.text3())
-                    .child(hm(anchor0 + (FIRST_HOUR + h) * 3600, z))
+                    .child(hm(anchor0 + h * 3600, z))
             }))
         });
         let times = div()
@@ -1545,16 +1571,16 @@ impl CalendarView {
             .flex_none()
             .relative()
             .h(px(height))
-            .children((0..HOURS).map(|h| {
-                let near_now = now_visible && today_shown && ((FIRST_HOUR + h) * 60 - now_min).abs() < 25;
+            .children((0..GRID_HOURS).map(|h| {
+                let near_now = now_visible && today_shown && (h * 60 - now_min).abs() < 25;
                 div()
                     .absolute()
-                    .top(px(h as f32 * HOUR_PX + 3.))
+                    .top(px(minute_y(h * 60) + 3.))
                     .right(px(6.))
                     .text_size(px(11.))
                     .text_color(l.text2())
                     .when(near_now, |d| d.invisible())
-                    .child(format!("{:02}:00", FIRST_HOUR + h))
+                    .child(format!("{:02}:00", h))
             }))
             .when(now_visible && today_shown, |d| {
                 d.child(
@@ -1572,9 +1598,9 @@ impl CalendarView {
                         .child(hm(now, tz)),
                 )
             });
-        // Рабочее время — «Настройки → Календарь» (S5-20): часы до минуты, нерабочий день затенён целиком.
-        let y =
-            |t: jiff::civil::Time| ((i64::from(t.hour()) * 60 + i64::from(t.minute()) - FIRST_HOUR * 60) as f32 / 60. * HOUR_PX).clamp(0., height);
+        // Рабочее время — «Настройки → Календарь» (S5-20): часы до минуты, нерабочий день затенён целиком; вне рабочих
+        // часов — подложка темнее (T1-09), события там видны и выбираются, как в рабочие.
+        let y = |t: jiff::civil::Time| work_scroll(t).clamp(0., height);
         let (work_start, work_end) = (y(self.hours.start), y(self.hours.end));
         // Линии: час — сплошная, шаг сетки (S5-20: 30 или 15 мин) — бледнее.
         let per_hour = (60 / self.step.clamp(5, 60)).max(1);
@@ -1582,15 +1608,15 @@ impl CalendarView {
         let mut columns = Vec::new();
         for &date in days {
             let is_today = date == today;
-            let day0 = day_start(date, tz) + FIRST_HOUR * 3600;
+            let day0 = day_start(date, tz);
             let (timed, _) = day_events(&self.events, date, tz);
             let timed: Vec<usize> =
                 timed.into_iter().filter(|&i| event_look(&self.events[i], me) != Shown::Hidden && !self.hidden(&self.events[i])).collect();
             let placed = layout_day(&timed.iter().map(|&i| self.events[i].span).collect::<Vec<_>>());
             let (ws, we) = if self.hours.days.contains(&date.weekday()) { (work_start, work_end) } else { (height, height) };
             let shade = [(0., ws), (we, height)].map(|(a, b)| div().absolute().left_0().right_0().top(px(a)).h(px(b - a)).bg(l.pm(Pm::CalOff)));
-            let lines = (0..HOURS).flat_map(|h| {
-                let y = h as f32 * HOUR_PX;
+            let lines = (0..GRID_HOURS).flat_map(|h| {
+                let y = minute_y(h * 60);
                 std::iter::once(div().absolute().top(px(y)).left_0().right_0().h(px(1.)).bg(hour_line)).chain(
                     (1..per_hour)
                         .map(move |k| div().absolute().top(px(y + HOUR_PX * k as f32 / per_hour as f32)).left_0().right_0().h(px(1.)).bg(step_line)),
@@ -2765,6 +2791,17 @@ pub(crate) mod scenes {
 
 #[cfg(test)]
 mod tests {
+    /// Сетка суток (T1-09): координата от 00:00, начальная прокрутка — начало рабочего дня из настроек.
+    #[test]
+    fn day_grid_covers_the_whole_day() {
+        assert_eq!(super::minute_y(0), 0.);
+        assert_eq!(super::minute_y(9 * 60), 9. * super::HOUR_PX);
+        assert!((super::minute_y(23 * 60 + 59) - 24. * super::HOUR_PX).abs() < super::HOUR_PX / 59.);
+        let start = postman_core::prefs::Calendar::default().work_hours(jiff::tz::TimeZone::UTC).start;
+        assert_eq!(super::work_scroll(start), super::minute_y(i64::from(start.hour()) * 60 + i64::from(start.minute())));
+        assert_eq!(super::work_scroll(jiff::civil::time(8, 30, 0, 0)), 8.5 * super::HOUR_PX);
+    }
+
     // Не `super::*`: из `gpui_kit::*` пришёл бы атрибут `test` gpui вместо встроенного.
     use super::{
         Date, Event, Shown, TimeZone, View, WorkHours, add_days, day_events, day_start, event_look, initials, monday_of, period_label, range_label,
