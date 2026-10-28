@@ -117,7 +117,12 @@ pub(crate) struct ReadingPane {
     reveal: bool,
     /// Прокрутка письма (обычный вид): к текущему совпадению.
     pub(crate) scroll: ScrollHandle,
+    /// Ширина колонки текста по последней раскладке (T1-10, `ir_view::column_probe`): картинки не шире неё.
+    pub(crate) column: std::rc::Rc<std::cell::Cell<Pixels>>,
 }
+
+/// Поля области письма слева и справа (`px(24.)` у `#reading`).
+const READING_INSET: f32 = 48.;
 
 /// Итог разбора и действий: уровень песочницы (строка состояния), тосты, запросы к серверу.
 pub(crate) enum ReadingEvent {
@@ -203,7 +208,13 @@ impl ReadingPane {
             hits: std::cell::Cell::new(0),
             reveal: false,
             scroll: ScrollHandle::new(),
+            column: Default::default(),
         }
+    }
+
+    /// Замер ширины колонки текста в корне `#reading` (T1-10).
+    fn column_probe(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
+        ir_view::column_probe(self.column.clone(), px(READING_INSET), cx.entity_id())
     }
 
     /// Поиск начался, сменился или закончился (`None`): подсветка — по нему.
@@ -786,6 +797,7 @@ impl Render for ReadingPane {
                 .py(px(20.))
                 .gap(px(4.))
                 .overflow_y_scroll()
+                .child(self.column_probe(cx))
                 .child(top)
                 .children(scheduled)
                 .children(self.stack_view(r, cx))
@@ -887,6 +899,7 @@ impl Render for ReadingPane {
                 .py(px(20.))
                 .gap(px(12.))
                 .overflow_y_scroll()
+                .child(self.column_probe(cx))
                 .child(header)
                 .children(seal_card)
                 .children(scheduled)
@@ -908,6 +921,7 @@ impl Render for ReadingPane {
                 .pb(px(16.))
                 .gap(px(12.))
                 .overflow_y_scroll()
+                .child(self.column_probe(cx))
                 .child(header)
                 .children(seal_card)
                 .children(scheduled)
@@ -939,7 +953,7 @@ impl Render for ReadingPane {
                         div().px_2().py_1().rounded_md().bg(l.warning_bg()).child(tr!("reading-remote-blocked", n = doc.remote_images_blocked)),
                     );
                 }
-                col.children(ir_view::blocks_marked(&doc.blocks, "doc", &r.images, &hits, cx)).into_any_element()
+                col.children(ir_view::blocks_marked(&doc.blocks, "doc", &r.images, &hits, self.column.get(), cx)).into_any_element()
             }
         };
         // Текст ещё не пришёл — совпадения только в теме.
@@ -955,6 +969,7 @@ impl Render for ReadingPane {
             .py(px(20.))
             .gap(px(12.))
             .overflow_y_scroll()
+            .child(self.column_probe(cx))
             .track_scroll(&self.scroll)
             .child(header)
             .children(seal_card)

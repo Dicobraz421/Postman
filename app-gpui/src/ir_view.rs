@@ -1,10 +1,12 @@
 //! IR письма → элементы gpui. Абзац — один StyledText с выделениями:
 //! перенос строк, выравнивание и настоящий полужирный — силами текстового движка,
 //! ссылки — кликабельные диапазоны того же текста. Картинки `cid:` (уже декодированные воркером) — отдельными
-//! элементами между кусками текста абзаца; пока картинки нет — её подпись.
+//! элементами между кусками текста абзаца; пока картинки нет — её подпись. Картинка вписана в ширину колонки текста
+//! (T1-10): ширину колонки меряет [`column_probe`] по раскладке области чтения.
 
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::prelude::*;
@@ -18,8 +20,9 @@ use crate::roles::{Look, Pm, look};
 /// Картинки письма по `cid:`, кадры для gpui.
 pub type Images = HashMap<String, Arc<RenderImage>>;
 
-pub fn blocks(bs: &[Block], key: &str, images: &Images, cx: &mut App) -> Vec<AnyElement> {
-    blocks_marked(bs, key, images, &Hits::new(&[], 0, 0), cx)
+/// Блоки письма; `col` — ширина колонки текста (картинки не шире неё), ещё не измерена — ноль.
+pub fn blocks(bs: &[Block], key: &str, images: &Images, col: Pixels, cx: &mut App) -> Vec<AnyElement> {
+    blocks_marked(bs, key, images, &Hits::new(&[], 0, 0), col, cx)
 }
 
 /// Совпадения поиска при отрисовке письма (S5-10, S5-14): слова, номер текущего и счёт по порядку чтения — тот же
@@ -114,8 +117,30 @@ pub fn reveal_at(el: AnyElement, layout: TextLayout, at: usize, hits: &Hits) -> 
 
 /// Блоки с подсветкой совпадений поиска (S5-10): слова `hits` (`postman_core::fuzzy::term_spans`) — янтарной
 /// подложкой поверх своих выделений, текущее — плотной.
-pub fn blocks_marked(bs: &[Block], key: &str, images: &Images, hits: &Hits, cx: &mut App) -> Vec<AnyElement> {
-    bs.iter().enumerate().map(|(n, b)| block(b, &format!("{key}.{n}"), images, hits, cx)).collect()
+pub fn blocks_marked(bs: &[Block], key: &str, images: &Images, hits: &Hits, col: Pixels, cx: &mut App) -> Vec<AnyElement> {
+    bs.iter().enumerate().map(|(n, b)| block(b, &format!("{key}.{n}"), images, hits, col, cx)).collect()
+}
+
+/// Ширина колонки текста по раскладке (T1-10): невидимая полоска во всю ширину области письма; `inset` — её поля
+/// слева и справа вместе. Ширина изменилась (разделитель, размер окна) — запомнить и перерисовать view `view`:
+/// картинки перевписываются тем же кадром, меняется только размер элемента.
+pub fn column_probe(column: Rc<Cell<Pixels>>, inset: Pixels, view: EntityId) -> impl IntoElement {
+    canvas(
+        move |bounds, window, _| {
+            let w = (bounds.size.width - inset).max(px(0.));
+            if (w - column.get()).abs() >= px(1.) {
+                column.set(w);
+                window.on_next_frame(move |_, cx| cx.notify(view));
+                window.request_animation_frame();
+            }
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .w_full()
+    .h(px(0.))
 }
 
 /// Все `cid:` картинок документа, по порядку.
@@ -145,11 +170,11 @@ pub fn cids(doc: &Document) -> Vec<String> {
     out
 }
 
-fn block(b: &Block, key: &str, images: &Images, hits: &Hits, cx: &mut App) -> AnyElement {
+fn block(b: &Block, key: &str, images: &Images, hits: &Hits, col: Pixels, cx: &mut App) -> AnyElement {
     let l = &*look(cx);
     match b {
         Block::Paragraph { align, content } => {
-            let d = div().child(paragraph(content, key, images, hits, l));
+            let d = div().child(paragraph(content, key, images, hits, col, l));
             match align {
                 Align::Center => d.text_center(),
                 Align::End => d.text_right(),
@@ -164,7 +189,7 @@ fn block(b: &Block, key: &str, images: &Images, hits: &Hits, cx: &mut App) -> An
                 3 => 17.,
                 _ => 15.,
             };
-            div().text_size(px(size)).font_weight(FontWeight::SEMIBOLD).child(paragraph(content, key, images, hits, l)).into_any_element()
+            div().text_size(px(size)).font_weight(FontWeight::SEMIBOLD).child(paragraph(content, key, images, hits, col, l)).into_any_element()
         }
         Block::Quote(inner) => div()
             .flex()
@@ -174,7 +199,7 @@ fn block(b: &Block, key: &str, images: &Images, hits: &Hits, cx: &mut App) -> An
             .border_l_2()
             .border_color(l.c(Role::StrokeStrong))
             .text_color(l.text2())
-            .children(blocks_marked(inner, key, images, hits, cx))
+            .children(blocks_marked(inner, key, images, hits, col, cx))
             .into_any_element(),
         Block::List { ordered, items } => div()
             .flex()
@@ -187,6 +212,7 @@ fn block(b: &Block, key: &str, images: &Images, hits: &Hits, cx: &mut App) -> An
                     &format!("{key}.{n}"),
                     images,
                     hits,
+                    col,
                     cx,
                 )))
             }))
@@ -197,11 +223,17 @@ fn block(b: &Block, key: &str, images: &Images, hits: &Hits, cx: &mut App) -> An
             .flex()
             .flex_col()
             .children(rows.iter().enumerate().map(|(r, row)| {
-                div().flex().when(r % 2 == 1, |d| d.bg(l.fill_passive())).children(
-                    row.iter()
-                        .enumerate()
-                        .map(|(c, cell)| div().min_w(px(90.)).px_2().py_1().child(paragraph(cell, &format!("{key}.{r}.{c}"), images, hits, l))),
-                )
+                div().flex().when(r % 2 == 1, |d| d.bg(l.fill_passive())).children(row.iter().enumerate().map(|(c, cell)| {
+                    // Поля ячейки (`px_2`) — 16 px.
+                    div().min_w(px(widest(cell, images, col).max(74.) + 16.)).px_2().py_1().child(paragraph(
+                        cell,
+                        &format!("{key}.{r}.{c}"),
+                        images,
+                        hits,
+                        col,
+                        l,
+                    ))
+                }))
             }))
             .into_any_element(),
     }
@@ -299,7 +331,7 @@ fn pieces<'a>(items: &'a [Inline], shown: impl Fn(&str) -> bool) -> Vec<Piece<'a
     out
 }
 
-fn paragraph(items: &[Inline], key: &str, images: &Images, hits: &Hits, l: &Look) -> AnyElement {
+fn paragraph(items: &[Inline], key: &str, images: &Images, hits: &Hits, col: Pixels, l: &Look) -> AnyElement {
     let parts = pieces(items, |cid| images.contains_key(cid));
     if !parts.iter().any(|p| matches!(p, Piece::Image(_))) {
         return text(items, key, hits, l);
@@ -311,17 +343,42 @@ fn paragraph(items: &[Inline], key: &str, images: &Images, hits: &Hits, l: &Look
         .children(parts.into_iter().enumerate().map(|(n, p)| match p {
             Piece::Text(t) => text(t, &format!("{key}.{n}"), hits, l),
             Piece::Image(cid) => match images.get(cid) {
-                Some(image) => picture(image),
+                Some(image) => picture(image, col),
                 None => div().into_any_element(),
             },
         }))
         .into_any_element()
 }
 
-/// Картинка в своём размере, не шире области чтения; высота — по пропорции (родитель — flex-колонка абзаца).
-fn picture(image: &Arc<RenderImage>) -> AnyElement {
+/// Картинка (T1-10): своя ширина, но не шире колонки текста `col` и родителя (карточка беседы, цитата); высота — по
+/// пропорции. Кадр растёт от нуля до предела (`max_w`), а не сжимается от явной ширины: так высота считается от
+/// итоговой ширины и пропорция не ломается.
+fn picture(image: &Arc<RenderImage>, col: Pixels) -> AnyElement {
+    crate::preview::picture(image, px(fitted(image, col).0)).into_any_element()
+}
+
+/// Размер картинки `image` в колонке `col`.
+fn fitted(image: &RenderImage, col: Pixels) -> (f32, f32) {
     let size = image.size(0);
-    crate::preview::picture(image, px(size.width.0 as f32)).into_any_element()
+    fit(size.width.0 as f32, size.height.0 as f32, f32::from(col))
+}
+
+/// Ширина самой широкой показанной картинки ячейки таблицы: ширину ячейки задаёт содержимое, а кадр картинки растёт
+/// от нуля — без этого ячейка сжалась бы до своего минимума.
+fn widest(items: &[Inline], images: &Images, col: Pixels) -> f32 {
+    pieces(items, |cid| images.contains_key(cid))
+        .into_iter()
+        .filter_map(|p| match p {
+            Piece::Image(cid) => images.get(cid).map(|i| fitted(i, col).0),
+            Piece::Text(_) => None,
+        })
+        .fold(0., f32::max)
+}
+
+/// Размер картинки `w`×`h` в колонке шириной `col`: шире колонки — уменьшить до неё с сохранением пропорций, уже —
+/// как есть (меньшие не растягиваются, как в Outlook). Колонка не измерена (`col` ≤ 0) — свой размер.
+fn fit(w: f32, h: f32, col: f32) -> (f32, f32) {
+    if col <= 0. || w <= col { (w, h) } else { (col, h * col / w.max(1.)) }
 }
 
 fn text(items: &[Inline], key: &str, hits: &Hits, l: &Look) -> AnyElement {
@@ -376,7 +433,7 @@ fn normalize(mut hl: Vec<(std::ops::Range<usize>, HighlightStyle)>) -> Vec<(std:
 #[cfg(test)]
 mod tests {
     // Не `use super::*`: вместе с gpui пришёл бы атрибут `gpui::test`, он перекрывает `#[test]`.
-    use super::{Piece, cids, pieces};
+    use super::{Piece, cids, fit, pieces};
     use postman_ir::{Align, Block, Document, Inline};
 
     fn image(cid: &str) -> Inline {
@@ -393,6 +450,15 @@ mod tests {
         assert_eq!(p[1], Piece::Text(&items[1..4]));
         assert_eq!(p[2], Piece::Image("chart"));
         assert_eq!(pieces(&items[1..3], |_| false), [Piece::Text(&items[1..3])]);
+    }
+
+    /// T1-10: широкая картинка — в ширину колонки с пропорцией, узкая — в своём размере.
+    #[test]
+    fn pictures_fit_the_column() {
+        assert_eq!(fit(2400., 600., 700.), (700., 175.));
+        assert_eq!(fit(120., 40., 700.), (120., 40.));
+        assert_eq!(fit(700., 70., 700.), (700., 70.));
+        assert_eq!(fit(2400., 600., 0.), (2400., 600.), "колонка ещё не измерена");
     }
 
     #[test]
