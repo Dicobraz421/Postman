@@ -16,6 +16,7 @@ pub use html::from_html;
 pub use link::{LinkCheck, check_link};
 pub use markdown::{markdown_to_html, quote, to_markdown};
 pub use plain::from_plain;
+pub use style::MAX_IMAGE_SIDE;
 
 use serde::{Deserialize, Serialize};
 
@@ -106,6 +107,12 @@ pub enum Inline {
     Image {
         cid: String,
         alt: String,
+        /// Задуманный размер в CSS px — из атрибутов `width`/`height` и `style` (T1-10б); `None` — не задан или
+        /// вне 1..=[`MAX_IMAGE_SIDE`]. Одна сторона без другой — вторую считают по пропорции кадра.
+        #[serde(default)]
+        width: Option<u32>,
+        #[serde(default)]
+        height: Option<u32>,
     },
     LineBreak,
 }

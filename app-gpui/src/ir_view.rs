@@ -437,7 +437,7 @@ mod tests {
     use postman_ir::{Align, Block, Document, Inline};
 
     fn image(cid: &str) -> Inline {
-        Inline::Image { cid: cid.into(), alt: String::new() }
+        Inline::Image { cid: cid.into(), alt: String::new(), width: None, height: None }
     }
 
     #[test]
