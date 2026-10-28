@@ -100,6 +100,7 @@ cmd-contacts-delete = Delete contact
 cmd-contacts-write = Write to contact
 cmd-contacts-meeting = Meeting with contact
 cmd-contacts-copy-address = Copy contact address
+cmd-contacts-context-menu = Contact menu
 cmd-task-new = New task
 cmd-task-complete = Complete task
 cmd-task-due = Task due date
