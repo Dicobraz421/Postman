@@ -85,6 +85,8 @@ pub(crate) struct ReadingPane {
     pub(crate) me: Option<String>,
     /// Действия с вложениями, ждущие байтов.
     pub(crate) pending_files: Vec<(AttachmentRow, FileAct)>,
+    /// Нажатие на карточке вложения — может стать перетаскиванием (T1-18, `attachments.rs`).
+    pub(crate) drag: Option<crate::attachments::Drag>,
     /// Блобы, за которыми пошли (хранилище или сервер) и которых ещё нет.
     pub(crate) in_flight: HashSet<String>,
     /// Куда «Открыть» кладёт файл перед запуском системного приложения.
@@ -192,6 +194,7 @@ impl ReadingPane {
             live: false,
             me: Some(postman_demo::ME.to_string()),
             pending_files: Vec::new(),
+            drag: None,
             in_flight: HashSet::new(),
             open_dir: data_dir().join("open"),
             retired: Vec::new(),
@@ -560,6 +563,7 @@ impl ReadingPane {
             }
         }
         self.attachment_ready(blob_id, &data, cx);
+        self.drag_bytes(blob_id, &data, cx);
         let (ready, rest) = std::mem::take(&mut self.pending_files).into_iter().partition(|(a, _)| a.blob_id == blob_id);
         self.pending_files = rest;
         for (a, act) in ready {
@@ -578,6 +582,11 @@ impl ReadingPane {
         }
         let mut user = self.pending_files.iter().any(|(a, _)| a.blob_id == blob_id);
         self.pending_files.retain(|(a, _)| a.blob_id != blob_id);
+        // Перетаскивание ждало байтов (T1-18) — ошибка видна тостом.
+        if self.drag.as_ref().is_some_and(|d| d.waiting && d.blob() == blob_id) {
+            self.drag = None;
+            user = true;
+        }
         if let Some(card) = self.reading.as_mut().and_then(|r| r.invite.as_mut()).filter(|c| c.waits_for(blob_id)) {
             card.state = State::Failed(error.clone());
             user = true;
