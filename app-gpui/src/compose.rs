@@ -814,6 +814,60 @@ pub(crate) struct Composers {
     max_delay: u64,
     /// Подписи учётной записи и подписи по умолчанию (Настройки → Подписи и шаблоны, S5-09).
     pub(crate) prefs: postman_core::prefs::AccountPrefs,
+    /// «Переслать вложениями» ждёт тела писем с сервера (T1-17).
+    attach_wait: Option<AttachWait>,
+}
+
+/// «Переслать вложениями» (T1-17): письма `ids`; у `missing` в кэше нет тела с `Email.blobId` — спрошены у сервера.
+struct AttachWait {
+    ids: Vec<String>,
+    missing: HashSet<String>,
+}
+
+/// Письмо для пересылки вложением: строка, `blob_id` письма целиком (RFC 5322), байты (демо — сразу).
+pub(crate) type Letter = (postman_cache::EmailRow, Option<String>, Vec<u8>);
+
+/// Имя вложения `.eml` из темы письма: без знаков, которые Windows не пускает в имя файла; пустая — «message» (как у
+/// «Сообщить о фишинге» в синхронизации).
+fn eml_name(subject: &str) -> String {
+    let clean: String = subject.chars().map(|c| if c.is_control() || r#"\/:*?"<>|"#.contains(c) { '_' } else { c }).take(80).collect();
+    let clean = clean.trim().trim_end_matches('.');
+    format!("{}.eml", if clean.is_empty() { "message" } else { clean })
+}
+
+/// Черновик «Переслать вложениями» (T1-17, как Outlook): каждое письмо — вложение `message/rfc822` `<тема>.eml`, по
+/// дате; тема — пустая, у одного письма — «FW: <тема>», как у обычной пересылки (`postman_compose::respond`). Байты
+/// без `data` скачивает отправка по `blob_id`, как вложения при пересылке.
+pub(crate) fn attached_draft(mut letters: Vec<Letter>) -> Draft {
+    letters.sort_by_key(|(r, _, _)| r.received_at);
+    let subject = match letters.as_slice() {
+        [(r, _, _)] => {
+            let s = r.subject.trim();
+            let lower = s.to_lowercase();
+            if lower.starts_with("fw:") || lower.starts_with("fwd:") { s.to_owned() } else { format!("FW: {s}") }
+        }
+        _ => String::new(),
+    };
+    let attachments = letters
+        .into_iter()
+        .map(|(r, blob_id, data)| Attachment { name: eml_name(&r.subject), mime: "message/rfc822".into(), data, inline_cid: None, blob_id })
+        .collect();
+    Draft { subject, attachments, ..Default::default() }
+}
+
+/// Демо: письмо целиком из строки и тела демо-ящика (сервера, который отдал бы `Email.blobId`, нет).
+fn demo_eml(row: &postman_cache::EmailRow) -> Vec<u8> {
+    let body = postman_demo::body(&row.id);
+    let d = Draft {
+        from: Address::new(&row.from_name, &row.from_addr),
+        to: body.to.iter().map(|a| Address::new(&a.name, &a.email)).collect(),
+        cc: body.cc.iter().map(|a| Address::new(&a.name, &a.email)).collect(),
+        subject: row.subject.clone(),
+        markdown: body.text.clone().unwrap_or_else(|| row.preview.clone()),
+        ..Default::default()
+    };
+    let id = body.message_id.clone().unwrap_or_else(|| format!("{}@demo.example", row.id));
+    postman_compose::build(&d, row.received_at, &id).unwrap_or_default()
 }
 
 /// Отправленное письмо: что вернуть в композер, если отправку отменят (S5-06).
@@ -1155,6 +1209,72 @@ impl Mailer {
         .detach();
     }
 
+    /// `mail.forward_attached` (T1-17): новое письмо вкладкой, в нём письма `ids` вложениями. Строки и тела — из кэша
+    /// в фоне; у письма без тела с `Email.blobId` тело спрашивается у сервера, окно откроется, когда придут все.
+    pub(crate) fn forward_attached(&mut self, ids: Vec<String>, cx: &mut Context<Self>) {
+        self.forward_attached_with(ids, false, cx);
+    }
+
+    fn forward_attached_with(&mut self, ids: Vec<String>, asked: bool, cx: &mut Context<Self>) {
+        if ids.is_empty() {
+            return self.toast(pets_ui::Level::Info, tr!("actions-select-letter"), cx);
+        }
+        let live = self.backend.is_live();
+        let cache = self.cache.clone();
+        let task = cx.background_spawn(async move {
+            let rows = cache.rows_by_ids(&ids).unwrap_or_default();
+            rows.into_iter()
+                .map(|row| {
+                    let blob = if live { cache.body(&row.id).ok().flatten().and_then(|b| b.blob_id) } else { None };
+                    let data = if live { Vec::new() } else { demo_eml(&row) };
+                    (row, blob, data)
+                })
+                .collect::<Vec<Letter>>()
+        });
+        cx.spawn(async move |this, cx| {
+            let letters = task.await;
+            let _ = this.update(cx, |m, cx| m.forward_attached_ready(letters, asked, cx));
+        })
+        .detach();
+    }
+
+    /// Письма из кэша: всё есть — окно письма; нет тел — спросить сервер (один раз) и ждать `BodyReady`.
+    fn forward_attached_ready(&mut self, letters: Vec<Letter>, asked: bool, cx: &mut Context<Self>) {
+        let ready = |(_, blob, data): &Letter| blob.is_some() || !data.is_empty();
+        let missing: HashSet<String> = letters.iter().filter(|l| !ready(l)).map(|(r, _, _)| r.id.clone()).collect();
+        if !missing.is_empty() && !asked {
+            for id in &missing {
+                if !self.backend.send(Command::Body(id.clone())) {
+                    self.compose.attach_wait = None;
+                    return self.sync_stopped(cx);
+                }
+            }
+            let ids = letters.iter().map(|(r, _, _)| r.id.clone()).collect();
+            self.compose.attach_wait = Some(AttachWait { ids, missing });
+            return self.toast(pets_ui::Level::Info, tr!("compose-attached-loading"), cx);
+        }
+        let skipped = missing.len();
+        let letters: Vec<Letter> = letters.into_iter().filter(ready).collect();
+        if letters.is_empty() {
+            return self.toast(pets_ui::Level::Error, tr!("compose-attached-none"), cx);
+        }
+        self.open_compose(attached_draft(letters), cx);
+        if skipped > 0 {
+            self.toast(pets_ui::Level::Warning, tr!("compose-attached-skipped", n = skipped as i64), cx);
+        }
+    }
+
+    /// Тело письма пришло (`BodyReady`): «Переслать вложениями» дождался всех — открыть письмо.
+    pub(crate) fn forward_body_ready(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(w) = &mut self.compose.attach_wait else { return };
+        w.missing.remove(id);
+        if w.missing.is_empty() {
+            let ids = std::mem::take(&mut w.ids);
+            self.compose.attach_wait = None;
+            self.forward_attached_with(ids, true, cx);
+        }
+    }
+
     /// «Часто пишу» (S5-25): адресаты переписки за 30 дней по частоте и давности — в «Контакты».
     pub(crate) fn contacts_frequent(&mut self, cx: &mut Context<Self>) {
         let now = jiff::Timestamp::now().as_second();
@@ -1347,6 +1467,62 @@ mod tests {
         accept_suggestion, apply_format, compose_field, current_token, own_end, segments, send_later, swap_signature,
     };
     use postman_core::contacts::{AddressBook, Source};
+
+    /// «Переслать вложениями» (T1-17): из трёх писем — черновик с тремя `message/rfc822` по дате, с `blob_id` и
+    /// именами по теме; собранное письмо (байты — как после скачивания отправкой) разбирается в три вложенных письма.
+    #[test]
+    fn forward_three_letters_attached() {
+        let row = |id: &str, subject: &str, at: i64| postman_cache::EmailRow {
+            id: id.into(),
+            thread_id: id.into(),
+            mailbox_ids: vec!["inbox".into()],
+            received_at: at,
+            subject: subject.into(),
+            from_name: "Анна".into(),
+            from_addr: "anna@corp.example".into(),
+            preview: String::new(),
+            seen: true,
+            flagged: false,
+            has_attachment: false,
+            size: 0,
+            keywords: Vec::new(),
+        };
+        let letters = vec![
+            (row("c", "Итоги", 30), Some("blob-c".to_string()), Vec::new()),
+            (row("a", "Отчёт: март/апрель", 10), Some("blob-a".to_string()), Vec::new()),
+            (row("b", "  ", 20), Some("blob-b".to_string()), Vec::new()),
+        ];
+        let mut d = super::attached_draft(letters);
+        assert_eq!(d.subject, "", "несколько писем — тема пустая");
+        let got: Vec<_> = d.attachments.iter().map(|a| (a.name.as_str(), a.mime.as_str(), a.blob_id.as_deref(), a.inline_cid.is_none())).collect();
+        assert_eq!(
+            got,
+            [
+                ("Отчёт_ март_апрель.eml", "message/rfc822", Some("blob-a"), true),
+                ("message.eml", "message/rfc822", Some("blob-b"), true),
+                ("Итоги.eml", "message/rfc822", Some("blob-c"), true),
+            ]
+        );
+        let one = super::attached_draft(vec![(row("a", "Отчёт", 10), Some("blob-a".into()), Vec::new())]);
+        assert_eq!(one.subject, "FW: Отчёт");
+        // Отправка скачала письма по `blob_id`: байты — настоящие письма RFC 5322.
+        let me = Address::new("Я", "me@corp.example");
+        for (i, a) in d.attachments.iter_mut().enumerate() {
+            let inner = Draft { from: Address::new("Анна", "anna@corp.example"), to: vec![me.clone()], subject: format!("Письмо {i}"), markdown: "текст".into(), ..Default::default() };
+            a.data = postman_compose::build(&inner, 10, &format!("m{i}@corp.example")).unwrap();
+        }
+        d.from = me.clone();
+        d.to = vec![Address::new("", "boss@corp.example")];
+        let raw = postman_compose::build(&d, 100, "out@corp.example").unwrap();
+        let m = postman_worker::mime::parse(&raw).unwrap();
+        assert_eq!(m.parts.iter().map(|p| p.mime.as_str()).collect::<Vec<_>>(), ["message/rfc822"; 3]);
+        for (i, p) in m.parts.iter().enumerate() {
+            let inner = postman_worker::mime::part(&raw, p.index).unwrap();
+            let inner = postman_worker::mime::parse(&inner).unwrap();
+            assert_eq!(inner.message_id.as_deref(), Some(format!("m{i}@corp.example").as_str()), "вложенное письмо {i}");
+            assert!(inner.text.as_deref().is_some_and(|t| t.contains("текст")));
+        }
+    }
 
     fn model() -> Model {
         Model::new(Draft::default(), Some(Address::new("Я", "me@corp.example")), "", Instant::now())

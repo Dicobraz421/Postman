@@ -13,6 +13,7 @@ cmd-mail-new = Создать письмо
 cmd-mail-reply = Ответить
 cmd-mail-reply-all = Ответить всем
 cmd-mail-forward = Переслать
+cmd-mail-forward-attached = Переслать вложениями
 cmd-mail-delete = Удалить
 cmd-mail-due = Срок…
 cmd-mail-remind = Напомнить…

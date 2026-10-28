@@ -13,6 +13,7 @@ cmd-mail-new = New message
 cmd-mail-reply = Reply
 cmd-mail-reply-all = Reply all
 cmd-mail-forward = Forward
+cmd-mail-forward-attached = Forward as attachments
 cmd-mail-delete = Delete
 cmd-mail-due = Due date…
 cmd-mail-remind = Remind me…

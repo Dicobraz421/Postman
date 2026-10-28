@@ -48,3 +48,11 @@ compose-seal-no-cert = Not sent: no encryption certificate for { $address }
 compose-seal-no-own-cert = Not sent: you have no encryption certificate (the message is encrypted to you too)
 compose-seal-need-skzi = Not sent: GOST recipients need a certified crypto provider (CryptoPro CSP or ViPNet CSP)
 compose-seal-failed = Not encrypted: { $error }
+
+# Forward as attachments (T1-17).
+compose-attached-loading = Loading the messages to forward as attachments…
+compose-attached-none = Could not forward: the messages are not on the server
+compose-attached-skipped = { $n ->
+    [one] { $n } message not attached: it is not on the server
+   *[other] { $n } messages not attached: they are not on the server
+}
