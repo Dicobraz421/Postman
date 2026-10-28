@@ -104,6 +104,9 @@ pub(crate) fn set_theme(id: &str, cx: &mut App) -> Result<(), ThemeError> {
     Themes::set_choice(id, cx)?;
     let id = id.to_owned();
     update(cx, |p| p.general.theme = Some(id));
+    // «Серая» (T1-D) — слой токенов Postman, а не тема pets-ui: заново под выбранную.
+    let p = get(cx);
+    crate::roles::set_accent(p.look.accent, density_at_start(None, &p), cx);
     Ok(())
 }
 

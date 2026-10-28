@@ -164,7 +164,7 @@ pub struct Driver {
     signin: bool,
     /// Последнее письмо до сцены (`checks`, `reply-inline`): готово, когда открылось следующее.
     pub(crate) composer: Option<u64>,
-    /// Окончание имён файлов: `-dark` для `--theme dark` (S5-01), иначе пусто.
+    /// Окончание имён файлов: `-dark` для `--theme dark` (S5-01), `-gray` для `--theme gray` (T1-D), иначе пусто.
     suffix: &'static str,
     /// Сроки, поставленные сценой `lifecycle`: снять до следующих сцен.
     pub(crate) undo: Vec<postman_core::lifecycle::Patch>,

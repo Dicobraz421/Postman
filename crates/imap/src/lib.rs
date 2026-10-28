@@ -318,10 +318,22 @@ impl Session {
             .collect())
     }
 
-    /// Разделитель иерархии ящика (`LIST "" ""`, RFC 3501 §6.3.8); `None` — плоский ящик.
+    /// Разделитель иерархии ящика: `LIST "" ""` (RFC 3501 §6.3.8), иначе — у папок верхнего уровня (`LIST "" "%"`):
+    /// Stalwart на `LIST "" ""` разделителя не даёт. `None` — плоский ящик.
     pub async fn delimiter(&mut self) -> Result<Option<String>> {
-        let names: Vec<async_imap::types::Name> = timed(async { Ok(self.inner.list(Some(""), Some("")).await?.try_collect().await?) }).await?;
-        Ok(names.first().and_then(|n| n.delimiter()).filter(|d| !d.is_empty()).map(str::to_owned))
+        for pattern in ["", "%"] {
+            let names: Vec<async_imap::types::Name> =
+                timed(async { Ok(self.inner.list(Some(""), Some(pattern)).await?.try_collect().await?) }).await?;
+            if let Some(d) = names.iter().filter_map(|n| n.delimiter()).find(|d| !d.is_empty()) {
+                return Ok(Some(d.to_owned()));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Удалить папку `raw` (`DELETE`, RFC 3501 §6.3.4). Подпапки сервер оставляет — удалять с вложенных.
+    pub async fn delete_folder(&mut self, raw: &str) -> Result<()> {
+        timed(async { Ok(self.inner.run_command_and_check_ok(&names::delete_command(raw)).await?) }).await
     }
 
     /// Создать папку `name` в `parent` (его `raw`; `None` — верхний уровень) → её имя на сервере.

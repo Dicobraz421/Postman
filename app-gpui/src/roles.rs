@@ -96,10 +96,14 @@ pub(crate) enum Pm {
     AssignDeclined,
     AssignWait,
     AssignGlyph,
+    /// Строка списка (письма, беседы, контакты, папки; T1-D): наведение и выделенная в фокусе — тон акцента поверх
+    /// карточки ([`ROWS`]). Без фокуса — нейтральная заливка и полоса цвета подписей ([`Look::row_fill`]).
+    RowHover,
+    RowSelected,
 }
 
 impl Pm {
-    pub(crate) const COUNT: usize = Pm::AssignGlyph as usize + 1;
+    pub(crate) const COUNT: usize = Pm::RowSelected as usize + 1;
 }
 
 const fn c(v: u32) -> Color {
@@ -126,8 +130,9 @@ pub(crate) const CORE: &[(Role, Color, Color)] = &[
     (Role::TextPrimary, c(0x242424), c(0xD2D2D2)),
     (Role::TextSecondary, c(0x616161), c(0xA6A6A6)),
     (Role::TextTertiary, c(0x8A8A8A), c(0x8A8A8A)),
-    // Фон окна / карточка (и всплывающие — Fluent #F9F9F9 / #2C2C2C, ΔE ≤ 1,2) / наведение / выбранное (строка списка).
-    (Role::BgBase, c(0xF3F3F3), c(0x202020)),
+    // Фон окна / карточка (и всплывающие — Fluent #F9F9F9 / #2C2C2C, ΔE ≤ 1,2) / наведение / нейтральная заливка
+    // (чипы, полосы таблиц, выделенная строка без фокуса). Тёмное окно — #191919 (T1-D: список не сливается с окном).
+    (Role::BgBase, c(0xF3F3F3), c(0x191919)),
     (Role::LayerPanel, c(0xFFFFFF), c(0x2B2B2B)),
     (Role::LayerOverlay, c(0xFFFFFF), c(0x2B2B2B)),
     (Role::FillSubtleHover, c(0xF5F5F5), c(0x323232)),
@@ -139,11 +144,65 @@ pub(crate) const CORE: &[(Role, Color, Color)] = &[
     (Role::CriticalBg, c(0xFFE6E3), c(0x4C2B28)),
 ];
 
-/// Слой таблицы DESIGN поверх Fluent ([`CORE`]) и плотность — переопределения темы Postman.
-pub(crate) fn base(density: Option<Density>, accent: Accent) -> ThemeSpec {
+/// Тема «Серая» (T1-D, решение владельца 2026-10-28): светлая без белого — окно и карточки в оттенках серого, как
+/// Outlook. Её цвета — слой [`base`] поверх светлой ([`GRAY_CORE`]); сама тема для pets-ui — пустая светлая
+/// ([`gray_theme`]), иначе слой Postman перекрыл бы её.
+pub(crate) const GRAY: &str = "gray";
+
+/// Роли «Серой» из таблицы DESIGN; остальное — как в светлой ([`CORE`]).
+pub(crate) const GRAY_CORE: &[(Role, Color)] = &[
+    (Role::BgBase, c(0xDADADA)),
+    (Role::LayerPanel, c(0xEDEDED)),
+    (Role::LayerOverlay, c(0xEDEDED)),
+    (Role::FillSubtleHover, c(0xE5E5E5)),
+    (Role::FillCursor, c(0xDEDEDE)),
+    (Role::StrokeDivider, c(0xD5D5D5)),
+    (Role::StrokeControl, c(0xC2C2C2)),
+    (Role::TextPrimary, c(0x242424)),
+    (Role::TextSecondary, c(0x575757)),
+    (Role::TextTertiary, c(0x767676)),
+];
+
+/// Тема «Серая» для списка тем pets-ui: всегда светлая (системная тёмная её не переключает).
+pub(crate) fn gray_theme() -> ThemeSpec {
+    ThemeSpec {
+        id: GRAY.to_owned(),
+        name: Some(pets_i18n::tr!("settings-theme-gray")),
+        appearance: Some(pets_ui::theme::Appearance::Light),
+        ..ThemeSpec::default()
+    }
+}
+
+/// Строка списка по акценту (DESIGN «Токены цвета», T1-D): [наведение, выделена] — светлая, тёмная, «Серая».
+/// Акцент и [наведение, выделена] светлой, тёмной и «Серой».
+type RowTones = (Accent, [u32; 2], [u32; 2], [u32; 2]);
+
+pub(crate) const ROWS: &[RowTones] = &[
+    (Accent::System, [0xF0F6FB, 0xD1E4F4], [0x2B333A, 0x2B3E50], [0xDFE5EA, 0xC2D5E5]),
+    (Accent::Teal, [0xF0F7F6, 0xD1E6E5], [0x283333, 0x23403E], [0xDFE6E5, 0xC2D7D6]),
+    (Accent::Green, [0xF3F7F2, 0xDCE7D7], [0x2D342A, 0x304129], [0xE2E6E1, 0xCDD8C8]),
+    (Accent::Violet, [0xF6F4FB, 0xE5DFF2], [0x332F3B, 0x3E3552], [0xE5E3EA, 0xD6D0E3]),
+    (Accent::Graphite, [0xF4F5F6, 0xDFE1E3], [0x303133, 0x383B3E], [0xE3E4E5, 0xD0D2D5]),
+];
+
+/// Слой таблицы DESIGN поверх Fluent ([`CORE`]; в «Серой» — ещё [`GRAY_CORE`]), строка списка по акценту ([`ROWS`])
+/// и плотность — переопределения темы Postman.
+pub(crate) fn base(density: Option<Density>, accent: Accent, gray: bool) -> ThemeSpec {
     let table = |dark: bool| {
         let mut t: std::collections::BTreeMap<String, Color> =
             CORE.iter().map(|&(r, l, d)| (r.name().to_owned(), if dark { d } else { l })).collect();
+        if gray && !dark {
+            t.extend(GRAY_CORE.iter().map(|&(r, v)| (r.name().to_owned(), v)));
+        }
+        if let Some(&(_, light, dark_t, gray_t)) = ROWS.iter().find(|(a, ..)| *a == accent) {
+            let [hover, selected] = match (dark, gray) {
+                (true, _) => dark_t,
+                (false, true) => gray_t,
+                (false, false) => light,
+            };
+            t.insert(pm_name(Pm::RowHover).to_owned(), c(hover));
+            t.insert(pm_name(Pm::RowSelected).to_owned(), c(selected));
+        }
         // Акцент «Внешнего вида» (S5-30): текст, заливка кнопки, тонированная подложка и текст на ней — из таблицы.
         if let Some(&(_, light, dark_t)) = ACCENTS.iter().find(|(a, _, _)| *a == accent) {
             let [text, fill, tint, tint_fg] = if dark { dark_t } else { light };
@@ -190,9 +249,12 @@ fn mix(a: u32, b: u32, t: f32) -> u32 {
     one(16) | one(8) | one(0)
 }
 
-/// Акцент «Внешнего вида» — на лету: слой токенов заново (плотность — та же).
+/// Акцент «Внешнего вида» или тема — на лету: слой токенов заново под действующую тему (плотность — та же).
 pub(crate) fn set_accent(accent: Accent, density: Option<Density>, cx: &mut App) {
-    Themes::update(cx, |s| s.set_overrides(Some(base(density, accent))));
+    Themes::update(cx, |s| {
+        let gray = s.effective() == GRAY;
+        s.set_overrides(Some(base(density, accent, gray)))
+    });
 }
 
 /// Цвета ролей Postman: (роль, имя, светлая, тёмная, при высокой контрастности — роль pets-ui). Роли из палитры
@@ -246,6 +308,9 @@ const FIXED: &[(Pm, &str, Color, Color, Role)] = &[
     (Pm::AssignDeclined, "app.assign.declined", c(0x303030), c(0xCECECE), Role::TextPrimary),
     (Pm::AssignWait, "app.assign.wait", c(0xAAAAAA), c(0x6E6E6E), Role::TextSecondary),
     (Pm::AssignGlyph, "app.assign.glyph", c(0xFFFFFF), c(0x2B2B2B), Role::LayerPanel),
+    // Строка списка, синий акцент (T1-D); акцент и «Серая» — слой [`base`] по [`ROWS`].
+    (Pm::RowHover, "app.row.hover", c(0xF0F6FB), c(0x2B333A), Role::FillSubtleHover),
+    (Pm::RowSelected, "app.row.selected", c(0xD1E4F4), c(0x2B3E50), Role::FillCursor),
 ];
 
 /// Цвет свободного времени (S5-20): только цвета бренда (решение владельца 2026-10-21) — розовый, синий,
@@ -388,6 +453,8 @@ const PMS: [Pm; Pm::COUNT] = [
     Pm::AssignDeclined,
     Pm::AssignWait,
     Pm::AssignGlyph,
+    Pm::RowHover,
+    Pm::RowSelected,
 ];
 
 /// Цвета категории в теме.
@@ -511,9 +578,29 @@ impl Look {
         self.c(Role::AccentSubtle)
     }
 
-    /// Выделенная строка списка: нейтральное «выбранное» (полоса акцента слева рисует строка), не синяя подложка.
+    /// Нейтральное «выбранное» (элементы gpui-kit); строки списков — [`Look::row_fill`].
     pub(crate) fn selected(&self) -> Hsla {
         self.c(Role::FillCursor)
+    }
+
+    /// Тема «Серая»: панель папок — карточкой (DESIGN «Токены цвета»).
+    pub(crate) fn gray(&self) -> bool {
+        self.theme.id() == GRAY
+    }
+
+    /// Строка списка (письма, беседы, контакты, папки; T1-D) под указателем — тон акцента 6 % (тёмная 12 %).
+    pub(crate) fn row_hover(&self) -> Hsla {
+        self.pm(Pm::RowHover)
+    }
+
+    /// Выделенная строка: в фокусе — тон акцента 18 % (тёмная 30 %), без фокуса — нейтральная заливка.
+    pub(crate) fn row_fill(&self, focused: bool) -> Hsla {
+        if focused { self.pm(Pm::RowSelected) } else { self.c(Role::FillCursor) }
+    }
+
+    /// Полоса слева у выделенной строки: в фокусе — акцент, без фокуса — цвет подписей.
+    pub(crate) fn row_strip(&self, focused: bool) -> Hsla {
+        if focused { self.accent() } else { self.text3() }
     }
 
     pub(crate) fn accent(&self) -> Hsla {
@@ -574,7 +661,7 @@ impl Default for Look {
         static LIGHT: LazyLock<Theme> = LazyLock::new(|| {
             pets_ui::theme::resolve(
                 &ThemeSpec::default(),
-                Some(&base(None, Accent::System)),
+                Some(&base(None, Accent::System, false)),
                 &pets_ui::theme::OsLook::default(),
                 pets_ui::theme::FontSizes::default(),
                 &ROLES,
@@ -604,11 +691,12 @@ pub(crate) fn now() -> Rc<Look> {
     NOW.with(|n| n.borrow().clone()).unwrap_or_else(|| Rc::new(Look::default()))
 }
 
-/// `--theme light|dark|system`: тема снимков и запуска; по умолчанию — «как в ОС».
+/// `--theme light|dark|gray|system`: тема снимков и запуска; по умолчанию — «как в ОС».
 pub(crate) fn choice(arg: Option<&str>) -> &'static str {
     match arg {
         Some("light") => pets_ui::theme::FLUENT_LIGHT,
         Some("dark") => pets_ui::theme::FLUENT_DARK,
+        Some("gray") => GRAY,
         _ => pets_ui::theme::SYSTEM,
     }
 }
@@ -631,12 +719,16 @@ pub(crate) fn init(choice: &str, density: Option<Density>, accent: Accent, cx: &
         ThemeConfig {
             app: "Postman",
             choice: choice.to_owned(),
-            overrides: Some(base(density, accent)),
+            overrides: Some(base(density, accent, choice == GRAY)),
+            // «Серая» — своя тема Postman в списке тем (T1-D).
+            user_themes: vec![gray_theme()],
             app_roles: ROLES.as_slice(),
             ..ThemeConfig::default()
         },
         cx,
     );
+    // Политика могла выбрать тему за пользователя: слой — под действующую.
+    set_accent(accent, density, cx);
     refresh(cx);
     cx.observe_global::<Themes>(refresh).detach();
 }
@@ -687,7 +779,7 @@ fn sync_components(l: &Look, cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Look, PMS, Pm, ROLES, base, pm_name};
+    use super::{GRAY, Look, PMS, Pm, ROLES, base, gray_theme, pm_name};
     use pets_ui::theme::{FontSizes, OsLook, ThemeSpec, resolve};
     use postman_core::prefs::Accent;
 
@@ -700,7 +792,7 @@ mod tests {
         };
         let look = |dark: bool, accent: Accent| {
             let os = OsLook { dark, ..OsLook::default() };
-            Look::new(&resolve(&ThemeSpec::default(), Some(&base(None, accent)), &os, FontSizes::default(), &ROLES))
+            Look::new(&resolve(&ThemeSpec::default(), Some(&base(None, accent, false)), &os, FontSizes::default(), &ROLES))
         };
         let l = look(false, Accent::Teal);
         assert_eq!(
@@ -773,7 +865,37 @@ mod tests {
 
     /// Тема Postman, как после [`super::init`]: Fluent и слой таблицы DESIGN.
     fn theme(os: &OsLook) -> Look {
-        Look::new(&resolve(&ThemeSpec::default(), Some(&base(None, Accent::System)), os, FontSizes::default(), &ROLES))
+        Look::new(&resolve(&ThemeSpec::default(), Some(&base(None, Accent::System, false)), os, FontSizes::default(), &ROLES))
+    }
+
+    /// T1-D: строка списка — тон акцента (наведение, выделена в фокусе), без фокуса — нейтральная заливка и полоса
+    /// цвета подписей; тёмное окно #191919; «Серая» — окно и карточки в оттенках серого, всегда светлая.
+    #[test]
+    fn selection_surfaces_and_gray_theme() {
+        let hex = |c| pets_ui::theme::Color::from_hsla(c).hex();
+        let look = |spec: &ThemeSpec, dark: bool, accent: Accent| {
+            let os = OsLook { dark, ..OsLook::default() };
+            Look::new(&resolve(spec, Some(&base(None, accent, spec.id == GRAY)), &os, FontSizes::default(), &ROLES))
+        };
+        let plain = ThemeSpec::default();
+        let (l, d) = (look(&plain, false, Accent::System), look(&plain, true, Accent::System));
+        assert_eq!([hex(l.row_hover()), hex(l.row_fill(true)), hex(l.row_fill(false))], ["#F0F6FB", "#D1E4F4", "#EBEBEB"]);
+        assert_eq!([hex(d.row_hover()), hex(d.row_fill(true)), hex(d.row_fill(false))], ["#2B333A", "#2B3E50", "#3A3A3A"]);
+        assert_eq!([hex(l.row_strip(true)), hex(l.row_strip(false))], ["#0067C0", "#8A8A8A"]);
+        assert_eq!([hex(d.base()), hex(d.panel())], ["#191919", "#2B2B2B"]);
+        let teal = look(&plain, true, Accent::Teal);
+        assert_eq!([hex(teal.row_hover()), hex(teal.row_fill(true))], ["#283333", "#23403E"]);
+        let gray = gray_theme();
+        // Системная тёмная «Серую» не переключает.
+        let g = look(&gray, true, Accent::System);
+        assert!(g.gray() && !g.dark() && !l.gray());
+        assert_eq!([hex(g.base()), hex(g.panel()), hex(g.hover()), hex(g.fill())], ["#DADADA", "#EDEDED", "#E5E5E5", "#DEDEDE"]);
+        assert_eq!([hex(g.border()), hex(g.stroke())], ["#D5D5D5", "#C2C2C2"]);
+        assert_eq!([hex(g.text()), hex(g.text2()), hex(g.text3())], ["#242424", "#575757", "#767676"]);
+        assert_eq!([hex(g.row_hover()), hex(g.row_fill(true))], ["#DFE5EA", "#C2D5E5"]);
+        assert_eq!(hex(g.accent()), "#0067C0", "акцент — как в светлой");
+        let gv = look(&gray, false, Accent::Violet);
+        assert_eq!([hex(gv.row_hover()), hex(gv.row_fill(true))], ["#E5E3EA", "#D6D0E3"]);
     }
 
     /// Тёмная и светлая тема — токены таблицы DESIGN; категории — тёмные варианты палитры.
@@ -786,7 +908,7 @@ mod tests {
         assert_eq!([hex(l.text()), hex(l.text2()), hex(l.text3())], ["#242424", "#616161", "#8A8A8A"]);
         assert_eq!([hex(d.accent()), hex(d.accent_text()), hex(d.pm(Pm::LabelAccent))], ["#2B6CA8", "#7CC4F0", "#7CC4F0"]);
         assert_eq!([hex(l.accent()), hex(l.accent_text()), hex(l.picked())], ["#0067C0", "#0067C0", "#DFF0FF"]);
-        assert_eq!([hex(d.base()), hex(d.panel()), hex(d.hover()), hex(d.fill())], ["#202020", "#2B2B2B", "#323232", "#3A3A3A"]);
+        assert_eq!([hex(d.base()), hex(d.panel()), hex(d.hover()), hex(d.fill())], ["#191919", "#2B2B2B", "#323232", "#3A3A3A"]);
         assert_eq!([hex(l.border()), hex(l.stroke()), hex(d.border()), hex(d.stroke())], ["#E0E0E0", "#D1D1D1", "#3D3D3D", "#505050"]);
         assert_eq!([hex(d.pm(Pm::ThreatBg)), hex(d.pm(Pm::ThreatFg))], ["#4C2B28", "#F9BDB7"]);
         assert_eq!([hex(l.pm(Pm::DeadlineFg)), hex(l.pm(Pm::DeadlineFill)), hex(l.pm(Pm::DeadlineOn))], ["#664700", "#F8DEA8", "#664700"]);

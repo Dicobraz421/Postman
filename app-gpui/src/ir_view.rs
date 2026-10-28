@@ -303,18 +303,22 @@ fn style(m: Marks, l: &Look) -> Option<HighlightStyle> {
 #[derive(Debug, PartialEq)]
 enum Piece<'a> {
     Text(&'a [Inline]),
-    Image(&'a str),
+    /// `cid:` и задуманный размер из HTML (T1-10б).
+    Image(&'a str, Want),
 }
+
+/// Задуманные ширина и высота картинки в CSS px из IR (`width`/`height` HTML и `style`); `None` — не задана.
+type Want = (Option<u32>, Option<u32>);
 
 fn pieces<'a>(items: &'a [Inline], shown: impl Fn(&str) -> bool) -> Vec<Piece<'a>> {
     let mut out = Vec::new();
     let mut start = 0;
     for (i, item) in items.iter().enumerate() {
-        if let Inline::Image { cid, .. } = item
+        if let Inline::Image { cid, width, height, .. } = item
             && shown(cid)
         {
             out.push(Piece::Text(&items[start..i]));
-            out.push(Piece::Image(cid));
+            out.push(Piece::Image(cid, (*width, *height)));
             start = i + 1;
         }
     }
@@ -326,14 +330,14 @@ fn pieces<'a>(items: &'a [Inline], shown: impl Fn(&str) -> bool) -> Vec<Piece<'a
             Inline::LineBreak => false,
             _ => true,
         }),
-        Piece::Image(_) => true,
+        Piece::Image(..) => true,
     });
     out
 }
 
 fn paragraph(items: &[Inline], key: &str, images: &Images, hits: &Hits, col: Pixels, l: &Look) -> AnyElement {
     let parts = pieces(items, |cid| images.contains_key(cid));
-    if !parts.iter().any(|p| matches!(p, Piece::Image(_))) {
+    if !parts.iter().any(|p| matches!(p, Piece::Image(..))) {
         return text(items, key, hits, l);
     }
     div()
@@ -342,25 +346,37 @@ fn paragraph(items: &[Inline], key: &str, images: &Images, hits: &Hits, col: Pix
         .gap_1()
         .children(parts.into_iter().enumerate().map(|(n, p)| match p {
             Piece::Text(t) => text(t, &format!("{key}.{n}"), hits, l),
-            Piece::Image(cid) => match images.get(cid) {
-                Some(image) => picture(image, col),
+            Piece::Image(cid, want) => match images.get(cid) {
+                Some(image) => picture(image, want, col),
                 None => div().into_any_element(),
             },
         }))
         .into_any_element()
 }
 
-/// Картинка (T1-10): своя ширина, но не шире колонки текста `col` и родителя (карточка беседы, цитата); высота — по
-/// пропорции. Кадр растёт от нуля до предела (`max_w`), а не сжимается от явной ширины: так высота считается от
-/// итоговой ширины и пропорция не ломается.
-fn picture(image: &Arc<RenderImage>, col: Pixels) -> AnyElement {
-    crate::preview::picture(image, px(fitted(image, col).0)).into_any_element()
+/// Картинка (T1-10, T1-10в): задуманная в HTML ширина или своя, но не шире колонки текста `col` и родителя (карточка
+/// беседы, цитата); высота — по пропорции кадра. Кадр растёт от нуля до предела (`max_w`), а не сжимается от явной
+/// ширины: так высота считается от итоговой ширины и пропорция не ломается.
+fn picture(image: &Arc<RenderImage>, want: Want, col: Pixels) -> AnyElement {
+    crate::preview::picture(image, px(fitted(image, want, col).0)).into_any_element()
 }
 
-/// Размер картинки `image` в колонке `col`.
-fn fitted(image: &RenderImage, col: Pixels) -> (f32, f32) {
+/// Размер картинки `image` с задуманным `want` в колонке `col`.
+fn fitted(image: &RenderImage, want: Want, col: Pixels) -> (f32, f32) {
     let size = image.size(0);
-    fit(size.width.0 as f32, size.height.0 as f32, f32::from(col))
+    let (w, h) = intended(size.width.0 as f32, size.height.0 as f32, want);
+    fit(w, h, f32::from(col))
+}
+
+/// Задуманный размер кадра `w`×`h` (T1-10в): ширина из HTML, без неё — из высоты по пропорции кадра, без обеих — свой
+/// размер. Высота всегда по пропорции кадра: заданная пара с другой пропорцией картинку не искажает.
+fn intended(w: f32, h: f32, want: Want) -> (f32, f32) {
+    let width = match want {
+        (Some(x), _) => x as f32,
+        (None, Some(y)) => w * y as f32 / h.max(1.),
+        (None, None) => w,
+    };
+    (width, h * width / w.max(1.))
 }
 
 /// Ширина самой широкой показанной картинки ячейки таблицы: ширину ячейки задаёт содержимое, а кадр картинки растёт
@@ -369,7 +385,7 @@ fn widest(items: &[Inline], images: &Images, col: Pixels) -> f32 {
     pieces(items, |cid| images.contains_key(cid))
         .into_iter()
         .filter_map(|p| match p {
-            Piece::Image(cid) => images.get(cid).map(|i| fitted(i, col).0),
+            Piece::Image(cid, want) => images.get(cid).map(|i| fitted(i, want, col).0),
             Piece::Text(_) => None,
         })
         .fold(0., f32::max)
@@ -433,11 +449,11 @@ fn normalize(mut hl: Vec<(std::ops::Range<usize>, HighlightStyle)>) -> Vec<(std:
 #[cfg(test)]
 mod tests {
     // Не `use super::*`: вместе с gpui пришёл бы атрибут `gpui::test`, он перекрывает `#[test]`.
-    use super::{Piece, cids, fit, pieces};
+    use super::{Piece, cids, fit, intended, pieces};
     use postman_ir::{Align, Block, Document, Inline};
 
     fn image(cid: &str) -> Inline {
-        Inline::Image { cid: cid.into(), alt: String::new() }
+        Inline::Image { cid: cid.into(), alt: String::new(), width: None, height: None }
     }
 
     #[test]
@@ -445,10 +461,10 @@ mod tests {
         let items = [image("logo"), Inline::LineBreak, Inline::text("Коллеги"), image("missing"), image("chart")];
         let p = pieces(&items, |c| c != "missing");
         assert_eq!(p.len(), 3, "{p:?}");
-        assert_eq!(p[0], Piece::Image("logo"));
+        assert_eq!(p[0], Piece::Image("logo", (None, None)));
         // Текст и подпись картинки, которой нет, — одним куском.
         assert_eq!(p[1], Piece::Text(&items[1..4]));
-        assert_eq!(p[2], Piece::Image("chart"));
+        assert_eq!(p[2], Piece::Image("chart", (None, None)));
         assert_eq!(pieces(&items[1..3], |_| false), [Piece::Text(&items[1..3])]);
     }
 
@@ -459,6 +475,29 @@ mod tests {
         assert_eq!(fit(120., 40., 700.), (120., 40.));
         assert_eq!(fit(700., 70., 700.), (700., 70.));
         assert_eq!(fit(2400., 600., 0.), (2400., 600.), "колонка ещё не измерена");
+    }
+
+    /// T1-10в: размер из HTML — меньше кадра или больше, одна сторона или обе; затем не шире колонки.
+    #[test]
+    fn pictures_take_the_html_size() {
+        let at = |w, h, want, col| {
+            let (w, h) = intended(w, h, want);
+            fit(w, h, col)
+        };
+        assert_eq!(at(1200., 400., (Some(180), Some(60)), 700.), (180., 60.));
+        assert_eq!(at(1200., 400., (Some(180), None), 700.), (180., 60.));
+        assert_eq!(at(1200., 400., (None, Some(60)), 700.), (180., 60.));
+        assert_eq!(at(1200., 400., (Some(180), Some(180)), 700.), (180., 60.), "пропорция кадра");
+        assert_eq!(at(2400., 600., (Some(2000), None), 700.), (700., 175.));
+        assert_eq!(at(120., 40., (Some(240), None), 700.), (240., 80.), "HTML может увеличить");
+        assert_eq!(at(2400., 600., (None, None), 700.), (700., 175.));
+        assert_eq!(at(120., 40., (None, None), 700.), (120., 40.));
+    }
+
+    #[test]
+    fn pieces_carry_the_html_size() {
+        let items = [Inline::Image { cid: "logo".into(), alt: String::new(), width: Some(180), height: None }];
+        assert_eq!(pieces(&items, |_| true), [Piece::Image("logo", (Some(180), None))]);
     }
 
     #[test]

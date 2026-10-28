@@ -208,6 +208,7 @@ settings-hint-vacation = The out-of-office reply is stored on the server and goe
 # General.
 settings-look = Appearance
 settings-theme = Theme
+settings-theme-gray = Gray
 settings-theme-hint = “As in Windows” follows the system light or dark theme and accent.
 settings-density = Density
 settings-density-hint = Row height of the message list and controls.

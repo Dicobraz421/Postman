@@ -171,30 +171,178 @@ pub(crate) fn filter(entries: &[Entry], query: &str) -> Vec<usize> {
     (0..entries.len()).filter(|&i| entries[i].matches(&words, query)).collect()
 }
 
-/// «Часто пишу» (S5-25): адресаты переписки по порядку `AddressBook::frequent` — запись справочника или моих контактов
-/// с этим адресом (та же карточка), иначе — адресат переписки. Адрес — одна строка.
-pub(crate) fn frequent(list: &[(String, String)], directory: &[Entry], mine: &[Entry]) -> Vec<Entry> {
+/// Адресат «Часто пишу» из адресной книги (`postman_core::contacts::Entry`): имя, адрес, последняя переписка
+/// (Unix-секунды).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Frequent {
+    pub(crate) name: String,
+    pub(crate) email: String,
+    pub(crate) last: i64,
+}
+
+/// Порядок «Часто пишу» (T1-24): как считает адресная книга (частота и давность), по имени, по адресу, сначала
+/// недавние. Помнится на время работы.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) enum Order {
+    #[default]
+    Frequency,
+    Name,
+    Address,
+    Recent,
+}
+
+impl Order {
+    const ALL: [Order; 4] = [Order::Frequency, Order::Name, Order::Address, Order::Recent];
+
+    fn key(self) -> &'static str {
+        match self {
+            Order::Frequency => "contacts-sort-frequency",
+            Order::Name => "contacts-sort-name",
+            Order::Address => "contacts-sort-address",
+            Order::Recent => "contacts-sort-recent",
+        }
+    }
+}
+
+/// Ключ сравнения имён с учётом языка, без регистра: ё = е, сначала цифры и знаки, затем буквы языка интерфейса
+/// (`ru` — кириллица), затем остальные.
+fn collate_key(s: &str, ru: bool) -> Vec<(u8, char)> {
+    normalize(s)
+        .chars()
+        .map(|c| {
+            let cyrillic = ('\u{0400}'..='\u{04FF}').contains(&c);
+            let rank = match c {
+                c if !c.is_alphabetic() => 0,
+                _ if cyrillic == ru => 1,
+                _ => 2,
+            };
+            (rank, c)
+        })
+        .collect()
+}
+
+/// «Часто пишу» (S5-25): адресаты переписки — запись справочника или моих контактов с этим адресом (та же карточка),
+/// иначе — адресат переписки. Адрес — одна строка. Порядок `list` — частота (`AddressBook::frequent`); другие
+/// порядки (T1-24) — по имени (`ru` — язык интерфейса), по адресу, по последней переписке.
+pub(crate) fn frequent(list: &[Frequent], directory: &[Entry], mine: &[Entry], order: Order, ru: bool) -> Vec<Entry> {
     let has = |e: &Entry, email: &str| e.card.emails.iter().any(|m| m.eq_ignore_ascii_case(email));
-    let mut out: Vec<Entry> = Vec::new();
-    for (name, email) in list {
-        if out.iter().any(|e| has(e, email)) {
+    let mut out: Vec<(Entry, i64)> = Vec::new();
+    for f in list {
+        if out.iter().any(|(e, _)| has(e, &f.email)) {
             continue;
         }
-        let known = directory.iter().find(|e| has(e, email)).or_else(|| mine.iter().find(|e| has(e, email)));
-        out.push(match known {
+        let known = directory.iter().find(|e| has(e, &f.email)).or_else(|| mine.iter().find(|e| has(e, &f.email)));
+        let entry = match known {
             Some(e) => e.clone(),
             None => Entry::new(
-                ContactCard { id: format!("freq:{email}"), name: name.clone(), emails: vec![email.clone()], ..Default::default() },
+                ContactCard { id: format!("freq:{}", f.email), name: f.name.clone(), emails: vec![f.email.clone()], ..Default::default() },
                 Kind::Correspondent,
             ),
-        });
+        };
+        out.push((entry, f.last));
     }
-    out
+    let email = |e: &Entry| e.card.emails.first().map(|m| m.to_lowercase()).unwrap_or_default();
+    match order {
+        Order::Frequency => {}
+        Order::Name => out.sort_by_cached_key(|(e, _)| (collate_key(&e.name(), ru), email(e))),
+        Order::Address => out.sort_by_cached_key(|(e, _)| email(e)),
+        Order::Recent => out.sort_by_key(|(_, last)| std::cmp::Reverse(*last)),
+    }
+    out.into_iter().map(|(e, _)| e).collect()
 }
 
 /// По имени (без регистра), затем по адресу.
 fn sort(entries: &mut [Entry]) {
     entries.sort_by_cached_key(|e| (normalize(&e.name()), e.card.emails.first().cloned()));
+}
+
+/// Пункт контекстного меню строки (T1-23): действия карточки правой панели.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum MenuItem {
+    Write,
+    Meet,
+    Copy,
+    Edit,
+    Delete,
+    AddMine,
+}
+
+impl MenuItem {
+    fn label(self) -> &'static str {
+        match self {
+            MenuItem::Write => "contacts-write",
+            MenuItem::Meet => "contacts-meet",
+            MenuItem::Copy => "contacts-copy",
+            MenuItem::Edit => "contacts-edit",
+            MenuItem::Delete => "contacts-delete",
+            MenuItem::AddMine => "contacts-add-mine",
+        }
+    }
+
+    fn glyph(self) -> char {
+        match self {
+            MenuItem::Write => g::MAIL,
+            MenuItem::Meet => g::CALENDAR,
+            MenuItem::Copy => g::COPY,
+            MenuItem::Edit => g::EDIT,
+            MenuItem::Delete => g::DELETE,
+            MenuItem::AddMine => g::ADD,
+        }
+    }
+
+    /// Команда реестра — клавиша справа.
+    fn command(self) -> &'static str {
+        match self {
+            MenuItem::Write => "contacts.write",
+            MenuItem::Meet => "contacts.meeting",
+            MenuItem::Copy => "contacts.copy_address",
+            MenuItem::Edit | MenuItem::AddMine => "contacts.edit",
+            MenuItem::Delete => "contacts.delete",
+        }
+    }
+
+    /// Пункт выбирает строку в панели: форма правки и строка «Удалить контакт?» живут в карточке справа. Письмо,
+    /// встреча и адрес — над строкой под курсором, панель остаётся на своей записи.
+    fn selects(self) -> bool {
+        matches!(self, MenuItem::Edit | MenuItem::Delete | MenuItem::AddMine)
+    }
+}
+
+/// Пункты меню строки группами, как кнопки карточки: с адресом — «Написать», «Встреча» (`meet` — у сервера есть
+/// календарь), «Копировать адрес»; свой контакт — «Изменить», «Удалить»; справочник и переписка — только чтение,
+/// «Добавить в мои контакты» (`personal` — у сервера есть личные контакты).
+pub(crate) fn menu_items(e: &Entry, personal: bool, meet: bool) -> Vec<Vec<MenuItem>> {
+    let mut groups = Vec::new();
+    if !e.card.emails.is_empty() {
+        let mut g = vec![MenuItem::Write];
+        if meet {
+            g.push(MenuItem::Meet);
+        }
+        g.push(MenuItem::Copy);
+        groups.push(g);
+    }
+    if personal {
+        groups.push(if e.kind == Kind::Contact { vec![MenuItem::Edit, MenuItem::Delete] } else { vec![MenuItem::AddMine] });
+    }
+    groups
+}
+
+/// Открытое контекстное меню строки: у точки окна, над записью `id`.
+struct RowMenu {
+    at: Point<Pixels>,
+    id: String,
+    groups: Vec<Vec<MenuItem>>,
+    cursor: usize,
+    focus: FocusHandle,
+    /// Фокус до меню — вернуть при закрытии.
+    before: Option<FocusHandle>,
+    focus_pending: bool,
+}
+
+impl RowMenu {
+    fn items(&self) -> impl Iterator<Item = MenuItem> + '_ {
+        self.groups.iter().flatten().copied()
+    }
 }
 
 /// Строка списка: буква-заголовок (буква, сколько) или контакт (индекс в источнике).
@@ -349,13 +497,18 @@ struct Today {
 }
 
 pub(crate) struct ContactsView {
+    /// Экран в фокусе (T1-D): выбранная строка — тоном акцента, иначе нейтральной заливкой.
+    pub(crate) focused: bool,
     live: bool,
     source: Source,
     mine: Vec<Entry>,
     directory: Vec<Entry>,
-    /// «Часто пишу»: (имя, адрес) из адресной книги по порядку и строки списка из них (S5-25).
-    frequent_src: Vec<(String, String)>,
+    /// «Часто пишу»: адресаты из адресной книги по частоте и строки списка из них (S5-25) в выбранном порядке (T1-24).
+    frequent_src: Vec<Frequent>,
     frequent: Vec<Entry>,
+    order: Order,
+    /// Открыт выбор порядка «Часто пишу».
+    order_menu: bool,
     /// Поиск — по всем трём источникам сразу: найденные группами (справочник, мои, переписка).
     pool: Vec<Entry>,
     /// Ждём контакты с сервера.
@@ -384,6 +537,8 @@ pub(crate) struct ContactsView {
     /// Мой адрес: «Внешний» у чужих доменов, заголовок источников.
     me: Option<String>,
     today: Today,
+    /// Контекстное меню строки (T1-23).
+    menu: Option<RowMenu>,
     /// Адреса, чьи подробности уже спрошены (`PersonDetails`): карточка спрашивает один раз.
     details_asked: std::collections::HashSet<String>,
     tz: TimeZone,
@@ -406,12 +561,15 @@ impl ContactsView {
             }
         });
         let mut this = Self {
+            focused: true,
             live: false,
             source: Source::Directory,
             mine: demo_mine(),
             directory: demo_directory(),
             frequent_src: Vec::new(),
             frequent: Vec::new(),
+            order: Order::default(),
+            order_menu: false,
             pool: Vec::new(),
             loading: false,
             loaded: false,
@@ -430,6 +588,7 @@ impl ContactsView {
             want_first: false,
             me: Some(postman_demo::ME.to_string()),
             today: Today::default(),
+            menu: None,
             details_asked: std::collections::HashSet::new(),
             tz: crate::prefs::get(cx).calendar.zone(),
             _subscriptions: vec![on_search],
@@ -486,7 +645,7 @@ impl ContactsView {
     }
 
     /// «Часто пишу» из адресной книги (экран — при открытии раздела и когда книга собрана).
-    pub(crate) fn set_frequent(&mut self, list: Vec<(String, String)>, cx: &mut Context<Self>) {
+    pub(crate) fn set_frequent(&mut self, list: Vec<Frequent>, cx: &mut Context<Self>) {
         if self.frequent_src != list {
             self.frequent_src = list;
             self.refilter(cx);
@@ -508,7 +667,10 @@ impl ContactsView {
     }
 
     fn selected_entry(&self) -> Option<&Entry> {
-        let id = self.selected.as_deref()?;
+        self.entry(self.selected.as_deref()?)
+    }
+
+    fn entry(&self, id: &str) -> Option<&Entry> {
         self.entries().iter().find(|e| e.card.id == id)
     }
 
@@ -527,7 +689,8 @@ impl ContactsView {
     }
 
     fn reshow(&mut self) {
-        self.frequent = frequent(&self.frequent_src, &self.directory, &self.mine);
+        let ru = !pets_i18n::current().lang().starts_with("en");
+        self.frequent = frequent(&self.frequent_src, &self.directory, &self.mine, self.order, ru);
         if self.searching() {
             // По всем трём источникам: справочник, мои, адресаты переписки (кого нет ни там, ни там).
             let groups: [(Source, Vec<Entry>); 3] = [
@@ -551,7 +714,7 @@ impl ContactsView {
         } else {
             self.pool.clear();
             self.shown = (0..self.entries().len()).collect();
-            // «Часто пишу» — по частоте, без букв.
+            // «Часто пишу» — в своём порядке, без букв.
             self.items = items(self.entries(), &self.shown, self.source != Source::Frequent);
         }
         self.list.reset(self.items.len());
@@ -675,8 +838,12 @@ impl ContactsView {
         self.search.update(cx, |s, cx| s.focus(window, cx));
     }
 
-    /// Esc: строка подтверждения, затем форма, затем поиск. `false` — сбрасывать было нечего.
+    /// Esc: меню строки, строка подтверждения, затем форма, затем поиск. `false` — сбрасывать было нечего.
     pub(crate) fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.menu.is_some() {
+            self.close_menu(window, cx);
+            return true;
+        }
         match self.mode {
             Mode::Confirm | Mode::Edit(_) => {
                 self.mode = Mode::View;
@@ -715,10 +882,14 @@ impl ContactsView {
         }
     }
 
-    /// Адрес выбранного: (имя, адрес).
-    fn selected_address(&self) -> Option<Address> {
-        let e = self.selected_entry()?;
+    /// Адрес записи: (имя, адрес).
+    fn address(&self, id: &str) -> Option<Address> {
+        let e = self.entry(id)?;
         e.card.emails.first().map(|m| Address::new(&e.card.name, m))
+    }
+
+    fn selected_address(&self) -> Option<Address> {
+        self.address(self.selected.as_deref()?)
     }
 
     pub(crate) fn write(&mut self, cx: &mut Context<Self>) {
@@ -735,9 +906,164 @@ impl ContactsView {
 
     pub(crate) fn copy_address(&mut self, cx: &mut Context<Self>) {
         if let Some(a) = self.selected_address() {
-            cx.write_to_clipboard(ClipboardItem::new_string(a.email.clone()));
-            cx.emit(ContactsAction::Toast(Toast::Info, tr!("contacts-copied", email = a.email)));
+            self.copy(a, cx);
         }
+    }
+
+    fn copy(&mut self, a: Address, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(a.email.clone()));
+        cx.emit(ContactsAction::Toast(Toast::Info, tr!("contacts-copied", email = a.email)));
+    }
+
+    // --- контекстное меню строки (T1-23) ---
+
+    /// Меню над записью `id` у точки окна `at` (правая кнопка; с клавиатуры — у строки).
+    fn open_menu(&mut self, id: String, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(e) = self.entry(&id) else { return };
+        let features = crate::features::get(cx);
+        let groups = menu_items(e, crate::features::available("contacts.new", features), crate::features::available("contacts.meeting", features));
+        if groups.is_empty() {
+            return;
+        }
+        let before = window.focused(cx);
+        self.menu = Some(RowMenu { at, id, groups, cursor: 0, focus: cx.focus_handle(), before, focus_pending: true });
+        cx.notify();
+    }
+
+    /// `contacts.context_menu` (Shift+F10, «Меню»): у выбранной строки.
+    pub(crate) fn context_menu_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.selected.clone() else { return };
+        let ix = self.items.iter().position(|it| matches!(it, Item::Row(i) if self.entries().get(*i).is_some_and(|e| e.card.id == id)));
+        let at = ix
+            .and_then(|ix| self.list.bounds_for_item(ix))
+            .map(|b| point(b.origin.x + px(140.), b.origin.y + px(ROW_H * 0.6)))
+            .unwrap_or_else(|| point(px(NAV_W + 140.), px(200.)));
+        self.open_menu(id, at, window, cx);
+    }
+
+    /// Снимки: меню у записи с адресом `email` (как правая кнопка по её строке).
+    pub(crate) fn screen_menu(&mut self, email: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let found = self.entries().iter().find(|e| e.card.emails.iter().any(|m| m.eq_ignore_ascii_case(email))).map(|e| e.card.id.clone());
+        let Some(id) = found else { return };
+        let ix = self.items.iter().position(|it| matches!(it, Item::Row(i) if self.entries().get(*i).is_some_and(|e| e.card.id == id)));
+        let at = ix
+            .and_then(|ix| self.list.bounds_for_item(ix))
+            .map(|b| point(b.origin.x + px(180.), b.origin.y + px(ROW_H * 0.6)))
+            .unwrap_or_else(|| point(px(NAV_W + 180.), px(260.)));
+        self.open_menu(id, at, window, cx);
+    }
+
+    pub(crate) fn menu_open(&self) -> bool {
+        self.menu.is_some()
+    }
+
+    fn close_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(m) = self.menu.take() {
+            if let Some(f) = m.before {
+                window.focus(&f, cx);
+            }
+            cx.notify();
+        }
+    }
+
+    /// Пункт выбран: письмо, встреча и адрес — над строкой меню, без смены записи в панели; правка и удаление —
+    /// в карточке этой записи.
+    fn choose(&mut self, it: MenuItem, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.menu.as_ref().map(|m| m.id.clone()) else { return };
+        self.close_menu(window, cx);
+        if it.selects() {
+            self.select(id.clone(), cx);
+        }
+        match it {
+            MenuItem::Write | MenuItem::Meet | MenuItem::Copy => {
+                let Some(a) = self.address(&id) else { return };
+                match it {
+                    MenuItem::Write => cx.emit(ContactsAction::Write(a)),
+                    MenuItem::Meet => cx.emit(ContactsAction::Meet(a)),
+                    _ => self.copy(a, cx),
+                }
+            }
+            MenuItem::Edit | MenuItem::AddMine => self.edit(window, cx),
+            MenuItem::Delete => self.ask_delete(cx),
+        }
+    }
+
+    /// Клавиши меню, как у меню письма: стрелки, Home/End, Enter и пробел — выполнить (Esc — `search.clear`, `escape`).
+    fn menu_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(m) = &mut self.menu else { return };
+        let n = m.items().count();
+        let chosen = m.items().nth(m.cursor);
+        match ev.keystroke.key.as_str() {
+            "down" => m.cursor = (m.cursor + 1) % n,
+            "up" => m.cursor = (m.cursor + n - 1) % n,
+            "home" => m.cursor = 0,
+            "end" => m.cursor = n - 1,
+            "enter" | "space" => {
+                if let Some(it) = chosen {
+                    self.choose(it, window, cx);
+                }
+            }
+            _ => return,
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    /// Меню поверх экрана: слой и строки — как у контекстного меню письма (`menu.rs`).
+    fn row_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let m = self.menu.as_mut()?;
+        if std::mem::take(&mut m.focus_pending) {
+            window.focus(&m.focus, cx);
+        }
+        let l = crate::roles::look(cx);
+        let m = self.menu.as_ref()?;
+        let mut col = div().flex().flex_col();
+        let mut i = 0usize;
+        for (k, group) in m.groups.iter().enumerate() {
+            if k > 0 {
+                col = col.child(crate::bulk::separator(&l));
+            }
+            for &it in group {
+                let n = i;
+                i += 1;
+                let key = crate::bulk::key_hint(it.command(), cx);
+                col = col.child(
+                    crate::bulk::menu_line(("contact-menu-item", n), &l)
+                        .when(m.cursor == n, |d| d.bg(l.hover()))
+                        .child(icon(it.glyph(), 16.).text_color(l.text2()))
+                        .child(div().flex_1().min_w_0().truncate().child(tr!(it.label())))
+                        .when(!key.is_empty(), |d| d.child(div().text_size(px(11.)).text_color(l.text3()).child(key)))
+                        .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                            if let Some(m) = &mut this.menu
+                                && *hovered
+                                && m.cursor != n
+                            {
+                                m.cursor = n;
+                                cx.notify();
+                            }
+                        }))
+                        .on_click(cx.listener(move |this, _, window, cx| this.choose(it, window, cx))),
+                );
+            }
+        }
+        let body = div()
+            .id("contact-menu")
+            .key_context("ContextMenu")
+            .track_focus(&m.focus)
+            .occlude()
+            .w(px(260.))
+            .p(px(4.))
+            .rounded(l.px(Metric::RadiusOverlay))
+            .border_1()
+            .border_color(l.c(pets_ui::theme::Role::StrokeCard))
+            .bg(l.c(pets_ui::theme::Role::LayerOverlay))
+            .shadow_lg()
+            .text_size(px(13.))
+            .text_color(l.text())
+            .child(col)
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| this.menu_key(ev, window, cx)))
+            .on_mouse_down_out(cx.listener(|this, _, window, cx| this.close_menu(window, cx)));
+        Some(deferred(anchored().position(m.at).snap_to_window_with_margin(px(8.)).child(body)).with_priority(2))
     }
 
     /// Сотрудник справочника → новый личный контакт (форма с его именем и адресом).
@@ -1038,11 +1364,15 @@ impl ContactsView {
             .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
             .child(div().text_size(px(12.)).text_color(l.text2()).child(summary))
             .child(div().flex_1())
-            .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!(match self.source {
-                _ if searching => "contacts-sort-match",
-                Source::Frequent => "contacts-sort-frequency",
-                _ => "contacts-sort-name",
-            })));
+            .child(if self.source == Source::Frequent && !searching {
+                self.order_picker(&l, cx).into_any_element()
+            } else {
+                div()
+                    .text_size(px(12.))
+                    .text_color(l.text2())
+                    .child(tr!(if searching { "contacts-sort-match" } else { "contacts-sort-name" }))
+                    .into_any_element()
+            });
         let list = list(self.list.clone(), cx.processor(|this, ix: usize, _window, cx| this.item(ix, cx))).size_full();
         let letters: Vec<(char, usize)> = self
             .items
@@ -1091,6 +1421,64 @@ impl ContactsView {
             )
     }
 
+    /// Выбор порядка «Часто пишу» (T1-24): подпись с ▾, по щелчку — меню из четырёх порядков.
+    fn order_picker(&self, l: &Look, cx: &mut Context<Self>) -> impl IntoElement {
+        let menu = self.order_menu.then(|| {
+            let items = Order::ALL.into_iter().map(|o| {
+                crate::composer::menu_item(ElementId::NamedInteger("freq-order".into(), o as u64), l, o == self.order)
+                    .child(tr!(o.key()))
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_order(o, cx)))
+            });
+            let menu =
+                crate::composer::menu_box("freq-order-menu", l).top(px(26.)).left_auto().right_0().min_w(px(180.)).children(items).on_mouse_down_out(
+                    cx.listener(|this, _, _, cx| {
+                        this.order_menu = false;
+                        cx.notify();
+                    }),
+                );
+            deferred(menu).with_priority(1)
+        });
+        div()
+            .relative()
+            .child(
+                div()
+                    .id("freq-order")
+                    .h(px(24.))
+                    .px(px(6.))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .rounded(l.px(Metric::RadiusControl))
+                    .text_size(px(12.))
+                    .text_color(l.text2())
+                    .cursor_pointer()
+                    .when(self.order_menu, |d| d.bg(l.pressed()))
+                    .hover(|d| d.bg(l.hover()))
+                    .child(tr!(self.order.key()))
+                    .child(icon(crate::chrome::glyph::CHEVRON_DOWN, 8.))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.order_menu = !this.order_menu;
+                        cx.notify();
+                    })),
+            )
+            .children(menu)
+    }
+
+    fn set_order(&mut self, order: Order, cx: &mut Context<Self>) {
+        self.order_menu = false;
+        if self.order != order {
+            self.order = order;
+            self.reshow();
+        }
+        cx.notify();
+    }
+
+    /// Снимок `contacts-frequent`: выбор порядка открыт.
+    pub(crate) fn open_order_menu(&mut self, cx: &mut Context<Self>) {
+        self.order_menu = true;
+        cx.notify();
+    }
+
     fn item(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let l = crate::roles::look(cx);
         match self.items.get(ix).copied() {
@@ -1127,7 +1515,7 @@ impl ContactsView {
                 .child(div().text_color(l.text2()).child(n.to_string()))
                 .into_any_element(),
             Some(Item::Row(i)) => match self.entries().get(i) {
-                Some(e) => row(ix, e, self.selected.as_deref() == Some(e.card.id.as_str()), self.external(e), &l, cx),
+                Some(e) => row(ix, e, self.selected.as_deref() == Some(e.card.id.as_str()), self.focused, self.external(e), &l, cx),
                 None => div().into_any_element(),
             },
             None => div().into_any_element(),
@@ -1492,7 +1880,7 @@ impl ContactsView {
 }
 
 /// Строка списка: кружок с буквами, имя, ниже — должность и организация или адрес (тип у переговорных).
-fn row(ix: usize, e: &Entry, selected: bool, external: bool, l: &Look, cx: &mut Context<ContactsView>) -> AnyElement {
+fn row(ix: usize, e: &Entry, selected: bool, focused: bool, external: bool, l: &Look, cx: &mut Context<ContactsView>) -> AnyElement {
     let name = e.name();
     let email = e.card.emails.first().filter(|m| !m.eq_ignore_ascii_case(&name)).cloned();
     let second = match (e.kind, e.card.title.as_str(), e.card.organization.as_str(), email) {
@@ -1505,6 +1893,7 @@ fn row(ix: usize, e: &Entry, selected: bool, external: bool, l: &Look, cx: &mut 
     };
     let second = if second.is_empty() { e.kind.label() } else { second };
     let id = e.card.id.clone();
+    let menu_id = id.clone();
     div()
         .id(("contact", ix))
         .w_full()
@@ -1518,8 +1907,9 @@ fn row(ix: usize, e: &Entry, selected: bool, external: bool, l: &Look, cx: &mut 
         .border_b_1()
         .border_color(l.border())
         .cursor_pointer()
-        .when(selected, |d| d.bg(l.selected()).child(div().absolute().left_0().top_0().bottom_0().w(px(3.)).bg(l.accent())))
-        .when(!selected, |d| d.hover(|d| d.bg(l.hover())))
+        // Как строка писем (T1-D): тон акцента в фокусе, нейтральная без; полоса — акцент или цвет подписей.
+        .when(selected, |d| d.bg(l.row_fill(focused)).child(div().absolute().left_0().top_0().bottom_0().w(px(3.)).bg(l.row_strip(focused))))
+        .when(!selected, |d| d.hover(|d| d.bg(l.row_hover())))
         .child(avatar(&name, 36., l))
         .child(
             div()
@@ -1534,11 +1924,20 @@ fn row(ix: usize, e: &Entry, selected: bool, external: bool, l: &Look, cx: &mut 
         .when(matches!(e.kind, Kind::Room | Kind::Resource), |d| d.child(icon(g::PIN, 12.).text_color(l.text2())))
         .when(external, |d| d.child(chip_outline(tr!("cal-external"), l)))
         .on_click(cx.listener(move |this, _, _, cx| this.select(id.clone(), cx)))
+        // Правая кнопка — меню действий карточки над этой строкой (T1-23); выбор в панели не меняется.
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                cx.stop_propagation();
+                this.open_menu(menu_id.clone(), ev.position, window, cx);
+            }),
+        )
         .into_any_element()
 }
 
 impl Render for ContactsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let menu = self.row_menu(window, cx);
         let l = crate::roles::look(cx);
         let pane = match &self.mode {
             Mode::Edit(f) => self.form_pane(f, cx),
@@ -1565,6 +1964,7 @@ impl Render for ContactsView {
             .child(self.nav(cx))
             .child(self.list_card(cx))
             .child(crate::mailer::card(&l).flex_1().child(pane))
+            .children(menu)
     }
 }
 
@@ -1769,6 +2169,9 @@ fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
     .on_action(cx.listener(|this, _: &contacts::CopyAddress, _, cx| {
         this.contacts.update(cx, |c, cx| c.copy_address(cx));
     }))
+    .on_action(cx.listener(|this, _: &contacts::ContextMenu, window, cx| {
+        this.contacts.update(cx, |c, cx| c.context_menu_key(window, cx));
+    }))
 }
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
@@ -1778,7 +2181,7 @@ const TEXTS: &[pets_i18n::Resource] = &[("ru", include_str!("../i18n/ru/contacts
 // Имя — область действий (`contacts::…`), как в id команд: так обработчики читаются и их находит `docs/PARITY.md`.
 #[allow(clippy::module_inception)]
 pub(crate) mod contacts {
-    gpui_kit::actions!(contacts, [New, Edit, Delete, Write, Meeting, CopyAddress]);
+    gpui_kit::actions!(contacts, [New, Edit, Delete, Write, Meeting, CopyAddress, ContextMenu]);
 }
 
 /// Команды части (`commands.rs`: контексты и `cmd`).
@@ -1792,6 +2195,8 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("contacts.write", &[], CONTACTS_ANY),
         cmd("contacts.meeting", &[], CONTACTS_ANY),
         cmd("contacts.copy_address", &[], CONTACTS_ANY),
+        // Меню строки (T1-23): как у письма — Shift+F10 и клавиша «Меню».
+        cmd("contacts.context_menu", &["shift-f10", "menu"], CONTACTS),
     ]
 };
 
@@ -1805,9 +2210,11 @@ pub(crate) mod scenes {
     pub(crate) const SCENES: &[Scene] = &[
         // Раздел «Контакты»: список и карточка первого контакта (S4-02).
         Scene::new("contacts", contacts, contacts_ready).live(),
+        // Контекстное меню строки (T1-23): правая кнопка по коллеге справочника, в панели — другая запись.
+        Scene::new("contacts-menu", menu, menu_ready).continues(),
         // Форма правки первого контакта (демо).
         Scene::new("contact-edit", edit, edit_ready).continues(),
-        // «Часто пишу» (S5-25): адресаты переписки по частоте, первая строка выбрана.
+        // «Часто пишу» (S5-25): адресаты переписки по частоте, первая строка выбрана, выбор порядка открыт (T1-24).
         Scene::new("contacts-frequent", frequent, frequent_ready).continues().wait(frequent_wait),
     ];
 
@@ -1831,7 +2238,24 @@ pub(crate) mod scenes {
         m.section == Section::Contacts && m.contacts.read(cx).ready()
     }
 
+    fn menu(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        // Демо — Петров Алексей (справочник); живой ящик — первая другая запись с адресом.
+        m.contacts.update(cx, |c, cx| {
+            let demo = c.entries().iter().find(|e| e.card.emails.iter().any(|m| m == "a.petrov@corp.example"));
+            let other = || c.entries().iter().filter(|e| Some(&e.card.id) != c.selected.as_ref()).find(|e| !e.card.emails.is_empty());
+            if let Some(email) = demo.or_else(other).and_then(|e| e.card.emails.first().cloned()) {
+                c.screen_menu(&email, window, cx);
+            }
+        });
+        Ok(())
+    }
+
+    fn menu_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.section == Section::Contacts && m.contacts.read(cx).menu_open()
+    }
+
     fn edit(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.contacts.update(cx, |c, cx| c.close_menu(window, cx));
         m.contacts.update(cx, |c, cx| c.edit_selected(window, cx));
         Ok(())
     }
@@ -1845,7 +2269,11 @@ pub(crate) mod scenes {
         m.contacts.update(cx, |c, cx| c.escape(window, cx));
         m.load_address_book(cx);
         m.contacts_frequent(cx);
-        m.contacts.update(cx, |c, cx| c.show_frequent(cx));
+        // Выбор порядка (T1-24) — открытым.
+        m.contacts.update(cx, |c, cx| {
+            c.show_frequent(cx);
+            c.open_order_menu(cx);
+        });
         Ok(())
     }
 
@@ -1864,7 +2292,14 @@ pub(crate) mod scenes {
 #[cfg(test)]
 mod tests {
     // Не `super::*`: из `gpui_kit::*` пришёл бы атрибут `test` gpui вместо встроенного.
-    use super::{ContactCard, Entry, FormError, FormText, Item, Kind, demo_directory, demo_mine, filter, frequent, items};
+    use super::{
+        ContactCard, Entry, FormError, FormText, Frequent, Item, Kind, MenuItem, Order, demo_directory, demo_mine, filter, frequent, items,
+        menu_items,
+    };
+
+    fn freq(name: &str, email: &str, last: i64) -> Frequent {
+        Frequent { name: name.into(), email: email.into(), last }
+    }
 
     fn names(entries: &[Entry], q: &str) -> Vec<String> {
         filter(entries, q).into_iter().map(|i| entries[i].card.name.clone()).collect()
@@ -1900,13 +2335,8 @@ mod tests {
         let friend = mine.iter().find(|e| !e.card.emails.is_empty()).unwrap();
         let ce = colleague.card.emails[0].to_uppercase();
         let fe = friend.card.emails[0].clone();
-        let list = vec![
-            ("Партнёр".to_string(), "partner@outside.example".to_string()),
-            (String::new(), ce.clone()),
-            (String::new(), fe.clone()),
-            (String::new(), ce.to_lowercase()),
-        ];
-        let f = frequent(&list, &dir, &mine);
+        let list = vec![freq("Партнёр", "partner@outside.example", 0), freq("", &ce, 0), freq("", &fe, 0), freq("", &ce.to_lowercase(), 0)];
+        let f = frequent(&list, &dir, &mine, Order::Frequency, true);
         assert_eq!(f.len(), 3, "один адрес — одна строка");
         assert_eq!(f[0].kind, Kind::Correspondent);
         assert_eq!(f[0].card.name, "Партнёр");
@@ -1916,6 +2346,48 @@ mod tests {
         assert!(filter(&f, "gfhn").contains(&0));
         assert!(filter(&f, "партн").contains(&0));
         assert!(!filter(&f, "gfhn").contains(&1), "сотрудник не подходит");
+    }
+
+    /// Меню строки (T1-23): у справочника — письмо, встреча, адрес и «Добавить в мои контакты» (только чтение); у
+    /// своего контакта — ещё «Изменить» и «Удалить»; без календаря — без встречи, без личных контактов — без правки.
+    /// Письмо, встреча и адрес выбранную запись панели не меняют.
+    #[test]
+    fn row_menu_items() {
+        let dir = demo_directory();
+        let colleague = dir.iter().find(|e| e.kind == Kind::Person && !e.card.emails.is_empty()).unwrap();
+        let mine = demo_mine();
+        let friend = mine.iter().find(|e| !e.card.emails.is_empty()).unwrap();
+        use MenuItem::*;
+        assert_eq!(menu_items(colleague, true, true), [vec![Write, Meet, Copy], vec![AddMine]]);
+        assert_eq!(menu_items(friend, true, true), [vec![Write, Meet, Copy], vec![Edit, Delete]]);
+        assert_eq!(menu_items(friend, false, false), [vec![Write, Copy]]);
+        let no_mail = Entry::new(ContactCard { id: "x".into(), name: "x".into(), ..Default::default() }, Kind::Contact);
+        assert_eq!(menu_items(&no_mail, true, true), [vec![Edit, Delete]]);
+        assert!([Write, Meet, Copy].iter().all(|it| !it.selects()), "панель остаётся на своей записи");
+        assert!([Edit, Delete, AddMine].iter().all(|it| it.selects()), "форма и подтверждение — в карточке строки");
+    }
+
+    /// Четыре порядка «Часто пишу» (T1-24) на одном наборе: частота — как дала адресная книга; имя — без регистра,
+    /// ё = е, буквы языка интерфейса раньше чужих; адрес; давность — сначала последняя переписка.
+    #[test]
+    fn frequent_orders() {
+        let list = vec![
+            freq("ёлкин Пётр", "petr@b.example", 300),
+            freq("Zoe", "zoe@a.example", 100),
+            freq("анна", "anna@c.example", 200),
+            freq("Егор", "egor@d.example", 400),
+        ];
+        let order = |o: Order, ru: bool| -> Vec<String> { frequent(&list, &[], &[], o, ru).into_iter().map(|e| e.card.emails[0].clone()).collect() };
+        assert_eq!(order(Order::Frequency, true), ["petr@b.example", "zoe@a.example", "anna@c.example", "egor@d.example"]);
+        // «Егор» < «ёлкин» (ё = е, «г» < «л»), кириллица — до латиницы.
+        assert_eq!(order(Order::Name, true), ["anna@c.example", "egor@d.example", "petr@b.example", "zoe@a.example"]);
+        assert_eq!(
+            order(Order::Name, false),
+            ["zoe@a.example", "anna@c.example", "egor@d.example", "petr@b.example"],
+            "английский — латиница раньше"
+        );
+        assert_eq!(order(Order::Address, true), ["anna@c.example", "egor@d.example", "petr@b.example", "zoe@a.example"]);
+        assert_eq!(order(Order::Recent, true), ["egor@d.example", "petr@b.example", "anna@c.example", "zoe@a.example"]);
     }
 
     /// Список с буквами: заголовок буквы с числом, «Ё» — с «Е»; при поиске букв нет.

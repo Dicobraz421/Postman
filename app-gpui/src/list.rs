@@ -99,6 +99,8 @@ impl FlagWriter {
 /// Список писем — отдельное view: при листании gpui раскладывает и рисует только его,
 /// остальные части экрана берутся из прошлого кадра (S1-06).
 pub(crate) struct MailList {
+    /// Окно в фокусе и фокус — у экрана почты (T1-D): выделенная строка — тоном акцента, иначе нейтральной.
+    pub(crate) focused: bool,
     pub(crate) cache: Cache,
     pub(crate) flags: FlagWriter,
     pub(crate) mailbox: Option<String>,
@@ -480,6 +482,7 @@ impl MailList {
             summary: None,
             summary_gen: 0,
             menu_row: None,
+            focused: true,
             bulk_menu: None,
             offline: None,
             offline_hidden: false,
@@ -1282,6 +1285,7 @@ impl Render for MailList {
                                 boxes,
                                 menu: this.menu_row == Some(i),
                                 thread: this.thread_mark(i),
+                                focused: this.focused,
                             };
                             match state.thread {
                                 crate::outline::Mark::Child { .. } => crate::outline::child_row(i, &r, labels, state, &l, cx),
@@ -1410,6 +1414,8 @@ pub(crate) struct RowState {
     pub(crate) boxes: bool,
     pub(crate) menu: bool,
     pub(crate) thread: crate::outline::Mark,
+    /// Список в фокусе (T1-D).
+    pub(crate) focused: bool,
 }
 
 /// Группа наведения строки: флажок на месте аватара по наведению (S5-08).
@@ -1535,8 +1541,9 @@ pub(crate) fn list_row(
         if encrypted { p.child(tr!("smime-list-preview")) } else { p.child(crate::search::marked(&r.preview, marks, l)) }
     });
     let lit = state.open || state.picked;
-    // Выделенная строка — нейтральная подложка «выбранное» и полоса акцента слева (решение владельца 2026-10-22).
-    let stripe = if lit { Some(l.accent()) } else { stripe };
+    // Выделенная строка (T1-D): в фокусе — тон акцента и полоса акцента, без фокуса — нейтральная заливка и полоса
+    // цвета подписей; наведение — тон акцента, на выделенной ничего не меняет.
+    let stripe = if lit { Some(l.row_strip(state.focused)) } else { stripe };
     let open_head = state.thread.open_head();
     div()
         .id(i)
@@ -1550,8 +1557,8 @@ pub(crate) fn list_row(
         // Развёрнутая беседа — без черты снизу, к письмам под ней — линия (макет «В списке, как Outlook»).
         .when(!open_head, |d| d.border_b_1())
         .border_color(l.border())
-        .when(lit, |d| d.bg(l.selected()))
-        .when(!lit, |d| d.hover(|d| d.bg(l.hover())))
+        .when(lit, |d| d.bg(l.row_fill(state.focused)))
+        .when(!lit, |d| d.hover(|d| d.bg(l.row_hover())))
         // Строка под контекстным меню — с рамкой акцента (макет «Выделение»).
         .when(state.menu, |d| d.border_1().border_color(l.accent_text()))
         .cursor_pointer()

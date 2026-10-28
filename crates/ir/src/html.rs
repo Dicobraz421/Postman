@@ -420,7 +420,8 @@ impl Builder {
         let src = attr(node, "src").unwrap_or_default();
         let src = src.trim();
         if let Some(cid) = src.get(..4).filter(|p| p.eq_ignore_ascii_case("cid:")).map(|_| &src[4..]) {
-            sink.inline(Inline::Image { cid: cid.to_string(), alt }, ctx.align);
+            let (width, height) = image_size(node);
+            sink.inline(Inline::Image { cid: cid.to_string(), alt, width, height }, ctx.align);
             return;
         }
         if !src.is_empty() {
@@ -430,6 +431,19 @@ impl Builder {
             sink.text(&format!("[{alt}]"), ctx);
         }
     }
+}
+
+/// Задуманный размер картинки (T1-10б): атрибуты `width`/`height`, поверх них — `style` (CSS главнее
+/// атрибутов-подсказок, как в браузере).
+fn image_size(node: &Handle) -> (Option<u32>, Option<u32>) {
+    let mut w = attr(node, "width").and_then(|v| style::attr_px(&v));
+    let mut h = attr(node, "height").and_then(|v| style::attr_px(&v));
+    if let Some(css) = attr(node, "style") {
+        let (cw, ch) = style::image_size(&css);
+        w = cw.or(w);
+        h = ch.or(h);
+    }
+    (w, h)
 }
 
 /// Разметка цитаты почтовыми клиентами: класс, id или `type=cite`.
@@ -589,7 +603,27 @@ mod tests {
         let Block::Paragraph { content, .. } = &d.blocks[0] else { panic!() };
         assert_eq!(content[0], text("клик "));
         assert!(matches!(&content[1], Inline::Link { suspicious: true, .. }));
-        assert!(matches!(&content[3], Inline::Image { cid, .. } if cid == "logo@x"));
+        assert!(matches!(&content[3], Inline::Image { cid, width: None, height: None, .. } if cid == "logo@x"));
+    }
+
+    /// T1-10б: размер из атрибутов и `style`; CSS главнее атрибутов; мусор, проценты и огромное — не размер.
+    #[test]
+    fn image_sizes() {
+        let size = |html: &str| {
+            let d = from_html(html);
+            let Block::Paragraph { content, .. } = &d.blocks[0] else { panic!("{d:?}") };
+            let Inline::Image { width, height, .. } = &content[0] else { panic!("{content:?}") };
+            (*width, *height)
+        };
+        assert_eq!(size(r#"<p><img src="cid:a" width="120" height=40></p>"#), (Some(120), Some(40)));
+        assert_eq!(size(r#"<p><img src="cid:a" width="120px"></p>"#), (Some(120), None));
+        // Outlook: атрибуты в px и они же в дюймах в style.
+        assert_eq!(size(r#"<p><img src="cid:a" width=200 height=80 style='width:1.25in;height:.4166in'></p>"#), (Some(120), Some(40)));
+        assert_eq!(size(r#"<p><img src="cid:a" style="height: 30pt !important; WIDTH: 90PX"></p>"#), (Some(90), Some(40)));
+        assert_eq!(size(r#"<p><img src="cid:a" width="50%" height="0"></p>"#), (None, None));
+        assert_eq!(size(r#"<p><img src="cid:a" width="999999" height="-5" style="width:auto"></p>"#), (None, None));
+        assert_eq!(size(r#"<p><img src="cid:a" width="x" height="NaN" style="width: 2em; height: 1e9px"></p>"#), (None, None));
+        assert_eq!(size(r#"<p><img src="cid:a" width="12.6"></p>"#), (Some(13), None));
     }
 
     #[test]

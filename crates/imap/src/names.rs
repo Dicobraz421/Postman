@@ -163,6 +163,11 @@ pub fn create_command(path: &str) -> String {
     format!("CREATE {}", crate::quote(path))
 }
 
+/// `DELETE` папки (RFC 3501 §6.3.4).
+pub fn delete_command(path: &str) -> String {
+    format!("DELETE {}", crate::quote(path))
+}
+
 /// `RENAME` папки (RFC 3501 §6.3.5): переименование и перенос — новый путь.
 pub fn rename_command(from: &str, to: &str) -> String {
     format!("RENAME {} {}", crate::quote(from), crate::quote(to))
@@ -216,7 +221,9 @@ pub fn has_attachment(b: &BodyStructure<'_>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Attr, Role, create_command, decode_header, decode_utf7, encode_utf7, folder, folder_path, rename_command, role_by_name};
+    use super::{
+        Attr, Role, create_command, decode_header, decode_utf7, delete_command, encode_utf7, folder, folder_path, rename_command, role_by_name,
+    };
 
     #[test]
     fn utf7_names() {
@@ -249,6 +256,7 @@ mod tests {
         let moved = folder_path(Some("Archive"), "Проект", Some("/")).unwrap();
         assert_eq!(rename_command(&path, &moved), format!("RENAME \"{path}\" \"{moved}\""));
         assert_eq!(rename_command("A \"q\"", "B"), r#"RENAME "A \"q\"" "B""#, "кавычки экранированы");
+        assert_eq!(delete_command(&moved), format!("DELETE \"{moved}\""));
         assert_eq!(folder_path(Some("INBOX"), "a.b", Some(".")), None, "разделитель в имени");
         assert_eq!(folder_path(None, "  ", Some(".")), None, "пустое имя");
         assert_eq!(folder_path(Some("INBOX"), "x", None), None, "без разделителя — только верхний уровень");

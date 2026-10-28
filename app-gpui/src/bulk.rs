@@ -56,6 +56,8 @@ pub(crate) enum Ask {
     Archive,
     Trash,
     Phishing,
+    /// Переслать вложениями (T1-17).
+    ForwardAttached,
     /// Панель выбора срока (S5-04) для выделения.
     Lifecycle(Kind),
     /// Снять выделение.
@@ -424,6 +426,10 @@ impl MailList {
                 d.child(button("bulk-cat", glyph::TAG, tr!("bulk-category-plain"), open == Some(Drop::Category), true).on_click(drop(Drop::Category)))
                     .child(button("bulk-due", glyph::CLOCK, tr!("bulk-due-plain"), false, true).on_click(ask(Ask::Lifecycle(Kind::Due))))
             })
+            // Переслать вложениями (T1-17) — от двух писем; одно — меню строки.
+            .when(n >= 2, |d| {
+                d.child(button("bulk-forward", glyph::FORWARD, tr!("bulk-forward-attached"), false, false).on_click(ask(Ask::ForwardAttached)))
+            })
             .child(button("bulk-move", glyph::MOVE, tr!("bulk-move-plain"), open == Some(Drop::Folder), true).on_click(drop(Drop::Folder)))
             .child(button("bulk-archive", glyph::ARCHIVE, tr!("bulk-archive"), false, false).on_click(ask(Ask::Archive)))
             .child(button("bulk-delete", glyph::DELETE, tr!("bulk-delete"), false, false).on_click(ask(Ask::Trash)));
@@ -674,6 +680,7 @@ impl Mailer {
             }
             Ask::Lifecycle(kind) => self.open_picker_for(kind, ids, cx),
             Ask::Phishing => self.report_phishing(ids, cx),
+            Ask::ForwardAttached => self.forward_attached(ids, cx),
             other => self.run_bulk(ids, other, cx),
         }
     }
@@ -698,7 +705,7 @@ impl Mailer {
                 Ask::Move(to) => Act::Move { to: to.clone() },
                 Ask::Trash => Act::Trash,
                 Ask::Phishing => Act::Phishing,
-                Ask::Archive | Ask::Lifecycle(_) | Ask::Clear => Act::Archive,
+                Ask::Archive | Ask::Lifecycle(_) | Ask::Clear | Ask::ForwardAttached => Act::Archive,
             };
             let plan = bulk::plan(&rows, &act, &mailboxes, |r, need| {
                 crate::list::may(&rights, r, |x| match need {
@@ -1141,6 +1148,8 @@ pub(crate) mod scenes {
         Scene::new("context-menu", menu, menu_ready).continues(),
         // «Сообщить о фишинге»: тост «Отменить» после сообщения и меню у другого письма на пункте с красной маской.
         Scene::new("phishing", phishing, menu_ready).continues(),
+        // «Переслать вложениями» (T1-17): три письма выделения — новое письмо вкладкой с тремя вложениями .eml.
+        Scene::new("forward-attached", forward_attached, forward_attached_ready),
     ];
 
     fn bulk(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
@@ -1175,6 +1184,23 @@ pub(crate) mod scenes {
 
     fn menu_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
         m.menu.is_some() && screens::rows_loaded(m.list.read(cx))
+    }
+
+    fn forward_attached(s: &Scene, m: &mut Mailer, w: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.close_menu(cx);
+        bulk(s, m, w, cx)?;
+        screens::remember_composer(m, cx);
+        let ids = m.targets(cx);
+        m.ask(ids, crate::bulk::Ask::ForwardAttached, cx);
+        Ok(())
+    }
+
+    fn forward_attached_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let before = screens::composer_before(m);
+        screens::compose_tab(m).is_some_and(|c| {
+            let c = c.read(cx);
+            Some(c.id) != before && c.drawn() && c.model.attachments().count() == 3
+        })
     }
 
     fn phishing(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {

@@ -568,6 +568,7 @@ impl Mailer {
             }
         }
         for id in plan.bodies {
+            self.forward_body_ready(&id, cx);
             self.load_body(id, false, cx);
         }
         if let Some(x) = &self.live.extractor
