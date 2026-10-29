@@ -1148,6 +1148,14 @@ async fn handle(
             let people = postman_core::contacts::directory(client.directory(DIRECTORY_LIMIT).await?.into_iter().map(Principal::from_jmap).collect());
             notify(Event::directory_slice(account, &people, offset, max));
         }
+        // Перенос между учётками (S8-08): шаги пути — в S8-13; пока отказ, задание не ждёт.
+        cmd @ (Command::MoveLetters { .. }
+        | Command::FetchRaw { .. }
+        | Command::Import { .. }
+        | Command::ServerCopy { .. }
+        | Command::Migration(_)) => {
+            cmd.unsupported().into_iter().for_each(notify);
+        }
     }
     Ok(())
 }

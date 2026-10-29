@@ -17,7 +17,7 @@ use crate::categories;
 use crate::invite::Delivery;
 use crate::lifecycle;
 use crate::link::{Connection, Link};
-use crate::model::{Auth, ContactCard, Filter, Principal};
+use crate::model::{Auth, ContactCard, Filter, FolderId, ImportError, JobId, LetterId, MigrationRequest, MigrationState, Principal, Remote};
 pub use crate::model::{Error, ErrorKind, Release};
 use crate::schedule::Meeting;
 use crate::send_later::Scheduled;
@@ -272,6 +272,37 @@ pub enum Command {
         scheduled: Vec<Scheduled>,
         ticket: u64,
     },
+    /// Перенести письма в папку (ADR 0006 п. 3–4) — в поток ядра: перенос в базе одной транзакцией, затем ядро решает
+    /// само: письма своей учётки цели — перенос на её сервере, прочие — задание переноса (`Event::Migration`).
+    MoveLetters {
+        ids: Vec<LetterId>,
+        to: FolderId,
+    },
+    /// Письмо целиком (как его отдаёт сервер) — у учётки письма → `Event::Raw`. Письмо «На этом компьютере» — из
+    /// базы, без сети.
+    FetchRaw {
+        letter: LetterId,
+    },
+    /// Выгрузить письмо (содержимое — в базе) в папку `folder` учётки цели с ключевыми словами (и `$seen`,
+    /// `$flagged`) и датой получения (Unix-секунды) → `Event::Imported` или `Event::ImportFailed`. Путь без выгрузки
+    /// ([`Features::import`](crate::model::Features::import)) отвечает отказом.
+    Import {
+        job: JobId,
+        letter: LetterId,
+        folder: FolderId,
+        keywords: Vec<String>,
+        received_at: i64,
+    },
+    /// Сервер сам переносит письма в папку `to` другого аккаунта той же сессии, без выгрузки
+    /// ([`Features::server_copy`](crate::model::Features::server_copy)) → по письму `Event::Imported` или
+    /// `Event::ImportFailed`.
+    ServerCopy {
+        job: JobId,
+        letters: Vec<LetterId>,
+        to: FolderId,
+    },
+    /// Ответ, пауза, продолжение, отмена задания переноса — в поток ядра → `Event::Migration`.
+    Migration(MigrationRequest),
 }
 
 impl Command {
@@ -312,8 +343,55 @@ fn profile_of_key(key: &str) -> Option<String> {
     postman_cache::profile_of(postman_cache::account_of(key)).map(str::to_owned)
 }
 
+/// Чьё письмо или папка формата 6 (ADR 0006 п. 1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Home {
+    /// Учётки: ключ — аккаунт ключей кэша (основной — пустая строка), как у `postman_cache::Owner::Account`.
+    Account(String),
+    /// «На этом компьютере»: без сервера.
+    Local,
+}
+
+/// Откуда маршрут знает, чьи письма и папки: письмо — по действующей связи с сервером (`letter_remote`), без неё —
+/// [`Home::Local`]; папка — по владельцу. Даёт хранилище формата 6.
+pub trait Homes {
+    fn letter(&self, id: LetterId) -> Home;
+    fn folder(&self, id: FolderId) -> Home;
+}
+
+/// Куда идёт команда в профиле с письмами формата 6 ([`Command::routes_by`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Route {
+    /// Поток ядра, без сети: письма и папки «На этом компьютере», перенос между учётками и его задания.
+    Core,
+    /// Поток синхронизации учётной записи.
+    Sync(Target),
+}
+
 impl Command {
-    /// Куда идёт команда и в каком виде: правки писем разных учётных записей — по команде на учётную запись.
+    /// Маршрут с письмами и папками формата 6: команда над [`LetterId`] — по учётке письма (`FetchRaw`), выгрузка —
+    /// по учётке папки цели (`Import`, `ServerCopy`); «На этом компьютере», перенос (`MoveLetters`) и задания
+    /// (`Migration`) — в ядро. Прочие команды — по ключам кэша, как [`Command::routes`].
+    pub fn routes_by(self, homes: &dyn Homes) -> Vec<(Route, Command)> {
+        let home = |h: Home| match h {
+            Home::Local => Route::Core,
+            Home::Account(a) => {
+                Route::Sync(Target::Profile(postman_cache::profile_of(Some(a.as_str()).filter(|a| !a.is_empty())).map(str::to_owned)))
+            }
+        };
+        let route = match &self {
+            Command::FetchRaw { letter } => home(homes.letter(*letter)),
+            Command::Import { folder, .. } => home(homes.folder(*folder)),
+            Command::ServerCopy { to, .. } => home(homes.folder(*to)),
+            Command::MoveLetters { .. } | Command::Migration(_) => Route::Core,
+            _ => return self.routes().into_iter().map(|(t, c)| (Route::Sync(t), c)).collect(),
+        };
+        vec![(route, self)]
+    }
+
+    /// Куда идёт команда и в каком виде: правки писем разных учётных записей — по команде на учётную запись. По
+    /// ключам кэша (префикс учётной записи); команды над [`LetterId`] здесь — в основную, их маршрут —
+    /// [`Command::routes_by`].
     pub fn routes(self) -> Vec<(Target, Command)> {
         let one = |key: &str| Target::Profile(profile_of_key(key));
         let scope = |mailbox: &Option<String>| mailbox.as_deref().map_or(Target::All, one);
@@ -680,6 +758,31 @@ pub enum Event {
         too_late: bool,
         error: Option<String>,
     },
+    /// Письмо целиком (`Command::FetchRaw`); ошибка — ответ сервера или сети.
+    Raw {
+        letter: LetterId,
+        data: std::result::Result<Arc<Vec<u8>>, String>,
+    },
+    /// Сервер цели принял письмо задания (`Command::Import`, `Command::ServerCopy`): `remote` — где оно у него.
+    Imported {
+        job: JobId,
+        letter: LetterId,
+        remote: Remote,
+    },
+    /// Сервер цели письмо не принял.
+    ImportFailed {
+        job: JobId,
+        letter: LetterId,
+        error: ImportError,
+    },
+    /// Ход задания переноса: писем готово из `total`, байт выгружено, состояние.
+    Migration {
+        job: JobId,
+        done: u64,
+        total: u64,
+        bytes: u64,
+        state: MigrationState,
+    },
     /// Папку не создать, не переименовать или не перенести (T1-04б). `mailbox` — папка команды, у `CreateFolder` —
     /// родитель (`None` — верхний уровень); `error` — ответ сервера или отказ ядра ([`FOLDER_UNSUPPORTED`],
     /// [`FOLDER_INTO_ITSELF`], [`FOLDER_OTHER_ACCOUNT`]: текст у интерфейса).
@@ -690,7 +793,7 @@ pub enum Event {
     Error(SyncError),
 }
 
-/// Путь не умеет команду над папками ([`Command::unsupported`]).
+/// Путь не умеет команду ([`Command::unsupported`]): над папками, письмо целиком, выгрузку.
 pub const FOLDER_UNSUPPORTED: &str = "not supported";
 /// Перенос папки в саму себя или в свою подпапку ([`admit`]).
 pub const FOLDER_INTO_ITSELF: &str = "folder cannot be moved into itself or its subfolder";
@@ -698,16 +801,22 @@ pub const FOLDER_INTO_ITSELF: &str = "folder cannot be moved into itself or its 
 pub const FOLDER_OTHER_ACCOUNT: &str = "folder cannot be moved to another account";
 
 impl Command {
-    /// Ответ пути, который команду не умеет, — чтобы интерфейс не ждал: у команд над папками — `FolderFailed`
-    /// «not supported», у страницы справочника — пустая страница. У прочих — `None` (путь пишет в журнал).
-    pub fn unsupported(&self) -> Option<Event> {
+    /// Ответ пути, который команду не умеет, — чтобы интерфейс и задание переноса не ждали: у команд над папками —
+    /// `FolderFailed` «not supported», у страницы справочника — пустая страница, у письма целиком и выгрузки — отказ
+    /// по письму. У прочих — пусто (путь пишет в журнал).
+    pub fn unsupported(&self) -> Vec<Event> {
+        let not = || FOLDER_UNSUPPORTED.to_owned();
+        let failed = |job: JobId, letter: LetterId| Event::ImportFailed { job, letter, error: ImportError::Rejected(not()) };
         let mailbox = match self {
             Command::CreateFolder { parent, .. } => parent.clone(),
             Command::RenameFolder { mailbox, .. } | Command::MoveFolder { mailbox, .. } => Some(mailbox.clone()),
-            Command::DirectoryPage { account, offset, .. } => return Some(Event::no_directory(account.clone(), *offset)),
-            _ => return None,
+            Command::DirectoryPage { account, offset, .. } => return vec![Event::no_directory(account.clone(), *offset)],
+            Command::FetchRaw { letter } => return vec![Event::Raw { letter: *letter, data: Err(not()) }],
+            Command::Import { job, letter, .. } => return vec![failed(*job, *letter)],
+            Command::ServerCopy { job, letters, .. } => return letters.iter().map(|l| failed(*job, *l)).collect(),
+            _ => return Vec::new(),
         };
-        Some(Event::FolderFailed { mailbox, error: FOLDER_UNSUPPORTED.into() })
+        vec![Event::FolderFailed { mailbox, error: not() }]
     }
 }
 
@@ -982,9 +1091,9 @@ mod tests {
         assert!(Command::MoveFolder { mailbox: "f".into(), parent: None }.for_each_account().is_none());
         // Путь без папок отвечает отказом, команда не теряется.
         let no = Command::RenameFolder { mailbox: "@2/f".into(), name: "x".into() }.unsupported();
-        assert!(matches!(no, Some(Event::FolderFailed { mailbox: Some(m), error }) if m == "@2/f" && error == FOLDER_UNSUPPORTED));
-        assert!(matches!(create(None, None).unsupported(), Some(Event::FolderFailed { mailbox: None, .. })));
-        assert!(Command::Contacts.unsupported().is_none());
+        assert!(matches!(&no[..], [Event::FolderFailed { mailbox: Some(m), error }] if m == "@2/f" && error == FOLDER_UNSUPPORTED));
+        assert!(matches!(&create(None, None).unsupported()[..], [Event::FolderFailed { mailbox: None, .. }]));
+        assert!(Command::Contacts.unsupported().is_empty());
     }
 
     /// Перенос папки в саму себя, в подпапку или в другой аккаунт — отказ ядра, плагин команды не получает; прочее —
@@ -1039,6 +1148,71 @@ mod tests {
         assert!(matches!(body, Some(Command::Body(_))) && !read.get());
     }
 
+    /// Письма формата 6 (S8-08): письмо — по учётке его связи с сервером, «На этом компьютере» — в ядро; выгрузка — в
+    /// поток учётки цели; перенос и задания — в ядро; прочие команды — по ключам, как раньше.
+    #[test]
+    fn letters_route_by_their_account() {
+        struct Table;
+        impl Homes for Table {
+            fn letter(&self, id: LetterId) -> Home {
+                match id.0 {
+                    1 => Home::Local,
+                    2 => Home::Account("@2".into()),
+                    3 => Home::Account(String::new()),
+                    _ => Home::Account("@2.shared".into()),
+                }
+            }
+            fn folder(&self, id: FolderId) -> Home {
+                match id.0 {
+                    10 => Home::Local,
+                    _ => Home::Account("@3".into()),
+                }
+            }
+        }
+        let route = |c: Command| c.routes_by(&Table).into_iter().map(|(r, _)| r).collect::<Vec<_>>();
+        let sync = |s: Option<&str>| Route::Sync(Target::Profile(s.map(str::to_owned)));
+        let raw = |n: u64| Command::FetchRaw { letter: LetterId(n) };
+        assert_eq!(route(raw(1)), [Route::Core], "письмо «На этом компьютере» — без сети");
+        assert_eq!(route(raw(2)), [sync(Some("@2"))]);
+        assert_eq!(route(raw(3)), [sync(None)], "основная учётка");
+        assert_eq!(route(raw(4)), [sync(Some("@2"))], "общий ящик учётки @2");
+        let import = |folder: u64| Command::Import { job: JobId(1), letter: LetterId(2), folder: FolderId(folder), keywords: vec![], received_at: 0 };
+        assert_eq!(route(import(11)), [sync(Some("@3"))], "выгрузка — в поток цели, а не источника");
+        let copy = Command::ServerCopy { job: JobId(1), letters: vec![LetterId(2), LetterId(3)], to: FolderId(11) };
+        assert_eq!(route(copy), [sync(Some("@3"))]);
+        assert_eq!(route(Command::MoveLetters { ids: vec![LetterId(2)], to: FolderId(11) }), [Route::Core]);
+        assert_eq!(route(Command::MoveLetters { ids: vec![LetterId(1)], to: FolderId(10) }), [Route::Core]);
+        assert_eq!(route(Command::Migration(MigrationRequest::Pause { job: JobId(1) })), [Route::Core]);
+        assert_eq!(route(Command::Body("@2/e1".into())), [sync(Some("@2"))], "прежние команды — по ключам");
+        assert_eq!(route(Command::Search { query: "q".into(), mailbox: None, ticket: 1 }), [Route::Sync(Target::All)]);
+        let split = Command::SetKeywords { ids: vec!["a".into(), "@2/b".into()], add: vec![], remove: vec![] };
+        assert_eq!(route(split), [sync(None), sync(Some("@2"))]);
+        for c in [raw(2), import(11), Command::Migration(MigrationRequest::Resume { job: JobId(1) })] {
+            assert!(c.replayable().is_none() && c.for_each_account().is_none(), "задание переноса повторяет само");
+        }
+    }
+
+    /// Путь без выгрузки отвечает отказом по каждому письму: задание не ждёт.
+    #[test]
+    fn unsupported_transfer_answers_per_letter() {
+        let failed = |events: Vec<Event>| {
+            events
+                .into_iter()
+                .map(|e| match e {
+                    Event::ImportFailed { job, letter, error: ImportError::Rejected(r) } if r == FOLDER_UNSUPPORTED => (job.0, letter.0),
+                    _ => unreachable!(),
+                })
+                .collect::<Vec<_>>()
+        };
+        let import = Command::Import { job: JobId(5), letter: LetterId(2), folder: FolderId(9), keywords: vec![], received_at: 0 };
+        assert_eq!(failed(import.unsupported()), [(5, 2)]);
+        let copy = Command::ServerCopy { job: JobId(5), letters: vec![LetterId(2), LetterId(3)], to: FolderId(9) };
+        assert_eq!(failed(copy.unsupported()), [(5, 2), (5, 3)]);
+        let raw = Command::FetchRaw { letter: LetterId(4) }.unsupported();
+        assert!(matches!(&raw[..], [Event::Raw { letter: LetterId(4), data: Err(_) }]));
+        assert!(Command::MoveLetters { ids: vec![LetterId(1)], to: FolderId(1) }.unsupported().is_empty());
+    }
+
     /// Справочник по страницам (T1-25б): команда — в свою учётную запись; JMAP отвечает срезом загруженного, путь без
     /// справочника — пустой страницей.
     #[test]
@@ -1058,7 +1232,7 @@ mod tests {
         assert_eq!(ids(Event::directory_slice(None, &all, 0, 2)), (0, vec!["0".into(), "1".into()], Some(5), false));
         assert_eq!(ids(Event::directory_slice(None, &all, 4, 2)), (4, vec!["4".into()], Some(5), false));
         assert_eq!(ids(Event::directory_slice(None, &all, 9, 2)), (9, vec![], Some(5), false));
-        let none = page(Some("@2")).unsupported().unwrap();
+        let none = page(Some("@2")).unsupported().pop().unwrap();
         assert!(matches!(&none, Event::DirectoryPage { account: Some(a), .. } if a == "@2"));
         assert_eq!(ids(none), (0, vec![], Some(0), false));
     }
