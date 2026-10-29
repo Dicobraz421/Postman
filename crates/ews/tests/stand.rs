@@ -562,6 +562,38 @@ fn ews_mail_draft() {
     });
 }
 
+/// Выгрузка в папку (S8-11) [проверить на 2013]: два письма пачкой во «Входящие» — с датой
+/// получения из письма, прочитано и флаг; поиск по `Message-ID`. Уборка — по метке в теме.
+#[test]
+#[ignore = "боевой Exchange: S7 «Проверка на боевом Exchange»"]
+fn ews_mail_upload() {
+    rt().block_on(async {
+        let a = first();
+        let tag = tag();
+        guarded(&tag, &[&a], async {
+            let mut c = client(&a).await;
+            let (one, two) = (letter(&a.email, &format!("{tag} upload 1")), letter(&a.email, &format!("{tag} upload 2")));
+            let received = 1_792_240_200; // 2026-10-17 12:30:00 UTC
+            let letters = [
+                postman_ews::Upload { mime: &one, received_at: received, is_read: true, flagged: true },
+                postman_ews::Upload { mime: &two, received_at: received - 86_400, is_read: false, flagged: false },
+            ];
+            let inbox = FolderRef::WellKnown(WellKnown::Inbox);
+            let ids: Vec<_> = c.upload_mail(&inbox, &letters).await.unwrap().into_iter().map(|r| r.unwrap()).collect();
+            assert_eq!(ids.len(), 2);
+            let h = c.mail_headers(&ids).await.unwrap();
+            assert_eq!(h.len(), 2);
+            assert_eq!((h[0].received_at, h[0].is_read, h[0].flagged), (received, true, true), "дата, прочитано, флаг");
+            assert_eq!((h[1].received_at, h[1].is_read, h[1].flagged), (received - 86_400, false, false));
+            let message_id = String::from_utf8_lossy(&one).lines().find_map(|l| l.strip_prefix("Message-ID: ").map(str::to_owned)).unwrap();
+            let found = c.find_message_id(&inbox, &message_id).await.unwrap();
+            assert_eq!(found.iter().map(|i| &i.id).collect::<Vec<_>>(), [&ids[0].id], "по Message-ID — то самое письмо");
+            println!("выгрузка: 2 письма, дата и флаги на месте, поиск по Message-ID");
+        })
+        .await;
+    });
+}
+
 /// Папка: создать в корне ящика → переименовать → перенести во «Входящие» → удалить насовсем (T1-04а). Имя — с
 /// меткой прогона; папка удаляется и при падении теста.
 #[test]

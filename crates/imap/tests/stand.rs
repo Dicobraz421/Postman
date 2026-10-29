@@ -177,3 +177,32 @@ fn imap_folder_create_rename_move_delete() {
         println!("папки IMAP: разделитель {d:?}, созданы, переименованы, перенесены, удалены");
     });
 }
+
+/// Выгрузка (S8-11) [проверить на 1.0]: `APPEND` с флагами и датой получения, UID нового письма (`APPENDUID`, без
+/// UIDPLUS — поиск по `Message-ID`), повтор находится по `Message-ID`; квота папки; уборка.
+#[test]
+#[ignore = "нужен стенд Stalwart: docs/STALWART.md"]
+fn imap_append_with_flags_and_date() {
+    rt().block_on(async {
+        let imap = config("POSTMAN_STAND_IMAP");
+        let me = imap.user.clone();
+        let mut s = Session::connect(&imap).await.unwrap();
+        let subject = format!("postman-append-{}", stamp());
+        let received = 1_792_240_200; // 2026-10-17 12:30:00 UTC
+        let appended = s.append_message("INBOX", &["\\Seen".into(), "\\Flagged".into()], Some(received), &letter(&me, &subject)).await.unwrap();
+        s.select("INBOX").await.unwrap();
+        let found = s.find_message_id(&format!("<{subject}@postman.test>")).await.unwrap();
+        assert_eq!(found.len(), 1, "письмо одно");
+        if s.has("UIDPLUS") {
+            assert_eq!(appended.map(|a| a.uid), Some(found[0]));
+        }
+        let h = s.headers(&found[0].to_string()).await.unwrap().pop().unwrap();
+        assert_eq!(h.received_at, received, "INTERNALDATE — дата письма");
+        assert!(h.flags.iter().any(|f| f == "\\Seen") && h.flags.iter().any(|f| f == "\\Flagged"), "{:?}", h.flags);
+        let quota = s.quota("INBOX").await.unwrap();
+        println!("APPENDLIMIT {:?}, квота {quota:?}", s.append_limit());
+        s.delete(&uid_set(&found)).await.unwrap();
+        assert!(s.find_message_id(&format!("<{subject}@postman.test>")).await.unwrap().is_empty(), "уборка");
+        s.logout().await.unwrap();
+    });
+}

@@ -17,9 +17,9 @@ pub use contacts::{AddressBook, ContactCard};
 pub use files::{FILENODE, FileNode, Written};
 pub use mail::*;
 pub use push::{EventSource, SseEvent};
-pub use session::{Account, Session, SharedAccount};
+pub use session::{Account, Limits, Session, SharedAccount};
 pub use sieve::{Activate, SaveError, SieveScript};
-pub use submission::{Envelope, Identity, PendingSubmission, Release, Submitted, UnsendError, unix_to_utc};
+pub use submission::{Envelope, Identity, Imported, PendingSubmission, Release, Submitted, UnsendError, unix_to_utc};
 pub use vacation::{Quota, VacationResponse};
 
 use serde::{Deserialize, Serialize};

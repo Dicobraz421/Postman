@@ -1,6 +1,7 @@
 //! IMAP и SMTP submission для второго пути к серверу (ADR 0003, S7-04): тонкая обёртка над `async-imap` и
 //! `mail-send` без знания модели Postman — папки с ролями, состояние синхронизации папки, заголовки писем, флаги и
-//! ключевые слова, письмо целиком, перенос, удаление, `APPEND`, поиск, IDLE; отправка — SMTP submission. Перевод в
+//! ключевые слова, письмо целиком, перенос, удаление, `APPEND` (с флагами, датой и UID нового письма), квота, поиск,
+//! IDLE; отправка — SMTP submission. Перевод в
 //! кэш Postman — в `postman_core` (адаптер `Mail::Imap`).
 //!
 //! TLS — rustls с проверкой сертификата и отзыва Windows (`rustls-platform-verifier`, как у JMAP): неявный TLS
@@ -16,7 +17,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_imap::extensions::idle::IdleResponse;
-use async_imap::imap_proto::NameAttribute;
+use async_imap::imap_proto::rfc4315::UidSetMember;
+use async_imap::imap_proto::{NameAttribute, Outcome, Response, ResponseCode, Status};
 use futures::TryStreamExt as _;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use tokio::net::TcpStream;
@@ -52,6 +54,42 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Отказ `APPEND` ([`Session::append_message`]): письмо больше предела сервера или ящик полон — тот же повтор не
+/// поможет. Остальное — [`Error`].
+#[derive(Debug, thiserror::Error)]
+pub enum AppendError {
+    /// Больше `APPENDLIMIT` (RFC 7889) — не отправлялось, или сервер ответил `[TOOBIG]`.
+    #[error("message too big: {0}")]
+    TooBig(String),
+    /// Ответ `[OVERQUOTA]` (RFC 5530, RFC 9208).
+    #[error("over quota: {0}")]
+    OverQuota(String),
+    #[error(transparent)]
+    Imap(#[from] Error),
+}
+
+/// Новое письмо после `APPEND`: ответ `APPENDUID` (UIDPLUS, RFC 4315).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Appended {
+    pub uid_validity: u32,
+    pub uid: u32,
+}
+
+/// Квота корня (QUOTA, RFC 9208): объём — в байтах (сервер считает в КиБ), письма — штуками; ресурса нет — `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Quota {
+    pub root: String,
+    pub storage: Option<Usage>,
+    pub messages: Option<Usage>,
+}
+
+/// Занято и предел ресурса квоты.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Usage {
+    pub used: u64,
+    pub limit: u64,
+}
 
 /// Как защищено соединение.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -448,6 +486,81 @@ impl Session {
         timed(async { Ok(self.inner.append(folder, flags.as_deref(), None, raw).await?) }).await
     }
 
+    /// Предел размера письма для `APPEND` (`APPENDLIMIT=n` в `CAPABILITY`, RFC 7889). `APPENDLIMIT` без числа (у
+    /// каждой папки свой, `STATUS`/`LIST-STATUS`) — `None`: `imap-proto` такой `STATUS` не разбирает, предел узнаётся
+    /// по ответу `[TOOBIG]`.
+    pub fn append_limit(&self) -> Option<u64> {
+        append_limit(&self.caps)
+    }
+
+    /// Положить письмо в папку (выгрузка, S8-11): флаги и ключевые слова IMAP (`\Seen`, `pm.due`; `\Recent`
+    /// пропускается), дата получения `INTERNALDATE` — `received_at` (Unix-секунды; `None` — время сервера). Ответ —
+    /// UID нового письма, если сервер его сообщил (`APPENDUID`, UIDPLUS); иначе — `None`, искать по `Message-ID`
+    /// ([`Session::find_message_id`]). Больше [`Session::append_limit`] — [`AppendError::TooBig`] без отправки.
+    /// `LITERAL+` (RFC 7888) есть — письмо идёт сразу за командой, без ожидания `+`.
+    pub async fn append_message(
+        &mut self,
+        folder: &str,
+        flags: &[String],
+        received_at: Option<i64>,
+        raw: &[u8],
+    ) -> std::result::Result<Option<Appended>, AppendError> {
+        if let Some(limit) = self.append_limit()
+            && raw.len() as u64 > limit
+        {
+            return Err(AppendError::TooBig(format!("{} bytes, APPENDLIMIT {limit}", raw.len())));
+        }
+        let literal_plus = self.has("LITERAL+");
+        let command = append_command(folder, flags, received_at, raw.len(), literal_plus);
+        // Крупное письмо идёт дольше одной команды: сверх TIMEOUT — секунда на каждые 64 КиБ.
+        let limit = TIMEOUT + Duration::from_secs(raw.len() as u64 / 65_536);
+        tokio::time::timeout(limit, self.append_raw(&command, raw, literal_plus)).await.map_err(|_| Error::Timeout)?
+    }
+
+    async fn append_raw(&mut self, command: &str, raw: &[u8], literal_plus: bool) -> std::result::Result<Option<Appended>, AppendError> {
+        let tag = self.inner.run_command(command).await.map_err(Error::from)?;
+        if !literal_plus {
+            // Синхронный литерал: ждать `+`; отказ сразу (`NO [TOOBIG]`) — ответ команды.
+            loop {
+                let res = self.inner.read_response().await.map_err(Error::from)?.ok_or_else(|| Error::Protocol("connection closed".into()))?;
+                match res.parsed() {
+                    Response::Continue(_) => break,
+                    Response::Done { tag: t, status, outcome } if *t == tag => return append_outcome(status, outcome),
+                    Response::Data { status: Status::Bye, .. } => return Err(Error::Protocol("server closed the connection".into()).into()),
+                    _ => {}
+                }
+            }
+        }
+        let stream = self.inner.get_mut();
+        stream.write_all(raw).await.map_err(Error::from)?;
+        stream.write_all(b"\r\n").await.map_err(Error::from)?;
+        stream.flush().await.map_err(Error::from)?;
+        loop {
+            let res = self.inner.read_response().await.map_err(Error::from)?.ok_or_else(|| Error::Protocol("connection closed".into()))?;
+            match res.parsed() {
+                Response::Done { tag: t, status, outcome } if *t == tag => return append_outcome(status, outcome),
+                Response::Data { status: Status::Bye, .. } => return Err(Error::Protocol("server closed the connection".into()).into()),
+                // `EXISTS` выбранной папки и прочее попутное — не ответ на команду.
+                _ => {}
+            }
+        }
+    }
+
+    /// UID писем выбранной папки с этим `Message-ID` (`UID SEARCH HEADER Message-ID`): повтор выгрузки без дублей и
+    /// UID нового письма, когда сервер без UIDPLUS.
+    pub async fn find_message_id(&mut self, message_id: &str) -> Result<Vec<u32>> {
+        self.search(&message_id_query(message_id)).await
+    }
+
+    /// Квоты папки (`GETQUOTAROOT`, RFC 9208): у каждого её корня — объём и число писем. Сервер без `QUOTA` — пусто.
+    pub async fn quota(&mut self, folder: &str) -> Result<Vec<Quota>> {
+        if !self.caps.iter().any(|c| c.eq_ignore_ascii_case("QUOTA") || c.to_ascii_uppercase().starts_with("QUOTA=")) {
+            return Ok(Vec::new());
+        }
+        let (_, quotas) = timed(async { Ok(self.inner.get_quota_root(folder).await?) }).await?;
+        Ok(quotas.iter().map(quota).collect())
+    }
+
     /// Поиск в выбранной папке по готовому условию IMAP (`HEADER Message-ID "<…>"`, `UID 1:100`).
     pub async fn search(&mut self, query: &str) -> Result<Vec<u32>> {
         let mut v: Vec<u32> = timed(async { Ok(self.inner.uid_search(query).await?) }).await?.into_iter().collect();
@@ -524,6 +637,90 @@ pub fn uid_set(uids: &[u32]) -> String {
     out.join(",")
 }
 
+/// `APPENDLIMIT=n` из возможностей сервера.
+fn append_limit(caps: &[String]) -> Option<u64> {
+    caps.iter().find_map(|c| c.split_once('=').filter(|(k, _)| k.eq_ignore_ascii_case("APPENDLIMIT")).and_then(|(_, n)| n.parse().ok()))
+}
+
+/// `APPEND "папка" (флаги) "дата" {n}` (RFC 3501 §6.3.11); `{n+}` — неблокирующий литерал (`LITERAL+`).
+fn append_command(folder: &str, flags: &[String], received_at: Option<i64>, len: usize, literal_plus: bool) -> String {
+    let mut cmd = format!("APPEND {}", quote(folder));
+    let flags: Vec<&str> = flags.iter().map(String::as_str).filter(|f| !f.eq_ignore_ascii_case("\\Recent")).collect();
+    if !flags.is_empty() {
+        cmd.push_str(&format!(" ({})", flags.join(" ")));
+    }
+    if let Some(t) = received_at {
+        cmd.push_str(&format!(" \"{}\"", internal_date(t)));
+    }
+    cmd.push_str(&format!(" {{{len}{}}}", if literal_plus { "+" } else { "" }));
+    cmd
+}
+
+/// Unix-секунды → `INTERNALDATE` (RFC 3501 `date-time`, UTC): `17-Oct-2026 12:30:00 +0000`.
+pub fn internal_date(t: i64) -> String {
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let (days, secs) = (t.div_euclid(86_400), t.rem_euclid(86_400));
+    // Дата по дням от эпохи — Howard Hinnant (civil_from_days).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    let month = MONTHS[usize::try_from(m - 1).unwrap_or(0).min(11)];
+    format!("{d:02}-{month}-{y:04} {:02}:{:02}:{:02} +0000", secs / 3600, secs % 3600 / 60, secs % 60)
+}
+
+/// Ответ на `APPEND`: `OK` — UID из `APPENDUID`, если есть; `NO [TOOBIG]`, `NO [OVERQUOTA]` — свои ошибки (этих кодов
+/// `imap-proto` не знает — они остаются в начале текста ответа).
+fn append_outcome(status: &Status, outcome: &Outcome<'_>) -> std::result::Result<Option<Appended>, AppendError> {
+    let text = outcome.information.as_deref().unwrap_or("");
+    match status {
+        Status::Ok => Ok(match &outcome.code {
+            Some(ResponseCode::AppendUid(uid_validity, uids)) => uids.first().map(|m| Appended {
+                uid_validity: *uid_validity,
+                uid: match m {
+                    UidSetMember::Uid(u) => *u,
+                    UidSetMember::UidRange(r) => *r.start(),
+                },
+            }),
+            _ => None,
+        }),
+        Status::No | Status::Bad => {
+            let code = text.strip_prefix('[').and_then(|t| t.split([']', ' ']).next()).unwrap_or("");
+            if code.eq_ignore_ascii_case("TOOBIG") {
+                return Err(AppendError::TooBig(text.to_owned()));
+            }
+            if code.eq_ignore_ascii_case("OVERQUOTA") {
+                return Err(AppendError::OverQuota(text.to_owned()));
+            }
+            let detail = format!("code: {:?}, info: {text:?}", outcome.code);
+            let e = if *status == Status::No { async_imap::error::Error::No(detail) } else { async_imap::error::Error::Bad(detail) };
+            Err(Error::Imap(e).into())
+        }
+        other => Err(Error::Protocol(format!("APPEND: {other:?} {text}")).into()),
+    }
+}
+
+/// Условие поиска письма по `Message-ID` (`HEADER`, подстрока без учёта регистра — RFC 3501 §6.4.4).
+pub fn message_id_query(message_id: &str) -> String {
+    format!("HEADER Message-ID {}", quote(message_id.trim()))
+}
+
+/// Квота корня из ответа `QUOTA`: `STORAGE` — КиБ → байты, `MESSAGE` — штуки; другие ресурсы — без них.
+fn quota(q: &async_imap::types::Quota) -> Quota {
+    use async_imap::types::QuotaResourceName as R;
+    let find = |want: fn(&R) -> bool| q.resources.iter().find(|r| want(&r.name)).map(|r| (r.usage, r.limit));
+    Quota {
+        root: q.root_name.clone(),
+        storage: find(|n| matches!(n, R::Storage)).map(|(u, l)| Usage { used: u.saturating_mul(1024), limit: l.saturating_mul(1024) }),
+        messages: find(|n| matches!(n, R::Message)).map(|(used, limit)| Usage { used, limit }),
+    }
+}
+
 fn text(b: &Option<std::borrow::Cow<'_, [u8]>>) -> String {
     b.as_deref().map(|b| names::decode_header(&String::from_utf8_lossy(b))).unwrap_or_default()
 }
@@ -572,7 +769,91 @@ fn header(f: &async_imap::types::Fetch) -> Option<Header> {
 
 #[cfg(test)]
 mod tests {
-    use super::{caps, quote, uid_set};
+    use super::{
+        AppendError, Appended, Error, Quota, Usage, append_command, append_limit, append_outcome, caps, internal_date, message_id_query, quote,
+        uid_set,
+    };
+    use async_imap::imap_proto::Response;
+
+    /// Ответ сервера на `APPEND` по записанной строке.
+    fn outcome(line: &[u8]) -> std::result::Result<Option<Appended>, AppendError> {
+        let (_, r) = Response::parse(line).unwrap();
+        let Response::Done { status, outcome, .. } = r else { panic!("{r:?}") };
+        append_outcome(&status, &outcome)
+    }
+
+    /// S8-11: `APPEND` с флагами и датой; `\Recent` клиент не ставит; `{n+}` — при `LITERAL+`.
+    #[test]
+    fn append_commands() {
+        let flags = ["\\Seen".to_string(), "\\Recent".into(), "pm.cat.clients".into()];
+        assert_eq!(
+            append_command("Архив/2026", &flags, Some(1_792_240_200), 1024, false),
+            r#"APPEND "Архив/2026" (\Seen pm.cat.clients) "17-Oct-2026 12:30:00 +0000" {1024}"#
+        );
+        assert_eq!(append_command("INBOX", &[], None, 5, true), r#"APPEND "INBOX" {5+}"#);
+        assert_eq!(internal_date(0), "01-Jan-1970 00:00:00 +0000");
+        assert_eq!(internal_date(951_782_400), "29-Feb-2000 00:00:00 +0000");
+        assert_eq!(internal_date(1_798_761_599), "31-Dec-2026 23:59:59 +0000");
+    }
+
+    /// Записанные ответы: `APPENDUID` (UIDPLUS) → UID; без него — `None`; `[TOOBIG]`, `[OVERQUOTA]` — свои ошибки.
+    #[test]
+    fn append_answers() {
+        assert_eq!(
+            outcome(b"A0007 OK [APPENDUID 1725735035 4012] APPEND completed\r\n").unwrap(),
+            Some(Appended { uid_validity: 1_725_735_035, uid: 4012 })
+        );
+        assert_eq!(outcome(b"A0007 OK APPEND completed\r\n").unwrap(), None);
+        assert!(matches!(outcome(b"A0007 NO [TOOBIG] Message too large\r\n"), Err(AppendError::TooBig(t)) if t.contains("too large")));
+        assert!(matches!(outcome(b"A0007 NO [OVERQUOTA] Quota exceeded (mailbox is full)\r\n"), Err(AppendError::OverQuota(_))));
+        assert!(matches!(
+            outcome(b"A0007 NO [TRYCREATE] Mailbox does not exist\r\n"),
+            Err(AppendError::Imap(Error::Imap(async_imap::error::Error::No(_))))
+        ));
+        assert!(matches!(outcome(b"A0007 BAD Invalid flags\r\n"), Err(AppendError::Imap(Error::Imap(async_imap::error::Error::Bad(_))))));
+    }
+
+    #[test]
+    fn append_limit_from_capabilities() {
+        let caps = |v: &[&str]| v.iter().map(|c| c.to_string()).collect::<Vec<_>>();
+        assert_eq!(append_limit(&caps(&["IMAP4rev1", "UIDPLUS", "APPENDLIMIT=35651584"])), Some(35_651_584));
+        assert_eq!(append_limit(&caps(&["IMAP4rev1", "APPENDLIMIT"])), None, "у каждой папки свой");
+        assert_eq!(append_limit(&caps(&["IMAP4rev1"])), None);
+        assert_eq!(caps::name("Atom(\"APPENDLIMIT=35651584\")"), "APPENDLIMIT=35651584");
+    }
+
+    #[test]
+    fn search_by_message_id() {
+        assert_eq!(message_id_query(" <a1b2@example.test> "), r#"HEADER Message-ID "<a1b2@example.test>""#);
+    }
+
+    /// Записанный ответ `GETQUOTAROOT` (RFC 9208): `STORAGE` в КиБ → байты, `MESSAGE` — штуки.
+    #[test]
+    fn quota_answer() {
+        let mut quotas = Vec::new();
+        for line in [
+            &b"* QUOTAROOT INBOX \"\"\r\n"[..],
+            b"* QUOTA \"\" (STORAGE 10240 512000 MESSAGE 120 100000)\r\n",
+            b"* QUOTA \"other\" (MAILBOX 3 100)\r\n",
+        ] {
+            let (_, r) = Response::parse(line).unwrap();
+            if let Response::Quota(q) = r {
+                quotas.push(async_imap::types::Quota::from(q));
+            }
+        }
+        let q: Vec<Quota> = quotas.iter().map(super::quota).collect();
+        assert_eq!(
+            q,
+            [
+                Quota {
+                    root: String::new(),
+                    storage: Some(Usage { used: 10_485_760, limit: 524_288_000 }),
+                    messages: Some(Usage { used: 120, limit: 100_000 })
+                },
+                Quota { root: "other".into(), storage: None, messages: None },
+            ]
+        );
+    }
 
     #[test]
     fn uid_sets_are_ranges() {
