@@ -73,6 +73,8 @@ mod content;
 #[cfg(feature = "store6")]
 mod folder;
 #[cfg(feature = "store6")]
+mod job;
+#[cfg(feature = "store6")]
 mod letter;
 #[cfg(feature = "store6")]
 mod migrate;
@@ -84,7 +86,9 @@ pub use content::{CHUNK, ContentReader, Encoding, Hash, MIN_PART, SplitPart};
 #[cfg(feature = "store6")]
 pub use folder::{FolderId, FolderRow, Owner, Scope};
 #[cfg(feature = "store6")]
-pub use letter::{JobId, LetterId, LetterRow, MOVE_BATCH, MoveTicket, Outbound, Place, Step};
+pub use job::{JobRow, MigrationMode, MigrationState};
+#[cfg(feature = "store6")]
+pub use letter::{JobId, LetterId, LetterRow, MOVE_BATCH, MoveTicket, Outbound, Place, Refused, Step};
 #[cfg(feature = "store6")]
 pub use migrate::{Migration, Split};
 #[cfg(feature = "store6")]
