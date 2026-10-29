@@ -285,13 +285,16 @@ pub enum Command {
     },
     /// Выгрузить письмо (содержимое — в базе) в папку `folder` учётки цели с ключевыми словами (и `$seen`,
     /// `$flagged`) и датой получения (Unix-секунды) → `Event::Imported` или `Event::ImportFailed`. Путь без выгрузки
-    /// ([`Features::import`](crate::model::Features::import)) отвечает отказом.
+    /// ([`Features::import`](crate::model::Features::import)) отвечает отказом. `retry` — повтор после сбоя (выгрузка
+    /// могла дойти, ответ — нет): путь, у которого сервер не отвечает `alreadyExists`, сначала ищет письмо по
+    /// `Message-ID` в папке цели и, если нашёл, отвечает `Imported` с ним — без дубля.
     Import {
         job: JobId,
         letter: LetterId,
         folder: FolderId,
         keywords: Vec<String>,
         received_at: i64,
+        retry: bool,
     },
     /// Сервер сам переносит письма в папку `to` другого аккаунта той же сессии, без выгрузки
     /// ([`Features::server_copy`](crate::model::Features::server_copy)) → по письму `Event::Imported` или
@@ -352,6 +355,19 @@ pub enum Home {
     Local,
 }
 
+impl Home {
+    /// Поток, который работает с письмами и папками этой учётки: синхронизация её учётной записи профиля; «На этом
+    /// компьютере» — ядро.
+    pub fn route(&self) -> Route {
+        match self {
+            Home::Local => Route::Core,
+            Home::Account(a) => {
+                Route::Sync(Target::Profile(postman_cache::profile_of(Some(a.as_str()).filter(|a| !a.is_empty())).map(str::to_owned)))
+            }
+        }
+    }
+}
+
 /// Откуда маршрут знает, чьи письма и папки: письмо — по действующей связи с сервером (`letter_remote`), без неё —
 /// [`Home::Local`]; папка — по владельцу. Даёт хранилище формата 6.
 pub trait Homes {
@@ -373,16 +389,10 @@ impl Command {
     /// по учётке папки цели (`Import`, `ServerCopy`); «На этом компьютере», перенос (`MoveLetters`) и задания
     /// (`Migration`) — в ядро. Прочие команды — по ключам кэша, как [`Command::routes`].
     pub fn routes_by(self, homes: &dyn Homes) -> Vec<(Route, Command)> {
-        let home = |h: Home| match h {
-            Home::Local => Route::Core,
-            Home::Account(a) => {
-                Route::Sync(Target::Profile(postman_cache::profile_of(Some(a.as_str()).filter(|a| !a.is_empty())).map(str::to_owned)))
-            }
-        };
         let route = match &self {
-            Command::FetchRaw { letter } => home(homes.letter(*letter)),
-            Command::Import { folder, .. } => home(homes.folder(*folder)),
-            Command::ServerCopy { to, .. } => home(homes.folder(*to)),
+            Command::FetchRaw { letter } => homes.letter(*letter).route(),
+            Command::Import { folder, .. } => homes.folder(*folder).route(),
+            Command::ServerCopy { to, .. } => homes.folder(*to).route(),
             Command::MoveLetters { .. } | Command::Migration(_) => Route::Core,
             _ => return self.routes().into_iter().map(|(t, c)| (Route::Sync(t), c)).collect(),
         };
@@ -1182,7 +1192,14 @@ mod tests {
         assert_eq!(route(raw(2)), [sync(Some("@2"))]);
         assert_eq!(route(raw(3)), [sync(None)], "основная учётка");
         assert_eq!(route(raw(4)), [sync(Some("@2"))], "общий ящик учётки @2");
-        let import = |folder: u64| Command::Import { job: JobId(1), letter: LetterId(2), folder: FolderId(folder), keywords: vec![], received_at: 0 };
+        let import = |folder: u64| Command::Import {
+            job: JobId(1),
+            letter: LetterId(2),
+            folder: FolderId(folder),
+            keywords: vec![],
+            received_at: 0,
+            retry: false,
+        };
         assert_eq!(route(import(11)), [sync(Some("@3"))], "выгрузка — в поток цели, а не источника");
         let copy = Command::ServerCopy { job: JobId(1), letters: vec![LetterId(2), LetterId(3)], to: FolderId(11) };
         assert_eq!(route(copy), [sync(Some("@3"))]);
@@ -1210,7 +1227,7 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
-        let import = Command::Import { job: JobId(5), letter: LetterId(2), folder: FolderId(9), keywords: vec![], received_at: 0 };
+        let import = Command::Import { job: JobId(5), letter: LetterId(2), folder: FolderId(9), keywords: vec![], received_at: 0, retry: false };
         assert_eq!(failed(import.unsupported()), [(5, 2)]);
         let copy = Command::ServerCopy { job: JobId(5), letters: vec![LetterId(2), LetterId(3)], to: FolderId(9) };
         assert_eq!(failed(copy.unsupported()), [(5, 2), (5, 3)]);

@@ -22,6 +22,7 @@ pub mod lifecycle;
 pub mod link;
 pub mod mailtask;
 pub mod marks;
+pub mod migrate;
 pub mod model;
 pub mod palette;
 pub mod prefs;
