@@ -692,7 +692,7 @@ impl OdsBook {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::io::Write;
 
     use postman_ir::Inline;
