@@ -6,13 +6,16 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use jiff::tz::TimeZone;
-use postman_cache::{Addr, AttachmentRow, BodyRow};
+use postman_cache::{Addr, AttachmentRow, BodyRow, Cache};
 use postman_calendar::Invitation;
 use postman_ir::{Align, Block, Document, Inline};
 use std::sync::Arc;
 
 use postman_worker::mime::Mime;
 use postman_worker::{Client, Level, Request, Rgba};
+
+use crate::model::LetterId;
+use crate::store;
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -131,6 +134,18 @@ impl Renderer {
     /// `Body`.
     pub fn request_raw(&self, id: String, raw: Arc<Vec<u8>>) {
         let _ = self.tx.send(Job::Body(id, Source::Raw(raw)));
+    }
+
+    /// Письмо формата 6 без сети (S8-09): тело — как есть, нет тела — из письма целиком (`Parsed` кладут в хранилище
+    /// под ключом `id`). Ответы — с `id` = [`store::letter_ref`]. `false` — ни тела, ни содержимого: нужен сервер.
+    pub fn request_letter(&self, cache: &Cache, letter: LetterId) -> postman_cache::Result<bool> {
+        let id = store::letter_ref(letter);
+        match store::source(cache, letter)? {
+            store::Source::Body(b) => self.request(id, *b),
+            store::Source::Raw(raw) => self.request_raw(id, raw),
+            store::Source::Missing => return Ok(false),
+        }
+        Ok(true)
     }
 
     pub fn decode(&self, key: String, bytes: Arc<Vec<u8>>) {
