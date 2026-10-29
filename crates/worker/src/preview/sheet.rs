@@ -20,7 +20,7 @@ use std::rc::Rc;
 use postman_ir::{Block, Inline};
 
 use super::docx::{self, Ev, Limit, attr, part, rels, resolve, walk};
-use super::{MAX_UNPACKED, Section};
+use super::{MAX_UNPACKED, Section, SectionTitle};
 
 /// Листов в ответе.
 pub const MAX_SHEETS: usize = 50;
@@ -270,7 +270,7 @@ fn xlsx(zip: &mut Zip, budget: &mut Budget) -> Result<Vec<Section>, String> {
         let mut s = XlSheet { strings: &strings, fmts: &fmts, date1904, ..XlSheet::default() };
         let read = read(zip, &path, budget.part_left(), sml, |ev| s.event(ev, budget)).map_err(|e| format!("книга не разобрана: {e}"))?;
         budget.spent(read);
-        out.push(Section { title: Some(name), blocks: budget.table(s.cells) });
+        out.push(Section { title: SectionTitle::Sheet(name), blocks: budget.table(s.cells) });
     }
     Ok(out)
 }
@@ -555,7 +555,7 @@ fn ods(zip: &mut Zip, budget: &mut Budget) -> Result<Vec<Section>, String> {
     budget.spent(read);
     let mut out = Vec::new();
     for (name, cells) in s.sheets {
-        out.push(Section { title: Some(name), blocks: budget.table(cells) });
+        out.push(Section { title: SectionTitle::Sheet(name), blocks: budget.table(cells) });
     }
     if out.is_empty() {
         return Err("в книге нет листов".into());
@@ -781,7 +781,7 @@ pub(super) mod tests {
             sections,
             [
                 Section {
-                    title: Some("Итоги".into()),
+                    title: SectionTitle::Sheet("Итоги".into()),
                     blocks: table(&[
                         &["Имя", "", "Сумма", ""],
                         &["42", "0.3", "1234.5", ""],
@@ -790,7 +790,7 @@ pub(super) mod tests {
                         &["TRUE", "встроке", "84", "#DIV/0!"],
                     ])
                 },
-                Section { title: Some("Лист2".into()), blocks: table(&[&["xy", "-0.0015"]]) },
+                Section { title: SectionTitle::Sheet("Лист2".into()), blocks: table(&[&["xy", "-0.0015"]]) },
             ]
         );
     }
@@ -868,7 +868,7 @@ pub(super) mod tests {
             </table:table>
             <table:table table:name="Повтор"><table:table-row><table:table-cell table:number-columns-repeated="16384" office:value-type="float" office:value="7"/></table:table-row></table:table>"#;
         let (s, cut) = sheet(&ods_of(body)).unwrap();
-        assert_eq!(s[0].title.as_deref(), Some("Данные"));
+        assert_eq!(s[0].title, SectionTitle::Sheet("Данные".into()));
         let multiline = vec![Inline::text("a  b"), Inline::LineBreak, Inline::text("c")];
         let row = vec![c("TRUE"), multiline, c(""), c("")];
         assert_eq!(s[0].blocks, [Block::Table(vec![vec![c("Имя"), c(""), c(""), c("0,10 ₽")], row.clone(), row])]);

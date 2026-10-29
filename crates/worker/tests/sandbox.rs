@@ -177,7 +177,7 @@ fn preview_round_trip() {
     // Таблица разделами (S8-17).
     let (p, _) = c.preview(PreviewKind::Table, "Дата;Сумма\r\n21.10;100".as_bytes(), 0, 0, 0).unwrap();
     let Preview::Document { sections, truncated: false } = p else { panic!("{p:?}") };
-    assert!(matches!(sections.as_slice(), [postman_worker::Section { title: None, blocks }] if blocks.len() == 1));
+    assert!(matches!(sections.as_slice(), [postman_worker::Section { title: postman_worker::SectionTitle::None, blocks }] if blocks.len() == 1));
 
     assert!(c.preview(PreviewKind::Pdf, b"%PDF-1.7 broken", 0, 800, 0).is_err());
     assert!(c.preview(PreviewKind::Archive, b"PK\x03\x04", 0, 0, 0).is_err());

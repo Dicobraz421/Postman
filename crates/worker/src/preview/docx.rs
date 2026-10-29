@@ -837,7 +837,7 @@ mod tests {
     use std::io::Write;
 
     use super::*;
-    use crate::preview::{OfficeScan, Preview, PreviewKind, Section, preview};
+    use crate::preview::{OfficeScan, Preview, PreviewKind, Section, SectionTitle, preview};
 
     const NS: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006""#;
     const REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -1022,7 +1022,7 @@ mod tests {
     fn macro_documents_are_office_scans() {
         let doc = docx_of(&run_p("x"), "", "", "");
         let (pv, _) = preview(PreviewKind::Document, &doc, 0, 0, 0).unwrap();
-        assert_eq!(pv, Preview::Document { sections: vec![Section { title: None, blocks: vec![p(vec![t("x")])] }], truncated: false });
+        assert_eq!(pv, Preview::Document { sections: vec![Section { title: SectionTitle::None, blocks: vec![p(vec![t("x")])] }], truncated: false });
         let docm = zip_of(&[("[Content_Types].xml", b"<Types/>"), ("word/document.xml", b"<w:document/>"), ("word/vbaProject.bin", b"x")]);
         let (pv, _) = preview(PreviewKind::Document, &docm, 0, 0, 0).unwrap();
         assert!(matches!(pv, Preview::Office(OfficeScan { macros: true, .. })), "{pv:?}");

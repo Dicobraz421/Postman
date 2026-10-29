@@ -8,8 +8,8 @@
 
 use std::ops::ControlFlow;
 
-use super::Section;
 use super::sheet::{self, Budget, Limits};
+use super::{Section, SectionTitle};
 
 /// Байт от начала файла.
 pub const MAX_CSV: usize = 16 * 1024 * 1024;
@@ -49,7 +49,7 @@ fn parse(bytes: &[u8], limits: Limits) -> (Vec<Section>, bool) {
         ControlFlow::Continue(())
     });
     let blocks = budget.table(cells);
-    (vec![Section { title: None, blocks }], budget.truncated)
+    (vec![Section { title: SectionTitle::None, blocks }], budget.truncated)
 }
 
 /// Разделитель по первым [`SNIFF`] непустым строкам; ничего не подошло — запятая.
@@ -138,7 +138,7 @@ mod tests {
     use crate::preview::{Preview, PreviewKind, preview};
 
     fn grid(s: &[Section]) -> Vec<Vec<String>> {
-        let [Section { title: None, blocks }] = s else { panic!("{s:?}") };
+        let [Section { title: SectionTitle::None, blocks }] = s else { panic!("{s:?}") };
         let [Block::Table(rows)] = blocks.as_slice() else { panic!("{blocks:?}") };
         rows.iter()
             .map(|r| {
@@ -185,7 +185,7 @@ mod tests {
         assert_eq!(grid(&s), rows(&[&["a", "b,c"], &["d", "e"], &["f", "g,h,i"]]));
         // Один столбец, пусто, незакрытая кавычка.
         assert_eq!(grid(&csv(b"x\ny").0), rows(&[&["x"], &["y"]]));
-        assert_eq!(csv(b"").0, [Section { title: None, blocks: Vec::new() }]);
+        assert_eq!(csv(b"").0, [Section { title: SectionTitle::None, blocks: Vec::new() }]);
         assert_eq!(grid(&csv(b"\"open,1\n2").0), rows(&[&["open,1\n2"]]));
     }
 
