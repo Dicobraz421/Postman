@@ -28,6 +28,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("postman-compose", L1),
     ("postman-calendar", L1),
     ("postman-search", L1),
+    ("postman-export", L1),
     ("postman-worker", L1),
     ("postman-core", L2),
     ("postman-demo", L2),
@@ -54,6 +55,9 @@ const PLUGINS: &[(&str, &str)] = &[
 ];
 
 const CORE: &str = "postman-core";
+/// Выгрузка в файлы (S8): из байтов письма и свойств MAPI. От неё зависят `core` и `worker` (свойства MAPI заполняет
+/// воркер, S8-29), сама — ни от них, ни от протоколов.
+const EXPORT: &str = "postman-export";
 
 fn cargo_tree(args: &[&str]) -> Vec<String> {
     let out = Command::new(env!("CARGO"))
@@ -118,6 +122,14 @@ fn core_does_not_know_protocols() {
     assert!(known.is_empty(), "{CORE} зависит от протокольных крейтов (их знают только плагины backend-*): {known:?}");
     let plugins: Vec<_> = PLUGINS.iter().map(|(p, _)| p).filter(|p| deps.contains(**p)).collect();
     assert!(plugins.is_empty(), "{CORE} зависит от плагинов: {plugins:?}");
+}
+
+/// `export` — только байты: ни ядра, ни протоколов, ни воркера во всём дереве (S8-03).
+#[test]
+fn export_knows_only_bytes() {
+    let deps: BTreeSet<String> = cargo_tree(&["-p", EXPORT]).into_iter().collect();
+    let known: Vec<_> = PROTOCOL_CRATES.iter().chain(&[CORE, "postman-worker"]).filter(|p| deps.contains(**p)).collect();
+    assert!(known.is_empty(), "{EXPORT} зависит от ядра, протоколов или воркера: {known:?}");
 }
 
 /// Плагин — поверх `core` и своего протокола: чужих протоколов и других плагинов нет во всём дереве.
