@@ -13,7 +13,7 @@ Windows. Приложение семейства «Pets»: общий архит
 | Слой | Крейты | Правило |
 |---|---|---|
 | L0 | `ir` | HTML → безопасный IR, без I/O |
-| L1 | `jmap`, `imap`, `dav`, `ews` (протоколы), `cache` (redb), `compose`, `calendar`, `search` (tantivy), `worker`, `smime` (CMS и проверка подписи S/MIME, без I/O) | без UI-зависимостей |
+| L1 | `jmap`, `imap`, `dav`, `ews` (протоколы), `cache` (redb), `compose`, `calendar`, `search` (tantivy), `worker`, `smime` (CMS и проверка подписи S/MIME, без I/O), `export` (EML, mbox, Maildir, MSG, PST из байтов письма и свойств MAPI; без I/O, кроме `Write`; ни `core`, ни протоколов, ни `worker`) | без UI-зависимостей |
 | L2 | `core` (модель, договор путей к серверам и общий цикл синхронизации, рендер через воркер, адресная книга, приглашения, замеры) | без UI-зависимостей; **без протоколов** (ADR 0004) |
 | L2b | плагины путей: `backend-jmap`, `backend-imap`, `backend-dav`, `backend-ews` (ADR 0004) | `core` и только свой протокол L1; друг от друга не зависят |
 | L3 | `app-gpui` — интерфейс, исполняемый файл `postman.exe`; реестр плагинов — `app-gpui/src/plugins.rs` | только здесь gpui, winit, rfd (диалоги); протоколы — только через плагины |
@@ -30,7 +30,9 @@ Windows. Приложение семейства «Pets»: общий архит
 `worker` — отдельный процесс-песочница для разбора чужих данных (HTML, картинки, .ics, просмотр вложений: PDF,
 ZIP, макросы Office, подпись S/MIME — `postman-smime`). Windows: AppContainer + Job Object + mitigation policies,
 запуск без консоли (`DETACHED_PROCESS`). Linux (dev): seccomp + Landlock. Чужие данные в UI-процессе не
-разбираются никогда; песочницу не ослабляем без диагностики (`docs/DEV.md`) и ADR.
+разбираются никогда; песочницу не ослабляем без диагностики (`docs/DEV.md`) и ADR. Второй исполняемый файл крейта —
+`postman-viewer.exe`: хост модулей просмотра WASM (`wasmi`, признак `viewer`), та же песочница, запуск по
+требованию (ADR 0007).
 
 ## Интерфейс
 
