@@ -1,13 +1,13 @@
 //! Встроенный просмотр вложений (S5-07): картинка, страница PDF, оглавление ZIP, текст, документ Word `.docx`
-//! (T1-13а, [`docx`]), книга `.xlsx`/`.ods` ([`sheet`]) и таблица `.csv`/`.tsv` ([`csv`]) — S8-17, проверка Office
-//! на макросы. Только здесь, в песочнице: UI получает пиксели, строки, числа и безопасный IR (документ — разделами:
-//! лист книги, ADR 0007).
+//! (T1-13а, [`docx`]), книга `.xlsx`/`.ods` ([`sheet`]) и таблица `.csv`/`.tsv` ([`csv`]) — S8-17, презентация
+//! `.pptx`/`.odp` ([`slides`], S8-18), проверка Office на макросы. Только здесь, в песочнице: UI получает пиксели,
+//! строки, числа и безопасный IR (документ — разделами: лист книги, слайд, ADR 0007).
 //!
 //! Пределы — на каждый запрос: вход не больше [`MAX_INPUT`], картинка и страница — не больше `max_side` по
 //! стороне (страница PDF — шириной `width`, если задана), текст — [`MAX_TEXT`] байт, оглавление — [`MAX_LISTED`] строк; архив не распаковывается (размеры —
 //! из центрального каталога), из OOXML читается только `vbaProject.bin` и не больше [`MAX_VBA`], у `.docx` — пределы
-//! [`docx`] (распаковка, блоки, символы), у книги и таблицы — пределы [`sheet`] (листы, строки, столбцы, ячейки), все
-//! части книги вместе — не больше [`MAX_UNPACKED`] после распаковки. Время
+//! [`docx`] (распаковка, блоки, символы), у книги и таблицы — пределы [`sheet`] (листы, строки, столбцы, ячейки), у
+//! презентации — [`slides`]; все части книги или презентации вместе — не больше [`MAX_UNPACKED`] после распаковки. Время
 //! ограничивает сторож в `serve` (процесс завершается с [`crate::EXIT_TIME`]), память — Job Object песочницы.
 
 use std::io::{self, Read};
@@ -15,6 +15,7 @@ use std::io::{self, Read};
 pub mod csv;
 pub mod docx;
 pub mod sheet;
+pub mod slides;
 
 use serde::{Deserialize, Serialize};
 
@@ -48,6 +49,8 @@ pub enum PreviewKind {
     Sheet,
     /// Таблица `.csv`/`.tsv` → один раздел-таблица (S8-17).
     Table,
+    /// Презентация `.pptx`/`.ppsx`/`.potx`/`.odp` → раздел на слайд (S8-18); с макросами — проверка Office.
+    Slides,
 }
 
 /// Итог просмотра. У `Image` и `Pdf` пиксели RGBA — в бинарной части ответа.
@@ -82,7 +85,8 @@ pub enum Preview {
     },
 }
 
-/// Раздел документа: у `.docx` и таблицы — один без заголовка, у книги — лист (заголовок — имя листа).
+/// Раздел документа: у `.docx` и таблицы — один без заголовка, у книги — лист (заголовок — имя листа), у презентации
+/// — слайд («Слайд N»).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Section {
     pub title: Option<String>,
@@ -155,6 +159,7 @@ pub fn preview(kind: PreviewKind, bytes: &[u8], page: u32, max_side: u32, width:
         PreviewKind::Office => Ok((Preview::Office(scan_office(bytes)?), Vec::new())),
         PreviewKind::Document => sections(bytes, |b| docx::docx(b).map(|(blocks, t)| (vec![Section { title: None, blocks }], t))),
         PreviewKind::Sheet => sections(bytes, sheet::sheet),
+        PreviewKind::Slides => sections(bytes, slides::slides),
         PreviewKind::Table => {
             let (sections, truncated) = csv::csv(bytes);
             Ok((Preview::Document { sections, truncated }, Vec::new()))
@@ -162,7 +167,7 @@ pub fn preview(kind: PreviewKind, bytes: &[u8], page: u32, max_side: u32, width:
     }
 }
 
-/// Документ Office разделами; с макросами (`.docm`, `.xlsm`, `vbaProject.bin`) — не просмотр, а проверка: открытие
+/// Документ Office разделами; с макросами (`.docm`, `.xlsm`, `.pptm`, `vbaProject.bin`) — не просмотр, а проверка: открытие
 /// заблокировано.
 fn sections(bytes: &[u8], parse: impl Fn(&[u8]) -> Result<(Vec<Section>, bool), String>) -> Result<(Preview, Vec<u8>), String> {
     let scan = scan_office(bytes)?;
