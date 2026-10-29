@@ -113,7 +113,7 @@ pub(crate) fn data_dir() -> std::path::PathBuf {
 
 /// Запуск невозможен (нет каталога данных, хранилище или окно не открылись): сообщение в журнал
 /// (и журнал Windows «Приложение») и выход с кодом 1, без паники.
-fn fatal(what: &str, e: impl std::fmt::Display) -> ! {
+pub(crate) fn fatal(what: &str, e: impl std::fmt::Display) -> ! {
     pets_shell::fatal(&tr!(what), e)
 }
 
@@ -252,10 +252,18 @@ fn main() {
         d.sign_in();
     }
     // Живой ящик: кэш учётной записи; нет учётной записи — пустой кэш в памяти до входа.
+    // Перенос формата 5 (ADR 0006 п. 6) первое окно не ждёт: оно — на пустом кэше, ход — в строке состояния.
+    let mut upgrading = None;
     let (cache, index) = match &start_with {
         account::Start::Demo => (demo_cache(&dir, bench, screens.is_some(), keep, n, &mut start), None),
         account::Start::Live(_) if bench => live::bench_store(warm, keep, &mut start).unwrap_or_else(|e| fatal("fatal-store", e)),
-        account::Start::Live(a) => live::open_store(&account::cache_path(&dir, a)).unwrap_or_else(|e| fatal("fatal-store", e)),
+        account::Start::Live(a) => match live::open_at_start(&account::cache_path(&dir, a)).unwrap_or_else(|e| fatal("fatal-store", e)) {
+            live::Startup::Ready(cache, index) => (cache, index),
+            live::Startup::Upgrading(rx) => {
+                upgrading = Some(rx);
+                (Cache::open_in_memory().unwrap_or_else(|e| fatal("fatal-store", e)), None)
+            }
+        },
         account::Start::SignIn(_) => (Cache::open_in_memory().unwrap_or_else(|e| fatal("fatal-store", e)), None),
     };
 
@@ -284,7 +292,10 @@ fn main() {
                 let mut m = Mailer { screens, ..Mailer::new(cache, bench, window, cx) };
                 match start_with {
                     account::Start::Demo => {}
-                    account::Start::Live(a) => m.start_sync(a, index, false, cx),
+                    account::Start::Live(a) => match upgrading {
+                        Some(rx) => m.await_store(rx, a, window, cx),
+                        None => m.start_sync(a, index, false, cx),
+                    },
                     account::Start::SignIn(prefill) => m.show_signin(prefill, window, cx),
                 }
                 m
