@@ -3,6 +3,7 @@ sync-connecting = Connecting to { $url }…
 sync-signed-in = Signed in: { $user }
 sync-loading = Loading { $mailbox }…
 sync-synced = Synced
+sync-store-upgrade = Updating storage: { $percent }%
 sync-error = { $what }: { $detail }
 sync-error-auth = The server rejected the sign-in
 sync-error-network = No connection to the server

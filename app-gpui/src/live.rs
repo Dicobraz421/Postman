@@ -336,7 +336,12 @@ pub(crate) fn inbox(mailboxes: &[MailboxRow]) -> Option<String> {
 
 /// Кэш и индекс поиска учётной записи (`<кэш>.search`). Индекс не открылся — поиск по кэшу.
 pub(crate) fn open_store(path: &Path) -> Result<(Cache, Index), postman_cache::Error> {
-    let cache = Cache::open(path)?;
+    open_store_with(path, &|_| {})
+}
+
+/// То же с ходом переноса формата 5 в 6 (`Event::StoreUpgrade`, ADR 0006 п. 6) в `notify`.
+fn open_store_with(path: &Path, notify: &dyn Fn(Event)) -> Result<(Cache, Index), postman_cache::Error> {
+    let (cache, _) = postman_core::store::open(path, None, notify)?;
     let index = match postman_search::SearchIndex::open(&path.with_extension("search")) {
         Ok(i) => Some(Arc::new(i)),
         Err(e) => {
@@ -345,6 +350,57 @@ pub(crate) fn open_store(path: &Path) -> Result<(Cache, Index), postman_cache::E
         }
     };
     Ok((cache, index))
+}
+
+/// Сколько ждать кэш до первого окна: обычное открытие укладывается, перенос формата 5 — нет.
+const STORE_QUICK: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// Кэш учётной записи при запуске.
+pub(crate) enum Startup {
+    Ready(Cache, Index),
+    /// Идёт перенос формата 5 (ADR 0006 п. 6): окно — на пустом кэше, ход — в строке состояния
+    /// (`Mailer::await_store`).
+    Upgrading(std::sync::mpsc::Receiver<Opening>),
+}
+
+/// Весть из потока открытия кэша.
+pub(crate) enum Opening {
+    Progress { done: u64, total: u64 },
+    Done(Result<(Cache, Index), String>),
+}
+
+/// Открыть кэш учётной записи в фоне: открылся за [`STORE_QUICK`] — сразу, иначе первый кадр его не ждёт.
+pub(crate) fn open_at_start(path: &Path) -> Result<Startup, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let path = path.to_owned();
+    let progress = tx.clone();
+    let spawned = std::thread::Builder::new().name("store-open".into()).spawn(move || {
+        let notify = move |e: Event| {
+            if let Event::StoreUpgrade { done, total } = e {
+                let _ = progress.send(Opening::Progress { done, total });
+            }
+        };
+        let opened = open_store_with(&path, &notify).map_err(|e| e.to_string());
+        let _ = tx.send(Opening::Done(opened));
+    });
+    if let Err(e) = spawned {
+        return Err(e.to_string());
+    }
+    match rx.recv_timeout(STORE_QUICK) {
+        Ok(Opening::Done(Ok((cache, index)))) => Ok(Startup::Ready(cache, index)),
+        Ok(Opening::Done(Err(e))) => Err(e),
+        Ok(Opening::Progress { .. }) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(Startup::Upgrading(rx)),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err("store thread ended".into()),
+    }
+}
+
+/// «Обновление хранилища: N %».
+fn upgrade_text(done: u64, total: u64) -> String {
+    tr!("sync-store-upgrade", percent = upgrade_percent(done, total) as i64)
+}
+
+fn upgrade_percent(done: u64, total: u64) -> u64 {
+    (done.min(total) * 100).checked_div(total).unwrap_or(0)
 }
 
 /// `--bench --live`: кэш и индекс живого ящика — в каталоге данных бенча (H-01), рабочий кэш учётной записи не
@@ -1133,6 +1189,47 @@ impl Mailer {
         .detach();
     }
 
+    /// Запуск во время переноса формата 5: ход — в строке состояния, по готовности — экран на кэше учётной записи
+    /// и синхронизация. Перенос не удался — как прежде при ошибке открытия кэша.
+    pub(crate) fn await_store(&mut self, rx: std::sync::mpsc::Receiver<Opening>, account: Account, window: &mut Window, cx: &mut Context<Self>) {
+        self.live.status = upgrade_text(0, 0);
+        let (tx, mut news) = futures::channel::mpsc::unbounded::<Opening>();
+        cx.background_spawn(async move {
+            for msg in rx {
+                if tx.unbounded_send(msg).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+        cx.spawn_in(window, async move |this, cx| {
+            use futures::StreamExt;
+            while let Some(msg) = news.next().await {
+                let account = account.clone();
+                let more = this
+                    .update_in(cx, |m, window, cx| match msg {
+                        Opening::Progress { done, total } => {
+                            m.live.status = upgrade_text(done, total);
+                            cx.notify();
+                            true
+                        }
+                        Opening::Done(Ok((cache, index))) => {
+                            let screens = m.screens.take();
+                            *m = Mailer { screens, ..Mailer::new(cache, None, window, cx) };
+                            m.start_sync(account, index, false, cx);
+                            false
+                        }
+                        Opening::Done(Err(e)) => crate::fatal("fatal-store", e),
+                    })
+                    .unwrap_or(false);
+                if !more {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
     /// Экран заново на кэше учётной записи; строка входа остаётся, пока сервер не ответит.
     fn switch_account(&mut self, cache: Cache, index: Index, account: Account, window: &mut Window, cx: &mut Context<Self>) {
         let panel = self.live.signin.take();
@@ -1164,6 +1261,25 @@ mod tests {
 
     fn connecting() -> Event {
         Event::Status(Status::Connecting { url: "https://mail".into() })
+    }
+
+    /// Кэш формата 6 (здесь — новый) открывается до первого окна; ждать переноса не нужно.
+    #[test]
+    fn a_current_store_opens_before_the_first_window() {
+        let dir = std::env::temp_dir().join(format!("postman-startup-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        {
+            let opened = super::open_at_start(&dir.join("store.redb"));
+            assert!(matches!(opened, Ok(super::Startup::Ready(..))));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn upgrade_percent() {
+        assert_eq!(super::upgrade_percent(0, 0), 0);
+        assert_eq!(super::upgrade_percent(1, 4), 25);
+        assert_eq!(super::upgrade_percent(9, 4), 100);
     }
 
     #[test]

@@ -3,6 +3,7 @@ sync-connecting = Подключение к { $url }…
 sync-signed-in = Вход выполнен: { $user }
 sync-loading = Загрузка: { $mailbox }…
 sync-synced = Синхронизировано
+sync-store-upgrade = Обновление хранилища: { $percent } %
 sync-error = { $what }: { $detail }
 sync-error-auth = Сервер отклонил вход
 sync-error-network = Нет связи с сервером
