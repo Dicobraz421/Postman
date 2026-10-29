@@ -6,11 +6,12 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use jiff::tz::TimeZone;
-use postman_cache::BodyRow;
+use postman_cache::{Addr, AttachmentRow, BodyRow};
 use postman_calendar::Invitation;
 use postman_ir::{Align, Block, Document, Inline};
 use std::sync::Arc;
 
+use postman_worker::mime::Mime;
 use postman_worker::{Client, Level, Request, Rgba};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
@@ -28,6 +29,12 @@ pub enum Rendered {
         key: String,
         result: Result<Rgba, String>,
     },
+    /// Тело, собранное воркером из письма целиком ([`Renderer::request_raw`]), — производное содержимого: его кладут
+    /// в хранилище (`put_body`), сеть не нужна. Следом — `Body` того же письма.
+    Parsed {
+        id: String,
+        body: Result<Box<BodyRow>, String>,
+    },
     /// Приглашение из вложения: `key` — письмо, к которому оно относится.
     Invite {
         key: String,
@@ -35,8 +42,14 @@ pub enum Rendered {
     },
 }
 
+/// Откуда тело: разобранное или письмо целиком.
+enum Source {
+    Row(Box<BodyRow>),
+    Raw(Arc<Vec<u8>>),
+}
+
 enum Job {
-    Body(String, Box<BodyRow>),
+    Body(String, Source),
     Image(String, Arc<Vec<u8>>),
     Calendar(String, Arc<Vec<u8>>),
 }
@@ -69,8 +82,19 @@ impl Renderer {
                     }
                 }
                 let mut out = Vec::new();
-                if let Some((id, b)) = body {
-                    let doc = render(&mut client, &b);
+                if let Some((id, source)) = body {
+                    let doc = match source {
+                        Source::Row(b) => render(&mut client, &b),
+                        Source::Raw(raw) => {
+                            let parsed = client.mime(&raw).map(|m| Box::new(body_of(m, &id)));
+                            let doc = match &parsed {
+                                Ok(b) => render(&mut client, b),
+                                Err(e) => failed(e),
+                            };
+                            out.push(Rendered::Parsed { id: id.clone(), body: parsed });
+                            doc
+                        }
+                    };
                     out.push(Rendered::Body { id, doc, level: client.level() });
                     if client.level() == postman_worker::Level::Partial && !warned {
                         warned = true;
@@ -100,7 +124,13 @@ impl Renderer {
     }
 
     pub fn request(&self, id: String, body: BodyRow) {
-        let _ = self.tx.send(Job::Body(id, Box::new(body)));
+        let _ = self.tx.send(Job::Body(id, Source::Row(Box::new(body))));
+    }
+
+    /// Тело из письма целиком (`content` хранилища, ADR 0006 п. 2) — без сети: разбор в воркере → `Parsed`, затем
+    /// `Body`.
+    pub fn request_raw(&self, id: String, raw: Arc<Vec<u8>>) {
+        let _ = self.tx.send(Job::Body(id, Source::Raw(raw)));
     }
 
     pub fn decode(&self, key: String, bytes: Arc<Vec<u8>>) {
@@ -134,13 +164,57 @@ fn render(client: &mut Client, body: &BodyRow) -> Document {
         None => None,
     };
     match html_err.or(text_err) {
-        Some(e) => Document {
-            blocks: vec![notice(&format!("Не удалось безопасно показать письмо: {e}"))], ..Default::default()
-        },
+        Some(e) => failed(&e),
         None => Document::default(),
+    }
+}
+
+fn failed(e: &str) -> Document {
+    Document { blocks: vec![notice(&format!("Не удалось безопасно показать письмо: {e}"))], ..Default::default() }
+}
+
+/// Письмо, разобранное воркером ([`Client::mime`]), → тело хранилища. Вложения — по номеру в письме (`<key>#<n>`),
+/// письмо целиком — `key`: так их читают пути IMAP и EWS.
+pub fn body_of(m: Mime, key: &str) -> BodyRow {
+    let addrs = |v: Vec<postman_worker::mime::Addr>| v.into_iter().map(|a| Addr { name: a.name, email: a.email }).collect();
+    BodyRow {
+        to: addrs(m.to),
+        cc: addrs(m.cc),
+        reply_to: addrs(m.reply_to),
+        message_id: m.message_id,
+        references: m.references,
+        html: m.html,
+        text: m.text,
+        attachments: m
+            .parts
+            .into_iter()
+            .map(|p| AttachmentRow { blob_id: format!("{key}#{}", p.index), name: p.name, mime: p.mime, size: p.size, cid: p.cid, inline: p.inline })
+            .collect(),
+        blob_id: Some(key.to_owned()),
     }
 }
 
 fn notice(text: &str) -> Block {
     Block::Paragraph { align: Align::Start, content: vec![Inline::text(format!("⚠ {text}"))] }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Тело из письма целиком (S8-09): поля и вложения по номеру; разбор — тем же кодом, что в воркере.
+    #[test]
+    fn body_from_content() {
+        let raw = b"From: a@x.ru\r\nTo: =?utf-8?B?0JjQstCw0L0=?= <i@x.ru>\r\nCc: c@x.ru\r\nMessage-ID: <m1@x.ru>\r\n\
+References: <r1@x.ru>\r\nSubject: s\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n\
+hi\r\n--b\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=a.pdf\r\n\r\n%PDF\r\n--b--\r\n";
+        let body = body_of(postman_worker::mime::parse(raw).unwrap(), "L7");
+        assert_eq!(body.to, [Addr { name: "Иван".into(), email: "i@x.ru".into() }]);
+        assert_eq!(body.cc.len(), 1);
+        assert_eq!((body.message_id.as_deref(), body.references.as_slice()), (Some("m1@x.ru"), &["r1@x.ru".to_string()][..]));
+        assert_eq!(body.text.as_deref().map(str::trim), Some("hi"));
+        assert_eq!(body.blob_id.as_deref(), Some("L7"));
+        let a = &body.attachments[0];
+        assert_eq!((a.blob_id.as_str(), a.name.as_str(), a.mime.as_str(), a.inline), ("L7#0", "a.pdf", "application/pdf", false));
+    }
 }
