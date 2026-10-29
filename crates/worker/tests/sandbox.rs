@@ -99,12 +99,15 @@ fn decodes_images_and_rejects_others() {
     assert_eq!(&img.pixels[..3], &[255, 0, 0]);
     assert!(c.decode_image(b"<svg onload=alert(1)>", 512).is_err());
     assert!(c.decode_image(&png[..20], 512).is_err());
-    // Формат, который `image` узнаёт, но воркер не берёт (BMP 1×1): отказ до разбора.
+    // BMP 1×1, 24 бита (S8-21).
     let bmp = [
         0x42, 0x4D, 0x3A, 0, 0, 0, 0, 0, 0, 0, 0x36, 0, 0, 0, 0x28, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0x18, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0,
     ];
-    assert_eq!(c.decode_image(&bmp, 512).err().as_deref(), Some("формат картинки не поддерживается"));
+    let img = c.decode_image(&bmp, 512).unwrap();
+    assert_eq!((img.width, img.height, img.pixels.len()), (1, 1, 4));
+    // Формат, который `image` узнаёт, но воркер не берёт (QOI 1×1): отказ до разбора.
+    assert_eq!(c.decode_image(b"qoif\0\0\0\x01\0\0\0\x01\x04\0", 512).err().as_deref(), Some("формат картинки не поддерживается"));
     // Воркер жив после ошибок разбора.
     assert!(c.render(&Request::Text("ok".into())).is_ok());
 }
@@ -140,8 +143,8 @@ fn preview_round_trip() {
     use postman_worker::{OfficeFormat, Preview, PreviewKind};
     let mut c = client();
     let (p, px) = c.preview(PreviewKind::Image, &fixture("img.png"), 0, 50, 0).unwrap();
-    let Preview::Image { width, height, source, format } = p else { panic!("{p:?}") };
-    assert_eq!((source, format.as_str()), ((300, 200), "PNG"));
+    let Preview::Image { width, height, source, format, page, pages } = p else { panic!("{p:?}") };
+    assert_eq!((source, format.as_str(), page, pages), ((300, 200), "PNG", 0, 1));
     assert!(width <= 50 && height <= 50);
     assert_eq!(px.unwrap().pixels.len(), (width * height * 4) as usize);
 
@@ -171,6 +174,10 @@ fn preview_round_trip() {
 
     let (p, _) = c.preview(PreviewKind::Text, "Дата;Сумма\r\n21.10;100".as_bytes(), 0, 0, 0).unwrap();
     assert_eq!(p, Preview::Text { text: "Дата;Сумма\n21.10;100".into(), truncated: false });
+    // Таблица разделами (S8-17).
+    let (p, _) = c.preview(PreviewKind::Table, "Дата;Сумма\r\n21.10;100".as_bytes(), 0, 0, 0).unwrap();
+    let Preview::Document { sections, truncated: false } = p else { panic!("{p:?}") };
+    assert!(matches!(sections.as_slice(), [postman_worker::Section { title: None, blocks }] if blocks.len() == 1));
 
     assert!(c.preview(PreviewKind::Pdf, b"%PDF-1.7 broken", 0, 800, 0).is_err());
     assert!(c.preview(PreviewKind::Archive, b"PK\x03\x04", 0, 0, 0).is_err());

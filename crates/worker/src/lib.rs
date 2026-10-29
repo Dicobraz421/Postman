@@ -57,7 +57,8 @@ pub enum Request {
     Calendar,
     /// Карточки vCard (.vcf, одна или несколько) в бинарной части; ответ — JSContact (JSON) каждой (S7-05б, CardDAV).
     Contacts,
-    /// Картинка (PNG/JPEG/GIF/WebP) в бинарной части; ответ — RGBA не больше `max_side` по стороне.
+    /// Картинка (PNG/JPEG/GIF/WebP/BMP/ICO, у TIFF — первая страница) в бинарной части; ответ — RGBA не больше
+    /// `max_side` по стороне.
     Image {
         max_side: u32,
     },
@@ -264,17 +265,33 @@ pub struct Rgba {
 }
 
 fn decode_image(bytes: &[u8], max_side: u32) -> Result<Rgba, String> {
-    decode(bytes, max_side).map(|(img, _, _)| img)
+    decode(bytes, max_side, 0).map(|d| d.img)
 }
 
-/// Картинка, её исходный размер и формат.
-pub(crate) fn decode(bytes: &[u8], max_side: u32) -> Result<(Rgba, (u32, u32), &'static str), String> {
-    use image::codecs::{gif::GifDecoder, jpeg::JpegDecoder, png::PngDecoder, webp::WebPDecoder};
-    use image::{DynamicImage, ImageDecoder, ImageFormat, ImageResult, Limits};
+/// Декодированная картинка с исходным размером, форматом («PNG») и страницей: показанная (с нуля) и всего — у TIFF
+/// страницы, как у PDF, у остальных — 0 и 1.
+pub(crate) struct Decoded {
+    pub img: Rgba,
+    pub source: (u32, u32),
+    pub format: &'static str,
+    pub page: u32,
+    pub pages: u32,
+}
+
+/// Страниц TIFF — не больше (цепочка IFD дальше не читается).
+const MAX_TIFF_PAGES: usize = 1000;
+
+/// Картинка не больше `max_side` по стороне; у TIFF — страница `page` (за последней — последняя). ICO — наибольший
+/// кадр (при равной глубине цвета).
+pub(crate) fn decode(bytes: &[u8], max_side: u32, page: u32) -> Result<Decoded, String> {
+    use image::codecs::{
+        bmp::BmpDecoder, gif::GifDecoder, ico::IcoDecoder, jpeg::JpegDecoder, png::PngDecoder, tiff::TiffDecoder, webp::WebPDecoder,
+    };
+    use image::{DynamicImage, ImageDecoder, ImageError, ImageFormat, ImageResult, Limits};
 
     // Как `ImageReader::decode`, но с декодером нужного формата напрямую: `ImageReader` выбирает декодер
     // во время работы и тянет в exe все форматы, включённые в `image` по рабочей области (gpui включает
-    // exr, tiff, dds, hdr…), хотя всё, кроме четырёх, мы отвергаем: +1,2 МиБ к воркеру (docs/SIZE.md).
+    // exr, dds, hdr…), хотя всё, кроме этих семи, мы отвергаем: +1,2 МиБ к воркеру (docs/SIZE.md).
     fn load(mut decoder: impl ImageDecoder, mut limits: Limits) -> ImageResult<DynamicImage> {
         limits.reserve(decoder.total_bytes())?;
         decoder.set_limits(limits)?;
@@ -286,21 +303,85 @@ pub(crate) fn decode(bytes: &[u8], max_side: u32) -> Result<(Rgba, (u32, u32), &
     limits.max_image_height = Some(16_384);
     limits.max_alloc = Some(256 * 1024 * 1024);
     let r = io::Cursor::new(bytes);
-    let (decoded, format) = match image::guess_format(bytes) {
+    // BigTIFF `image` по сигнатуре не узнаёт, а `tiff` читает.
+    let big_tiff = bytes.starts_with(b"II+\0") || bytes.starts_with(b"MM\0+");
+    let guessed = if big_tiff { Ok(ImageFormat::Tiff) } else { image::guess_format(bytes) };
+    let (mut shown, mut pages) = (0, 1);
+    let (decoded, format) = match guessed {
         Ok(ImageFormat::Png) => (PngDecoder::with_limits(r, limits.clone()).and_then(|d| load(d, limits)), "PNG"),
         Ok(ImageFormat::Jpeg) => (JpegDecoder::new(r).and_then(|d| load(d, limits)), "JPEG"),
         Ok(ImageFormat::Gif) => (GifDecoder::new(r).and_then(|d| load(d, limits)), "GIF"),
         Ok(ImageFormat::WebP) => (WebPDecoder::new(r).and_then(|d| load(d, limits)), "WebP"),
+        Ok(ImageFormat::Bmp) => (BmpDecoder::new(r).and_then(|d| load(d, limits)), "BMP"),
+        Ok(ImageFormat::Ico) => (IcoDecoder::new(r).and_then(|d| load(d, limits)), "ICO"),
+        Ok(ImageFormat::Tiff) => {
+            let (file, at, count) = tiff_page(bytes, page)?;
+            (shown, pages) = (at, count);
+            (TiffDecoder::new(io::Cursor::new(&file[..])).and_then(|d| load(d, limits)), "TIFF")
+        }
         _ => return Err("формат картинки не поддерживается".into()),
     };
-    let mut img = decoded.map_err(|e| e.to_string())?;
+    let mut img = decoded.map_err(|e| match e {
+        // Например, TIFF факса CCITT G3 (G4 `tiff` умеет).
+        ImageError::Unsupported(_) => "формат картинки не поддерживается".to_string(),
+        e => e.to_string(),
+    })?;
     let source = (img.width(), img.height());
     let max_side = max_side.clamp(16, 4096);
     if img.width() > max_side || img.height() > max_side {
         img = img.thumbnail(max_side, max_side);
     }
     let rgba = img.into_rgba8();
-    Ok((Rgba { width: rgba.width(), height: rgba.height(), pixels: rgba.into_raw() }, source, format))
+    let img = Rgba { width: rgba.width(), height: rgba.height(), pixels: rgba.into_raw() };
+    Ok(Decoded { img, source, format, page: shown, pages })
+}
+
+/// Страница TIFF: страницы — цепочка IFD (смещение первой — в заголовке, следующей — в конце каждой). Страница
+/// `page` (за последней — последняя) — копией файла, у которой первая IFD — нужная. Итог — файл, показанная
+/// страница и всего страниц (не больше [`MAX_TIFF_PAGES`]; цикл в цепочке — её конец).
+fn tiff_page(bytes: &[u8], page: u32) -> Result<(std::borrow::Cow<'_, [u8]>, u32, u32), String> {
+    let le = match bytes.get(..2) {
+        Some(b"II") => true,
+        Some(b"MM") => false,
+        _ => return Err("TIFF не разобран".into()),
+    };
+    let int = |at: usize, len: usize| -> Option<u64> {
+        let b = bytes.get(at..at.checked_add(len)?)?;
+        let fold = |n: u64, &x: &u8| (n << 8) | u64::from(x);
+        Some(if le { b.iter().rev().fold(0, fold) } else { b.iter().fold(0, fold) })
+    };
+    // Классический TIFF: смещения по 4 байта, IFD — 2 байта счётчика и записи по 12; BigTIFF — 8, 8 и 20.
+    let (first, wide, head, entry) = match int(2, 2) {
+        Some(42) => (4, 4, 2, 12),
+        Some(43) => (8, 8, 8, 20),
+        _ => return Err("TIFF не разобран".into()),
+    };
+    let mut offsets: Vec<u64> = Vec::new();
+    let mut next = int(first, wide);
+    while let Some(at) = next.filter(|&o| o != 0 && !offsets.contains(&o)) {
+        if offsets.len() >= MAX_TIFF_PAGES {
+            break;
+        }
+        let Some(start) = usize::try_from(at).ok() else { break };
+        let Some(count) = int(start, head).and_then(|n| usize::try_from(n).ok()) else { break };
+        offsets.push(at);
+        next = count.checked_mul(entry).and_then(|n| n.checked_add(start + head)).and_then(|end| int(end, wide));
+    }
+    let Some(last) = offsets.len().checked_sub(1) else { return Err("в TIFF нет страниц".into()) };
+    let shown = (page as usize).min(last);
+    if shown == 0 {
+        return Ok((std::borrow::Cow::Borrowed(bytes), 0, offsets.len() as u32));
+    }
+    let mut file = bytes.to_vec();
+    let at = offsets[shown];
+    let value: Vec<u8> = if wide == 8 {
+        if le { at.to_le_bytes().to_vec() } else { at.to_be_bytes().to_vec() }
+    } else {
+        let at = u32::try_from(at).map_err(|_| "TIFF не разобран".to_string())?;
+        if le { at.to_le_bytes().to_vec() } else { at.to_be_bytes().to_vec() }
+    };
+    file[first..first + wide].copy_from_slice(&value);
+    Ok((std::borrow::Cow::Owned(file), shown as u32, offsets.len() as u32))
 }
 
 /// iCalendar → `{ "method": "REQUEST", "data": <JSCalendar> }`. Чужие данные — только в песочнице.
@@ -964,5 +1045,132 @@ mod tests {
         assert_eq!(cards[1]["name"]["full"], "Вторая");
         assert!(super::parse_contacts(b"BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n").is_err());
         assert!(super::parse_contacts(b"").is_err());
+    }
+
+    fn bmp(pixels: &[u8], width: u32, color: image::ExtendedColorType) -> Vec<u8> {
+        let mut out = Vec::new();
+        let height = pixels.len() as u32 / width / u32::from(color.bits_per_pixel() / 8);
+        image::codecs::bmp::BmpEncoder::new(&mut out).encode(pixels, width, height, color).unwrap();
+        out
+    }
+
+    #[test]
+    fn bmp_24_and_32_bits() {
+        let d = super::decode(&bmp(&[255, 0, 0, 0, 0, 255], 2, image::ExtendedColorType::Rgb8), 512, 0).unwrap();
+        assert_eq!((d.source, d.format, d.page, d.pages), ((2, 1), "BMP", 0, 1));
+        assert_eq!(d.img.pixels, [255, 0, 0, 255, 0, 0, 255, 255]);
+        let d = super::decode(&bmp(&[0, 255, 0, 128, 1, 2, 3, 255], 2, image::ExtendedColorType::Rgba8), 512, 0).unwrap();
+        assert_eq!(d.img.pixels, [0, 255, 0, 128, 1, 2, 3, 255]);
+    }
+
+    /// Из трёх кадров ICO — наибольший.
+    #[test]
+    fn ico_largest_frame() {
+        use image::codecs::ico::{IcoEncoder, IcoFrame};
+        let frame = |side: u32, gray: u8| {
+            let px: Vec<u8> = (0..side * side).flat_map(|_| [gray, gray, gray, 255]).collect();
+            IcoFrame::as_png(&px, side, side, image::ExtendedColorType::Rgba8).unwrap()
+        };
+        let mut ico = Vec::new();
+        IcoEncoder::new(&mut ico).encode_images(&[frame(16, 10), frame(48, 20), frame(32, 30)]).unwrap();
+        let d = super::decode(&ico, 512, 0).unwrap();
+        assert_eq!((d.source, d.format), ((48, 48), "ICO"));
+        assert_eq!(&d.img.pixels[..4], &[20, 20, 20, 255]);
+        // Уменьшается до `max_side`, как остальные.
+        let d = super::decode(&ico, 16, 0).unwrap();
+        assert_eq!((d.img.width, d.img.height), (16, 16));
+    }
+
+    /// TIFF из страниц (ширина, высота, серый): 8 бит без сжатия (или `compression`), полоса — перед IFD страницы.
+    fn tiff(pages: &[(u32, u32, u8)], compression: u16) -> Vec<u8> {
+        let mut out = b"II*\0\0\0\0\0".to_vec();
+        let mut link = 4usize;
+        for &(w, h, gray) in pages {
+            let data = out.len() as u32;
+            out.extend(std::iter::repeat_n(gray, (w * h) as usize));
+            if out.len() % 2 == 1 {
+                out.push(0);
+            }
+            let ifd = out.len() as u32;
+            out[link..link + 4].copy_from_slice(&ifd.to_le_bytes());
+            let tags: [(u16, u16, u32); 9] = [
+                (256, 4, w),
+                (257, 4, h),
+                (258, 3, 8),
+                (259, 3, u32::from(compression)),
+                (262, 3, 1),
+                (273, 4, data),
+                (277, 3, 1),
+                (278, 4, h),
+                (279, 4, w * h),
+            ];
+            out.extend((tags.len() as u16).to_le_bytes());
+            for (tag, ty, v) in tags {
+                out.extend(tag.to_le_bytes());
+                out.extend(ty.to_le_bytes());
+                out.extend(1u32.to_le_bytes());
+                if ty == 3 {
+                    out.extend((v as u16).to_le_bytes());
+                    out.extend([0, 0]);
+                } else {
+                    out.extend(v.to_le_bytes());
+                }
+            }
+            link = out.len();
+            out.extend(0u32.to_le_bytes());
+        }
+        out
+    }
+
+    #[test]
+    fn tiff_pages_like_pdf() {
+        let mut t = tiff(&[(4, 3, 10), (5, 2, 200), (6, 1, 99)], 1);
+        let d = super::decode(&t, 512, 0).unwrap();
+        assert_eq!((d.source, d.format, d.page, d.pages), ((4, 3), "TIFF", 0, 3));
+        assert_eq!(&d.img.pixels[..4], &[10, 10, 10, 255]);
+        let d = super::decode(&t, 512, 1).unwrap();
+        assert_eq!((d.source, d.page, d.pages), ((5, 2), 1, 3));
+        assert_eq!(&d.img.pixels[..4], &[200, 200, 200, 255]);
+        // Страница за концом — последняя.
+        let d = super::decode(&t, 512, 99).unwrap();
+        assert_eq!((d.source, d.page, d.pages), ((6, 1), 2, 3));
+        // Цикл в цепочке страниц — её конец.
+        let first = t[4..8].to_vec();
+        let len = t.len();
+        t[len - 4..].copy_from_slice(&first);
+        assert_eq!(super::decode(&t, 512, 99).map(|d| (d.page, d.pages)), Ok((2, 3)));
+        // Факс CCITT G3 декодер `tiff` не умеет.
+        let g3 = tiff(&[(4, 3, 10)], 3);
+        assert_eq!(super::decode(&g3, 512, 0).err().as_deref(), Some("формат картинки не поддерживается"));
+    }
+
+    #[test]
+    fn huge_and_broken_images_are_errors() {
+        // BMP 30 000 × 30 000 без данных: отказ по размеру, до выделения памяти.
+        let mut b = bmp(&[0, 0, 0], 1, image::ExtendedColorType::Rgb8);
+        b[18..22].copy_from_slice(&30_000u32.to_le_bytes());
+        b[22..26].copy_from_slice(&30_000u32.to_le_bytes());
+        assert_eq!(super::decode(&b, 512, 0).err().as_deref(), Some("Memory limit exceeded"));
+        // TIFF 30 000 × 30 000: у страницы 1 × 1 IFD — с 10-го байта; ширина, высота, строк в полосе и её длина —
+        // значения записей 0, 1, 7 и 8.
+        let mut t = tiff(&[(1, 1, 0)], 1);
+        for (entry, v) in [(0, 30_000u32), (1, 30_000), (7, 30_000), (8, 900_000_000)] {
+            let at = 10 + 2 + 12 * entry + 8;
+            t[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        assert_eq!(super::decode(&t, 512, 0).err().as_deref(), Some("Memory limit exceeded"));
+        for broken in [
+            &b"BM"[..],
+            b"BM\0\0garbage",
+            b"II*\0",
+            b"II*\0\xff\xff\xff\x7f",
+            b"MM\0*\0\0\0\x08\0\x01",
+            b"II+\0\x08\0\0\0",
+            &[0, 0, 1, 0, 3, 0, 1, 2],
+        ] {
+            assert!(super::decode(broken, 512, 0).is_err(), "{broken:?}");
+        }
+        let t = tiff(&[(4, 3, 10)], 1);
+        assert!(super::decode(&t[..t.len() - 20], 512, 0).is_err());
     }
 }
