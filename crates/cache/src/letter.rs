@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::content::{self, Hash};
 use crate::folder::{self, FolderId, Owner, Scope};
+use crate::job;
 use crate::remote::{LETTER_REMOTE, REMOTE};
 use crate::{Cache, Error, FLAGGED, META, Result, dec, enc};
 
@@ -30,8 +31,21 @@ pub enum Place {
     Synced,
     /// Только в базе.
     Local,
-    /// Переносится в другую учётку или «На этом компьютере»: шаги — в [`Cache::outbound`].
+    /// Переносится в другую учётку или «На этом компьютере»: шаги — в [`Cache::outbound`]. Так до конца задания
+    /// ([`Cache::finish`]), и после подтверждения цели: перенос обратно до удаления у источника снимает задание.
     Outbound(JobId),
+    /// Сервер цели письмо не взял ([`Cache::refused`]): оно только в базе, в папке цели; у источника не удалено, его
+    /// связи остаются `detached`.
+    Refused(Refused),
+}
+
+/// Почему сервер цели не взял письмо.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Refused {
+    /// Больше предела сервера цели.
+    TooLarge,
+    /// Отказ после повторов.
+    Rejected,
 }
 
 /// Строка письма: то же, что [`crate::EmailRow`], без ключа сервера, с папками, содержимым и местом.
@@ -73,17 +87,19 @@ pub enum Step {
     Content,
     /// Выгрузить в папку цели.
     Upload,
-    /// Сервер цели подтвердил: новая связь, `place = Synced`.
+    /// Выгрузка отправлена, ждём подтверждения: после перезапуска — повтор с проверкой у цели.
     Confirm,
     /// Удалить у источника и снять `detached`-связь.
     DeleteSource,
 }
 
-/// Строка задания переноса: куда и на каком шаге.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Строка задания переноса: откуда, куда и на каком шаге.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Outbound {
     pub to: FolderId,
     pub step: Step,
+    /// Папки письма до переноса — туда оно вернётся при отмене ([`Cache::restore`]).
+    pub from: Vec<FolderId>,
 }
 
 /// Итог [`Cache::move_letters`].
@@ -101,7 +117,7 @@ pub const MOVE_BATCH: usize = 100_000;
 
 pub(crate) const NEXT_LETTER: &str = "next_letter";
 pub(crate) const NEXT_FOLDER: &str = "next_folder";
-const NEXT_JOB: &str = "next_job";
+pub(crate) const NEXT_JOB: &str = "next_job";
 
 pub(crate) const LETTER: TableDefinition<u64, &[u8]> = TableDefinition::new("letter");
 /// (папка, −дата, письмо) → () — порядок списка.
@@ -117,7 +133,7 @@ pub(crate) const BY_THREAD: TableDefinition<(&str, i64, u64), ()> = TableDefinit
 /// Письмо → [`crate::Recipients`].
 pub(crate) const RECIPIENTS: TableDefinition<u64, &[u8]> = TableDefinition::new("recipients");
 /// (задание, письмо) → [`Outbound`].
-const OUTBOUND: TableDefinition<(u64, u64), &[u8]> = TableDefinition::new("outbound");
+pub(crate) const OUTBOUND: TableDefinition<(u64, u64), &[u8]> = TableDefinition::new("outbound");
 
 /// Таблицы формата 6 — при открытии кэша.
 pub(crate) fn init(tx: &WriteTransaction) -> Result<()> {
@@ -129,6 +145,7 @@ pub(crate) fn init(tx: &WriteTransaction) -> Result<()> {
     tx.open_table(BY_THREAD)?;
     tx.open_table(RECIPIENTS)?;
     tx.open_table(OUTBOUND)?;
+    tx.open_table(crate::job::JOB)?;
     tx.open_table(REMOTE)?;
     tx.open_table(LETTER_REMOTE)?;
     tx.open_table(folder::FOLDER)?;
@@ -155,7 +172,7 @@ pub(crate) struct Letters<'t> {
     by_keyword: Table<'t, (&'static str, u64, i64, u64), ()>,
     by_thread: Table<'t, (&'static str, i64, u64), ()>,
     pub(crate) recipients: Table<'t, u64, &'static [u8]>,
-    outbound: Table<'t, (u64, u64), &'static [u8]>,
+    pub(crate) outbound: Table<'t, (u64, u64), &'static [u8]>,
     owners: HashMap<FolderId, Owner>,
     scopes: HashMap<Owner, u64>,
     counts: HashMap<u64, i64>,
@@ -454,7 +471,9 @@ impl Cache {
     /// до [`MOVE_BATCH`] писем; содержимое не трогается. Письмо оказывается только в `to`.
     ///
     /// Цель — у другого владельца: связи с сервером источника помечаются `detached` (синхронизация источника не
-    /// вернёт письмо, но увидит удаление), письму — `Outbound` и строка задания (все пачки — под одним номером).
+    /// вернёт письмо, но увидит удаление), письму — `Outbound` и строка задания с прежними папками (все пачки — под
+    /// одним номером; уже ждавшее выгрузки и ещё не удалённое у источника — папки до первого переноса), задание — строкой [`crate::JobRow`] в той же
+    /// транзакции: в «На этом компьютере» — локальный архив без вопроса, в учётку — вопрос.
     /// Цель — учётка, где у письма уже есть связь (перенос обратно), — связь снова действует, `Synced`, строка
     /// задания убирается; у письма без связей перенос в «На этом компьютере» — сразу `Local`. Писем, которых нет,
     /// и уже лежащих только в `to` — в итоге нет.
@@ -469,6 +488,7 @@ impl Cache {
             {
                 let mut l = Letters::open(&tx)?;
                 let target = l.owner(to)?;
+                let mut added = 0;
                 for &id in batch {
                     let Some(old) = l.get(id)? else { continue };
                     if !old.folders.is_empty() && old.folders.iter().all(|f| *f == to) {
@@ -485,9 +505,10 @@ impl Cache {
                             r.detached = target != Owner::Account(r.account.clone());
                         }
                         l.set_refs(id, &refs)?;
-                        if let Place::Outbound(job) = old.place {
-                            l.outbound.remove((job.0, id.0))?;
-                        }
+                        let prev = match old.place {
+                            Place::Outbound(job) => l.take_step(job, id)?,
+                            _ => None,
+                        };
                         new.place = if refs.iter().any(|r| !r.detached) {
                             Place::Synced
                         } else if refs.is_empty() && target == Owner::Local {
@@ -497,18 +518,24 @@ impl Cache {
                                 Some(j) => j,
                                 None => *ticket.job.insert(JobId(next_id(&tx, NEXT_JOB)?)),
                             };
-                            l.outbound.insert((job.0, id.0), enc(&Outbound { to, step: Step::Content })?.as_slice())?;
-                            ticket.outbound += 1;
+                            // Уже ждало выгрузки и у источника ещё есть: вернуть — туда, откуда переносили впервые.
+                            let from = prev.filter(|_| refs.iter().any(|r| r.detached)).map_or_else(|| old.folders.clone(), |o| o.from);
+                            l.outbound.insert((job.0, id.0), enc(&Outbound { to, step: Step::Content, from })?.as_slice())?;
+                            added += 1;
                             Place::Outbound(job)
                         };
                     } else if let Place::Outbound(job) = old.place {
                         // Ждёт выгрузки и переложено в другую папку той же цели: задание — в новую папку.
-                        let step = l.outbound.get((job.0, id.0))?.map(|v| dec::<Outbound>(v.value())).transpose()?.map_or(Step::Content, |o| o.step);
-                        l.outbound.insert((job.0, id.0), enc(&Outbound { to, step })?.as_slice())?;
+                        let ob = l.step(job, id)?.unwrap_or_else(|| Outbound { to, step: Step::Content, from: old.folders.clone() });
+                        l.outbound.insert((job.0, id.0), enc(&Outbound { to, ..ob })?.as_slice())?;
                     }
                     l.put(id, Some(&old), &new)?;
                     ticket.moved += 1;
                 }
+                if let Some(job) = ticket.job.filter(|_| added > 0) {
+                    job::add(&tx, job, &target, added as u64)?;
+                }
+                ticket.outbound += added;
                 l.finish()?;
             }
             tx.commit()?;
@@ -552,7 +579,7 @@ impl Cache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FolderRow, RemoteRef};
+    use crate::{FolderRow, MigrationMode, MigrationState, RemoteRef};
 
     fn account_folder(c: &Cache, account: &str, remote: &str) -> FolderId {
         let row = FolderRow { owner: Owner::Account(account.into()), parent: None, name: remote.into(), role: None, remote: Some(remote.into()) };
@@ -621,7 +648,9 @@ mod tests {
         let job = t.job.unwrap();
         assert_eq!((t.moved, t.outbound), (2, 2));
         assert_eq!(c.letter(x).unwrap().unwrap().place, Place::Outbound(job));
-        assert_eq!(c.outbound(job).unwrap(), [x, y].map(|id| (id, Outbound { to: b_in, step: Step::Content })));
+        assert_eq!(c.outbound(job).unwrap(), [x, y].map(|id| (id, Outbound { to: b_in, step: Step::Content, from: vec![a_in] })));
+        let j = c.job(job).unwrap().unwrap();
+        assert_eq!((j.mode, j.state, j.total), (MigrationMode::Ask, MigrationState::Asking, 2));
         assert!(c.remotes(x).unwrap()[0].detached);
         assert_eq!(c.letter_of("a", "x").unwrap(), None);
         assert_eq!((c.keyword_count_in("pm.cat.a", &all("a")).unwrap(), c.keyword_count_in("pm.cat.a", &all("b")).unwrap()), (0, 1));
@@ -653,6 +682,8 @@ mod tests {
         let x = c.upsert_remote("a", "x", &row(10, &[a_in], &["pm.cat.a"])).unwrap();
         let job = c.move_letters(&[x], archive).unwrap().job.unwrap();
         assert_eq!(c.letter(x).unwrap().unwrap().place, Place::Outbound(job));
+        let j = c.job(job).unwrap().unwrap();
+        assert_eq!((j.mode, j.state, j.total), (MigrationMode::LocalArchive, MigrationState::Running, 1));
         assert_eq!(c.keyword_count_in("pm.cat.a", &Scope::All(Owner::Local)).unwrap(), 1);
         assert_eq!(c.letter_of("a", "x").unwrap(), None);
 
@@ -672,7 +703,7 @@ mod tests {
         // Ждёт выгрузки и переложено внутри цели — задание в новую папку.
         let b_arch = account_folder(&c, "b", "arch");
         c.move_letters(&[x], b_arch).unwrap();
-        assert_eq!(c.outbound(job2).unwrap(), [(x, Outbound { to: b_arch, step: Step::Content })]);
+        assert_eq!(c.outbound(job2).unwrap(), [(x, Outbound { to: b_arch, step: Step::Content, from: vec![archive] })]);
         assert_eq!(c.move_letters(&[x], archive).unwrap().job, None);
         assert_eq!(c.letter(x).unwrap().unwrap().place, Place::Local);
         assert!(c.outbound(job2).unwrap().is_empty());
@@ -689,6 +720,7 @@ mod tests {
         let t = c.move_in_batches(&ids, b_in, 2).unwrap();
         assert_eq!((t.moved, t.outbound), (5, 5));
         assert_eq!(c.outbound(t.job.unwrap()).unwrap().len(), 5);
+        assert_eq!(c.job(t.job.unwrap()).unwrap().unwrap().total, 5, "задание одно на все пачки");
         assert_eq!(c.keyword_count_in("k", &Scope::Folder(b_in)).unwrap(), 5);
         assert_index(&c);
     }

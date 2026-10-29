@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::io::{self, Read};
 use std::ops::Range;
 
-use redb::{ReadOnlyTable, ReadableDatabase, ReadableTable, TableDefinition, WriteTransaction};
+use redb::{ReadOnlyTable, ReadTransaction, ReadableDatabase, ReadableTable, TableDefinition, WriteTransaction};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -385,6 +385,23 @@ pub(crate) fn release(tx: &WriteTransaction, hash: Hash) -> Result<()> {
     Ok(())
 }
 
+/// Читатель содержимого `hash` в транзакции `tx`; `None` — такого содержимого нет.
+fn reader(tx: &ReadTransaction, hash: Hash) -> Result<Option<ContentReader>> {
+    let Some(row) = tx.open_table(CONTENT)?.get(hash.0)?.map(|v| dec::<ContentRow>(v.value())).transpose()? else {
+        return Ok(None);
+    };
+    Ok(Some(ContentReader {
+        row,
+        part: tx.open_table(PART)?,
+        chunks: tx.open_table(CHUNKS)?,
+        pos: 0,
+        next: 0,
+        stream: None,
+        buf: Vec::new(),
+        off: 0,
+    }))
+}
+
 fn hex(h: &Hash) -> String {
     h.0[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -505,20 +522,25 @@ impl Cache {
 
     /// Письмо целиком потоком (экспорт, выгрузка на сервер): в памяти — скелет и кусок части.
     pub fn content_reader(&self, hash: Hash) -> Result<Option<ContentReader>> {
+        reader(&self.db.begin_read()?, hash)
+    }
+
+    /// Письмо `letter` целиком (выгрузка на сервер цели); `None` — письма нет или содержимое не загружено.
+    pub fn letter_content(&self, letter: LetterId) -> Result<Option<Vec<u8>>> {
+        let Some(mut r) = self.letter_content_reader(letter)? else { return Ok(None) };
+        let mut out = Vec::new();
+        r.read_to_end(&mut out)?;
+        Ok(Some(out))
+    }
+
+    /// [`Cache::letter_content`] потоком — строка письма и содержимое из одной транзакции чтения.
+    pub fn letter_content_reader(&self, letter: LetterId) -> Result<Option<ContentReader>> {
         let tx = self.db.begin_read()?;
-        let Some(row) = tx.open_table(CONTENT)?.get(hash.0)?.map(|v| dec::<ContentRow>(v.value())).transpose()? else {
-            return Ok(None);
-        };
-        Ok(Some(ContentReader {
-            row,
-            part: tx.open_table(PART)?,
-            chunks: tx.open_table(CHUNKS)?,
-            pos: 0,
-            next: 0,
-            stream: None,
-            buf: Vec::new(),
-            off: 0,
-        }))
+        let row: Option<LetterRow> = tx.open_table(LETTER)?.get(letter.0)?.map(|v| dec(v.value())).transpose()?;
+        match row.and_then(|r| r.content) {
+            Some(hash) => reader(&tx, hash),
+            None => Ok(None),
+        }
     }
 
     /// Пересчёт ссылок на содержимое и части с нуля по письмам и сверка с `refs` (и кусками частей) — для тестов и
