@@ -13,7 +13,8 @@ mod sandbox;
 
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use postman_ir::Document;
@@ -31,8 +32,13 @@ pub const TIME_LIMIT: Duration = Duration::from_secs(8);
 /// Сколько клиент ждёт ответа на просмотр вложения: сторож воркера срабатывает раньше.
 pub const PREVIEW_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Больше этого не принимаем ни в одну сторону.
+/// Сколько клиент ждёт разбора письма на части (до [`mime::MAX_SPLIT`]): сторож воркера срабатывает раньше.
+pub const SPLIT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Больше этого не принимаем ни в одну сторону (кроме бинарной части `MimeSplit`).
 const MAX_FRAME: usize = 64 * 1024 * 1024;
+/// Бинарная часть запроса и ответа `MimeSplit`: письмо целиком и его раскодированные части (не длиннее письма).
+const MAX_SPLIT_FRAME: usize = mime::MAX_SPLIT;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Request {
@@ -42,6 +48,9 @@ pub enum Request {
     MimePart {
         index: u32,
     },
+    /// Письмо целиком для хранилища (S8-07, ADR 0006 §2) в бинарной части → [`mime::Split`], раскодированные части
+    /// подряд — в бинарной части ответа.
+    MimeSplit,
     Html(String),
     Text(String),
     /// Приглашение iCalendar (.ics) в бинарной части; ответ — METHOD и JSCalendar (JSON).
@@ -216,6 +225,8 @@ fn probe(p: Probe) -> Response {
 enum Response {
     Ok(Document),
     Mime(Box<mime::Mime>),
+    /// Листовые части письма; раскодированные — в бинарной части.
+    Split(mime::Split),
     /// RGBA8 в бинарной части.
     Image {
         width: u32,
@@ -342,17 +353,21 @@ pub fn parse_contacts(bytes: &[u8]) -> Result<Vec<serde_json::Value>, String> {
     Ok(out)
 }
 
-fn write_msg(w: &mut impl Write, json: &[u8], bin: &[u8]) -> io::Result<()> {
-    write_frame(w, json)?;
-    write_frame(w, bin)
+/// Предел бинарной части запроса `req` и ответа на него: письмо на разбор частей — больше общего [`MAX_FRAME`].
+fn max_bin(req: &Request) -> usize {
+    match req {
+        Request::MimeSplit => MAX_SPLIT_FRAME,
+        _ => MAX_FRAME,
+    }
 }
 
-fn read_msg(r: &mut impl Read) -> io::Result<(Vec<u8>, Vec<u8>)> {
-    Ok((read_frame(r)?, read_frame(r)?))
+fn write_msg(w: &mut impl Write, json: &[u8], bin: &[u8], max_bin: usize) -> io::Result<()> {
+    write_frame(w, json, MAX_FRAME)?;
+    write_frame(w, bin, max_bin)
 }
 
-fn write_frame(w: &mut impl Write, payload: &[u8]) -> io::Result<()> {
-    if payload.len() > MAX_FRAME {
+fn write_frame(w: &mut impl Write, payload: &[u8], max: usize) -> io::Result<()> {
+    if payload.len() > max {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "кадр слишком большой"));
     }
     w.write_all(&(payload.len() as u32).to_le_bytes())?;
@@ -360,11 +375,11 @@ fn write_frame(w: &mut impl Write, payload: &[u8]) -> io::Result<()> {
     w.flush()
 }
 
-fn read_frame(r: &mut impl Read) -> io::Result<Vec<u8>> {
+fn read_frame(r: &mut impl Read, max: usize) -> io::Result<Vec<u8>> {
     let mut len = [0u8; 4];
     r.read_exact(&mut len)?;
     let len = u32::from_le_bytes(len) as usize;
-    if len > MAX_FRAME {
+    if len > max {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "кадр слишком большой"));
     }
     let mut buf = vec![0; len];
@@ -382,16 +397,20 @@ pub fn serve() -> ! {
     if let Err(e) = sandbox::lockdown() {
         // Без песочницы не работаем: лучше показать письмо текстом, чем разбирать HTML без защиты.
         let json = serde_json::to_vec(&Response::Err(format!("песочница: {e}"))).unwrap_or_default();
-        let _ = write_msg(&mut stdout, &json, &[]);
+        let _ = write_msg(&mut stdout, &json, &[], MAX_FRAME);
         std::process::exit(3);
     }
     loop {
-        let Ok((frame, bin)) = read_msg(&mut stdin) else { std::process::exit(0) };
+        let Ok(frame) = read_frame(&mut stdin, MAX_FRAME) else { std::process::exit(0) };
         if let Some(w) = &watchdog {
             let _ = w.send(true);
         }
+        // Предел бинарной части — по запросу; не разобрался — общий.
+        let req = serde_json::from_slice::<Request>(&frame);
+        let max = req.as_ref().map_or(MAX_FRAME, max_bin);
+        let Ok(bin) = read_frame(&mut stdin, max) else { std::process::exit(0) };
         let mut out_bin = Vec::new();
-        let resp = match serde_json::from_slice::<Request>(&frame) {
+        let resp = match req {
             Ok(Request::Mime) => match mime::parse(&bin) {
                 Ok(m) => Response::Mime(Box::new(m)),
                 Err(e) => Response::Err(e),
@@ -400,6 +419,13 @@ pub fn serve() -> ! {
                 Ok(bytes) => {
                     out_bin = bytes;
                     Response::Part
+                }
+                Err(e) => Response::Err(e),
+            },
+            Ok(Request::MimeSplit) => match mime::split(&bin) {
+                Ok((split, bytes)) => {
+                    out_bin = bytes;
+                    Response::Split(split)
                 }
                 Err(e) => Response::Err(e),
             },
@@ -473,7 +499,7 @@ pub fn serve() -> ! {
             let _ = w.send(false);
         }
         let out = serde_json::to_vec(&resp).unwrap_or_default();
-        if write_msg(&mut stdout, &out, &out_bin).is_err() {
+        if write_msg(&mut stdout, &out, &out_bin, max).is_err() {
             std::process::exit(0);
         }
     }
@@ -514,6 +540,8 @@ pub(crate) struct Process {
 struct Running {
     stdin: Box<dyn Write + Send>,
     responses: mpsc::Receiver<io::Result<(Vec<u8>, Vec<u8>)>>,
+    /// Предел бинарной части ответа на текущий запрос: ставится до отправки, читатель берёт его после заголовка.
+    max_bin: Arc<AtomicUsize>,
     kill: Box<dyn FnMut() + Send>,
     exit_code: Box<dyn FnMut() -> Option<u32> + Send>,
     /// Воркер ответил хотя бы раз — значит, в этой песочнице он работоспособен.
@@ -572,6 +600,7 @@ impl Client {
             | Response::Opened { .. }
             | Response::Part
             | Response::Mime(_)
+            | Response::Split(_)
             | Response::Prepared(_)
             | Response::Crl(_) => Err("неожиданный ответ".into()),
             Response::Err(e) => Err(e),
@@ -780,6 +809,20 @@ impl Client {
         }
     }
 
+    /// Письмо целиком для хранилища (S8-07) — в песочнице: диапазоны крупных листовых частей в `raw` и их
+    /// раскодированные байты подряд, по порядку частей. Ответ сверен с письмом: диапазоны внутри него, по порядку.
+    pub fn mime_split(&mut self, raw: &[u8]) -> Result<(mime::Split, Vec<u8>), String> {
+        if raw.len() > mime::MAX_SPLIT {
+            return Err("письмо слишком большое".into());
+        }
+        let timeout = self.timeout.max(SPLIT_TIMEOUT);
+        match self.call_for(&Request::MimeSplit, raw, timeout)? {
+            (Response::Split(split), bytes) if split.fits(raw.len(), bytes.len()) => Ok((split, bytes)),
+            (Response::Err(e), _) => Err(e),
+            _ => Err("неожиданный ответ".into()),
+        }
+    }
+
     /// Разобрать приглашение (.ics) в песочнице.
     pub fn parse_calendar(&mut self, ics: &[u8]) -> Result<serde_json::Value, String> {
         match self.call(&Request::Calendar, ics)?.0 {
@@ -804,7 +847,8 @@ impl Client {
 
     fn call_for(&mut self, req: &Request, bin: &[u8], timeout: Duration) -> Result<(Response, Vec<u8>), String> {
         let json = serde_json::to_vec(req).map_err(|e| e.to_string())?;
-        let mut result = self.exchange(&json, bin, timeout);
+        let max = max_bin(req);
+        let mut result = self.exchange(&json, bin, max, timeout);
         // Воркер не ответил ни разу в полной изоляции (например, AppContainer не может прочитать
         // свой exe в профиле пользователя) — одна попытка с ослабленной, уровень станет «частичная».
         if let Err(strict) = &result
@@ -815,7 +859,7 @@ impl Client {
             self.running = None;
             self.relaxed = true;
             self.fallback = Some(format!("в полной изоляции воркер не ответил: {strict}"));
-            result = self.exchange(&json, bin, timeout).map_err(|e| format!("{e}; в полной изоляции: {strict}"));
+            result = self.exchange(&json, bin, max, timeout).map_err(|e| format!("{e}; в полной изоляции: {strict}"));
         }
         if result.is_err() {
             // Таймаут, падение или ошибка песочницы: процесс больше не используем.
@@ -825,12 +869,13 @@ impl Client {
         Ok((serde_json::from_slice(&json).map_err(|e| e.to_string())?, bin))
     }
 
-    fn exchange(&mut self, json: &[u8], bin: &[u8], timeout: Duration) -> Result<(Vec<u8>, Vec<u8>), String> {
+    fn exchange(&mut self, json: &[u8], bin: &[u8], max_bin: usize, timeout: Duration) -> Result<(Vec<u8>, Vec<u8>), String> {
         if self.running.is_none() {
             self.running = Some(self.start()?);
         }
         let Some(r) = self.running.as_mut() else { return Err("воркер не запущен".into()) };
-        write_msg(&mut r.stdin, json, bin).map_err(|e| format!("воркер недоступен: {e}"))?;
+        r.max_bin.store(max_bin, Ordering::SeqCst);
+        write_msg(&mut r.stdin, json, bin, max_bin).map_err(|e| format!("воркер недоступен: {e}"))?;
         match r.responses.recv_timeout(timeout) {
             Ok(Ok(msg)) => {
                 r.answered = true;
@@ -854,11 +899,13 @@ impl Client {
         }
         let (tx, rx) = mpsc::channel();
         let mut stdout = p.stdout;
+        let max_bin = Arc::new(AtomicUsize::new(MAX_FRAME));
+        let limit = Arc::clone(&max_bin);
         std::thread::Builder::new()
             .name("worker-reader".into())
             .spawn(move || {
                 loop {
-                    let r = read_msg(&mut stdout);
+                    let r = read_frame(&mut stdout, MAX_FRAME).and_then(|json| Ok((json, read_frame(&mut stdout, limit.load(Ordering::SeqCst))?)));
                     let stop = r.is_err();
                     if tx.send(r).is_err() || stop {
                         break;
@@ -866,7 +913,7 @@ impl Client {
                 }
             })
             .map_err(|e| e.to_string())?;
-        Ok(Running { stdin: p.stdin, responses: rx, kill: p.kill, exit_code: p.exit_code, answered: false })
+        Ok(Running { stdin: p.stdin, responses: rx, max_bin, kill: p.kill, exit_code: p.exit_code, answered: false })
     }
 }
 

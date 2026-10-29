@@ -191,3 +191,30 @@ fn watchdog_stops_a_long_request() {
     assert!(started.elapsed() < Duration::from_secs(15));
     assert!(c.render(&Request::Text("ok".into())).is_ok());
 }
+
+/// Письмо для хранилища (S8-07) через песочницу: часть больше общего кадра в 64 МиБ — и в запросе, и в ответе.
+/// quoted-printable печатного текста раскодируется почти один к одному: разбор в отладочной сборке успевает до сторожа.
+#[test]
+fn mime_split_round_trip() {
+    let mut c = client();
+    let line = "ABC".repeat(25);
+    let lines = 64 * 1024 * 1024 / line.len() + 1000;
+    let body = vec![line; lines].join("=\r\n");
+    let raw = format!(
+        "From: a@example.test\r\nTo: b@example.test\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n\
+         --b\r\nContent-Type: text/plain\r\n\r\nТело\r\n--b\r\nContent-Type: application/octet-stream\r\n\
+         Content-Transfer-Encoding: quoted-printable\r\n\r\n{body}\r\n--b--\r\n"
+    );
+    let (split, bin) = c.mime_split(raw.as_bytes()).unwrap();
+    assert_eq!(split.parts.len(), 1);
+    let p = &split.parts[0];
+    assert_eq!(&raw.as_bytes()[p.range.start as usize..p.range.end as usize], body.as_bytes());
+    assert_eq!(bin.len(), lines * 75);
+    assert!(bin.len() > 64 * 1024 * 1024 && bin.chunks(3).all(|c| c == b"ABC"));
+
+    assert!(c.mime_split(b"").is_err());
+    assert!(c.mime_split(&vec![b'a'; postman_worker::mime::MAX_SPLIT + 1]).is_err(), "больше предела — отказ до отправки");
+    // Общий предел кадра для остальных запросов не вырос.
+    assert!(c.mime(raw.as_bytes()).is_err());
+    assert!(c.render(&Request::Text("ok".into())).is_ok());
+}
