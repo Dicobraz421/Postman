@@ -1,16 +1,20 @@
 //! Встроенный просмотр вложений (S5-07): картинка, страница PDF, оглавление ZIP, текст, документ Word `.docx`
-//! (T1-13а, [`docx`]), проверка Office на макросы. Только здесь, в песочнице: UI получает пиксели, строки, числа и
-//! безопасный IR.
+//! (T1-13а, [`docx`]), книга `.xlsx`/`.ods` ([`sheet`]) и таблица `.csv`/`.tsv` ([`csv`]) — S8-17, проверка Office
+//! на макросы. Только здесь, в песочнице: UI получает пиксели, строки, числа и безопасный IR (документ — разделами:
+//! лист книги, ADR 0007).
 //!
 //! Пределы — на каждый запрос: вход не больше [`MAX_INPUT`], картинка и страница — не больше `max_side` по
 //! стороне (страница PDF — шириной `width`, если задана), текст — [`MAX_TEXT`] байт, оглавление — [`MAX_LISTED`] строк; архив не распаковывается (размеры —
 //! из центрального каталога), из OOXML читается только `vbaProject.bin` и не больше [`MAX_VBA`], у `.docx` — пределы
-//! [`docx`] (распаковка, блоки, символы). Время
+//! [`docx`] (распаковка, блоки, символы), у книги и таблицы — пределы [`sheet`] (листы, строки, столбцы, ячейки), все
+//! части книги вместе — не больше [`MAX_UNPACKED`] после распаковки. Время
 //! ограничивает сторож в `serve` (процесс завершается с [`crate::EXIT_TIME`]), память — Job Object песочницы.
 
 use std::io::{self, Read};
 
+pub mod csv;
 pub mod docx;
+pub mod sheet;
 
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +30,8 @@ pub const MAX_LISTED: usize = 500;
 pub const MAX_VBA: u64 = 16 * 1024 * 1024;
 /// Сторона страницы PDF при просмотре, если UI не задал меньше.
 pub const PDF_SIDE: u32 = 1600;
+/// Все части книги или презентации вместе после распаковки: дальше не читаем, показанное — `truncated`.
+pub const MAX_UNPACKED: u64 = 64 * 1024 * 1024;
 
 /// Чем показать вложение (выбирает UI по имени и MIME, `postman_core::attach::viewer`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,6 +44,10 @@ pub enum PreviewKind {
     Office,
     /// Документ Word `.docx` → IR (T1-13а); документ с макросами — проверка Office, как у `Office`.
     Document,
+    /// Книга `.xlsx`/`.xltx`/`.ods` → раздел на лист с таблицей (S8-17); с макросами — проверка Office.
+    Sheet,
+    /// Таблица `.csv`/`.tsv` → один раздел-таблица (S8-17).
+    Table,
 }
 
 /// Итог просмотра. У `Image` и `Pdf` пиксели RGBA — в бинарной части ответа.
@@ -65,11 +75,18 @@ pub enum Preview {
         truncated: bool,
     },
     Office(OfficeScan),
-    /// Текст документа Word: безопасный IR (как тело письма); `truncated` — показано начало.
+    /// Документ разделами: безопасный IR (как тело письма); `truncated` — показано начало.
     Document {
-        blocks: Vec<postman_ir::Block>,
+        sections: Vec<Section>,
         truncated: bool,
     },
+}
+
+/// Раздел документа: у `.docx` и таблицы — один без заголовка, у книги — лист (заголовок — имя листа).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Section {
+    pub title: Option<String>,
+    pub blocks: Vec<postman_ir::Block>,
 }
 
 /// Оглавление архива.
@@ -136,16 +153,24 @@ pub fn preview(kind: PreviewKind, bytes: &[u8], page: u32, max_side: u32, width:
             Ok((Preview::Text { text, truncated }, Vec::new()))
         }
         PreviewKind::Office => Ok((Preview::Office(scan_office(bytes)?), Vec::new())),
-        PreviewKind::Document => {
-            // С макросами (`.docm`, `vbaProject.bin`) — не просмотр, а проверка: открытие заблокировано.
-            let scan = scan_office(bytes)?;
-            if scan.macros {
-                return Ok((Preview::Office(scan), Vec::new()));
-            }
-            let (blocks, truncated) = docx::docx(bytes)?;
-            Ok((Preview::Document { blocks, truncated }, Vec::new()))
+        PreviewKind::Document => sections(bytes, |b| docx::docx(b).map(|(blocks, t)| (vec![Section { title: None, blocks }], t))),
+        PreviewKind::Sheet => sections(bytes, sheet::sheet),
+        PreviewKind::Table => {
+            let (sections, truncated) = csv::csv(bytes);
+            Ok((Preview::Document { sections, truncated }, Vec::new()))
         }
     }
+}
+
+/// Документ Office разделами; с макросами (`.docm`, `.xlsm`, `vbaProject.bin`) — не просмотр, а проверка: открытие
+/// заблокировано.
+fn sections(bytes: &[u8], parse: impl Fn(&[u8]) -> Result<(Vec<Section>, bool), String>) -> Result<(Preview, Vec<u8>), String> {
+    let scan = scan_office(bytes)?;
+    if scan.macros {
+        return Ok((Preview::Office(scan), Vec::new()));
+    }
+    let (sections, truncated) = parse(bytes)?;
+    Ok((Preview::Document { sections, truncated }, Vec::new()))
 }
 
 // --- PDF ---
@@ -328,8 +353,21 @@ fn scan_ole(bytes: &[u8]) -> Result<(bool, Vec<String>), String> {
 /// Начало файла как текст: UTF-8 (с BOM или без), UTF-16 с BOM, иначе — Windows-1251.
 pub fn text(bytes: &[u8]) -> (String, bool) {
     let truncated = bytes.len() > MAX_TEXT;
-    let head = &bytes[..bytes.len().min(MAX_TEXT)];
-    let decoded: String = if let Some(rest) = head.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+    let decoded = decode(&bytes[..bytes.len().min(MAX_TEXT)], truncated);
+    let text = decoded
+        .replace("\r\n", "\n")
+        .chars()
+        .map(|c| if c == '\r' { '\n' } else { c })
+        .filter(|&c| c == '\n' || c == '\t' || !c.is_control())
+        .filter(|c| !matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
+        .collect();
+    (text, truncated)
+}
+
+/// Начало файла `head` в строку: UTF-8 (с BOM или без), UTF-16 с BOM, иначе — Windows-1251; `truncated` — файл
+/// длиннее `head` (последний символ UTF-8 мог разрезаться).
+fn decode(head: &[u8], truncated: bool) -> String {
+    if let Some(rest) = head.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
         String::from_utf8_lossy(rest).into_owned()
     } else if let Some(rest) = head.strip_prefix(&[0xFF, 0xFE]) {
         char::decode_utf16(rest.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c))).map(|c| c.unwrap_or('\u{FFFD}')).collect()
@@ -342,15 +380,7 @@ pub fn text(bytes: &[u8]) -> (String, bool) {
             Err(e) if truncated && e.error_len().is_none() => String::from_utf8_lossy(&head[..e.valid_up_to()]).into_owned(),
             Err(_) => head.iter().map(|&b| cp1251(b)).collect(),
         }
-    };
-    let text = decoded
-        .replace("\r\n", "\n")
-        .chars()
-        .map(|c| if c == '\r' { '\n' } else { c })
-        .filter(|&c| c == '\n' || c == '\t' || !c.is_control())
-        .filter(|c| !matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
-        .collect();
-    (text, truncated)
+    }
 }
 
 fn cp1251(b: u8) -> char {

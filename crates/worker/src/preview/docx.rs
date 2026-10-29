@@ -81,7 +81,7 @@ fn parse(bytes: &[u8], limits: Limits) -> Result<(Vec<Block>, bool), String> {
     let hit = Rc::new(Cell::new(false));
     let src = BufReader::new(Limit { inner: f, left: limits.xml, hit: hit.clone() });
     let mut b = Builder::new(&styles, &numbering, &links, limits);
-    match walk(src, |ev| b.event(ev)) {
+    match walk(src, ns, |ev| b.event(ev)) {
         // Обрезали по пределу посреди элемента — это не порча документа.
         Err(_) if hit.get() => {}
         Err(e) => return Err(format!("документ не разобран: {e}")),
@@ -92,7 +92,7 @@ fn parse(bytes: &[u8], limits: Limits) -> Result<(Vec<Block>, bool), String> {
 }
 
 /// Служебная часть пакета целиком, если она есть и не больше [`MAX_PART`].
-fn part(zip: &mut zip::ZipArchive<io::Cursor<&[u8]>>, name: &str) -> Option<Vec<u8>> {
+pub(super) fn part(zip: &mut zip::ZipArchive<io::Cursor<&[u8]>>, name: &str) -> Option<Vec<u8>> {
     let f = zip.by_name(name).ok()?;
     let mut data = Vec::new();
     f.take(MAX_PART + 1).read_to_end(&mut data).ok()?;
@@ -100,7 +100,7 @@ fn part(zip: &mut zip::ZipArchive<io::Cursor<&[u8]>>, name: &str) -> Option<Vec<
 }
 
 /// Путь части по ссылке из связей: от каталога источника (`word/`) или от корня пакета (`/…`).
-fn resolve(dir: &str, target: &str) -> String {
+pub(super) fn resolve(dir: &str, target: &str) -> String {
     let joined = match target.strip_prefix('/') {
         Some(abs) => abs.to_string(),
         None => format!("{dir}{target}"),
@@ -119,10 +119,10 @@ fn resolve(dir: &str, target: &str) -> String {
 }
 
 /// Чтение не дальше предела; `hit` — за пределом есть ещё данные.
-struct Limit<R> {
-    inner: R,
-    left: u64,
-    hit: Rc<Cell<bool>>,
+pub(super) struct Limit<R> {
+    pub inner: R,
+    pub left: u64,
+    pub hit: Rc<Cell<bool>>,
 }
 
 impl<R: Read> Read for Limit<R> {
@@ -152,19 +152,32 @@ enum Ns {
     Other,
 }
 
-/// Событие XML: пространство имён, локальное имя, атрибуты (локальное имя → значение).
-enum Ev<'a> {
-    Start(Ns, &'a [u8], &'a [(Vec<u8>, String)]),
-    End(Ns, &'a [u8]),
+fn ns(uri: &[u8]) -> Ns {
+    match uri {
+        W | W_STRICT => Ns::W,
+        MC => Ns::Mc,
+        _ => Ns::Other,
+    }
+}
+
+/// Событие XML: пространство имён (как его различает разборщик части), локальное имя, атрибуты (локальное имя →
+/// значение; у атрибутов связей OOXML — `r:` и локальное имя, иначе `r:id` и `id` у `p:sldId` не различить).
+pub(super) enum Ev<'a, N> {
+    Start(N, &'a [u8], &'a [(Vec<u8>, String)]),
+    End(N, &'a [u8]),
     Text(&'a str),
 }
 
-fn attr<'a>(attrs: &'a [(Vec<u8>, String)], key: &[u8]) -> Option<&'a str> {
+pub(super) fn attr<'a>(attrs: &'a [(Vec<u8>, String)], key: &[u8]) -> Option<&'a str> {
     attrs.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
 }
 
+const REL: &[u8] = b"http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const REL_STRICT: &[u8] = b"http://purl.oclc.org/ooxml/officeDocument/relationships";
+
 /// Потоковый обход: пустой элемент — начало и конец; DTD и чужие сущности — ошибка; `Break` — стоп без ошибки.
-fn walk<R: BufRead>(src: R, mut on: impl FnMut(Ev<'_>) -> ControlFlow<()>) -> Result<(), String> {
+/// `ns` — пространство имён элемента по его URI (без пространства — пустой URI).
+pub(super) fn walk<R: BufRead, N: Copy>(src: R, ns: impl Fn(&[u8]) -> N, mut on: impl FnMut(Ev<'_, N>) -> ControlFlow<()>) -> Result<(), String> {
     let mut reader = NsReader::from_reader(src);
     reader.config_mut().expand_empty_elements = true;
     let mut buf = Vec::new();
@@ -172,11 +185,10 @@ fn walk<R: BufRead>(src: R, mut on: impl FnMut(Ev<'_>) -> ControlFlow<()>) -> Re
     let mut depth = 0usize;
     loop {
         buf.clear();
-        let (ns, event) = reader.read_resolved_event_into(&mut buf).map_err(|e| format!("xml: {e}"))?;
-        let ns = match ns {
-            ResolveResult::Bound(n) if n.as_ref() == W || n.as_ref() == W_STRICT => Ns::W,
-            ResolveResult::Bound(n) if n.as_ref() == MC => Ns::Mc,
-            _ => Ns::Other,
+        let (uri, event) = reader.read_resolved_event_into(&mut buf).map_err(|e| format!("xml: {e}"))?;
+        let ns = match uri {
+            ResolveResult::Bound(n) => ns(n.as_ref()),
+            _ => ns(b""),
         };
         let flow = match event {
             Event::Start(e) => {
@@ -191,7 +203,12 @@ fn walk<R: BufRead>(src: R, mut on: impl FnMut(Ev<'_>) -> ControlFlow<()>) -> Re
                         continue;
                     }
                     let v = a.normalized_value(quick_xml::XmlVersion::default()).map_err(|e| format!("xml: {e}"))?;
-                    attrs.push((a.key.local_name().as_ref().to_vec(), v.into_owned()));
+                    let mut key = match reader.resolver().resolve_attribute(a.key).0 {
+                        ResolveResult::Bound(n) if n.as_ref() == REL || n.as_ref() == REL_STRICT => b"r:".to_vec(),
+                        _ => Vec::new(),
+                    };
+                    key.extend_from_slice(a.key.local_name().as_ref());
+                    attrs.push((key, v.into_owned()));
                 }
                 on(Ev::Start(ns, e.local_name().as_ref(), &attrs))
             }
@@ -225,16 +242,16 @@ fn walk<R: BufRead>(src: R, mut on: impl FnMut(Ev<'_>) -> ControlFlow<()>) -> Re
 
 /// Связь части: `Id`, тип (URI), цель и внешняя ли она.
 #[derive(Debug, Default)]
-struct Rel {
-    id: String,
-    kind: String,
-    target: String,
-    external: bool,
+pub(super) struct Rel {
+    pub id: String,
+    pub kind: String,
+    pub target: String,
+    pub external: bool,
 }
 
-fn rels(data: &[u8]) -> Result<Vec<Rel>, String> {
+pub(super) fn rels(data: &[u8]) -> Result<Vec<Rel>, String> {
     let mut out = Vec::new();
-    walk(data, |ev| {
+    walk(data, ns, |ev| {
         if let Ev::Start(_, b"Relationship", a) = ev {
             out.push(Rel {
                 id: attr(a, b"Id").unwrap_or_default().into(),
@@ -268,7 +285,7 @@ fn styles(data: &[u8]) -> Result<HashMap<String, Style>, String> {
     }
     let mut raw: HashMap<String, Raw> = HashMap::new();
     let mut cur: Option<(String, Raw)> = None;
-    walk(data, |ev| {
+    walk(data, ns, |ev| {
         match ev {
             Ev::Start(Ns::W, b"style", a) => {
                 cur = (attr(a, b"type").is_none_or(|t| t == "paragraph"))
@@ -345,7 +362,7 @@ impl Numbering {
 fn numbering(data: &[u8]) -> Result<Numbering, String> {
     let mut out = Numbering::default();
     let (mut abs, mut lvl, mut num): (Option<String>, Option<u8>, Option<String>) = (None, None, None);
-    walk(data, |ev| {
+    walk(data, ns, |ev| {
         match ev {
             Ev::Start(Ns::W, b"abstractNum", a) => abs = attr(a, b"abstractNumId").map(str::to_string),
             Ev::Start(Ns::W, b"lvl", a) => lvl = attr(a, b"ilvl").and_then(|v| v.parse().ok()).filter(|&l: &u8| l <= 8),
@@ -441,7 +458,7 @@ impl<'a> Builder<'a> {
         }
     }
 
-    fn event(&mut self, ev: Ev<'_>) -> ControlFlow<()> {
+    fn event(&mut self, ev: Ev<'_, Ns>) -> ControlFlow<()> {
         match ev {
             Ev::Start(..) if self.skip > 0 => {
                 self.skip += 1;
@@ -526,7 +543,7 @@ impl<'a> Builder<'a> {
             b"hyperlink" => {
                 self.links_open += 1;
                 if self.links_open == 1 {
-                    let href = attr(attrs, b"id").and_then(|id| self.links.get(id)).cloned();
+                    let href = attr(attrs, b"r:id").and_then(|id| self.links.get(id)).cloned();
                     self.link = Some((href, Vec::new()));
                 }
             }
@@ -771,7 +788,7 @@ impl<'a> Builder<'a> {
     }
 }
 
-fn push(target: &mut Vec<Inline>, i: Inline) {
+pub(super) fn push(target: &mut Vec<Inline>, i: Inline) {
     if let (Some(Inline::Text { text, marks }), Inline::Text { text: t, marks: m }) = (target.last_mut(), &i)
         && marks == m
     {
@@ -781,7 +798,7 @@ fn push(target: &mut Vec<Inline>, i: Inline) {
     target.push(i);
 }
 
-fn is_blank(content: &[Inline]) -> bool {
+pub(super) fn is_blank(content: &[Inline]) -> bool {
     content.iter().all(|i| match i {
         Inline::Text { text, .. } => text.trim().is_empty(),
         Inline::LineBreak => true,
@@ -790,7 +807,7 @@ fn is_blank(content: &[Inline]) -> bool {
 }
 
 /// Пункты подряд → список; пункты глубже первого уровня — вложенным списком в предыдущем пункте.
-fn list(items: Vec<(u8, bool, Vec<Inline>)>) -> Block {
+pub(super) fn list(items: Vec<(u8, bool, Vec<Inline>)>) -> Block {
     let base = items.iter().map(|i| i.0).min().unwrap_or(0);
     let ordered = items.first().is_some_and(|i| i.1);
     let mut out: Vec<Vec<Block>> = Vec::new();
@@ -820,7 +837,7 @@ mod tests {
     use std::io::Write;
 
     use super::*;
-    use crate::preview::{OfficeScan, Preview, PreviewKind, preview};
+    use crate::preview::{OfficeScan, Preview, PreviewKind, Section, preview};
 
     const NS: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006""#;
     const REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -1005,7 +1022,7 @@ mod tests {
     fn macro_documents_are_office_scans() {
         let doc = docx_of(&run_p("x"), "", "", "");
         let (pv, _) = preview(PreviewKind::Document, &doc, 0, 0, 0).unwrap();
-        assert_eq!(pv, Preview::Document { blocks: vec![p(vec![t("x")])], truncated: false });
+        assert_eq!(pv, Preview::Document { sections: vec![Section { title: None, blocks: vec![p(vec![t("x")])] }], truncated: false });
         let docm = zip_of(&[("[Content_Types].xml", b"<Types/>"), ("word/document.xml", b"<w:document/>"), ("word/vbaProject.bin", b"x")]);
         let (pv, _) = preview(PreviewKind::Document, &docm, 0, 0, 0).unwrap();
         assert!(matches!(pv, Preview::Office(OfficeScan { macros: true, .. })), "{pv:?}");

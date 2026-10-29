@@ -22,7 +22,7 @@ use postman_smime::envelope::{Envelope, OpenError, Opened};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-pub use preview::{Entry, Listing, OfficeFormat, OfficeScan, Preview, PreviewKind};
+pub use preview::{Entry, Listing, OfficeFormat, OfficeScan, Preview, PreviewKind, Section};
 pub use sandbox::Level;
 
 /// Код выхода воркера, которого остановил сторож времени: разбор одного запроса дольше [`TIME_LIMIT`].
