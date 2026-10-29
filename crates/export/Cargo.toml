@@ -1,0 +1,18 @@
+[package]
+name = "postman-export"
+description = "Выгрузка писем в файлы: EML, mbox, Maildir, MSG, PST. Без I/O."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+# Запись MSG (MS-OXMSG поверх MS-CFB, S8-30): тот же крейт, что у воркера, — умеет запись.
+cfb = "0.15"
+
+# Проверка своих файлов чужими читателями: MSG (S8-30) и PST (S8-33, Microsoft) — только чтение, только в тестах.
+[dev-dependencies]
+msg_parser = "0.3"
+outlook-pst = "1.2"
+
+[lints]
+workspace = true
