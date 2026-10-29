@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 postman-ir.workspace = true
-postman-cache.workspace = true
+postman-cache = { workspace = true, features = ["store6"] }
 postman-worker.workspace = true
 postman-compose.workspace = true
 postman-search.workspace = true

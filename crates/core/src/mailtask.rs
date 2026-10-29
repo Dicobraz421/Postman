@@ -9,11 +9,13 @@
 
 use jiff::civil::{Date, Time};
 use jiff::tz::TimeZone;
-use postman_cache::{Cache, EmailRow, all_folders};
+use postman_cache::{Cache, EmailRow, LetterRow, all_folders};
 use postman_calendar::{MailLink, Moment, Task};
 
 use crate::lifecycle::{self, Patch};
 use crate::marks::{self, Kind, When};
+use crate::model::LetterId;
+use crate::store::{self, cache_id};
 
 /// Префикс UID задачи-письма (не записанной в хранилище): `mail:<ключ письма в кэше>`.
 pub const LETTER_UID: &str = "mail:";
@@ -36,9 +38,43 @@ pub fn is_letter(t: &Task) -> bool {
     t.uid.starts_with(LETTER_UID)
 }
 
-/// Ключ письма задачи-письма или записанной задачи со ссылкой.
+/// Ключ письма задачи-письма или записанной задачи со ссылкой: ключ кэша или ссылка на письмо формата 6
+/// ([`store::letter_ref`]).
 pub fn letter_key(t: &Task) -> Option<&str> {
     t.uid.strip_prefix(LETTER_UID).or_else(|| t.mail.as_ref().and_then(|m| m.email_id.as_deref()))
+}
+
+/// Письмо задачи по `LetterId` (S8-09): по ссылке [`store::letter_ref`] — и после переноса письма в другую папку или
+/// учётку; по прежнему ключу кэша — пока связь письма с сервером действует.
+pub fn letter_id(cache: &Cache, t: &Task) -> postman_cache::Result<Option<LetterId>> {
+    letter_key(t).map_or(Ok(None), |k| store::letter_of_key(cache, k))
+}
+
+/// Строка письма формата 6 для сроков (ключевые слова, тема); id — ссылка [`store::letter_ref`], папок нет.
+pub fn row_of(id: LetterId, row: &LetterRow) -> EmailRow {
+    EmailRow {
+        id: store::letter_ref(id),
+        thread_id: row.thread_id.clone(),
+        mailbox_ids: Vec::new(),
+        received_at: row.received_at,
+        subject: row.subject.clone(),
+        from_name: row.from_name.clone(),
+        from_addr: row.from_addr.clone(),
+        preview: row.preview.clone(),
+        seen: row.seen,
+        flagged: row.flagged,
+        has_attachment: row.has_attachment,
+        size: row.size,
+        keywords: row.keywords.clone(),
+    }
+}
+
+/// Письмо задачи для сроков: по ссылке [`store::letter_ref`] или по ключу кэша; нет — `None`.
+fn lookup(cache: &Cache, id: &str) -> postman_cache::Result<Option<EmailRow>> {
+    match store::parse_ref(id) {
+        Some(letter) => Ok(cache.letter(cache_id(letter))?.map(|r| row_of(letter, &r))),
+        None => Ok(cache.rows_by_ids(&[id.to_owned()])?.pop()),
+    }
 }
 
 /// Срок письма → срок задачи: «плавающее» местное время (сроки писем — местные), без времени — весь день.
@@ -116,6 +152,14 @@ pub fn promote(row: &EmailRow, message_id: Option<&str>, uid: &str) -> Task {
     t
 }
 
+/// [`promote`] по `LetterId`: ссылка на письмо — [`store::letter_ref`], задача переживает перенос письма в другую
+/// папку и учётку. `None` — письма нет.
+pub fn promote_letter(cache: &Cache, id: LetterId, uid: &str) -> postman_cache::Result<Option<Task>> {
+    let Some(row) = cache.letter(cache_id(id))? else { return Ok(None) };
+    let message_id = store::body(cache, id)?.and_then(|b| b.message_id);
+    Ok(Some(promote(&row_of(id, &row), message_id.as_deref(), uid)))
+}
+
 /// Что сделать с письмом после правки задачи `task` (задачи-письма или записанной со ссылкой): выполнена — снять
 /// срок (оба слова одним патчем); срок изменён или снят — то же у письма. Ничего не изменилось — `None`.
 pub fn letter_patch(task: &Task, row: &EmailRow, tz: &TimeZone) -> Option<Patch> {
@@ -160,14 +204,22 @@ pub fn reconcile(tasks: &[Task], lookup: impl Fn(&str) -> Option<EmailRow>, now:
     out
 }
 
+/// [`letter_patch`] по хранилищу: письмо задачи — по ссылке или ключу ([`letter_id`]), правка — по ключу действующей
+/// связи (её отправляют серверу, `sync::Command::Patch`). Письмо «На этом компьютере» — `None`: слова срока у него
+/// правит только хранилище.
+pub fn letter_patch_in(cache: &Cache, task: &Task, tz: &TimeZone) -> postman_cache::Result<Option<Patch>> {
+    let Some(id) = letter_id(cache, task)? else { return Ok(None) };
+    let Some(key) = store::key_of(cache, id)? else { return Ok(None) };
+    Ok(cache.rows_by_ids(&[key])?.pop().and_then(|row| letter_patch(task, &row, tz)))
+}
+
 /// [`reconcile`] по кэшу: задачи и письма — из него.
 pub fn reconcile_cache(cache: &Cache, now: i64, tz: &TimeZone) -> postman_cache::Result<Vec<Task>> {
     let tasks: Vec<Task> = cache.tasks()?.iter().filter_map(crate::tasks::from_row).collect();
     if !tasks.iter().any(|t| t.mail.as_ref().is_some_and(|m| m.email_id.is_some())) {
         return Ok(Vec::new());
     }
-    let lookup = |id: &str| cache.rows_by_ids(&[id.to_owned()]).ok().and_then(|mut v| v.pop());
-    Ok(reconcile(&tasks, lookup, now, tz))
+    Ok(reconcile(&tasks, |id| lookup(cache, id).ok().flatten(), now, tz))
 }
 
 #[cfg(test)]
@@ -291,6 +343,37 @@ mod tests {
         let mut done = promote(&row("m1", &[]), None, "e");
         done.set_done(true, 1);
         assert!(reconcile(&[done], |_| None, 42, &tz()).is_empty());
+    }
+
+    /// Задача из письма демо-ящика (S8-09) по `LetterId` переживает перенос письма в другую учётку: ссылка та же, срок
+    /// — письма; по прежнему ключу ссылка после переноса теряется. Правка срока — по ключу новой связи.
+    #[test]
+    fn task_survives_transfer_to_another_account() {
+        let (_dir, c) = crate::store::tests::demo();
+        let letter = crate::store::tests::id(&c, "demo8");
+        c.set_keywords("demo8", &["pm.due".into(), "pm.due.2026-11-02".into()], &[]).unwrap();
+        let t = promote_letter(&c, letter, "u1").unwrap().unwrap();
+        assert_eq!(t.mail.as_ref().and_then(|m| m.email_id.clone()), Some(store::letter_ref(letter)));
+        assert_eq!(due_when(&t, &tz()), Some(When::day(day(2026, 11, 2))));
+        crate::tasks::save_local(&c, t.clone()).unwrap();
+        crate::tasks::save_local(&c, promote(&c.rows_by_ids(&["demo8".into()]).unwrap()[0], None, "old")).unwrap();
+        assert!(reconcile_cache(&c, 1, &tz()).unwrap().is_empty());
+
+        let other = c.folder_of("@2", "inbox").unwrap().unwrap();
+        c.move_letters(&[cache_id(letter)], other).unwrap();
+        assert_eq!(letter_id(&c, &t).unwrap(), Some(letter));
+        let fixed = reconcile_cache(&c, 1, &tz()).unwrap();
+        assert_eq!(fixed.len(), 1, "задача по `LetterId` не изменилась");
+        assert_eq!((fixed[0].uid.as_str(), fixed[0].mail.clone()), ("old", None), "по ключу — ссылка потеряна");
+        // Связи письма больше нет (перенос ждёт выгрузки) — серверу править нечего; после подтверждения цели — по её ключу.
+        let mut done = t.clone();
+        done.set_done(true, 2);
+        assert_eq!(letter_patch_in(&c, &done, &tz()).unwrap(), None);
+        let job = c.jobs().unwrap()[0].id;
+        let link = postman_cache::RemoteRef { account: "@2".into(), id: "x1".into(), data: Vec::new(), detached: false };
+        c.confirm(job, cache_id(letter), link).unwrap();
+        let p = letter_patch_in(&c, &done, &tz()).unwrap().unwrap();
+        assert_eq!((p.id.as_str(), p.keywords.len()), ("@2/x1", 2));
     }
 
     /// По кэшу: письма со сроком из индекса; связанная задача в кэше закрывается, когда у письма срок снят.

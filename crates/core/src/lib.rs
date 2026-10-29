@@ -34,6 +34,7 @@ pub mod schedule;
 pub mod send_later;
 pub mod settings;
 pub mod smime;
+pub mod store;
 pub mod sync;
 pub mod taskparse;
 pub mod tasks;
