@@ -9,7 +9,7 @@ use std::collections::{BTreeSet, HashMap};
 use redb::{ReadableDatabase, ReadableTable, Table, TableDefinition, WriteTransaction};
 use serde::{Deserialize, Serialize};
 
-use crate::content::Hash;
+use crate::content::{self, Hash};
 use crate::folder::{self, FolderId, Owner, Scope};
 use crate::remote::{LETTER_REMOTE, REMOTE};
 use crate::{Cache, Error, FLAGGED, META, Result, dec, enc};
@@ -53,7 +53,7 @@ pub struct LetterRow {
     pub keywords: Vec<String>,
     /// Членство в папках (у JMAP папок может быть несколько).
     pub folders: Vec<FolderId>,
-    /// Письмо целиком; `None` — ещё не загружено. Ведёт кэш: запись с сервера не меняет.
+    /// Письмо целиком ([`Cache::put_content`]); `None` — ещё не загружено. Ведёт кэш: запись с сервера не меняет.
     pub content: Option<Hash>,
     /// Ведёт кэш: запись с сервера не меняет.
     pub place: Place,
@@ -134,7 +134,7 @@ pub(crate) fn init(tx: &WriteTransaction) -> Result<()> {
     tx.open_table(folder::FOLDER)?;
     tx.open_table(folder::FOLDER_REMOTE)?;
     tx.open_table(folder::SCOPE)?;
-    Ok(())
+    content::init(tx)
 }
 
 /// Следующий id счётчика `key` в `meta` (с 1).
@@ -160,6 +160,7 @@ pub(crate) struct Letters<'t> {
     scopes: HashMap<Owner, u64>,
     counts: HashMap<u64, i64>,
     keyword_counts: HashMap<(String, u64), i64>,
+    released: Vec<Hash>,
 }
 
 impl<'t> Letters<'t> {
@@ -178,6 +179,7 @@ impl<'t> Letters<'t> {
             scopes: HashMap::new(),
             counts: HashMap::new(),
             keyword_counts: HashMap::new(),
+            released: Vec::new(),
         })
     }
 
@@ -270,7 +272,8 @@ impl<'t> Letters<'t> {
         Ok(())
     }
 
-    /// Записать строку письма с индексами; `old` — прежняя строка (`None` — новое письмо).
+    /// Записать строку письма с индексами; `old` — прежняя строка (`None` — новое письмо). Содержимое здесь не
+    /// меняется: его счётчики ведут [`Cache::put_content`] и [`Letters::remove`].
     pub(crate) fn put(&mut self, id: LetterId, old: Option<&LetterRow>, new: &LetterRow) -> Result<()> {
         self.index(id, old, Some(new))?;
         self.letter.insert(id.0, enc(new)?.as_slice())?;
@@ -284,7 +287,7 @@ impl<'t> Letters<'t> {
         Ok(id)
     }
 
-    /// Удалить письмо целиком: строку, индексы, связи с сервером, получателей, строку задания.
+    /// Удалить письмо целиком: строку, индексы, связи с сервером, получателей, строку задания, ссылку на содержимое.
     pub(crate) fn remove(&mut self, id: LetterId) -> Result<bool> {
         let Some(old) = self.get(id)? else { return Ok(false) };
         self.index(id, Some(&old), None)?;
@@ -297,10 +300,11 @@ impl<'t> Letters<'t> {
         if let Place::Outbound(job) = old.place {
             self.outbound.remove((job.0, id.0))?;
         }
+        self.released.extend(old.content);
         Ok(true)
     }
 
-    /// Счётчики — в таблицы.
+    /// Счётчики — в таблицы, содержимое удалённых писем — `refs − 1`.
     pub(crate) fn finish(self) -> Result<()> {
         let mut count = self.tx.open_table(COUNT)?;
         for (f, d) in self.counts {
@@ -317,6 +321,9 @@ impl<'t> Letters<'t> {
                 0 => kw_count.remove((kw.as_str(), p))?,
                 n => kw_count.insert((kw.as_str(), p), n)?,
             };
+        }
+        for h in self.released {
+            content::release(self.tx, h)?;
         }
         Ok(())
     }
@@ -509,7 +516,7 @@ impl Cache {
         Ok(ticket)
     }
 
-    /// Удалить письма из базы: строки, индексы, связи, строки заданий.
+    /// Удалить письма из базы: строки, индексы, связи, строки заданий; содержимое — `refs − 1`.
     pub fn delete_letters(&self, ids: &[LetterId]) -> Result<()> {
         let tx = self.db.begin_write()?;
         {
@@ -686,19 +693,21 @@ mod tests {
         assert_index(&c);
     }
 
-    /// Удаление с сервера: действующая связь — письмо из базы целиком; запись с сервера — место своё.
+    /// Удаление с сервера: действующая связь — письмо из базы целиком; запись с сервера — содержимое и место свои.
     #[test]
     fn remote_delete_and_upsert() {
         let c = Cache::open_in_memory().unwrap();
         let a_in = account_folder(&c, "a", "in");
         let x = c.upsert_remote("a", "x", &row(10, &[a_in], &["k"])).unwrap();
+        c.put_content(x, b"Subject: x\r\n\r\nhi\r\n", &[]).unwrap();
         let again = c.upsert_remote("a", "x", &row(11, &[a_in], &[])).unwrap();
         assert_eq!(again, x);
         let r = c.letter(x).unwrap().unwrap();
-        assert!(r.place == Place::Synced && r.received_at == 11 && r.keywords.is_empty());
+        assert!(r.content.is_some() && r.received_at == 11 && r.keywords.is_empty());
         assert_eq!(c.delete_remote("a", &["x".into(), "zz".into()]).unwrap(), [x]);
         assert_eq!(c.letter(x).unwrap(), None);
         assert_eq!(c.folder_count(a_in).unwrap(), 0);
+        assert_eq!(c.check_refs().unwrap(), Vec::<String>::new());
         assert!(c.upsert_remote("a", "y", &row(1, &[FolderId(999)], &[])).is_err(), "папки нет");
         assert_index(&c);
     }
