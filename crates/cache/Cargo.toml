@@ -12,6 +12,10 @@ postcard = { version = "1", default-features = false, features = ["use-std"] }
 # Хэш содержимого (ADR 0006 п. 2): SHA-256 — та же версия, что у `smime`.
 sha2 = "0.11"
 
+[features]
+# Формат 6 — единое хранилище (ADR 0006): до приёмки S8 за признаком, без него — формат 5.
+store6 = []
+
 [dev-dependencies]
 tempfile = "3"
 
