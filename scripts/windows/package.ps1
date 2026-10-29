@@ -1,7 +1,8 @@
-# S4-01: the delivery zip Postman-<version>-windows-x64.zip: postman.exe, postman-worker.exe, README.txt, install.ps1.
+# S4-01: the delivery zip Postman-<version>-windows-x64.zip: postman.exe, postman-worker.exe, README.txt, install.ps1,
+# and postman-viewer.exe (S8-02, ADR 0007) when the build has it. WASM viewer modules (viewers/*) are not packaged.
 # Takes the exes of a finished release build (cargo build --release --workspace); the version is the one
 # built into postman.exe (Cargo). Prints the zip path; in GitHub Actions also sets the outputs name and dir
-# (the folder with the four files, uploaded as the artifact).
+# (the folder with the packaged files, uploaded as the artifact).
 # Usage: powershell -File scripts\windows\package.ps1 [-TargetDir <cargo target dir>] [-Out <dir, default dist>]
 param(
   [string]$TargetDir = "",
@@ -29,6 +30,9 @@ $zip = Join-Path $Out "$name.zip"
 if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 Copy-Item -LiteralPath $exe, (Join-Path $release "postman-worker.exe") -Destination $dir
+# The viewer host lies next to the worker; until S8-24 the build has none, then the zip is without it.
+$viewer = Join-Path $release "postman-viewer.exe"
+if (Test-Path -LiteralPath $viewer) { Copy-Item -LiteralPath $viewer -Destination $dir }
 Copy-Item -LiteralPath "$PSScriptRoot\README.txt", "$PSScriptRoot\install.ps1" -Destination $dir
 if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
 Compress-Archive -Path "$dir\*" -DestinationPath $zip -CompressionLevel Optimal
