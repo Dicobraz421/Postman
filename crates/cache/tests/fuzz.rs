@@ -40,7 +40,7 @@ fn row(rng: &mut Rng, id: u64) -> EmailRow {
         id: format!("m{id}"),
         thread_id: format!("t{}", id % 7),
         mailbox_ids,
-        // Совпадающие даты — нарочно: порядок тогда решает id.
+        // Совпадающие даты — нарочно: порядок тогда решает id ([`tie`]).
         received_at: 1_700_000_000 + rng.below(40) as i64 * 60,
         subject: format!("тема {id}"),
         from_name: "Отправитель".into(),
@@ -57,10 +57,24 @@ fn row(rng: &mut Rng, id: u64) -> EmailRow {
 /// Метки писем (S5-02): индекс ключевых слов сверяется с моделью.
 const KEYWORDS: &[&str] = &["pm.cat.a", "pm.cat.b"];
 
+/// Порядок писем с одной датой: формат 5 — по ключу, формат 6 — по локальному id письма.
+#[cfg(not(feature = "store6"))]
+fn tie(_: &Cache, id: &str) -> String {
+    id.to_owned()
+}
+
+#[cfg(feature = "store6")]
+fn tie(cache: &Cache, id: &str) -> String {
+    format!("{:020}", cache.letter_of("", id).unwrap().unwrap().0)
+}
+
 fn check(cache: &Cache, model: &BTreeMap<String, EmailRow>, step: usize) {
+    #[cfg(feature = "store6")]
+    assert_eq!(cache.check_index().unwrap(), Vec::<String>::new(), "шаг {step}: индексы");
+    let ties: BTreeMap<&str, String> = model.keys().map(|id| (id.as_str(), tie(cache, id))).collect();
     for mb in MAILBOXES {
         let mut want: Vec<&EmailRow> = model.values().filter(|r| r.mailbox_ids.iter().any(|m| m == mb)).collect();
-        want.sort_by(|a, b| b.received_at.cmp(&a.received_at).then_with(|| a.id.cmp(&b.id)));
+        want.sort_by(|a, b| b.received_at.cmp(&a.received_at).then_with(|| ties[a.id.as_str()].cmp(&ties[b.id.as_str()])));
         assert_eq!(cache.count(mb).unwrap(), want.len(), "шаг {step}: счётчик {mb}");
         let page: Vec<String> = cache.page(mb, 0, 1000).unwrap().into_iter().map(|r| r.id).collect();
         let want: Vec<String> = want.into_iter().map(|r| r.id.clone()).collect();
@@ -76,7 +90,7 @@ fn check(cache: &Cache, model: &BTreeMap<String, EmailRow>, step: usize) {
         for mb in MAILBOXES.iter().copied().chain([all.as_str()]) {
             let mut want: Vec<&EmailRow> =
                 model.values().filter(|r| r.has_keyword(kw) && (mb == all || r.mailbox_ids.iter().any(|m| m == mb))).collect();
-            want.sort_by(|a, b| b.received_at.cmp(&a.received_at).then_with(|| a.id.cmp(&b.id)));
+            want.sort_by(|a, b| b.received_at.cmp(&a.received_at).then_with(|| ties[a.id.as_str()].cmp(&ties[b.id.as_str()])));
             let want: Vec<String> = want.into_iter().map(|r| r.id.clone()).collect();
             assert_eq!(cache.keyword_count(kw, mb).unwrap(), want.len(), "шаг {step}: {kw} в {mb}");
             let page: Vec<String> = cache.keyword_page(kw, mb, 0, 1000).unwrap().into_iter().map(|r| r.id).collect();

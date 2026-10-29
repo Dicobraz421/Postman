@@ -8,11 +8,17 @@
 //! Несколько аккаунтов (S4-06): ключи основного аккаунта — id сервера как есть, ключи общего ящика — с префиксом
 //! аккаунта (`<аккаунт>/<id>`, [`scoped`]): id JMAP у разных аккаунтов совпадают (у Stalwart — `a`, `b`…). Префикс
 //! у id папок, писем, цепочек, блобов и состояний синхронизации; интерфейс работает с ключами, не разбирая их.
+//!
+//! Формат 6 (ADR 0006, признак `store6` до приёмки S8): письмо — строка с локальным [`LetterId`], связь с сервером —
+//! отдельно ([`RemoteRef`]), папки — с владельцем (учётка или «На этом компьютере»). Прежний API писем — обёртка
+//! над ним до S8-09.
 
 use std::path::Path;
 use std::sync::Arc;
 
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableHandle};
+#[cfg(not(feature = "store6"))]
+use redb::TableHandle;
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -48,6 +54,26 @@ from_err!(
 );
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(feature = "store6")]
+mod compat;
+#[cfg(feature = "store6")]
+mod content;
+#[cfg(feature = "store6")]
+mod folder;
+#[cfg(feature = "store6")]
+mod letter;
+#[cfg(feature = "store6")]
+mod remote;
+
+#[cfg(feature = "store6")]
+pub use content::Hash;
+#[cfg(feature = "store6")]
+pub use folder::{FolderId, FolderRow, Owner, Scope};
+#[cfg(feature = "store6")]
+pub use letter::{JobId, LetterId, LetterRow, MOVE_BATCH, MoveTicket, Outbound, Place, Step};
+#[cfg(feature = "store6")]
+pub use remote::RemoteRef;
 
 /// Разделитель аккаунта и id в ключах: id JMAP — только `A-Za-z0-9-_` (RFC 8620 §1.2), `/` в них не бывает.
 const SCOPE: char = '/';
@@ -203,11 +229,13 @@ impl EmailRow {
 
     /// Ключевые слова в индексе ([`Cache::keyword_count`]): свои и `$flagged`. `$seen` не индексируется — у почти
     /// всех писем он есть, а непрочитанные папки считает сервер (`MailboxRow::unread`).
+    #[cfg(not(feature = "store6"))]
     fn indexed(&self) -> impl Iterator<Item = &str> {
         self.keywords.iter().map(String::as_str).chain(self.flagged.then_some(FLAGGED))
     }
 
     /// Где письмо в индексе ключевых слов: его папки и «все папки» его аккаунта.
+    #[cfg(not(feature = "store6"))]
     fn places(&self) -> Vec<String> {
         let mut out = self.mailbox_ids.clone();
         out.push(all_folders(account_of(&self.id)));
@@ -325,14 +353,21 @@ pub const MAX_CACHED_BLOB: usize = 16 * 1024 * 1024;
 /// Меняется при любом изменении формата значений или ключей. 2 — права папок и аккаунты (S4-06);
 /// 3 — ключевые слова писем и их индекс (S5-02); 4 — получатели писем (S5-03, [`Recipients`]); 5 — S/MIME (S5-12):
 /// `blobId` письма в теле, итоги проверки подписи и сертификаты адресатов.
+#[cfg(not(feature = "store6"))]
 const FORMAT_VERSION: u64 = 5;
+/// 6 — единое хранилище (ADR 0006): письма по [`LetterId`], связь с сервером, папки с владельцем.
+#[cfg(feature = "store6")]
+const FORMAT_VERSION: u64 = 6;
 
 const META: TableDefinition<&str, u64> = TableDefinition::new("meta");
 const MAILBOX: TableDefinition<&str, &[u8]> = TableDefinition::new("mailbox");
+#[cfg(not(feature = "store6"))]
 const EMAIL: TableDefinition<&str, &[u8]> = TableDefinition::new("email");
 /// (папка, -дата, id) → () — порядок списка.
+#[cfg(not(feature = "store6"))]
 const BY_MAILBOX: TableDefinition<(&str, i64, &str), ()> = TableDefinition::new("by_mailbox");
 /// Число писем в папке — чтобы не считать диапазон при каждом обновлении списка.
+#[cfg(not(feature = "store6"))]
 const COUNT: TableDefinition<&str, u64> = TableDefinition::new("count");
 const BODY: TableDefinition<&str, &[u8]> = TableDefinition::new("body");
 const BLOB: TableDefinition<&str, &[u8]> = TableDefinition::new("blob");
@@ -341,20 +376,26 @@ const STATE: TableDefinition<&str, &str> = TableDefinition::new("sync_state");
 /// Общие ящики: id аккаунта → [`AccountRow`].
 const ACCOUNT: TableDefinition<&str, &[u8]> = TableDefinition::new("account");
 /// id письма → [`Recipients`] (S5-03).
+#[cfg(not(feature = "store6"))]
 const RECIPIENTS: TableDefinition<&str, &[u8]> = TableDefinition::new("recipients");
 /// id письма → итог проверки подписи S/MIME (S5-12; запись ядра, `postman_core::smime`).
 const SMIME: TableDefinition<&str, &[u8]> = TableDefinition::new("smime");
 /// Адрес (нижний регистр) → сертификаты адресата, собранные из проверенных подписей (S5-12, для шифрования — Ф4).
 const CERTS: TableDefinition<&str, &[u8]> = TableDefinition::new("smime_certs");
 /// (ключевое слово, папка или «все папки», -дата, id) → () — письма с меткой в папке, новые сверху (S5-02).
+#[cfg(not(feature = "store6"))]
 const BY_KEYWORD: TableDefinition<(&str, &str, i64, &str), ()> = TableDefinition::new("by_keyword");
 /// (ключевое слово, папка или «все папки») → число писем: «N из M» без обхода диапазона.
+#[cfg(not(feature = "store6"))]
 const KEYWORD_COUNT: TableDefinition<(&str, &str), u64> = TableDefinition::new("keyword_count");
 
+#[cfg(not(feature = "store6"))]
 type ByKeyword<'t> = redb::Table<'t, (&'static str, &'static str, i64, &'static str), ()>;
+#[cfg(not(feature = "store6"))]
 type KeywordCount<'t> = redb::Table<'t, (&'static str, &'static str), u64>;
 
 /// Индекс ключевых слов: письмо `row` добавить (`on`) или убрать. Повтор ничего не меняет (ключи — множество).
+#[cfg(not(feature = "store6"))]
 fn index_keywords(by: &mut ByKeyword, count: &mut KeywordCount, row: &EmailRow, on: bool) -> Result<()> {
     let places = row.places();
     for kw in row.indexed() {
@@ -376,6 +417,7 @@ fn index_keywords(by: &mut ByKeyword, count: &mut KeywordCount, row: &EmailRow, 
 }
 /// (цепочка, дата, id) → () — письма беседы по времени, из всех папок (S5-05). Таблица новее формата 2: в кэше без
 /// неё она строится из писем при открытии ([`Cache::init`]), без пересоздания кэша.
+#[cfg(not(feature = "store6"))]
 const BY_THREAD: TableDefinition<(&str, i64, &str), ()> = TableDefinition::new("by_thread");
 /// UID задачи → [`TaskRow`] (S6-02). Таблицы задач новее формата 5: в старом кэше создаются при открытии, письма
 /// остаются.
@@ -447,31 +489,36 @@ impl Cache {
 
     fn init(&self) -> Result<()> {
         let tx = self.db.begin_write()?;
-        let threads_indexed = tx.list_tables()?.any(|t| t.name() == BY_THREAD.name());
         tx.open_table(META)?.insert("version", FORMAT_VERSION)?;
         // Создаём все таблицы, чтобы чтение не спотыкалось об их отсутствие.
         tx.open_table(MAILBOX)?;
-        tx.open_table(EMAIL)?;
-        tx.open_table(BY_MAILBOX)?;
-        tx.open_table(COUNT)?;
         tx.open_table(BODY)?;
         tx.open_table(BLOB)?;
         tx.open_table(TRUSTED)?;
         tx.open_table(STATE)?;
         tx.open_table(ACCOUNT)?;
-        tx.open_table(BY_KEYWORD)?;
-        tx.open_table(KEYWORD_COUNT)?;
-        tx.open_table(RECIPIENTS)?;
         tx.open_table(SMIME)?;
         tx.open_table(CERTS)?;
         tx.open_table(TASK)?;
         tx.open_table(TASK_ID)?;
-        if !threads_indexed {
-            let email = tx.open_table(EMAIL)?;
-            let mut by = tx.open_table(BY_THREAD)?;
-            for r in email.iter()? {
-                let e: EmailRow = dec(r?.1.value())?;
-                by.insert((e.thread_id.as_str(), e.received_at, e.id.as_str()), ())?;
+        #[cfg(feature = "store6")]
+        letter::init(&tx)?;
+        #[cfg(not(feature = "store6"))]
+        {
+            let threads_indexed = tx.list_tables()?.any(|t| t.name() == BY_THREAD.name());
+            tx.open_table(EMAIL)?;
+            tx.open_table(BY_MAILBOX)?;
+            tx.open_table(COUNT)?;
+            tx.open_table(BY_KEYWORD)?;
+            tx.open_table(KEYWORD_COUNT)?;
+            tx.open_table(RECIPIENTS)?;
+            if !threads_indexed {
+                let email = tx.open_table(EMAIL)?;
+                let mut by = tx.open_table(BY_THREAD)?;
+                for r in email.iter()? {
+                    let e: EmailRow = dec(r?.1.value())?;
+                    by.insert((e.thread_id.as_str(), e.received_at, e.id.as_str()), ())?;
+                }
             }
         }
         tx.commit()?;
@@ -489,6 +536,8 @@ impl Cache {
                 t.insert(m.id.as_str(), enc(m)?.as_slice())?;
             }
         }
+        #[cfg(feature = "store6")]
+        compat::sync_folders(&tx, rows)?;
         tx.commit()?;
         Ok(())
     }
@@ -537,6 +586,39 @@ impl Cache {
 
     /// Убрать из кэша всё общего ящика `account`: папки, письма (с телами), счётчики, состояния.
     fn forget_account(&self, account: &str) -> Result<()> {
+        self.forget_emails(account)?;
+        let tx = self.db.begin_write()?;
+        {
+            let mine = |k: &str| account_of(k) == Some(account);
+            tx.open_table(MAILBOX)?.retain(|k, _| !mine(k))?;
+            tx.open_table(STATE)?.retain(|k, _| !mine(k))?;
+            tx.open_table(BLOB)?.retain(|k, _| !mine(k))?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn mailboxes(&self) -> Result<Vec<MailboxRow>> {
+        let tx = self.db.begin_read()?;
+        let t = tx.open_table(MAILBOX)?;
+        let mut out: Vec<MailboxRow> = t.iter()?.map(|r| dec(r?.1.value())).collect::<Result<_>>()?;
+        out.sort_by(|a, b| a.sort_order.cmp(&b.sort_order).then_with(|| a.name.cmp(&b.name)));
+        Ok(out)
+    }
+
+    /// id писем, у которых тело уже загружено (для пересборки поискового индекса).
+    pub fn body_ids(&self, offset: usize, limit: usize) -> Result<Vec<String>> {
+        let tx = self.db.begin_read()?;
+        let body = tx.open_table(BODY)?;
+        body.iter()?.skip(offset).take(limit).map(|r| Ok(r?.0.value().to_string())).collect()
+    }
+}
+
+/// Письма формата 5: строки по ключу кэша. В формате 6 — обёртка над письмами по [`LetterId`] (`compat`).
+#[cfg(not(feature = "store6"))]
+impl Cache {
+    /// Письма аккаунта `account` со всеми записями о них.
+    fn forget_emails(&self, account: &str) -> Result<()> {
         let prefix = scoped(Some(account), "");
         let ids: Vec<String> = {
             let tx = self.db.begin_read()?;
@@ -555,22 +637,11 @@ impl Cache {
         let tx = self.db.begin_write()?;
         {
             let mine = |k: &str| account_of(k) == Some(account);
-            tx.open_table(MAILBOX)?.retain(|k, _| !mine(k))?;
             tx.open_table(COUNT)?.retain(|k, _| !mine(k))?;
-            tx.open_table(STATE)?.retain(|k, _| !mine(k))?;
-            tx.open_table(BLOB)?.retain(|k, _| !mine(k))?;
             tx.open_table(RECIPIENTS)?.retain(|k, _| !mine(k))?;
         }
         tx.commit()?;
         Ok(())
-    }
-
-    pub fn mailboxes(&self) -> Result<Vec<MailboxRow>> {
-        let tx = self.db.begin_read()?;
-        let t = tx.open_table(MAILBOX)?;
-        let mut out: Vec<MailboxRow> = t.iter()?.map(|r| dec(r?.1.value())).collect::<Result<_>>()?;
-        out.sort_by(|a, b| a.sort_order.cmp(&b.sort_order).then_with(|| a.name.cmp(&b.name)));
-        Ok(out)
     }
 
     pub fn upsert_emails(&self, rows: &[EmailRow]) -> Result<()> {
@@ -772,13 +843,6 @@ impl Cache {
         let tx = self.db.begin_read()?;
         let email = tx.open_table(EMAIL)?;
         email.iter()?.skip(offset).take(limit).map(|r| dec(r?.1.value())).collect()
-    }
-
-    /// id писем, у которых тело уже загружено (для пересборки поискового индекса).
-    pub fn body_ids(&self, offset: usize, limit: usize) -> Result<Vec<String>> {
-        let tx = self.db.begin_read()?;
-        let body = tx.open_table(BODY)?;
-        body.iter()?.skip(offset).take(limit).map(|r| Ok(r?.0.value().to_string())).collect()
     }
 
     /// Письма без загруженного тела, свежие первыми (для фоновой предзагрузки).
@@ -1007,7 +1071,9 @@ impl Cache {
         }
         Ok(out)
     }
+}
 
+impl Cache {
     pub fn body(&self, id: &str) -> Result<Option<BodyRow>> {
         let tx = self.db.begin_read()?;
         tx.open_table(BODY)?.get(id)?.map(|v| dec(v.value())).transpose()
@@ -1183,6 +1249,7 @@ impl Cache {
     }
 }
 
+#[cfg(not(feature = "store6"))]
 fn add(count: &mut redb::Table<&str, u64>, mailbox: &str, delta: i64) -> Result<()> {
     let cur = count.get(mailbox)?.map_or(0, |v| v.value());
     count.insert(mailbox, cur.saturating_add_signed(delta))?;
@@ -1497,8 +1564,14 @@ mod tests {
         assert_eq!(thread(&c, "t1"), ["s1", "r3", "r2"]);
         c.delete_emails(&["s1".into()]).unwrap();
         assert_eq!(thread(&c, "t1"), ["r3", "r2"]);
+    }
 
-        // Кэш формата 2 без таблицы бесед: индекс строится при открытии.
+    /// Кэш формата 2 без таблицы бесед: индекс строится при открытии.
+    #[cfg(not(feature = "store6"))]
+    #[test]
+    fn thread_index_is_built_on_open() {
+        let in_thread = |id: &str, thread: &str, at, mbs: &[&str]| EmailRow { thread_id: thread.into(), ..email(id, at, mbs) };
+        let thread = |c: &Cache, t: &str| ids(c.thread(t).unwrap());
         let dir = tempfile::Builder::new().prefix("postman-cache-").tempdir().unwrap();
         let path = dir.path().join("c.redb");
         {
@@ -1532,7 +1605,9 @@ mod tests {
             let tx = db.begin_write().unwrap();
             tx.open_table(META).unwrap().insert("version", 4u64).unwrap();
             let e = email("old", 1, &["in"]);
-            tx.open_table(EMAIL).unwrap().insert("old", enc(&e).unwrap().as_slice()).unwrap();
+            // Таблица писем формата 5 (в формате 6 её нет).
+            let email: TableDefinition<&str, &[u8]> = TableDefinition::new("email");
+            tx.open_table(email).unwrap().insert("old", enc(&e).unwrap().as_slice()).unwrap();
             tx.commit().unwrap();
         }
         let c = Cache::open(&path).unwrap();
