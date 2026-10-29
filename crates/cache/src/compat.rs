@@ -13,7 +13,7 @@ use crate::remote::{LETTER_REMOTE, REMOTE, RemoteRef};
 use crate::{BODY, Cache, EmailRow, MAX_ID, MailboxRow, Patch, Recipients, Result, Scan, dec, enc, scoped, unscoped};
 
 /// Учётка ключа: основной аккаунт — пустая строка.
-fn account(key: &str) -> (&str, &str) {
+pub(crate) fn account(key: &str) -> (&str, &str) {
     let (a, id) = unscoped(key);
     (a.unwrap_or(""), id)
 }
@@ -55,7 +55,7 @@ fn email(row: LetterRow, refs: &[RemoteRef], mut folder: impl FnMut(FolderId) ->
 }
 
 /// [`EmailRow`] → строка формата 6; папки по ключам — известные или новые. Содержимое и место — из `old`.
-fn letter(tx: &WriteTransaction, e: &EmailRow, old: Option<&LetterRow>) -> Result<LetterRow> {
+pub(crate) fn letter(tx: &WriteTransaction, e: &EmailRow, old: Option<&LetterRow>) -> Result<LetterRow> {
     let mut folders = Vec::with_capacity(e.mailbox_ids.len());
     for m in &e.mailbox_ids {
         let (a, id) = account(m);
