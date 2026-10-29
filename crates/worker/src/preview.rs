@@ -90,12 +90,21 @@ pub enum Preview {
     },
 }
 
-/// Раздел документа: у `.docx` и таблицы — один без заголовка, у книги — лист (заголовок — имя листа), у презентации
-/// — слайд («Слайд N»).
+/// Раздел документа: у `.docx` и таблицы — один без заголовка, у книги — лист, у презентации — слайд.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Section {
-    pub title: Option<String>,
+    pub title: SectionTitle,
     pub blocks: Vec<postman_ir::Block>,
+}
+
+/// Заголовок раздела — данными: подпись («Лист …», «Слайд N») составляет интерфейс (Fluent).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SectionTitle {
+    None,
+    /// Имя листа книги.
+    Sheet(String),
+    /// Номер слайда с единицы.
+    Slide(u32),
 }
 
 /// Оглавление архива.
@@ -163,7 +172,7 @@ pub fn preview(kind: PreviewKind, bytes: &[u8], page: u32, max_side: u32, width:
             Ok((Preview::Text { text, truncated }, Vec::new()))
         }
         PreviewKind::Office => Ok((Preview::Office(scan_office(bytes)?), Vec::new())),
-        PreviewKind::Document => sections(bytes, |b| docx::docx(b).map(|(blocks, t)| (vec![Section { title: None, blocks }], t))),
+        PreviewKind::Document => sections(bytes, |b| docx::docx(b).map(|(blocks, t)| (vec![Section { title: SectionTitle::None, blocks }], t))),
         PreviewKind::Sheet => sections(bytes, sheet::sheet),
         PreviewKind::Slides => sections(bytes, slides::slides),
         PreviewKind::Table => {

@@ -238,6 +238,7 @@ fn md(blocks: &[Block]) -> String {
             Block::Code(s) => out.push(s.clone()),
             Block::Table(rows) => out.extend(rows.iter().flatten().map(|c| plain_text(c))),
             Block::Rule => out.push("---".into()),
+            Block::Figure => {}
         }
     }
     out.join(

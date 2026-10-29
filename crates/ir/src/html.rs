@@ -169,7 +169,7 @@ fn flatten_block(b: Block, out: &mut Vec<Inline>) {
             }
         }
         Block::Code(s) => out.push(Inline::Text { text: s, marks: Marks { code: true, ..Default::default() } }),
-        Block::Rule => {}
+        Block::Rule | Block::Figure => {}
         Block::Table(rows) => {
             for (n, row) in rows.into_iter().enumerate() {
                 if n > 0 {

@@ -5,11 +5,12 @@
 //! и чужих сущностей, с пределом вложенности. Наружу — до [`MAX_SLIDES`] слайдов, блоков и символов — как у `.docx`
 //! ([`docx::MAX_BLOCKS`], [`docx::MAX_CHARS`]); остальное — `truncated`. Время ограничивает сторож в `serve`.
 //!
-//! `.pptx`: слайды по порядку `p:sldIdLst` из `ppt/presentation.xml` и его связей; на слайд — раздел «Слайд N»:
+//! `.pptx`: слайды по порядку `p:sldIdLst` из `ppt/presentation.xml` и его связей; на слайд — раздел с номером:
 //! заголовок (место `title`/`ctrTitle`) — `Heading`, текст фигур — абзацы (`a:p`, `a:r`; жирный, курсив, подчёркнутый,
 //! зачёркнутый), пункты (маркер `a:buChar`/`a:buAutoNum` или текст в месте для содержимого без `a:buNone`) — списки
 //! по уровню `lvl`, таблицы (`a:tbl`) — `Table`, заметки докладчика (`notesSlide`) — `Quote` в конце раздела;
-//! картинки, диаграммы, SmartArt и объекты — пометкой «[рисунок]»; дата, колонтитул и номер слайда не выводятся.
+//! картинки, диаграммы, SmartArt и объекты — блоком `Figure` (подпись — у интерфейса); дата, колонтитул и номер
+//! слайда не выводятся.
 //! `.odp`: `draw:page` из `content.xml` так же: рамка `presentation:class="title"` — заголовок, `text:list` — пункты,
 //! `table:table` — таблица, `presentation:notes` — заметки; жирный и курсив — из автоматических стилей.
 
@@ -21,7 +22,7 @@ use postman_ir::{Align, Block, Inline, Marks};
 
 use super::docx::{self, Ev, attr, part, rels, resolve, walk};
 use super::sheet::{Od, od, read};
-use super::{MAX_UNPACKED, Section};
+use super::{MAX_UNPACKED, Section, SectionTitle};
 
 /// Слайдов в ответе.
 pub const MAX_SLIDES: usize = 500;
@@ -158,8 +159,8 @@ impl Builder {
         if !notes.is_empty() {
             blocks.push(Block::Quote(notes));
         }
-        let n = self.sections.len() + 1;
-        self.sections.push(Section { title: Some(format!("Слайд {n}")), blocks });
+        let n = self.sections.len() as u32 + 1;
+        self.sections.push(Section { title: SectionTitle::Slide(n), blocks });
         (self.in_notes, self.kind) = (false, Kind::Plain);
     }
 
@@ -276,16 +277,13 @@ impl Builder {
         ControlFlow::Continue(())
     }
 
-    /// Картинка, диаграмма, объект — пометкой (в ячейке таблицы и в невидимом — нет).
+    /// Картинка, диаграмма, объект — блоком `Figure` (в ячейке таблицы и в невидимом — нет).
     fn picture(&mut self) -> ControlFlow<()> {
         if self.kind == Kind::Hidden || self.table.is_some() {
             return ControlFlow::Continue(());
         }
         self.flush_list();
-        self.para = Some(Para::default());
-        self.text("[рисунок]", Marks { italic: true, ..Marks::default() })?;
-        let Some(p) = self.para.take() else { return ControlFlow::Continue(()) };
-        self.emit(Block::Paragraph { align: Align::Start, content: p.inlines })
+        self.emit(Block::Figure)
     }
 
     fn start_table(&mut self) {
@@ -501,7 +499,7 @@ struct OdpPart {
     lists: usize,
     para_marks: Marks,
     marks: Marks,
-    /// У рамки уже есть пометка «[рисунок]» (картинка-замена объекта — та же).
+    /// У рамки уже есть `Figure` (картинка-замена объекта — та же).
     pictured: bool,
 }
 
@@ -660,8 +658,8 @@ mod tests {
         Block::Paragraph { align: Align::Start, content }
     }
 
-    fn section(n: usize, blocks: Vec<Block>) -> Section {
-        Section { title: Some(format!("Слайд {n}")), blocks }
+    fn section(n: u32, blocks: Vec<Block>) -> Section {
+        Section { title: SectionTitle::Slide(n), blocks }
     }
 
     #[test]
@@ -699,7 +697,6 @@ mod tests {
         let (pv, _) = preview(PreviewKind::Slides, &x, 0, 0, 0).unwrap();
         let Preview::Document { sections, truncated } = pv else { panic!("{pv:?}") };
         assert!(!truncated);
-        let it = Marks { italic: true, ..Marks::default() };
         let bold = Marks { bold: true, ..Marks::default() };
         let iu = Marks { italic: true, underline: true, ..Marks::default() };
         assert_eq!(
@@ -710,8 +707,8 @@ mod tests {
                     vec![
                         Block::Heading { level: 1, content: vec![t("Сроки")] },
                         Block::Table(vec![vec![vec![t("Имя")], vec![t("Срок")]], vec![vec![t("Смета")], vec![]]]),
-                        p(vec![Inline::Text { text: "[рисунок]".into(), marks: it }]),
-                        p(vec![Inline::Text { text: "[рисунок]".into(), marks: it }]),
+                        Block::Figure,
+                        Block::Figure,
                     ]
                 ),
                 section(2, vec![p(vec![t("Вопросы")]), Block::Quote(vec![p(vec![t("Сказать про")]), p(vec![t("бюджет")])])]),
@@ -777,7 +774,7 @@ mod tests {
                                 Block::List { ordered: false, items: vec![vec![p(vec![t("на  10%")])]] }
                             ]]
                         },
-                        p(vec![Inline::Text { text: "[рисунок]".into(), marks: Marks { italic: true, ..Marks::default() } }]),
+                        Block::Figure,
                         Block::Quote(vec![p(vec![t("Заметка")])]),
                     ]
                 ),

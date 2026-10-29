@@ -361,7 +361,10 @@ impl ReadingPane {
                     Ok((Preview::Archive(l), _)) => PvState::Ready(Shown::Archive(l)),
                     Ok((Preview::Text { text, truncated }, _)) => PvState::Ready(Shown::Text { text, truncated }),
                     Ok((Preview::Office(s), _)) => PvState::Ready(Shown::Office(s)),
-                    Ok((Preview::Document { blocks, truncated }, _)) => PvState::Ready(Shown::Document { blocks, truncated }),
+                    // Разделы (листы, слайды) и их заголовки покажет S8-23; пока — подряд.
+                    Ok((Preview::Document { sections, truncated }, _)) => {
+                        PvState::Ready(Shown::Document { blocks: sections.into_iter().flat_map(|s| s.blocks).collect(), truncated })
+                    }
                     Ok(_) => PvState::Failed("?".into()),
                     Err(e) => PvState::Failed(e),
                 };

@@ -77,6 +77,8 @@ pub enum Block {
     Rule,
     /// Строки -> ячейки -> инлайны. Только простая сетка без вложенности.
     Table(Vec<Vec<Vec<Inline>>>),
+    /// Картинка, диаграмма или объект документа во вложении (S8): без содержимого, подпись — у интерфейса.
+    Figure,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

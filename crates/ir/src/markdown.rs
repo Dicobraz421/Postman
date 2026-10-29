@@ -68,6 +68,7 @@ fn write_block(b: &Block, out: &mut String) {
             out.push_str(&fence);
         }
         Block::Rule => out.push_str("---"),
+        Block::Figure => {}
         Block::Table(rows) => {
             let cols = rows.iter().map(Vec::len).max().unwrap_or(0);
             for (n, row) in rows.iter().enumerate() {

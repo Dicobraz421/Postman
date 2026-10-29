@@ -161,7 +161,7 @@ pub fn cids(doc: &Document) -> Vec<String> {
                 Block::Quote(inner) => blk(inner, out),
                 Block::List { items, .. } => items.iter().for_each(|i| blk(i, out)),
                 Block::Table(rows) => rows.iter().flatten().for_each(|c| inl(c, out)),
-                Block::Code(_) | Block::Rule => {}
+                Block::Code(_) | Block::Rule | Block::Figure => {}
             }
         }
     }
@@ -219,6 +219,8 @@ fn block(b: &Block, key: &str, images: &Images, hits: &Hits, col: Pixels, cx: &m
             .into_any_element(),
         Block::Code(code) => div().p_2().rounded_md().bg(l.fill()).font_family("Cascadia Mono").child(code.clone()).into_any_element(),
         Block::Rule => div().h(px(1.)).bg(l.border()).into_any_element(),
+        // Пометку картинки документа (Fluent) нарисует S8-23.
+        Block::Figure => div().into_any_element(),
         Block::Table(rows) => div()
             .flex()
             .flex_col()
