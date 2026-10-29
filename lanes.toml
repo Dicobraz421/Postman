@@ -19,8 +19,8 @@ paths = ["crates/jmap/*", "crates/imap/*", "crates/dav/*", "crates/ews/*"]
 paths = ["crates/cache/*", "crates/search/*"]
 
 [lane.formats]
-# L1: письмо и календарь без I/O.
-paths = ["crates/compose/*", "crates/calendar/*"]
+# L1: письмо, календарь и экспорт без I/O.
+paths = ["crates/compose/*", "crates/calendar/*", "crates/export/*"]
 
 [lane.sandbox]
 # L1: воркер-песочница и S/MIME (CODEOWNERS — класс B).
@@ -40,6 +40,10 @@ paths = ["app-gpui/*"]
 
 [lane.demo]
 paths = ["crates/demo/*"]
+
+[lane.viewers]
+# Модули просмотра WASM и их SDK (ADR 0007): вне рабочей области, цель wasm32-unknown-unknown.
+paths = ["viewers/*"]
 
 [lane.docs-gen]
 # Генерируемые документы: одна волна в день, от main.

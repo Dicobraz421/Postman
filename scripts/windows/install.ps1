@@ -7,7 +7,7 @@
 #   -RegisterEventSource (elevated, optional) register the "Postman" source of the Windows Application log;
 #                        with -Uninstall - remove it. Does not copy files: an elevated shell may be another user.
 #
-# The sandboxed worker runs in an AppContainer, which reads its exe only with a grant for
+# The sandboxed worker and viewer host run in an AppContainer, which reads their exes only with a grant for
 # ALL APPLICATION PACKAGES (S-1-15-2-1), as in Program Files; the script gives it to the install directory.
 # User data (%LOCALAPPDATA%\Postman) and the saved sign-in (Credential Manager) are never touched.
 # Messages are English, like the rest of the console output.
@@ -19,7 +19,8 @@ param(
 )
 $ErrorActionPreference = "Stop"
 
-$Files = "postman.exe", "postman-worker.exe", "README.txt", "install.ps1"
+# postman-viewer.exe (viewer host, ADR 0007) is optional: copied and removed when present.
+$Files = "postman.exe", "postman-worker.exe", "postman-viewer.exe", "README.txt", "install.ps1"
 $Shortcut = Join-Path ([Environment]::GetFolderPath("Programs")) "Postman.lnk"
 $EventKey = "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\Postman"
 # The .NET message file holds "%1" for every event id: the log shows our text as is (pets-shell writes id 1000).
@@ -36,7 +37,7 @@ function Full([string]$path) {
 
 # Postman started from this directory locks its files.
 function Assert-NotRunning([string]$dir) {
-  $running = Get-Process -Name "postman", "postman-worker" -ErrorAction SilentlyContinue |
+  $running = Get-Process -Name "postman", "postman-worker", "postman-viewer" -ErrorAction SilentlyContinue |
     Where-Object { $_.Path -and (Full (Split-Path -Parent $_.Path)) -ieq $dir }
   if ($running) { throw "Postman is running from $dir - close it and run the script again" }
 }
