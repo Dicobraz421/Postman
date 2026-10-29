@@ -15,7 +15,7 @@ serde_json.workspace = true
 calcard = "0.3"
 # Письмо IMAP целиком → тело и вложения (S7-04б): тот же разборщик, что у S/MIME, — только здесь, в песочнице.
 mail-parser = { version = "0.11", default-features = false }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
 # Встроенный просмотр вложений (S5-07): PDF — чистый Rust без unsafe (Apache-2.0 OR MIT), стандартные шрифты
 # Foxit (BSD) встроены, таблицы CJK — нет; ZIP — только оглавление и `vbaProject.bin` (MIT); OLE — составные
 # файлы Office (MIT).
@@ -25,6 +25,14 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 cfb = "0.15"
 # Просмотр .docx (T1-13а): потоковый XML без DTD и своих сущностей — тот же крейт, что у `dav` и `ews`.
 quick-xml = { version = "0.41", default-features = false }
+# Просмотр .md (S8): тот же разборщик, что у `compose`.
+pulldown-cmark = { version = "0.13", default-features = false }
+# Хост модулей просмотра на WASM (S8, ADR 0007, решение A): интерпретатор без `wat` — модуль только двоичный.
+# Только для `postman-viewer.exe` (признак `viewer`): интерфейс, ядро и плагины зависят от воркера без него.
+wasmi = { version = "2", default-features = false, features = ["std", "stable", "validate", "auto-dispatch"], optional = true }
+
+[features]
+viewer = ["dep:wasmi"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/ir", "crates/smime", "crates/jmap", "crates/imap", "crates/dav", "crates/ews", "crates/cache", "crates/compose", "crates/worker", "crates/search", "crates/demo", "crates/calendar", "crates/core", "crates/backend-jmap", "crates/backend-imap", "crates/backend-dav", "crates/backend-ews", "app-gpui"]
+members = ["crates/ir", "crates/smime", "crates/jmap", "crates/imap", "crates/dav", "crates/ews", "crates/cache", "crates/compose", "crates/worker", "crates/search", "crates/export", "crates/demo", "crates/calendar", "crates/core", "crates/backend-jmap", "crates/backend-imap", "crates/backend-dav", "crates/backend-ews", "app-gpui"]
 
 [workspace.package]
 edition = "2024"
@@ -25,6 +25,7 @@ postman-backend-dav = { path = "crates/backend-dav" }
 postman-backend-ews = { path = "crates/backend-ews" }
 postman-worker = { path = "crates/worker" }
 postman-smime = { path = "crates/smime" }
+postman-export = { path = "crates/export" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -81,6 +82,19 @@ opt-level = "s"
 [profile.release.package.crypto-primes]
 opt-level = "s"
 [profile.release.package.streebog]
+opt-level = "s"
+
+# Хост модулей просмотра на WASM (S8, ADR 0007, решение A): интерпретатор `wasmi` и проверка модуля `wasmparser` —
+# холодный код, по размеру. Только в `postman-viewer.exe` (признак `viewer` воркера), на postman.exe не влияет.
+[profile.release.package.wasmi]
+opt-level = "s"
+[profile.release.package.wasmi_core]
+opt-level = "s"
+[profile.release.package.wasmi_ir]
+opt-level = "s"
+[profile.release.package.wasmi_collections]
+opt-level = "s"
+[profile.release.package.wasmparser]
 opt-level = "s"
 
 # «Не падать» (S2-03): вне тестов нет unwrap/expect/panic!; в тестах разрешены (clippy.toml).
