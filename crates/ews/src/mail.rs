@@ -13,14 +13,17 @@
 //! - **Прочитано и флаг** — `UpdateItem` (`message:IsRead`, `item:Flag`).
 //! - **Перенос и удаление** — `MoveItem`, `DeleteItem` (в «Удалённые» или насовсем).
 //! - **Отправка** — `CreateItem` из MIME с `SendAndSaveCopy` (копия — в «Отправленные»); черновик — `SaveOnly`.
-//! - **Поиск** — `FindItem` с `QueryString` (AQS; Exchange 2013+).
+//! - **Поиск** — `FindItem` с `QueryString` (AQS; Exchange 2013+); письмо в папке по `Message-ID` — `FindItem` с
+//!   условием на `InternetMessageId` (повтор выгрузки без дублей).
+//! - **Выгрузка в папку** — `CreateItem` из MIME с `SaveOnly` в `SavedItemFolderId` пачкой до [`BATCH`]: письмо
+//!   полученное, не черновик (`PR_MESSAGE_FLAGS`), с датой получения (`PR_MESSAGE_DELIVERY_TIME`).
 //! - **Вложения** — `GetAttachment` для крупных (в `MimeContent` вложения уже есть; метод — на случай выборки
 //!   письма без MIME).
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 
-use crate::calendar::parse_time;
+use crate::calendar::{format_time, parse_time};
 use crate::soap::{self, text_el};
 use crate::xml::{El, esc};
 use crate::{BATCH, Client, Error, FolderId, FolderRef, ItemId, Result, SyncState, WellKnown};
@@ -131,6 +134,49 @@ pub struct Attachment {
     pub size: u32,
     pub inline: bool,
 }
+
+/// Письмо для выгрузки в папку ([`Client::upload_mail`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Upload<'a> {
+    /// RFC 5322 целиком.
+    pub mime: &'a [u8],
+    /// Дата получения (Unix-секунды) — `PR_MESSAGE_DELIVERY_TIME`, по ней список писем.
+    pub received_at: i64,
+    pub is_read: bool,
+    pub flagged: bool,
+}
+
+/// Отказ выгрузки одного письма: больше предела сервера (`ErrorMessageSizeExceeded`), ящик полон
+/// (`ErrorQuotaExceeded`) — тот же повтор не поможет; другое — [`Error`].
+#[derive(Debug, thiserror::Error)]
+pub enum UploadError {
+    #[error("message too big for the server")]
+    TooBig,
+    #[error("mailbox quota exceeded")]
+    OverQuota,
+    #[error(transparent)]
+    Ews(Error),
+}
+
+impl From<Error> for UploadError {
+    fn from(e: Error) -> Self {
+        match e.code() {
+            Some("ErrorMessageSizeExceeded") => UploadError::TooBig,
+            Some("ErrorQuotaExceeded") => UploadError::OverQuota,
+            _ => UploadError::Ews(e),
+        }
+    }
+}
+
+/// `PR_MESSAGE_FLAGS` (MAPI, целое): `MSGFLAG_READ`; без `MSGFLAG_UNSENT` (0x8) письмо — полученное, не черновик.
+const PR_MESSAGE_FLAGS: &str = "0x0E07";
+const MSGFLAG_READ: u32 = 0x1;
+/// `PR_MESSAGE_DELIVERY_TIME` (MAPI, время): дата получения.
+const PR_MESSAGE_DELIVERY_TIME: &str = "0x0E06";
+/// `PR_INTERNET_MESSAGE_ID` (MAPI, строка) — то же, что `message:InternetMessageId`. Через MAPI-свойство: на
+/// Exchange 2013 CU23 `message:InternetMessageId` в `GetItem` отвечает `ErrorInternalServerError` (`docs/EXCHANGE.md`,
+/// находка 6).
+const PR_INTERNET_MESSAGE_ID: &str = "0x1035";
 
 /// Куда отправлять письмо при создании (`MessageDisposition`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -427,6 +473,25 @@ pub(crate) mod parse {
         Ok(b64(&content))
     }
 
+    /// Итог выгрузки — по письму, в порядке запроса: id или отказ ([`UploadError`]).
+    pub(crate) fn uploaded(resp: &El, expected: usize) -> Result<Vec<std::result::Result<ItemId, UploadError>>> {
+        let msgs = soap::messages(resp);
+        if msgs.len() != expected {
+            return Err(Error::Xml(format!("CreateItem: {} answers for {expected} letters", msgs.len())));
+        }
+        Ok(msgs
+            .into_iter()
+            .map(|msg| {
+                soap::check(msg)?;
+                msg.child("Items")
+                    .and_then(|i| i.children.first())
+                    .and_then(|m| m.child("ItemId"))
+                    .and_then(ItemId::from_el)
+                    .ok_or_else(|| UploadError::Ews(Error::Xml("no ItemId in response".into())))
+            })
+            .collect())
+    }
+
     /// Первый id из `<m:Items>` (черновик `SaveOnly`).
     pub(crate) fn saved(resp: &El) -> Result<ItemId> {
         let msg = soap::single(resp)?;
@@ -490,6 +555,45 @@ pub(crate) mod req {
             r#"<m:UpdateFolder><m:FolderChanges><t:FolderChange>{}<t:Updates><t:SetFolderField><t:FieldURI FieldURI="folder:DisplayName"/><t:Folder>{}</t:Folder></t:SetFolderField></t:Updates></t:FolderChange></m:FolderChanges></m:UpdateFolder>"#,
             soap::id_el("t:FolderId", &id.id, None),
             text_el("t:DisplayName", name)
+        )
+    }
+
+    /// Выгрузка писем в папку: `CreateItem` `SaveOnly` с `SavedItemFolderId`; у каждого — MIME, `PR_MESSAGE_FLAGS`
+    /// (прочитано, без «не отправлено»), `PR_MESSAGE_DELIVERY_TIME`, флаг. Порядок — схемы `MessageType`:
+    /// `MimeContent`, `ExtendedProperty`, `Flag`.
+    pub(crate) fn upload(folder: &FolderRef, letters: &[Upload<'_>]) -> String {
+        let items: String = letters
+            .iter()
+            .map(|l| {
+                let flags = if l.is_read { MSGFLAG_READ } else { 0 };
+                let flag = if l.flagged { "<t:Flag><t:FlagStatus>Flagged</t:FlagStatus></t:Flag>" } else { "" };
+                format!(
+                    "<t:Message><t:MimeContent>{}</t:MimeContent>{}{}{flag}</t:Message>",
+                    B64.encode(l.mime),
+                    extended(PR_MESSAGE_FLAGS, "Integer", &flags.to_string()),
+                    extended(PR_MESSAGE_DELIVERY_TIME, "SystemTime", &format_time(l.received_at))
+                )
+            })
+            .collect();
+        format!(
+            r#"<m:CreateItem MessageDisposition="SaveOnly"><m:SavedItemFolderId>{}</m:SavedItemFolderId><m:Items>{items}</m:Items></m:CreateItem>"#,
+            folder.xml()
+        )
+    }
+
+    fn extended(tag: &str, kind: &str, value: &str) -> String {
+        format!(
+            r#"<t:ExtendedProperty><t:ExtendedFieldURI PropertyTag="{tag}" PropertyType="{kind}"/>{}</t:ExtendedProperty>"#,
+            text_el("t:Value", value)
+        )
+    }
+
+    /// Письма папки с этим `Message-ID` (`FindItem`, равенство `PR_INTERNET_MESSAGE_ID`).
+    pub(crate) fn find_message_id(folder: &FolderRef, message_id: &str) -> String {
+        format!(
+            r#"<m:FindItem Traversal="Shallow"><m:ItemShape><t:BaseShape>IdOnly</t:BaseShape></m:ItemShape><m:IndexedPageItemView MaxEntriesReturned="10" Offset="0" BasePoint="Beginning"/><m:Restriction><t:IsEqualTo><t:ExtendedFieldURI PropertyTag="{PR_INTERNET_MESSAGE_ID}" PropertyType="String"/><t:FieldURIOrConstant><t:Constant Value="{}"/></t:FieldURIOrConstant></t:IsEqualTo></m:Restriction><m:ParentFolderIds>{}</m:ParentFolderIds></m:FindItem>"#,
+            esc(message_id.trim()),
+            folder.xml()
         )
     }
 
@@ -715,6 +819,23 @@ impl Client {
         Ok(id)
     }
 
+    /// Выгрузить письма в папку `folder` (S8-11): `CreateItem` из MIME, `SaveOnly`, пачками по [`BATCH`] — полученными,
+    /// не черновиками, с датой получения и «прочитано»/флагом. Ответ — по письму, в порядке `letters`: id или отказ
+    /// ([`UploadError::TooBig`], [`UploadError::OverQuota`]); сбой всего запроса — `Err`, следующие пачки не идут.
+    /// Метки Postman (`pm.*`) Exchange не хранит.
+    pub async fn upload_mail(&mut self, folder: &FolderRef, letters: &[Upload<'_>]) -> Result<Vec<std::result::Result<ItemId, UploadError>>> {
+        let mut out = Vec::with_capacity(letters.len());
+        for chunk in letters.chunks(BATCH) {
+            out.extend(parse::uploaded(&self.call("CreateItem", &req::upload(folder, chunk)).await?, chunk.len())?);
+        }
+        Ok(out)
+    }
+
+    /// Письма папки с этим `Message-ID` (с угловыми скобками, как в заголовке): повтор выгрузки без дублей.
+    pub async fn find_message_id(&mut self, folder: &FolderRef, message_id: &str) -> Result<Vec<ItemId>> {
+        Ok(parse::page(&self.call("FindItem", &req::find_message_id(folder, message_id)).await?)?.0)
+    }
+
     /// Поиск писем в папке по строке AQS (`QueryString`, Exchange 2013+): id, не больше `max`.
     pub async fn search_mail(&mut self, folder: &FolderRef, query: &str, max: u32) -> Result<Vec<ItemId>> {
         let body = format!(
@@ -916,6 +1037,68 @@ mod tests {
         assert_eq!((after.id.as_str(), after.change_key.as_deref()), ("AAMkADmsg1", Some("CQAAABYAAAB9")));
         assert_eq!(parse::saved(&resp(include_bytes!("../tests/fixtures/create_item_draft.xml"))).unwrap().id, "AAMkADdraft");
         parse::all_ok(&resp(include_bytes!("../tests/fixtures/create_item_send.xml"))).unwrap();
+    }
+
+    /// S8-11: выгрузка в папку — `SaveOnly` в `SavedItemFolderId`, MIME, флаги MAPI без «не отправлено», дата получения.
+    #[test]
+    fn upload_request() {
+        let inbox = FolderRef::Id(FolderId { id: "AAMkADinbox".into(), change_key: None });
+        let letters = [
+            Upload { mime: b"From: a@example.test\r\n\r\nhi", received_at: 1_792_240_200, is_read: true, flagged: true },
+            Upload { mime: b"x", received_at: 0, is_read: false, flagged: false },
+        ];
+        let x = xml(soap::envelope(&req::upload(&inbox, &letters)).as_bytes()).unwrap();
+        let ci = x.at(&["Body", "CreateItem"]).unwrap();
+        assert_eq!(ci.attr("MessageDisposition"), Some("SaveOnly"));
+        assert_eq!(ci.children.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["SavedItemFolderId", "Items"], "порядок схемы CreateItemType");
+        assert_eq!(ci.at(&["SavedItemFolderId", "FolderId"]).and_then(|f| f.attr("Id")), Some("AAMkADinbox"));
+        let msgs: Vec<&El> = ci.child("Items").unwrap().all("Message").collect();
+        assert_eq!(msgs.len(), 2);
+        let order: Vec<&str> = msgs[0].children.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(order, ["MimeContent", "ExtendedProperty", "ExtendedProperty", "Flag"], "порядок схемы MessageType");
+        assert_eq!(b64(&msgs[0].str_at(&["MimeContent"])), b"From: a@example.test\r\n\r\nhi");
+        let props = |m: &El| -> Vec<(String, String, String)> {
+            m.all("ExtendedProperty")
+                .map(|p| {
+                    let uri = p.child("ExtendedFieldURI").unwrap();
+                    (uri.attr("PropertyTag").unwrap().to_owned(), uri.attr("PropertyType").unwrap().to_owned(), p.str_at(&["Value"]))
+                })
+                .collect()
+        };
+        let s = |a: &str, b: &str, c: &str| (a.to_owned(), b.to_owned(), c.to_owned());
+        assert_eq!(props(msgs[0]), [s("0x0E07", "Integer", "1"), s("0x0E06", "SystemTime", "2026-10-17T12:30:00Z")]);
+        assert_eq!(msgs[0].text_at(&["Flag", "FlagStatus"]), Some("Flagged"));
+        assert_eq!(props(msgs[1]), [s("0x0E07", "Integer", "0"), s("0x0E06", "SystemTime", "1970-01-01T00:00:00Z")], "не прочитано, не черновик");
+        assert!(msgs[1].child("Flag").is_none());
+    }
+
+    /// Ответ выгрузки пачкой: по письму — id, `ErrorQuotaExceeded`, `ErrorMessageSizeExceeded`, другое.
+    #[test]
+    fn upload_answers() {
+        let r = resp(include_bytes!("../tests/fixtures/create_item_upload.xml"));
+        let up = parse::uploaded(&r, 4).unwrap();
+        assert_eq!(up.len(), 4);
+        assert_eq!(up[0].as_ref().unwrap(), &ItemId { id: "AAMkADup1".into(), change_key: Some("CQAAABYAAAA1".into()) });
+        assert!(matches!(up[1], Err(UploadError::OverQuota)));
+        assert!(matches!(up[2], Err(UploadError::TooBig)));
+        assert!(matches!(&up[3], Err(UploadError::Ews(e)) if e.code() == Some("ErrorInvalidFolderId")));
+        assert!(parse::uploaded(&r, 3).is_err(), "ответов не столько, сколько писем");
+    }
+
+    /// Письмо в папке по `Message-ID`: `FindItem` с равенством `PR_INTERNET_MESSAGE_ID` перед `ParentFolderIds`.
+    #[test]
+    fn find_by_message_id() {
+        let body = req::find_message_id(&FolderRef::WellKnown(WellKnown::Inbox), " <a1b2&c@example.test> ");
+        let x = xml(soap::envelope(&body).as_bytes()).unwrap();
+        let fi = x.at(&["Body", "FindItem"]).unwrap();
+        let order: Vec<&str> = fi.children.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(order, ["ItemShape", "IndexedPageItemView", "Restriction", "ParentFolderIds"], "порядок схемы FindItemType");
+        let eq = fi.at(&["Restriction", "IsEqualTo"]).unwrap();
+        assert_eq!(eq.child("ExtendedFieldURI").and_then(|u| u.attr("PropertyTag")), Some("0x1035"));
+        assert_eq!(eq.at(&["FieldURIOrConstant", "Constant"]).and_then(|c| c.attr("Value")), Some("<a1b2&c@example.test>"));
+        assert_eq!(fi.at(&["ParentFolderIds", "DistinguishedFolderId"]).and_then(|d| d.attr("Id")), Some("inbox"));
+        let (ids, more) = parse::page(&resp(include_bytes!("../tests/fixtures/find_item_message_id.xml"))).unwrap();
+        assert_eq!((ids.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), more), (vec!["AAMkADup1"], false));
     }
 
     #[test]

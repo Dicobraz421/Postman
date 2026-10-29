@@ -330,6 +330,17 @@ impl EmailPatch {
     }
 }
 
+/// Итог `Email/copy` одного письма ([`Client::copy_emails`]).
+#[derive(Debug)]
+pub struct Copied {
+    /// Письмо-источник.
+    pub from_id: String,
+    /// Копия в аккаунте назначения (или письмо, которое там уже было, `alreadyExists`) — или отказ сервера.
+    pub copy: Result<crate::Imported>,
+    /// Источник просили удалить, а он остался: копия не создана, письмо уже было или сервер не удалил.
+    pub original_left: bool,
+}
+
 /// Условие `Email/query` (RFC 8621 §4.4.1) — для фильтров панели и «Все папки».
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Filter {
@@ -669,6 +680,19 @@ impl Client {
         Ok(out)
     }
 
+    /// Скопировать письма `ids` из аккаунта `from` в папку `mailbox` аккаунта `to` без выгрузки (`Email/copy`, RFC 8621
+    /// §4.7): общий ящик, другая учётка той же сессии. `destroy_original` — источник удаляется после копии
+    /// (`onSuccessDestroyOriginal`), то есть перенос. По [`crate::Limits::max_objects_in_set`] писем в запросе; ответ —
+    /// по письму, в порядке `ids`.
+    pub async fn copy_emails(&self, from: &str, to: &str, ids: &[String], mailbox: &str, destroy_original: bool) -> Result<Vec<Copied>> {
+        let mut out = Vec::with_capacity(ids.len());
+        for chunk in ids.chunks(self.session().limits().max_objects_in_set) {
+            let r = self.call(USING, &[copy_call(from, to, chunk, mailbox, destroy_original)]).await?;
+            out.extend(copied(&r, chunk, destroy_original)?);
+        }
+        Ok(out)
+    }
+
     pub async fn move_email(&self, id: &str, from: &str, to: &str) -> Result<()> {
         self.email_patch(id, json!({ format!("mailboxIds/{from}"): null, format!("mailboxIds/{to}"): true })).await
     }
@@ -690,6 +714,33 @@ impl Client {
 fn check_set(r: &mut [Invocation], id: &str, field: &str) -> Result<()> {
     let v: Value = take(r, "s")?;
     set_error(&v, field, id, "Email/set")
+}
+
+/// `Email/copy`: каждое письмо — в `mailbox`, ключ создания — `c{номер}`; ключевые слова и дата — как у источника.
+fn copy_call(from: &str, to: &str, ids: &[String], mailbox: &str, destroy_original: bool) -> Invocation {
+    let create: serde_json::Map<String, Value> =
+        ids.iter().enumerate().map(|(i, id)| (format!("c{i}"), json!({ "id": id, "mailboxIds": { mailbox: true } }))).collect();
+    inv("Email/copy", json!({ "fromAccountId": from, "accountId": to, "create": create, "onSuccessDestroyOriginal": destroy_original }), "c")
+}
+
+/// Ответ `Email/copy` и неявного `Email/set` (тот же id вызова, RFC 8620 §5.4) — по письму, в порядке `ids`.
+fn copied(r: &[Invocation], ids: &[String], destroy_original: bool) -> Result<Vec<Copied>> {
+    let copy = r.iter().find(|i| i.0 == "Email/copy" && i.2 == "c").ok_or_else(|| Error::Protocol("нет ответа на Email/copy".into()))?;
+    let destroyed: Vec<&str> = r
+        .iter()
+        .find(|i| i.0 == "Email/set" && i.2 == "c")
+        .and_then(|i| i.1["destroyed"].as_array())
+        .map(|d| d.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    Ok(ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| Copied {
+            from_id: id.clone(),
+            copy: crate::submission::created_or_existing(&copy.1, &format!("c{i}"), "Email/copy"),
+            original_left: destroy_original && !destroyed.contains(&id.as_str()),
+        })
+        .collect())
 }
 
 /// Новая папка для `Mailbox/set` `create`: имя, родитель (`null` — верхний уровень), роль.
@@ -828,6 +879,45 @@ mod tests {
         assert_eq!(mailbox_update(None, Some(Some("arch"))), json!({ "parentId": "arch" }), "перенести — только родитель");
         assert_eq!(mailbox_update(None, Some(None)), json!({ "parentId": null }), "на верхний уровень");
         assert_eq!(mailbox_update(Some("x"), Some(Some("p"))), json!({ "name": "x", "parentId": "p" }));
+    }
+
+    /// S8-11: перенос между аккаунтами сессии (`Email/copy` + `onSuccessDestroyOriginal`) и разбор записанного ответа.
+    #[test]
+    fn copy_between_accounts() {
+        let ids = ["M1".to_string(), "M2".into(), "M3".into()];
+        let Invocation(name, args, id) = copy_call("e", "i", &ids, "inbox-i", true);
+        assert_eq!((name.as_str(), id.as_str()), ("Email/copy", "c"));
+        assert_eq!(
+            args,
+            json!({
+                "fromAccountId": "e", "accountId": "i", "onSuccessDestroyOriginal": true,
+                "create": {
+                    "c0": { "id": "M1", "mailboxIds": { "inbox-i": true } },
+                    "c1": { "id": "M2", "mailboxIds": { "inbox-i": true } },
+                    "c2": { "id": "M3", "mailboxIds": { "inbox-i": true } },
+                },
+            })
+        );
+        let r: Vec<Invocation> = serde_json::from_value(json!([
+            ["Email/copy", { "fromAccountId": "e", "accountId": "i", "oldState": "5", "newState": "6",
+                "created": { "c0": { "id": "N1", "blobId": "B1", "threadId": "T1", "size": 512 } },
+                "notCreated": {
+                    "c1": { "type": "alreadyExists", "existingId": "N2" },
+                    "c2": { "type": "overQuota" }
+                } }, "c"],
+            ["Email/set", { "accountId": "e", "oldState": "9", "newState": "10", "destroyed": ["M1"] }, "c"]
+        ]))
+        .unwrap();
+        let c = copied(&r, &ids, true).unwrap();
+        assert_eq!(c.len(), 3);
+        assert_eq!((c[0].copy.as_ref().unwrap().id.as_str(), c[0].original_left), ("N1", false));
+        let existing = c[1].copy.as_ref().unwrap();
+        assert_eq!((existing.id.as_str(), existing.existed, c[1].original_left), ("N2", true, true), "уже было — источник не удалён");
+        assert!(matches!(&c[2].copy, Err(Error::Method { kind, .. }) if kind == "overQuota"));
+        assert!(c[2].original_left);
+        let kept = copied(&r[..1], &ids, false).unwrap();
+        assert!(kept.iter().all(|c| !c.original_left), "копия без удаления");
+        assert!(copied(&[], &ids, false).is_err());
     }
 
     #[test]

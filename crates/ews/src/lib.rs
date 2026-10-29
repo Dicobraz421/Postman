@@ -40,7 +40,7 @@ pub use calendar::{
 };
 pub use contacts::{Contact, ContactData, ContactFolder, Member, Phone, PhoneKind};
 pub use directory::{PeoplePage, Person};
-pub use mail::{Attachment, Disposition, HierarchyChanges, MailFolder, MailHeader, MailItem, MailRole, MailSync, apply_roles};
+pub use mail::{Attachment, Disposition, HierarchyChanges, MailFolder, MailHeader, MailItem, MailRole, MailSync, Upload, UploadError, apply_roles};
 pub use notify::{Change, Event, EventKind, EventStream, Mode, Notifier, Subscription, changes};
 
 /// Сколько ждать соединения и ответа на один запрос.

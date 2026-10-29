@@ -41,7 +41,41 @@ pub struct SharedAccount {
     pub can_submit: bool,
 }
 
+/// Пределы сервера из `urn:ietf:params:jmap:core` (RFC 8620 §2): выгрузка писем и пачки вызовов. Не объявлен —
+/// рекомендованный минимум RFC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// Байт в одной загрузке блоба (`maxSizeUpload`): письмо больше — не загрузить.
+    pub max_size_upload: u64,
+    /// Загрузок одновременно (`maxConcurrentUpload`).
+    pub max_concurrent_upload: usize,
+    /// Объектов в одном `*/set`, `Email/import`, `Email/copy` (`maxObjectsInSet`).
+    pub max_objects_in_set: usize,
+    /// Вызовов в одном запросе (`maxCallsInRequest`).
+    pub max_calls_in_request: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self { max_size_upload: 50_000_000, max_concurrent_upload: 4, max_objects_in_set: 500, max_calls_in_request: 16 }
+    }
+}
+
 impl Session {
+    /// Пределы сервера (`capabilities` → `urn:ietf:params:jmap:core`); нет поля или 0 — минимум RFC 8620.
+    pub fn limits(&self) -> Limits {
+        let core = self.capabilities.get(crate::CORE);
+        let get = |name: &str| core.and_then(|c| c.get(name)).and_then(Value::as_u64).filter(|n| *n > 0);
+        let size = |name: &str, d: usize| get(name).map_or(d, |n| usize::try_from(n).unwrap_or(usize::MAX));
+        let d = Limits::default();
+        Limits {
+            max_size_upload: get("maxSizeUpload").unwrap_or(d.max_size_upload),
+            max_concurrent_upload: size("maxConcurrentUpload", d.max_concurrent_upload),
+            max_objects_in_set: size("maxObjectsInSet", d.max_objects_in_set),
+            max_calls_in_request: size("maxCallsInRequest", d.max_calls_in_request),
+        }
+    }
+
     /// Почтовые аккаунты, кроме основного (`primaryAccounts` почты), по имени. Аккаунт без capability почты
     /// (только календарь или файлы) — не ящик.
     pub fn shared_accounts(&self) -> Vec<SharedAccount> {
@@ -101,7 +135,7 @@ fn rebase(u: &str, origin: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Session, SharedAccount, rebase};
+    use super::{Limits, Session, SharedAccount, rebase};
 
     /// Сессия user3 со стенда (S4-06): свой аккаунт, общий ящик группы и папка, открытая только для чтения;
     /// аккаунт без почты — не ящик.
@@ -133,6 +167,28 @@ mod tests {
             can_submit: submit,
         };
         assert_eq!(shared, [acc("j", "shared-ro@itt.test", false, false), acc("i", "shared-sales@itt.test", true, true)]);
+    }
+
+    /// Пределы из сессии Stalwart (S8-11); чего нет — минимум RFC 8620.
+    #[test]
+    fn limits_come_from_core_capability() {
+        let session = |core: serde_json::Value| -> Session {
+            serde_json::from_value(serde_json::json!({
+                "capabilities": { "urn:ietf:params:jmap:core": core, "urn:ietf:params:jmap:mail": {} },
+                "accounts": {}, "primaryAccounts": {}, "username": "u",
+                "apiUrl": "/jmap/", "downloadUrl": "/d", "uploadUrl": "/u", "eventSourceUrl": "/e", "state": "s"
+            }))
+            .unwrap()
+        };
+        let s = session(serde_json::json!({
+            "maxSizeUpload": 50_000_000u64, "maxConcurrentUpload": 4, "maxSizeRequest": 10_000_000,
+            "maxConcurrentRequests": 4, "maxCallsInRequest": 16, "maxObjectsInGet": 500, "maxObjectsInSet": 500,
+            "collationAlgorithms": []
+        }));
+        assert_eq!(s.limits(), Limits { max_size_upload: 50_000_000, max_concurrent_upload: 4, max_objects_in_set: 500, max_calls_in_request: 16 });
+        let s = session(serde_json::json!({ "maxSizeUpload": 1_048_576, "maxObjectsInSet": 0, "maxCallsInRequest": 64 }));
+        assert_eq!(s.limits(), Limits { max_size_upload: 1_048_576, max_concurrent_upload: 4, max_objects_in_set: 500, max_calls_in_request: 64 });
+        assert_eq!(session(serde_json::json!({})).limits(), Limits::default());
     }
 
     #[test]

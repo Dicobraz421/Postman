@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Header>
+    <h:ServerVersionInfo MajorVersion="15" MinorVersion="0" MajorBuildNumber="1497" MinorBuildNumber="46" Version="V2_23" xmlns:h="http://schemas.microsoft.com/exchange/services/2006/types" xmlns="http://schemas.microsoft.com/exchange/services/2006/types"/>
+  </s:Header>
+  <s:Body>
+    <m:CreateItemResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+      <m:ResponseMessages>
+        <m:CreateItemResponseMessage ResponseClass="Success">
+          <m:ResponseCode>NoError</m:ResponseCode>
+          <m:Items><t:Message><t:ItemId Id="AAMkADup1" ChangeKey="CQAAABYAAAA1"/></t:Message></m:Items>
+        </m:CreateItemResponseMessage>
+        <m:CreateItemResponseMessage ResponseClass="Error">
+          <m:MessageText>The mailbox quota has been exceeded.</m:MessageText>
+          <m:ResponseCode>ErrorQuotaExceeded</m:ResponseCode>
+          <m:DescriptiveLinkKey>0</m:DescriptiveLinkKey>
+          <m:Items/>
+        </m:CreateItemResponseMessage>
+        <m:CreateItemResponseMessage ResponseClass="Error">
+          <m:MessageText>The message exceeds the maximum supported size.</m:MessageText>
+          <m:ResponseCode>ErrorMessageSizeExceeded</m:ResponseCode>
+          <m:DescriptiveLinkKey>0</m:DescriptiveLinkKey>
+          <m:Items/>
+        </m:CreateItemResponseMessage>
+        <m:CreateItemResponseMessage ResponseClass="Error">
+          <m:MessageText>Id is malformed.</m:MessageText>
+          <m:ResponseCode>ErrorInvalidFolderId</m:ResponseCode>
+          <m:DescriptiveLinkKey>0</m:DescriptiveLinkKey>
+          <m:Items/>
+        </m:CreateItemResponseMessage>
+      </m:ResponseMessages>
+    </m:CreateItemResponse>
+  </s:Body>
+</s:Envelope>

@@ -90,6 +90,14 @@ pub enum UnsendError {
     Jmap(#[from] Error),
 }
 
+/// Письмо, выгруженное `Email/import` или скопированное `Email/copy`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Imported {
+    pub id: String,
+    /// Такое письмо в аккаунте уже было (`alreadyExists`): `id` — его, новое не создано.
+    pub existed: bool,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Uploaded {
@@ -116,6 +124,24 @@ impl Client {
             .json()
             .await?;
         Ok(up.blob_id)
+    }
+
+    /// Выгрузить письмо (блоб из [`Client::upload`]) в папки `mailbox_ids` аккаунта `account` (`Email/import`, RFC 8621
+    /// §4.8): ключевые слова как есть (`$seen`, `$flagged`, `pm.*`), дата получения — `received_at` (Unix-секунды;
+    /// `None` — время выгрузки). Сервер узнал письмо (`alreadyExists`) — id существующего, без дубля.
+    pub async fn import_email(
+        &self,
+        account: &str,
+        blob: &str,
+        mailbox_ids: &[String],
+        keywords: &[String],
+        received_at: Option<i64>,
+    ) -> Result<Imported> {
+        let email = import_object(blob, mailbox_ids, keywords, received_at);
+        let call = inv("Email/import", json!({ "accountId": account, "emails": { "m": email } }), "i");
+        let mut r = self.call(USING, &[call]).await?;
+        let v: Value = take(&mut r, "i")?;
+        created_or_existing(&v, "m", "Email/import")
     }
 
     /// Сохранить черновик с ключевыми словами `keywords` (сверх `$draft`, `$seen`); прежняя версия (`replace`)
@@ -273,21 +299,42 @@ pub fn unix_to_utc(t: i64) -> String {
 
 /// `Email/import` черновика: `$draft`, `$seen` и свои ключевые слова.
 fn import_call(acc: &str, blob: &str, drafts: &str, keywords: &[String]) -> crate::Invocation {
-    inv("Email/import", json!({ "accountId": acc, "emails": { "draft": import_email(blob, drafts, keywords) } }), "i")
+    let mut all = vec!["$draft".to_owned(), "$seen".to_owned()];
+    all.extend_from_slice(keywords);
+    let email = import_object(blob, &[drafts.to_owned()], &all, None);
+    inv("Email/import", json!({ "accountId": acc, "emails": { "draft": email } }), "i")
 }
 
-/// Письмо для `Email/import`; ключевые слова — в нижнем регистре, неверные для JMAP (RFC 8621 §4.1.1) пропускаются.
-fn import_email(blob: &str, drafts: &str, keywords: &[String]) -> Value {
+/// Письмо для `Email/import`; ключевые слова — в нижнем регистре, неверные для JMAP (RFC 8621 §4.1.1) пропускаются;
+/// `received_at` — Unix-секунды (`None` — время выгрузки, ставит сервер).
+fn import_object(blob: &str, mailbox_ids: &[String], keywords: &[String], received_at: Option<i64>) -> Value {
     let mut kw = Map::new();
-    kw.insert("$draft".into(), Value::Bool(true));
-    kw.insert("$seen".into(), Value::Bool(true));
     for k in keywords.iter().map(|k| k.to_ascii_lowercase()) {
         let valid = (1..=255).contains(&k.len()) && k.bytes().all(|b| (0x21..=0x7e).contains(&b) && !b"(){]%*\"\\".contains(&b));
         if valid {
             kw.insert(k, Value::Bool(true));
         }
     }
-    json!({ "blobId": blob, "mailboxIds": { drafts: true }, "keywords": kw })
+    let mailboxes: Map<String, Value> = mailbox_ids.iter().map(|m| (m.clone(), Value::Bool(true))).collect();
+    let mut email = json!({ "blobId": blob, "mailboxIds": mailboxes, "keywords": kw });
+    if let Some(t) = received_at {
+        email["receivedAt"] = json!(unix_to_utc(t));
+    }
+    email
+}
+
+/// Итог создания под ключом `key` в ответе `Email/import` или `Email/copy`: `created` → id; `alreadyExists` → id
+/// существующего письма (`existingId`, RFC 8620 §5.4); другая ошибка — [`Error::Method`].
+pub(crate) fn created_or_existing(v: &Value, key: &str, method: &str) -> Result<Imported> {
+    let err = &v["notCreated"][key];
+    if err["type"].as_str() == Some("alreadyExists")
+        && let Some(id) = err["existingId"].as_str()
+    {
+        return Ok(Imported { id: id.to_owned(), existed: true });
+    }
+    set_error(v, "notCreated", key, method)?;
+    let id = v["created"][key]["id"].as_str().ok_or_else(|| Error::Protocol(format!("{method} не вернул id")))?;
+    Ok(Imported { id: id.to_owned(), existed: false })
 }
 
 fn imported_id(r: &mut [crate::Invocation]) -> Result<String> {
@@ -298,7 +345,7 @@ fn imported_id(r: &mut [crate::Invocation]) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Release, import_email, unix_to_utc};
+    use super::{Imported, Release, created_or_existing, import_object, unix_to_utc};
     use crate::utc_to_unix;
     use serde_json::json;
 
@@ -314,9 +361,44 @@ mod tests {
     #[test]
     fn draft_keywords_go_into_the_import() {
         let kw = ["pm.conf".to_string(), "PM.Wait.2026-10-24".into(), "bad word".into(), "pm(x".into()];
-        let v = import_email("b1", "d1", &kw);
+        let crate::Invocation(name, v, _) = super::import_call("a", "b1", "d1", &kw);
+        assert_eq!(name, "Email/import");
+        let v = &v["emails"]["draft"];
         assert_eq!(v["keywords"], json!({ "$draft": true, "$seen": true, "pm.conf": true, "pm.wait.2026-10-24": true }));
         assert_eq!(v["mailboxIds"], json!({ "d1": true }));
+        assert!(v.get("receivedAt").is_none(), "черновик — время сервера");
+    }
+
+    /// S8-11: выгрузка в любую папку — свои папки, ключевые слова как есть (без `$draft`), дата получения письма.
+    #[test]
+    fn import_into_any_mailbox() {
+        let kw = ["$seen".to_string(), "$Flagged".into(), "pm.cat.clients".into(), "bad word".into()];
+        let v = import_object("b1", &["in".into(), "arch".into()], &kw, Some(1_792_240_200));
+        assert_eq!(
+            v,
+            json!({
+                "blobId": "b1",
+                "mailboxIds": { "in": true, "arch": true },
+                "keywords": { "$seen": true, "$flagged": true, "pm.cat.clients": true },
+                "receivedAt": "2026-10-17T12:30:00Z",
+            })
+        );
+    }
+
+    /// Ответы `Email/import` (RFC 8621 §4.8): создано, уже есть (`alreadyExists` → `existingId`), отказ.
+    #[test]
+    fn import_answers() {
+        let created = json!({ "accountId": "a", "oldState": "1", "newState": "2",
+            "created": { "m0": { "id": "M1", "blobId": "b1", "threadId": "T1", "size": 1024 } }, "notCreated": null });
+        assert_eq!(created_or_existing(&created, "m0", "Email/import").unwrap(), Imported { id: "M1".into(), existed: false });
+        let exists = json!({ "accountId": "a", "oldState": "1", "newState": "1", "created": null,
+            "notCreated": { "m0": { "type": "alreadyExists", "existingId": "M7", "description": "duplicate" } } });
+        assert_eq!(created_or_existing(&exists, "m0", "Email/import").unwrap(), Imported { id: "M7".into(), existed: true });
+        let over = json!({ "accountId": "a", "oldState": "1", "newState": "1",
+            "notCreated": { "m0": { "type": "overQuota", "description": "quota exceeded" } } });
+        let err = created_or_existing(&over, "m0", "Email/import").unwrap_err();
+        assert!(matches!(&err, crate::Error::Method { kind, .. } if kind == "overQuota"), "{err}");
+        assert!(created_or_existing(&json!({ "created": {} }), "m0", "Email/import").is_err());
     }
 
     #[test]
