@@ -240,6 +240,95 @@ impl From<postman_cache::Error> for Error {
     }
 }
 
+/// Локальный id письма хранилища формата 6 (ADR 0006 п. 1): не меняется ни при переносе между папками и учётками, ни
+/// при выгрузке на сервер. Тот же номер, что у `postman_cache::LetterId`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct LetterId(pub u64);
+
+/// Папка формата 6: учётки или «На этом компьютере». Тот же номер, что у `postman_cache::FolderId`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct FolderId(pub u64);
+
+/// Задание переноса писем в другую учётку (ADR 0006 п. 4). Тот же номер, что у `postman_cache::JobId`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct JobId(pub u64);
+
+/// Режим задания переноса — ответ строки над списком папки (ADR 0006 п. 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MigrationMode {
+    /// Ещё не ответили: шаг «содержимое» уже идёт (он нужен обоим режимам).
+    Ask,
+    /// «Перенести на сервер»: выгрузить в папку цели, затем удалить у источника.
+    Upload,
+    /// «Оставить локальным архивом»: письмо целиком в базе, затем удалить у источника.
+    LocalArchive,
+}
+
+/// Где задание переноса.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MigrationState {
+    /// Ждёт ответа ([`MigrationMode::Ask`]).
+    Asking,
+    Running,
+    Paused,
+    /// На сервере цели нет места: задание стоит до «Продолжить» или «Оставить локально».
+    QuotaFull,
+    Done,
+    Cancelled,
+}
+
+/// Что пользователь велел заданию переноса (`sync::Command::Migration`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MigrationRequest {
+    /// Ответ на вопрос строки: режим задания.
+    Answer {
+        job: JobId,
+        mode: MigrationMode,
+    },
+    Pause {
+        job: JobId,
+    },
+    /// Продолжить после паузы или после «нет места».
+    Resume {
+        job: JobId,
+    },
+    /// Остановить: `keep_local` — оставшиеся письма — локальным архивом, иначе — одной транзакцией обратно в папку
+    /// источника.
+    Cancel {
+        job: JobId,
+        keep_local: bool,
+    },
+}
+
+/// Почему сервер цели не принял письмо (`sync::Event::ImportFailed`). Текст — для журнала (по-английски).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+pub enum ImportError {
+    /// Больше предела сервера: письмо остаётся локальным с пометкой, очередь идёт дальше.
+    #[error("too large for the server")]
+    TooLarge,
+    /// Нет места на сервере: задание — [`MigrationState::QuotaFull`].
+    #[error("server quota exceeded")]
+    Quota,
+    /// Сервер просит подождать: пауза очереди, секунды.
+    #[error("throttled, retry after {retry_after} s")]
+    Throttled { retry_after: u64 },
+    /// Прочий отказ: ответ сервера или сети как есть.
+    #[error("rejected: {0}")]
+    Rejected(String),
+}
+
+/// Письмо на сервере цели после выгрузки (`sync::Event::Imported`): из этого ядро пишет связь письма с сервером
+/// (`postman_cache::RemoteRef`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Remote {
+    /// Ключ учётки (аккаунт ключей кэша: основной — пустая строка).
+    pub account: String,
+    /// id письма на сервере.
+    pub id: String,
+    /// Что ещё нужно пути (папка и UID, `ItemId`…): формат плагина.
+    pub data: Vec<u8>,
+}
+
 /// Область или функция, которой у сервера учётной записи может не быть (S7, «Нет у сервера — нет на экране»).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Feature {
@@ -257,7 +346,8 @@ pub enum Feature {
     Rules,
     /// Автоответ на сервере.
     Autoreply,
-    /// Квота ящика.
+    /// Квота ящика (`settings::Request::Quota` → `Usage`): перед переносом на сервер и по ходу. У кого её нет —
+    /// места не хватит только по ошибке выгрузки ([`ImportError::Quota`]).
     Quota,
     /// Сервер хранит ключевые слова писем: категории, сроки, «Ждём» (JMAP — всегда; IMAP — `PERMANENTFLAGS \*`).
     Keywords,
@@ -283,8 +373,15 @@ impl Feature {
 
 /// Что умеет сервер учётной записи (ADR 0003). Пока сервер не ответил — [`Features::ALL`]: интерфейс не прячет
 /// разделы на время входа.
+///
+/// Перенос писем между учётками (ADR 0006 п. 4) — не раздел интерфейса, а умение пути: [`Features::import`] и
+/// [`Features::server_copy`]; в [`Features::ALL`] их нет, пока путь сам не сказал.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Features(u16);
+
+/// Биты умений переноса — после битов [`Feature`].
+const IMPORT: u16 = 1 << 14;
+const SERVER_COPY: u16 = 1 << 15;
 
 impl Features {
     pub const ALL: Features = {
@@ -304,7 +401,7 @@ impl Features {
 
     #[must_use]
     pub fn with(self, f: Feature, on: bool) -> Features {
-        if on { Features(self.0 | f.bit()) } else { Features(self.0 & !f.bit()) }
+        self.with_bits(f.bit(), on)
     }
 
     /// Есть хоть у одного: области учётной записи от нескольких плагинов (почта IMAP, календарь CalDAV; ADR 0004).
@@ -312,7 +409,33 @@ impl Features {
     pub fn union(self, o: Features) -> Features {
         Features(self.0 | o.0)
     }
+
+    /// Путь умеет выгрузку письма в папку на сервере (`sync::Command::Import`).
+    pub fn import(self) -> bool {
+        self.0 & IMPORT != 0
+    }
+
+    #[must_use]
+    pub fn with_import(self, on: bool) -> Features {
+        self.with_bits(IMPORT, on)
+    }
+
+    /// Сервер сам копирует письма между аккаунтами одной сессии (`sync::Command::ServerCopy`, без выгрузки).
+    pub fn server_copy(self) -> bool {
+        self.0 & SERVER_COPY != 0
+    }
+
+    #[must_use]
+    pub fn with_server_copy(self, on: bool) -> Features {
+        self.with_bits(SERVER_COPY, on)
+    }
+
+    fn with_bits(self, bits: u16, on: bool) -> Features {
+        if on { Features(self.0 | bits) } else { Features(self.0 & !bits) }
+    }
 }
+
+const _: () = assert!(Features::ALL.0 & (IMPORT | SERVER_COPY) == 0, "биты переноса заняты областью");
 
 impl Default for Features {
     fn default() -> Self {
@@ -333,6 +456,39 @@ mod tests {
         assert_eq!(Features::default(), Features::ALL);
         let cal = Features::NONE.with(Feature::Calendar, true);
         assert_eq!(cal.union(Features::NONE.with(Feature::Rules, true)), cal.with(Feature::Rules, true));
+    }
+
+    /// Умения переноса — свои биты: в `ALL` их нет, области они не трогают и объединяются, как области.
+    #[test]
+    fn features_import_and_server_copy() {
+        assert!(!Features::ALL.import() && !Features::ALL.server_copy() && !Features::default().import());
+        let f = Features::NONE.with(Feature::Keywords, true).with_import(true);
+        assert!(f.import() && !f.server_copy() && f.has(Feature::Keywords) && !f.has(Feature::Calendar));
+        assert_eq!(f.with(Feature::Keywords, false), Features::NONE.with_import(true));
+        let both = f.union(Features::NONE.with_server_copy(true));
+        assert!(both.import() && both.server_copy());
+        assert_eq!(both.with_import(false).with_server_copy(false), Features::NONE.with(Feature::Keywords, true));
+        assert_eq!(Features::ALL.with_import(true).with_import(false), Features::ALL);
+    }
+
+    /// Типы переноса — в журнал и в задание (JSON туда и обратно); текст ошибки выгрузки — по-английски.
+    #[test]
+    fn migration_types_serialize() {
+        fn json(v: &impl Serialize) -> String {
+            serde_json::to_string(v).unwrap()
+        }
+        assert_eq!(json(&MigrationState::QuotaFull), r#""QuotaFull""#);
+        assert_eq!(json(&ImportError::Throttled { retry_after: 30 }), r#"{"Throttled":{"retry_after":30}}"#);
+        assert_eq!(json(&ImportError::Rejected("550".into())), r#"{"Rejected":"550"}"#);
+        assert_eq!(json(&MigrationRequest::Cancel { job: JobId(7), keep_local: true }), r#"{"Cancel":{"job":7,"keep_local":true}}"#);
+        assert_eq!(json(&Remote { account: "@2".into(), id: "m1".into(), data: vec![1] }), r#"{"account":"@2","id":"m1","data":[1]}"#);
+        let back: MigrationRequest = serde_json::from_str(r#"{"Answer":{"job":3,"mode":"LocalArchive"}}"#).unwrap();
+        assert_eq!(back, MigrationRequest::Answer { job: JobId(3), mode: MigrationMode::LocalArchive });
+        let e: ImportError = serde_json::from_str(r#""Quota""#).unwrap();
+        assert_eq!(e, ImportError::Quota);
+        assert_eq!(ImportError::Throttled { retry_after: 5 }.to_string(), "throttled, retry after 5 s");
+        assert_eq!(ImportError::TooLarge.to_string(), "too large for the server");
+        assert_eq!((LetterId(1), FolderId(2)), serde_json::from_str("[1,2]").unwrap());
     }
 
     #[test]
