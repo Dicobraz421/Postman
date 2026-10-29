@@ -3,7 +3,8 @@
 //! Главная копия почты — на сервере; здесь то, что нужно для мгновенного старта,
 //! чтения без сети и списка без держания ящика в памяти. Порядок писем в папке
 //! задаёт составной ключ `(папка, -дата, id)`: страница списка — чтение диапазона.
-//! Хранилище одноразовое: при смене формата оно пересоздаётся и заполняется синхронизацией.
+//! Файл формата старше 5 пересоздаётся и заполняется синхронизацией; с признаком `store6` формат 5 переносится в 6
+//! ([`Cache::open_with`]); файл новее своей версии не открывается ([`Error::is_newer_format`]).
 //!
 //! Несколько аккаунтов (S4-06): ключи основного аккаунта — id сервера как есть, ключи общего ящика — с префиксом
 //! аккаунта (`<аккаунт>/<id>`, [`scoped`]): id JMAP у разных аккаунтов совпадают (у Stalwart — `a`, `b`…). Префикс
@@ -32,6 +33,16 @@ impl std::fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+/// Начало текста ошибки «файл новее этой версии».
+const NEWER: &str = "store format is newer than this Postman";
+
+impl Error {
+    /// Файл хранилища новее этой версии Postman (открыт более новой): он не удаляется, пользователю — понятный текст.
+    pub fn is_newer_format(&self) -> bool {
+        self.0.starts_with(NEWER)
+    }
+}
 
 macro_rules! from_err {
     ($($t:ty),*) => {$(
@@ -64,6 +75,8 @@ mod folder;
 #[cfg(feature = "store6")]
 mod letter;
 #[cfg(feature = "store6")]
+mod migrate;
+#[cfg(feature = "store6")]
 mod remote;
 
 #[cfg(feature = "store6")]
@@ -72,6 +85,8 @@ pub use content::{CHUNK, ContentReader, Encoding, Hash, MIN_PART, SplitPart};
 pub use folder::{FolderId, FolderRow, Owner, Scope};
 #[cfg(feature = "store6")]
 pub use letter::{JobId, LetterId, LetterRow, MOVE_BATCH, MoveTicket, Outbound, Place, Step};
+#[cfg(feature = "store6")]
+pub use migrate::{Migration, Split};
 #[cfg(feature = "store6")]
 pub use remote::RemoteRef;
 
@@ -448,27 +463,119 @@ pub struct Cache {
     db: Arc<Database>,
 }
 
+/// Как открылось хранилище ([`Cache::open_with`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Migrated {
+    /// Файл своего формата (или новый).
+    Current,
+    /// Формат 5 перенесён в 6.
+    Done,
+    /// Прежнего содержимого нет — база пустая, её наполняет синхронизация: файл не хранилище, формат старше 5 или
+    /// перенос не удался. Причина — по-английски, для журнала.
+    Fresh(String),
+}
+
+/// Версия формата файла; `None` — таблицы есть, версии нет.
+fn version(db: &impl ReadableDatabase) -> Result<Option<u64>> {
+    let tx = db.begin_read()?;
+    match tx.open_table(META) {
+        Ok(t) => Ok(t.get("version")?.map(|v| v.value())),
+        // Пустая новая база — тоже «наш» формат.
+        Err(redb::TableError::TableDoesNotExist(_)) => Ok(tx.list_tables()?.next().is_none().then_some(FORMAT_VERSION)),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn newer(v: u64) -> Error {
+    Error(format!("{NEWER}: format {v}, this version reads {FORMAT_VERSION}"))
+}
+
+/// Прежний файл после переноса формата 5 (рядом с базой): удаляется при следующем удачном открытии.
+const BACKUP: &str = ".v5.bak";
+
+/// Файл рядом с `path`: имя с добавкой `suffix`.
+fn beside(path: &Path, suffix: &str) -> std::path::PathBuf {
+    let mut s = path.as_os_str().to_owned();
+    s.push(suffix);
+    s.into()
+}
+
+fn remove_if_exists(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        r => Ok(r?),
+    }
+}
+
 impl Cache {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref();
-        let open = || Database::builder().set_cache_size(CACHE_BYTES).create(path);
-        let db = match open() {
-            Ok(db) => db,
-            // Файл другого формата (например, старый кэш SQLite): пересоздаём.
-            Err(redb::DatabaseError::Storage(_)) => {
-                std::fs::remove_file(path)?;
-                open()?
+        #[cfg(feature = "store6")]
+        let opened = Self::open_with(path, &mut Migration::default());
+        #[cfg(not(feature = "store6"))]
+        let opened = Self::open_or(path.as_ref(), |path, v| Self::fresh(path, format!("format {v} is not migrated")));
+        Ok(opened?.0)
+    }
+
+    /// Открыть хранилище; файл формата 5 — перенести в формат 6 ([`Migration`]: ход и разбиение писем на части).
+    /// Перенос долгий: ядро зовёт это не из потока интерфейса.
+    #[cfg(feature = "store6")]
+    pub fn open_with(path: impl AsRef<Path>, how: &mut Migration) -> Result<(Self, Migrated)> {
+        // Следующие смены формата — шагами `migrate_6_to_7` и т. д. от формата 6, без пересоздания.
+        Self::open_or(path.as_ref(), |path, v| match v {
+            5 => migrate::run(path, how),
+            _ => Self::fresh(path, format!("format {v} is not migrated")),
+        })
+    }
+
+    /// Открыть файл: свой формат — как есть, формат старше — `older(path, версия)`, новее — ошибка, не хранилище —
+    /// пустая база.
+    fn open_or(path: &Path, older: impl FnOnce(&Path, u64) -> Result<(Self, Migrated)>) -> Result<(Self, Migrated)> {
+        // Сначала — только чтение: открытие на запись меняет заголовок файла, а файл новее или для переноса должен
+        // остаться как был. Не вышло (файла нет, не закрыт чисто) — открытие на запись ниже, с той же проверкой.
+        if let Ok(db) = Database::builder().set_cache_size(CACHE_BYTES).open_read_only(path) {
+            match version(&db)? {
+                Some(v) if v > FORMAT_VERSION => return Err(newer(v)),
+                Some(v) if v < FORMAT_VERSION => {
+                    drop(db);
+                    return older(path, v);
+                }
+                _ => {}
             }
+        }
+        let c = match Self::create(path) {
+            Ok(db) => Self { db: Arc::new(db) },
+            // Файл другого формата (например, старый кэш SQLite): пересоздаём.
+            Err(redb::DatabaseError::Storage(e)) => return Self::fresh(path, format!("not a store file: {e}")),
             Err(e) => return Err(e.into()),
         };
-        let mut c = Self { db: Arc::new(db) };
-        if c.version()? != Some(FORMAT_VERSION) {
-            drop(c);
-            std::fs::remove_file(path)?;
-            c = Self { db: Arc::new(open()?) };
+        match version(&*c.db)? {
+            Some(FORMAT_VERSION) => {
+                c.init()?;
+                remove_if_exists(&beside(path, BACKUP))?;
+                Ok((c, Migrated::Current))
+            }
+            Some(v) if v > FORMAT_VERSION => Err(newer(v)),
+            Some(v) => {
+                drop(c);
+                older(path, v)
+            }
+            None => {
+                drop(c);
+                Self::fresh(path, "no format version".into())
+            }
         }
+    }
+
+    fn create(path: &Path) -> std::result::Result<Database, redb::DatabaseError> {
+        Database::builder().set_cache_size(CACHE_BYTES).create(path)
+    }
+
+    /// Файл `path` — пустой базой своего формата.
+    fn fresh(path: &Path, reason: String) -> Result<(Self, Migrated)> {
+        remove_if_exists(path)?;
+        let c = Self { db: Arc::new(Self::create(path)?) };
         c.init()?;
-        Ok(c)
+        Ok((c, Migrated::Fresh(reason)))
     }
 
     pub fn open_in_memory() -> Result<Self> {
@@ -476,16 +583,6 @@ impl Cache {
         let c = Self { db: Arc::new(db) };
         c.init()?;
         Ok(c)
-    }
-
-    fn version(&self) -> Result<Option<u64>> {
-        let tx = self.db.begin_read()?;
-        match tx.open_table(META) {
-            Ok(t) => Ok(t.get("version")?.map(|v| v.value())),
-            // Пустая новая база — тоже «наш» формат.
-            Err(redb::TableError::TableDoesNotExist(_)) => Ok(tx.list_tables()?.next().is_none().then_some(FORMAT_VERSION)),
-            Err(e) => Err(e.into()),
-        }
     }
 
     fn init(&self) -> Result<()> {
@@ -1738,6 +1835,25 @@ mod tests {
         assert_eq!(c.state("Email").unwrap().as_deref(), Some("s1"));
         c.delete_emails(&["a".into()]).unwrap();
         assert!(c.body("a").unwrap().is_none());
+    }
+
+    /// Файл новее этой версии (открыт более новой) — ошибка, файл на месте.
+    #[test]
+    fn newer_format_is_refused() {
+        let dir = tempfile::Builder::new().prefix("postman-cache-").tempdir().unwrap();
+        let path = dir.path().join("c.redb");
+        {
+            let db = Database::create(&path).unwrap();
+            let tx = db.begin_write().unwrap();
+            tx.open_table(META).unwrap().insert("version", FORMAT_VERSION + 1).unwrap();
+            tx.open_table(TASK).unwrap().insert("u1", &b"x"[..]).unwrap();
+            tx.commit().unwrap();
+        }
+        let before = std::fs::read(&path).unwrap();
+        let e = Cache::open(&path).err().unwrap();
+        assert!(e.is_newer_format(), "{e}");
+        assert!(!Error("x".into()).is_newer_format());
+        assert!(std::fs::read(&path).unwrap() == before, "файл не тронут");
     }
 
     #[test]
