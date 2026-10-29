@@ -3,6 +3,8 @@
 //! `.pptx`/`.odp` ([`slides`], S8-18), проверка Office на макросы. Только здесь, в песочнице: UI получает пиксели,
 //! строки, числа и безопасный IR (документ — разделами: лист книги, слайд, ADR 0007).
 //!
+//! Картинки — PNG, JPEG, GIF, WebP, BMP, ICO и TIFF (страницы — как у PDF, S8-21).
+//!
 //! Пределы — на каждый запрос: вход не больше [`MAX_INPUT`], картинка и страница — не больше `max_side` по
 //! стороне (страница PDF — шириной `width`, если задана), текст — [`MAX_TEXT`] байт, оглавление — [`MAX_LISTED`] строк; архив не распаковывается (размеры —
 //! из центрального каталога), из OOXML читается только `vbaProject.bin` и не больше [`MAX_VBA`], у `.docx` — пределы
@@ -62,6 +64,9 @@ pub enum Preview {
         /// Размер исходной картинки и её формат («PNG»).
         source: (u32, u32),
         format: String,
+        /// Показанная страница (с нуля) и всего страниц: у TIFF — как у PDF, у остальных — 0 и 1.
+        page: u32,
+        pages: u32,
     },
     Pdf {
         width: u32,
@@ -146,9 +151,10 @@ pub fn preview(kind: PreviewKind, bytes: &[u8], page: u32, max_side: u32, width:
     }
     match kind {
         PreviewKind::Image => {
-            let (img, source, format) = crate::decode(bytes, max_side)?;
-            let p = Preview::Image { width: img.width, height: img.height, source, format: format.into() };
-            Ok((p, img.pixels))
+            let d = crate::decode(bytes, max_side, page)?;
+            let p =
+                Preview::Image { width: d.img.width, height: d.img.height, source: d.source, format: d.format.into(), page: d.page, pages: d.pages };
+            Ok((p, d.img.pixels))
         }
         PreviewKind::Pdf => pdf(bytes, page, max_side, width),
         PreviewKind::Archive => Ok((Preview::Archive(list_zip(bytes)?), Vec::new())),
