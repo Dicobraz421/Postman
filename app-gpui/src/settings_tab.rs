@@ -191,6 +191,10 @@ pub(crate) struct SettingsView {
     pub(crate) remove_extra: Option<String>,
     /// Пароль в диспетчере учётных данных (`None` — ещё не проверено).
     pub(crate) stored: Option<bool>,
+    /// Диск с данными Postman и BitLocker (S8-35); `None` — ещё не прочитано (читается в фоне при открытии
+    /// «Безопасности»).
+    pub(crate) disk: Option<(String, Option<bool>)>,
+    pub(crate) disk_asked: bool,
     pub(crate) rules: Option<AnyView>,
     pub(crate) vacation: Option<AnyView>,
     pub(crate) theme_error: Option<String>,
@@ -262,6 +266,8 @@ impl SettingsView {
             remove_confirm: false,
             remove_extra: None,
             stored: None,
+            disk: None,
+            disk_asked: false,
             rules: None,
             vacation: None,
             theme_error: None,

@@ -661,3 +661,10 @@ settings-viewers-admin = from administrator
 settings-viewers-none = No modules. Put a .wasm file into the modules folder.
 settings-viewers-open = Open modules folder
 settings-viewers-tip = A module is a .wasm file with a .json description. Third-party modules are unsigned and see only the opened file.
+# Disk encryption of the database (S8-35, mockup S8-D "Settings").
+settings-bitlocker-off = Drive { $drive } with Postman data isn’t encrypted with BitLocker
+settings-bitlocker-off-hint = Messages “On this computer” are stored only here. Turn on BitLocker or contact your administrator.
+settings-bitlocker-open = BitLocker settings
+settings-bitlocker-on = Drive { $drive } with Postman data is encrypted with BitLocker
+settings-bitlocker-unknown = Encryption of drive { $drive } is unknown
+settings-bitlocker-unknown-hint = Windows didn’t report BitLocker status without administrator rights.

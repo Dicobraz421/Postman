@@ -664,3 +664,10 @@ settings-viewers-admin = от администратора
 settings-viewers-none = Модулей нет. Положите файл .wasm в папку модулей.
 settings-viewers-open = Открыть папку модулей
 settings-viewers-tip = Модуль — файл .wasm с описанием .json. Сторонние — без подписи; видят только открытый файл.
+# Шифрование диска с базой (S8-35, макет S8-D «Настройки»).
+settings-bitlocker-off = Диск { $drive } с данными Postman не зашифрован BitLocker
+settings-bitlocker-off-hint = Письма «На этом компьютере» хранятся только здесь. Включите BitLocker или обратитесь к администратору.
+settings-bitlocker-open = Параметры BitLocker
+settings-bitlocker-on = Диск { $drive } с данными Postman зашифрован BitLocker
+settings-bitlocker-unknown = Шифрование диска { $drive } неизвестно
+settings-bitlocker-unknown-hint = Windows не сообщила состояние BitLocker без прав администратора.

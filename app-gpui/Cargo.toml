@@ -37,10 +37,10 @@ postman-search.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 postman-compose.workspace = true
-pets-commands = { git = "https://github.com/Dicobraz/pets", rev = "1fbd05c0317d69e45aa6b2bc4438f6d6013297db" }
-pets-i18n = { git = "https://github.com/Dicobraz/pets", rev = "1fbd05c0317d69e45aa6b2bc4438f6d6013297db" }
-pets-shell = { git = "https://github.com/Dicobraz/pets", rev = "1fbd05c0317d69e45aa6b2bc4438f6d6013297db" }
-pets-ui = { git = "https://github.com/Dicobraz/pets", rev = "1fbd05c0317d69e45aa6b2bc4438f6d6013297db" }
+pets-commands = { git = "https://github.com/Dicobraz/pets", rev = "0114eca2e7f911822e8a3a05f85c472802bd3597" }
+pets-i18n = { git = "https://github.com/Dicobraz/pets", rev = "0114eca2e7f911822e8a3a05f85c472802bd3597" }
+pets-shell = { git = "https://github.com/Dicobraz/pets", rev = "0114eca2e7f911822e8a3a05f85c472802bd3597" }
+pets-ui = { git = "https://github.com/Dicobraz/pets", rev = "0114eca2e7f911822e8a3a05f85c472802bd3597" }
 futures = "0.3"
 tracing = "0.1"
 # Снимки экранов (`--screens`, S2-05): запись PNG.
