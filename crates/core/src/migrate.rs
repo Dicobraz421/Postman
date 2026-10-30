@@ -4,8 +4,9 @@
 //! содержимое есть в базе (нет — `FetchRaw` у источника) → выгрузка в папку цели (`Import`, между аккаунтами одной
 //! сессии — `ServerCopy` пачкой) → сервер подтвердил (связь с целью, `Synced`) → удаление у источника
 //! (`DestroyLetters`), снять `detached`-связь. Письмо у источника удалено только по ответу его сервера
-//! (`Event::Destroyed`, решение владельца 2026-10-29): отказ — повтор после паузы, письмо остаётся в задании. Режим
-//! «локальный архив» — содержимое (хэш сверен), затем удаление у источника, `Local`.
+//! (`Event::Destroyed`, решение владельца 2026-10-29): отказ — повтор после паузы, не больше [`DESTROY_ATTEMPTS`]
+//! раз; затем письмо выходит из задания с пометкой «не удалено у источника» (решение владельца 2026-10-30), итог —
+//! `Event::SourceKept`. Режим «локальный архив» — содержимое (хэш сверен), затем удаление у источника, `Local`.
 //! Каждый шаг записан в хранилище до команды и после ответа: после перезапуска задание идёт с того же шага.
 //!
 //! Движок без I/O и без потоков: поток ядра отдаёт ему ответы путей ([`Engine::event`], [`Engine::quota`]) и
@@ -29,6 +30,9 @@ pub const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 pub const RETRY: Duration = Duration::from_secs(30);
 /// Столько отказов сервера цели ([`ImportError::Rejected`]) — и письмо остаётся локальным с пометкой.
 pub const ATTEMPTS: u32 = 3;
+/// Попыток удалить письмо у источника (между ними — [`RETRY`]); все — отказ: письмо выходит из задания с пометкой
+/// «не удалено у источника» ([`Store::kept`]). Счёт — с запуска движка.
+pub const DESTROY_ATTEMPTS: u32 = 10;
 /// Писем, которые одно задание одновременно загружает у источника.
 const FETCHES: usize = 4;
 
@@ -111,6 +115,9 @@ pub trait Store: Homes {
     fn refused(&mut self, job: JobId, letter: LetterId, why: &ImportError) -> Result<()>;
     /// Источник подтвердил удаление: строка задания и `detached`-связи письма убраны.
     fn finish(&mut self, job: JobId, letter: LetterId) -> Result<()>;
+    /// Источник письмо так и не удалил ([`DESTROY_ATTEMPTS`] отказов): строка задания убрана, `detached`-связи
+    /// остаются — пометка «не удалено у источника».
+    fn kept(&mut self, job: JobId, letter: LetterId) -> Result<()>;
     /// Отмена: письма — одной транзакцией обратно в папку источника с прежними связями, строки задания убраны.
     fn restore(&mut self, job: JobId, letters: &[LetterId]) -> Result<()>;
 }
@@ -140,14 +147,15 @@ struct Letter {
     slot: Option<u64>,
     /// Перенесено `ServerCopy`: источник удалил сервер.
     copied: bool,
-    /// Удаление у источника: ответов ещё ждём (по учётке источника) и был ли отказ.
+    /// Удаление у источника: ответов ещё ждём (по учётке источника), был ли отказ и сколько попыток кончились им.
     pending: usize,
     failed: bool,
+    destroy_failures: u32,
 }
 
 impl Letter {
     fn new(to: FolderId, step: Step, size: u64) -> Self {
-        Self { to, step, busy: false, attempts: 0, size, slot: None, copied: false, pending: 0, failed: false }
+        Self { to, step, busy: false, attempts: 0, size, slot: None, copied: false, pending: 0, failed: false, destroy_failures: 0 }
     }
 }
 
@@ -176,6 +184,8 @@ struct Job {
     cancel: Option<bool>,
     /// Вернулись в папку источника при отмене — не «готово».
     returned: u64,
+    /// Вышли из задания с пометкой «не удалено у источника» — итог в конце.
+    kept: u64,
     dirty: bool,
     /// Смена состояния — показать сразу.
     forced: bool,
@@ -196,6 +206,7 @@ impl Job {
             quota: Quota::default(),
             cancel: None,
             returned: 0,
+            kept: 0,
             dirty: true,
             forced: true,
             shown: None,
@@ -567,7 +578,15 @@ impl<S: Store> Engine<S> {
                 }
                 l.busy = false;
                 if std::mem::take(&mut l.failed) {
-                    j.later(*letter, now);
+                    l.destroy_failures += 1;
+                    if l.destroy_failures < DESTROY_ATTEMPTS {
+                        j.later(*letter, now);
+                    } else {
+                        tracing::warn!(job = job.0, letter = letter.0, "migration: source delete gave up, letter kept at source");
+                        self.store.kept(*job, *letter)?;
+                        j.remove(*letter);
+                        j.kept += 1;
+                    }
                 } else {
                     self.store.finish(*job, *letter)?;
                     j.remove(*letter);
@@ -608,6 +627,9 @@ impl<S: Store> Engine<S> {
             if j.forced || (j.dirty && j.shown.is_none_or(|t| now >= t + PROGRESS_EVERY)) {
                 show(j, &mut self.net.out, now);
                 if end {
+                    if j.kept > 0 {
+                        self.net.out.events.push(Event::SourceKept { job: id, letters: j.kept });
+                    }
                     self.store.drop_job(id)?;
                     self.jobs.remove(&id);
                 } else {
@@ -998,6 +1020,12 @@ mod tests {
             self.outbound.remove(&(job, letter));
             Ok(())
         }
+        fn kept(&mut self, job: JobId, letter: LetterId) -> Result<()> {
+            let r = self.row(letter)?;
+            assert!(!r.sources.is_empty(), "пометка — связью источника");
+            self.outbound.remove(&(job, letter));
+            Ok(())
+        }
         fn restore(&mut self, job: JobId, letters: &[LetterId]) -> Result<()> {
             for l in letters {
                 let r = self.row(*l)?;
@@ -1035,6 +1063,8 @@ mod tests {
         held: Vec<Event>,
         /// Столько удалений у источника кончатся отказом.
         destroy_fails: u32,
+        /// Писем в командах удаления у источника.
+        destroys: u32,
     }
 
     impl Path {
@@ -1124,6 +1154,7 @@ mod tests {
                             Place::Local => assert!(row.content.is_some(), "локальный архив — с содержимым"),
                             p => panic!("удаление у источника письма {p:?}"),
                         }
+                        self.destroys += 1;
                         if self.destroy_fails > 0 {
                             self.destroy_fails -= 1;
                             out.push(Event::DestroyFailed { job, letter, error: "busy".into() });
@@ -1155,13 +1186,15 @@ mod tests {
         now: Instant,
         target: String,
         progress: Vec<(Instant, JobId, u64, u64, MigrationState)>,
+        /// Итоги `Event::SourceKept`.
+        kept: Vec<(JobId, u64)>,
     }
 
     impl World {
         fn new(store: Mem, path: Path, target: &str) -> Self {
             let mut engine = Engine::open(store).unwrap();
             engine.moved(Some(JOB)).unwrap();
-            let mut w = World { engine, path, now: Instant::now(), target: target.into(), progress: Vec::new() };
+            let mut w = World { engine, path, now: Instant::now(), target: target.into(), progress: Vec::new(), kept: Vec::new() };
             w.features(Features::ALL.with_import(true));
             w
         }
@@ -1173,11 +1206,20 @@ mod tests {
 
         /// Работать, пока есть что делать (со сдвигом времени к сроку движка, не дальше минуты) или до сбоя.
         fn run(&mut self) {
-            let until = self.now + Duration::from_secs(60);
+            self.run_for(Duration::from_secs(60));
+        }
+
+        /// [`World::run`] со сдвигом времени не дальше `limit`.
+        fn run_for(&mut self, limit: Duration) {
+            let until = self.now + limit;
             let mut idle = 0;
             for _ in 0..100_000 {
                 let out = self.engine.poll(self.now).unwrap();
                 for e in out.events {
+                    if let Event::SourceKept { job, letters } = e {
+                        self.kept.push((job, letters));
+                        continue;
+                    }
                     let Event::Migration { job, done, total, state, .. } = e else { panic!("неожиданное событие") };
                     if let Some(prev) = self.progress.iter().rev().find(|p| p.1 == job)
                         && prev.4 == state
@@ -1480,5 +1522,37 @@ mod tests {
         let s = w.store();
         assert!(s.letters.values().all(|r| r.sources.is_empty() && r.place == Place::Synced));
         assert!(s.outbound.is_empty() && s.jobs.is_empty());
+    }
+
+    /// Удаление у источника — не больше [`DESTROY_ATTEMPTS`] попыток с паузой между ними (решение владельца
+    /// 2026-10-30): 9 отказов и успех — письмо удалено, пометки нет; 10 отказов — письмо у цели с пометкой «не удалено
+    /// у источника» (его связь), задание закрыто, итог — `Event::SourceKept` с числом писем.
+    #[test]
+    fn source_delete_gives_up_after_ten_attempts() {
+        for fails in [DESTROY_ATTEMPTS - 1, DESTROY_ATTEMPTS] {
+            let mut path = Path::with_source(1);
+            path.destroy_fails = fails;
+            let mut w = World::new(Mem::moved("", Home::Account("@2".into()), 1, |_| true), path, "@2");
+            w.features(Features::ALL.with_import(true).with(Feature::Quota, false));
+            w.request(MigrationRequest::Answer { job: JOB, mode: MigrationMode::Upload });
+            let start = w.now;
+            w.run_for(RETRY * (DESTROY_ATTEMPTS + 1));
+            assert_eq!(w.path.destroys, DESTROY_ATTEMPTS.min(fails + 1), "попыток — не больше {DESTROY_ATTEMPTS}");
+            assert!(w.now >= start + RETRY * (DESTROY_ATTEMPTS - 1), "между попытками — пауза");
+            assert_eq!(w.last(), (1, 1, MigrationState::Done), "задание закрыто, не висит");
+            assert!(w.engine.wake_at().is_none());
+            let s = w.store();
+            assert!(s.outbound.is_empty() && s.jobs.is_empty());
+            let row = &s.letters[&LetterId(1)];
+            assert_eq!((row.place.clone(), row.links.len()), (Place::Synced, 1), "письмо у цели");
+            if fails < DESTROY_ATTEMPTS {
+                assert!(row.sources.is_empty() && !w.path.source.contains("m1"));
+                assert!(w.kept.is_empty());
+            } else {
+                assert_eq!(row.sources.len(), 1, "пометка «не удалено у источника» — его связь");
+                assert!(w.path.source.contains("m1"));
+                assert_eq!(w.kept, [(JOB, 1)]);
+            }
+        }
     }
 }
