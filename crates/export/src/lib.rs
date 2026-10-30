@@ -10,6 +10,7 @@ pub mod maildir;
 pub mod mapi;
 pub mod mbox;
 pub mod msg;
+pub mod pst;
 pub mod tree;
 
 pub use tree::{Layout, Tree, safe_name};
