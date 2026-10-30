@@ -1,0 +1,27 @@
+# Модули просмотра WASM (ADR 0007, решение A): своя рабочая область вне корневой — цель wasm32-unknown-unknown,
+# сборка: `cargo build --manifest-path viewers/<имя>/Cargo.toml --release --target wasm32-unknown-unknown`.
+[workspace]
+resolver = "3"
+members = ["sdk", "fb2"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+postman-viewer-sdk = { path = "sdk" }
+
+# «Не падать», как в корневой рабочей области: паника модуля — ловушка, хост показывает «не удалось показать».
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+# Модуль грузит интерпретатор хоста: меньше — быстрее проверка и загрузка.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
