@@ -1714,7 +1714,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.3",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1993,7 +1993,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3254,7 +3254,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-windows"
 version = "0.3.9"
-source = "git+https://github.com/Dicobraz/pets?rev=1fbd05c0317d69e45aa6b2bc4438f6d6013297db#1fbd05c0317d69e45aa6b2bc4438f6d6013297db"
+source = "git+https://github.com/Dicobraz/pets?rev=0114eca2e7f911822e8a3a05f85c472802bd3597#0114eca2e7f911822e8a3a05f85c472802bd3597"
 dependencies = [
  "accesskit",
  "accesskit_windows",
@@ -4992,7 +4992,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5721,7 +5721,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 [[package]]
 name = "pets-commands"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz/pets?rev=1fbd05c0317d69e45aa6b2bc4438f6d6013297db#1fbd05c0317d69e45aa6b2bc4438f6d6013297db"
+source = "git+https://github.com/Dicobraz/pets?rev=0114eca2e7f911822e8a3a05f85c472802bd3597#0114eca2e7f911822e8a3a05f85c472802bd3597"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -5729,7 +5729,7 @@ dependencies = [
 [[package]]
 name = "pets-i18n"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz/pets?rev=1fbd05c0317d69e45aa6b2bc4438f6d6013297db#1fbd05c0317d69e45aa6b2bc4438f6d6013297db"
+source = "git+https://github.com/Dicobraz/pets?rev=0114eca2e7f911822e8a3a05f85c472802bd3597#0114eca2e7f911822e8a3a05f85c472802bd3597"
 dependencies = [
  "fluent-bundle",
  "fluent-syntax",
@@ -5742,7 +5742,7 @@ dependencies = [
 [[package]]
 name = "pets-shell"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz/pets?rev=1fbd05c0317d69e45aa6b2bc4438f6d6013297db#1fbd05c0317d69e45aa6b2bc4438f6d6013297db"
+source = "git+https://github.com/Dicobraz/pets?rev=0114eca2e7f911822e8a3a05f85c472802bd3597#0114eca2e7f911822e8a3a05f85c472802bd3597"
 dependencies = [
  "thiserror 2.0.21",
  "tracing",
@@ -5753,7 +5753,7 @@ dependencies = [
 [[package]]
 name = "pets-ui"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz/pets?rev=1fbd05c0317d69e45aa6b2bc4438f6d6013297db#1fbd05c0317d69e45aa6b2bc4438f6d6013297db"
+source = "git+https://github.com/Dicobraz/pets?rev=0114eca2e7f911822e8a3a05f85c472802bd3597#0114eca2e7f911822e8a3a05f85c472802bd3597"
 dependencies = [
  "futures",
  "gpui-kit",
@@ -6629,7 +6629,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7249,7 +7249,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7316,7 +7316,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8397,7 +8397,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -9762,7 +9762,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -10396,7 +10396,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d6f32a0ff4a9f6f01231eb2059cc85479330739333e0e58cadf03b6af2cca10"
 dependencies = [
  "cfg-if",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

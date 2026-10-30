@@ -81,6 +81,14 @@ pub mod shell;
 pub mod shell {
     use std::path::Path;
 
+    pub fn bitlocker(_path: &Path) -> (String, Option<bool>) {
+        (String::new(), None)
+    }
+
+    pub fn open_bitlocker() -> Result<(), String> {
+        Err("BitLocker is Windows only".into())
+    }
+
     pub fn set_autostart(_on: bool) -> Result<(), String> {
         Err("autostart is Windows only".into())
     }

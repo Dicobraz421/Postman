@@ -108,6 +108,33 @@ pub fn open(target: &str) -> Result<(), String> {
     std::process::Command::new("explorer.exe").arg(target).spawn().map(|_| ()).map_err(|e| format!("explorer: {e}"))
 }
 
+/// Шифрование диска с данными (S8-35): буква тома («C:») и BitLocker — `Some(true)` защищён, `Some(false)` нет
+/// (выключен, расшифровка, защита приостановлена), `None` — Windows не сообщила. Свойство оболочки тома, без прав
+/// администратора; звать в фоне.
+pub fn bitlocker(path: &Path) -> (String, Option<bool>) {
+    use pets_shell::volume::BitLocker;
+    let drive = path.components().next().map(|c| c.as_os_str().to_string_lossy().trim_end_matches('\\').to_owned()).unwrap_or_default();
+    let state = match pets_shell::volume::bitlocker(path) {
+        Ok(BitLocker::On) => Some(true),
+        Ok(BitLocker::Off) => Some(false),
+        Ok(BitLocker::Unknown) => None,
+        Err(e) => {
+            tracing::warn!("bitlocker: {e}");
+            None
+        }
+    };
+    (drive, state)
+}
+
+/// «Параметры BitLocker» — панель управления Windows.
+pub fn open_bitlocker() -> Result<(), String> {
+    std::process::Command::new("control.exe")
+        .args(["/name", "Microsoft.BitLockerDriveEncryption"])
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("control: {e}"))
+}
+
 /// Показать файл в Проводнике.
 pub fn reveal(path: &Path) -> Result<(), String> {
     std::process::Command::new("explorer.exe").arg(format!("/select,{}", path.display())).spawn().map(|_| ()).map_err(|e| format!("explorer: {e}"))

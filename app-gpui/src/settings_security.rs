@@ -41,7 +41,65 @@ impl SettingsView {
         cx.notify();
     }
 
+    /// Диск с данными Postman: BitLocker — в фоне (UI-поток не ждёт); демо — «не зашифрован» (снимок).
+    fn check_disk(&mut self, cx: &mut Context<Self>) {
+        if self.disk_asked {
+            return;
+        }
+        self.disk_asked = true;
+        if !self.info.live {
+            self.disk = Some(("C:".into(), Some(false)));
+            return;
+        }
+        let task = cx.background_spawn(async move { crate::sys::shell::bitlocker(&crate::data_dir()) });
+        cx.spawn(async move |this, cx| {
+            let disk = task.await;
+            let _ = this.update(cx, |v, cx| {
+                v.disk = Some(disk);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Первая строка «Безопасности» (S8-35, макет S8-D): шифрование диска с базой — одно из трёх состояний,
+    /// нейтрально, без баннеров и тостов.
+    fn disk_row(&self, l: &Look, cx: &mut Context<Self>) -> Option<Div> {
+        let (drive, state) = self.disk.clone()?;
+        let (glyph, title, hint) = disk_texts(&drive, state);
+        let button = (state == Some(false)).then(|| {
+            button("settings-bitlocker-open", tr!("settings-bitlocker-open"), false, l).on_click(cx.listener(|_, _, _, cx| {
+                if let Err(e) = crate::sys::shell::open_bitlocker() {
+                    tracing::warn!("{e}");
+                }
+                cx.notify();
+            }))
+        });
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .gap_3()
+                .py_3()
+                .border_b_1()
+                .border_color(l.border())
+                .child(crate::chrome::icon(glyph, 16.).text_color(l.text2()))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(title)
+                        .children(hint.map(|h| div().text_size(px(12.)).text_color(l.text2()).child(h))),
+                )
+                .children(button),
+        )
+    }
+
     pub(crate) fn security(&mut self, l: &Look, cx: &mut Context<Self>) -> Div {
+        self.check_disk(cx);
+        let disk = self.disk_row(l, cx);
         let p = crate::prefs::get(cx);
         let fixed = |id: &'static str, key: &str| seg_group([seg(id, tr!(key), true, false, l)], l);
         let policy = crate::security::policy();
@@ -142,6 +200,7 @@ impl SettingsView {
             .flex()
             .flex_col()
             .when_some(self.os.error.clone(), |d, e| d.child(div().pt_3().text_color(l.error()).child(e)))
+            .children(disk)
             .child(group(tr!("settings-content-group"), l))
             .child(row(
                 tr!("settings-images"),
@@ -244,5 +303,34 @@ impl SettingsView {
             ))
             .child(row(tr!("settings-revocation"), Some(tr!("settings-revocation-hint")), revocation, l))
             .child(row(tr!("settings-wipe-title"), Some(wipe_hint), wipe, l))
+    }
+}
+
+/// Значок, заголовок и пояснение строки диска: не зашифрован — предупреждение и «Параметры BitLocker»; зашифрован —
+/// галочка; неизвестно — сведения.
+pub(crate) fn disk_texts(drive: &str, state: Option<bool>) -> (char, String, Option<String>) {
+    use crate::chrome::glyph;
+    match state {
+        Some(false) => (glyph::WARNING, tr!("settings-bitlocker-off", drive = drive), Some(tr!("settings-bitlocker-off-hint"))),
+        Some(true) => (glyph::CHECK, tr!("settings-bitlocker-on", drive = drive), None),
+        None => (glyph::INFO, tr!("settings-bitlocker-unknown", drive = drive), Some(tr!("settings-bitlocker-unknown-hint"))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Три состояния диска (S8-35) — свои значок и тексты на обоих языках.
+    #[test]
+    fn disk_states() {
+        use crate::chrome::glyph;
+        let _ = pets_i18n::init(&crate::parts::texts(), "ru");
+        let (g, t, h) = super::disk_texts("C:", Some(false));
+        assert_eq!((g, t.as_str()), (glyph::WARNING, "Диск C: с данными Postman не зашифрован BitLocker"));
+        assert!(h.is_some());
+        assert_eq!(super::disk_texts("C:", Some(true)).0, glyph::CHECK);
+        assert!(super::disk_texts("C:", Some(true)).2.is_none());
+        assert_eq!(super::disk_texts("D:", None).0, glyph::INFO);
+        let _ = pets_i18n::init(&crate::parts::texts(), "en");
+        assert_eq!(super::disk_texts("C:", Some(true)).1, "Drive C: with Postman data is encrypted with BitLocker");
     }
 }
