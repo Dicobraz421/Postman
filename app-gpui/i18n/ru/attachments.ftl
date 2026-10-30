@@ -73,3 +73,19 @@ att-pv-save-off = Сохранение файлов с макросами вык
 # Перетаскивание вложения в другое приложение (T1-18).
 att-drag-ready = «{ $name }» загружено — перетащите его ещё раз
 att-drag-failed = Не удалось перетащить «{ $name }»: { $error }
+# Разделы просмотра (S8-23) и модули просмотра (S8-27), макет S8-D «Просмотр».
+att-pv-sheet = Лист «{ $name }»
+att-pv-slide = Слайд { $n }
+att-pv-figure = [рисунок]
+att-pv-notes = Заметки докладчика
+att-pv-cut-rows-shown = Показано начало: { $shown } строк
+att-pv-prev-slide = Предыдущий слайд (←)
+att-pv-next-slide = Следующий слайд (→)
+att-pv-letter-from = От
+att-pv-letter-to = Кому
+att-pv-letter-cc = Копия
+att-pv-letter-date = Дата
+att-pv-module = Просмотр: модуль «{ $name }» { $version }
+att-pv-module-third = Просмотр: модуль «{ $name }» { $version } (сторонний) · в песочнице
+att-pv-module-enable = Включить модуль «{ $name }»
+att-pv-module-refused = Модуль не показал файл: { $reason }

@@ -69,3 +69,19 @@ att-pv-save-off = Saving files with macros is turned off (Settings → Security)
 # Dragging an attachment to another app (T1-18).
 att-drag-ready = “{ $name }” is downloaded — drag it again
 att-drag-failed = Could not drag “{ $name }”: { $error }
+# Preview sections (S8-23) and viewer modules (S8-27), mockup S8-D "Preview".
+att-pv-sheet = Sheet “{ $name }”
+att-pv-slide = Slide { $n }
+att-pv-figure = [picture]
+att-pv-notes = Speaker notes
+att-pv-cut-rows-shown = Showing the first { $shown } rows
+att-pv-prev-slide = Previous slide (←)
+att-pv-next-slide = Next slide (→)
+att-pv-letter-from = From
+att-pv-letter-to = To
+att-pv-letter-cc = Cc
+att-pv-letter-date = Date
+att-pv-module = Viewer: module “{ $name }” { $version }
+att-pv-module-third = Viewer: module “{ $name }” { $version } (third-party) · sandboxed
+att-pv-module-enable = Turn on module “{ $name }”
+att-pv-module-refused = The module couldn’t show the file: { $reason }

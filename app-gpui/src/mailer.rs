@@ -298,6 +298,8 @@ impl Mailer {
             let _ = this.update(cx, |m: &mut Mailer, cx| m.lifecycle_pass(false, cx));
         })
         .detach();
+        // Модули просмотра (S8-27): каталоги — в фоне.
+        crate::settings_viewers::start(cx);
         // Поток ядра (S8-16): перенос между учётками и его задания — на кэше этого экрана.
         cx.spawn(async move |this, cx| {
             let _ = this.update(cx, |m: &mut Mailer, cx| m.start_core(cx));

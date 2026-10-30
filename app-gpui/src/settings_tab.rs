@@ -27,6 +27,8 @@ pub(crate) enum Section {
     Categories,
     Quick,
     Reading,
+    /// «Просмотр вложений» (S8-27).
+    Viewers,
     Calendar,
     Security,
     Signatures,
@@ -50,10 +52,11 @@ impl Section {
         }
     }
 
-    pub(crate) const ALL: [Section; 12] = [
+    pub(crate) const ALL: [Section; 13] = [
         Section::General,
         Section::Accounts,
         Section::Reading,
+        Section::Viewers,
         Section::Calendar,
         Section::Categories,
         Section::Quick,
@@ -72,6 +75,7 @@ impl Section {
             Section::Categories => "categories",
             Section::Quick => "quick",
             Section::Reading => "reading",
+            Section::Viewers => "viewers",
             Section::Calendar => "calendar",
             Section::Security => "security",
             Section::Look => "look",
@@ -101,6 +105,7 @@ impl Section {
             Section::Categories => '\u{E8EC}',
             Section::Quick => '\u{E8FD}',
             Section::Reading => '\u{E8A1}',
+            Section::Viewers => '\u{E7B3}',
             Section::Calendar => crate::calendar::g::CALENDAR,
             Section::Security => '\u{E72E}',
             Section::Look => '\u{E790}',
@@ -822,6 +827,7 @@ impl SettingsView {
             }
             Section::Calendar => self.calendar(l, cx),
             Section::Security => (None, self.security(l, cx).into_any_element(), Vec::new()),
+            Section::Viewers => (None, self.viewers(l, cx).into_any_element(), Vec::new()),
             Section::Look => (None, self.look(l, cx).into_any_element(), Vec::new()),
             Section::Categories => self.categories(l, window, cx),
             Section::Keys => self.keyboard(l, cx),
