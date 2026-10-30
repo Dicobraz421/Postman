@@ -4,6 +4,7 @@ sync-signed-in = Signed in: { $user }
 sync-loading = Loading { $mailbox }…
 sync-synced = Synced
 sync-store-upgrade = Updating storage: { $percent }%
+sync-store-upgrade-hint = Once after a Postman update. Messages on the server don’t change.
 sync-error = { $what }: { $detail }
 sync-error-auth = The server rejected the sign-in
 sync-error-network = No connection to the server

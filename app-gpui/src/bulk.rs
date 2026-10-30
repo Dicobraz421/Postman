@@ -14,7 +14,7 @@ use gpui_kit::*;
 use pets_i18n::tr;
 use pets_ui::theme::{Metric, Role};
 use pets_ui::{Level as Toast, ToastAction};
-use postman_cache::{EmailRow, account_of};
+use postman_cache::EmailRow;
 use postman_core::bulk::{self, Act, Need, Plan, Summary};
 use postman_core::marks::Kind;
 
@@ -298,14 +298,14 @@ impl MailList {
             .unwrap_or_default()
     }
 
-    /// Папки для «В папку»: того же аккаунта, что открытая папка, кроме неё самой.
+    /// Папки для «В папку»: всех учёток и «На этом компьютере», кроме открытой (S8-15); чужая учётка — подписью.
     pub(crate) fn folder_items(&self) -> Vec<(String, String)> {
-        let account = self.mailbox.as_deref().and_then(account_of);
-        self.order
-            .iter()
-            .filter(|id| account_of(id) == account && self.mailbox.as_deref() != Some(id.as_str()))
-            .map(|id| (id.clone(), self.names.get(id).cloned().unwrap_or_default()))
-            .collect()
+        self.folder_targets().into_iter().map(|t| (t.id.clone(), t.label())).collect()
+    }
+
+    /// То же с учёткой отдельно: выпадающий список рисует её подписью группы.
+    pub(crate) fn folder_targets(&self) -> Vec<crate::local::Target> {
+        crate::local::folder_items(&self.order, &self.names, &self.servers, self.mailbox.as_deref())
     }
 
     /// Панель массовых действий (макет «Выделение»): «Выделить все», «Выбрано: N из M», «×»; ниже — кнопки.
@@ -475,22 +475,39 @@ impl MailList {
                 (width * 2. / 7., items)
             }
             Drop::Folder => {
-                let items = self
-                    .folder_items()
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, (id, name))| {
+                // Папки всех учёток (S8-15): другая учётка и «На этом компьютере» — подписью группы.
+                let mut items: Vec<AnyElement> = Vec::new();
+                let mut group: Option<String> = None;
+                for (i, t) in self.folder_targets().into_iter().enumerate() {
+                    if t.group.is_some() && t.group != group {
+                        group = t.group.clone();
+                        items.push(
+                            div()
+                                .w_full()
+                                .flex_none()
+                                .px(px(8.))
+                                .pt(px(8.))
+                                .pb(px(2.))
+                                .text_size(px(11.))
+                                .text_color(l.text3())
+                                .truncate()
+                                .child(t.group.clone().unwrap_or_default())
+                                .into_any_element(),
+                        );
+                    }
+                    let id = t.id.clone();
+                    items.push(
                         menu_line(("bulk-folder", i), l)
-                            .child(icon(glyph::FOLDER, 14.).text_color(l.text2()))
-                            .child(div().flex_1().truncate().child(name))
+                            .child(icon(if crate::local::is_local(&t.id) { crate::local::PC } else { glyph::FOLDER }, 14.).text_color(l.text2()))
+                            .child(div().flex_1().truncate().child(t.name))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.bulk_menu = None;
                                 cx.emit(Ask::Move(id.clone()));
                                 cx.notify();
                             }))
-                            .into_any_element()
-                    })
-                    .collect();
+                            .into_any_element(),
+                    );
+                }
                 (width * 4. / 7., items)
             }
         };
@@ -503,7 +520,7 @@ impl MailList {
                 .top(px(84.))
                 .left(px(left))
                 .w(px(224.))
-                .max_h(px(360.))
+                .max_h(px(480.))
                 .overflow_y_scroll()
                 .p(px(4.))
                 .flex()
@@ -647,7 +664,7 @@ pub(crate) fn key_hint(id: &str, cx: &App) -> String {
 }
 
 /// Писем — для текстов тостов.
-fn plural_n(n: usize) -> i64 {
+pub(crate) fn plural_n(n: usize) -> i64 {
     i64::try_from(n).unwrap_or(i64::MAX)
 }
 
@@ -681,6 +698,8 @@ impl Mailer {
             Ask::Lifecycle(kind) => self.open_picker_for(kind, ids, cx),
             Ask::Phishing => self.report_phishing(ids, cx),
             Ask::ForwardAttached => self.forward_attached(ids, cx),
+            // Между учётками и в «На этом компьютере» — ядром (S8-15), внутри учётки — правкой папки.
+            Ask::Move(to) => self.move_letters(ids, to, cx),
             other => self.run_bulk(ids, other, cx),
         }
     }

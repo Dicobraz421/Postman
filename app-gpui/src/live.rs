@@ -637,6 +637,8 @@ impl Mailer {
     /// Пачка событий учётной записи профиля (S7-03б): общий вид (`Profile::fold`) — частям экрана, ошибки
     /// дополнительной — тостом с её именем.
     pub(crate) fn on_profile_events(&mut self, profile: Option<&str>, batch: Vec<Event>, cx: &mut Context<Self>) {
+        // Ответы путей заданиям переноса — копией в поток ядра (S8-16).
+        self.core_events(profile, &batch);
         let senders_before = self.live.profile.sender_routes();
         let (events, errors) = self.live.profile.fold(profile, batch);
         let routes = self.live.profile.sender_routes();
@@ -1008,9 +1010,9 @@ impl Mailer {
     }
 
     /// Папки изменились: перечитать в фоне; текущей папки больше нет (или не было) — открыть входящие.
-    fn reload_folders(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn reload_folders(&mut self, cx: &mut Context<Self>) {
         let cache = self.cache.clone();
-        let task = cx.background_spawn(async move { (cache.mailboxes().unwrap_or_default(), cache.accounts().unwrap_or_default()) });
+        let task = cx.background_spawn(async move { (crate::local::mailboxes(&cache), cache.accounts().unwrap_or_default()) });
         cx.spawn(async move |this, cx| {
             let (rows, accounts) = task.await;
             let _ = this.update(cx, |m, cx| {
@@ -1025,6 +1027,7 @@ impl Mailer {
                     f.accounts = accounts;
                     cx.notify();
                 });
+                m.sync_servers(cx);
                 if let Some(id) = open {
                     m.open_mailbox(id, cx);
                 }
@@ -1058,13 +1061,19 @@ impl Mailer {
         }
         let cache = self.cache.clone();
         let key = id.clone();
-        let task = cx.background_spawn(async move { cache.body(&key).ok().flatten() });
+        // Письмо без связи с сервером (`#<LetterId>`, S8-15) — тело из содержимого в базе, без сети.
+        let task = cx.background_spawn(async move {
+            match postman_core::store::parse_ref(&key) {
+                Some(letter) => postman_core::store::body(&cache, letter).ok().flatten(),
+                None => cache.body(&key).ok().flatten(),
+            }
+        });
         cx.spawn(async move |this, cx| {
             let body = task.await;
             let _ = this.update(cx, |m, cx| {
                 if let Some(b) = body {
                     m.reading.update(cx, |r, cx| r.show_body(&id, b, cx));
-                } else if fetch && !m.backend.send(Command::Body(id)) {
+                } else if fetch && postman_core::store::parse_ref(&id).is_none() && !m.backend.send(Command::Body(id)) {
                     m.sync_stopped(cx);
                 }
             });
@@ -1210,6 +1219,7 @@ impl Mailer {
                     .update_in(cx, |m, window, cx| match msg {
                         Opening::Progress { done, total } => {
                             m.live.status = upgrade_text(done, total);
+                            m.migration.upgrade = Some(upgrade_percent(done, total));
                             cx.notify();
                             true
                         }

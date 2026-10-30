@@ -21,6 +21,8 @@ pub(crate) const PARTS: &[Part] = &[
     crate::settings::PART,
     crate::shared::PART,
     crate::folders::PART,
+    crate::local::PART,
+    crate::migration::PART,
     crate::labels::PART,
     crate::filters::PART,
     crate::lifecycle::PART,

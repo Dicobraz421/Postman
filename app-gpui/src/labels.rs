@@ -55,6 +55,8 @@ pub(crate) struct RowLabels {
     pub(crate) marks: Vec<postman_core::lifecycle::Badge>,
     /// «Назначено: …» (S5-28, `shared.rs`): письмо общего ящика взято в работу; ставит список.
     pub(crate) assigned: Option<String>,
+    /// Значок переноса и подсказка (S8-16, `local::Mark`); ставит список.
+    pub(crate) migration: Option<(char, String)>,
 }
 
 pub(crate) fn row_labels(book: &Book, row: &EmailRow) -> RowLabels {
@@ -65,7 +67,7 @@ pub(crate) fn row_labels(book: &Book, row: &EmailRow) -> RowLabels {
     let labels = table.labels(&row.keywords);
     let stripe = labels.iter().find(|l| matches!(l, Label::Category(_))).map(|l| l.color());
     let chips = labels.iter().take(ROW_LABELS).map(|l| (label_name(l), l.color())).collect();
-    RowLabels { stripe, chips, marks: Vec::new(), assigned: None }
+    RowLabels { stripe, chips, marks: Vec::new(), assigned: None, migration: None }
 }
 
 /// Метка в строке отправителя: подложка и текст цвета категории; длинное имя обрезается.

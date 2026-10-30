@@ -61,6 +61,8 @@ enum Row<'a> {
     Branch(&'a AccountRow),
     /// Папка: в ветке ли (отступ ветки), уровень вложенности, есть ли подпапки.
     Folder(&'a MailboxRow, bool, Node),
+    /// Подпись группы «На этом компьютере» (S8-15).
+    Local,
 }
 
 /// Место папки в дереве (T1-04г).
@@ -126,6 +128,10 @@ pub(crate) enum FolderEvent {
     Command(std::cell::RefCell<Option<Command>>),
     /// Подсказка тостом (ролевую папку не изменить).
     Toast(String),
+    /// Правка папки «На этом компьютере» (S8-15) — в базе, без сервера.
+    Local(crate::local::FolderEdit),
+    /// Письма брошены на папку (S8-15).
+    Letters(crate::local::DraggedLetters, String),
 }
 
 /// Что правится полем в дереве.
@@ -150,9 +156,18 @@ struct Edit {
 enum MenuItem {
     New,
     Rename,
+    /// Удалить пустую папку «На этом компьютере» (S8-15).
+    Delete,
 }
 
-const MENU: [MenuItem; 2] = [MenuItem::New, MenuItem::Rename];
+/// Пункты меню папки: у локальной — ещё «Удалить».
+fn menu_items(id: &str) -> &'static [MenuItem] {
+    if crate::local::is_local(id) || id == crate::local::LOCAL {
+        &[MenuItem::New, MenuItem::Rename, MenuItem::Delete]
+    } else {
+        &[MenuItem::New, MenuItem::Rename]
+    }
+}
 
 struct FolderMenu {
     id: String,
@@ -200,10 +215,23 @@ pub(crate) fn new_folder(account: Option<&str>, parent: Option<&str>, name: &str
     })
 }
 
+/// Новая папка «На этом компьютере» (S8-15): под локальной папкой `parent` (`None` — в корне группы).
+pub(crate) fn new_local(parent: Option<&str>, name: &str) -> Option<crate::local::FolderEdit> {
+    let name = name.trim();
+    (!name.is_empty()).then(|| crate::local::FolderEdit::Create { parent: parent.and_then(crate::local::local_folder), name: name.to_owned() })
+}
+
 /// Новое имя папки: ролевую — нельзя, то же имя или пустое — нет команды.
 pub(crate) fn rename(m: &MailboxRow, name: &str) -> Option<Command> {
     let name = name.trim();
     (changeable(m) && !name.is_empty() && name != m.name).then(|| Command::RenameFolder { mailbox: m.id.clone(), name: name.to_owned() })
+}
+
+/// Новое имя локальной папки (S8-15): то же или пустое — нет правки.
+pub(crate) fn rename_local(m: &MailboxRow, name: &str) -> Option<crate::local::FolderEdit> {
+    let name = name.trim();
+    let id = crate::local::local_folder(&m.id)?;
+    (!name.is_empty() && name != m.name).then(|| crate::local::FolderEdit::Rename { id, name: name.to_owned() })
 }
 
 /// Куда бросили папку: на другую папку или на имя учётки (`Account` — верхний уровень, `None` — своя).
@@ -216,7 +244,7 @@ pub(crate) enum DropTarget<'a> {
 /// Перенос перетаскиванием: ролевую — нельзя; в саму себя, к прежнему родителю и в другую учётку — нет команды
 /// (другую учётку и подпапку ядро отклонит и само — `sync::admit`).
 pub(crate) fn drop_on(dragged: &MailboxRow, target: DropTarget<'_>) -> Option<Command> {
-    if !changeable(dragged) {
+    if !changeable(dragged) || crate::local::is_local(&dragged.id) {
         return None;
     }
     let account = account_of(&dragged.id);
@@ -226,6 +254,18 @@ pub(crate) fn drop_on(dragged: &MailboxRow, target: DropTarget<'_>) -> Option<Co
         _ => return None,
     };
     (dragged.parent_id != parent).then(|| Command::MoveFolder { mailbox: dragged.id.clone(), parent })
+}
+
+/// Перенос локальной папки (S8-15): в другую локальную или в корень группы; к прежнему родителю и в себя — нет
+/// правки (в свою подпапку база не даст).
+pub(crate) fn drop_local(dragged: &MailboxRow, target: DropTarget<'_>) -> Option<crate::local::FolderEdit> {
+    let id = crate::local::local_folder(&dragged.id)?;
+    let parent = match target {
+        DropTarget::Folder(t) if t.id != dragged.id => Some(crate::local::local_folder(&t.id)?),
+        DropTarget::Account(Some(crate::local::LOCAL)) => None,
+        _ => return None,
+    };
+    (dragged.parent_id.as_deref().and_then(crate::local::local_folder) != parent).then_some(crate::local::FolderEdit::Move { id, parent })
 }
 
 impl EventEmitter<FolderEvent> for Folders {}
@@ -280,6 +320,27 @@ impl Folders {
         self.open_menu(id.to_owned(), point(px(160.), px(240.)), cx);
     }
 
+    /// Снимок `folders` (S8-15): дерево — до группы «На этом компьютере», меню её папки `id` у строки.
+    pub(crate) fn screen_local_menu(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.open_menu(id.to_owned(), point(px(300.), px(660.)), cx);
+    }
+
+    /// Снимок `folders`: дерево прокручено к концу (группа «На этом компьютере»); `true` — уже там.
+    pub(crate) fn screen_scroll_end(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.scroll.offset().y < px(0.) {
+            return true;
+        }
+        if let Some(last) = self.rows().len().checked_sub(1) {
+            self.scroll.scroll_to_item(last);
+            cx.notify();
+        }
+        false
+    }
+
+    pub(crate) fn scrolled(&self) -> bool {
+        self.scroll.offset().y < px(0.)
+    }
+
     pub(crate) fn menu_open(&self) -> bool {
         self.menu.is_some()
     }
@@ -296,11 +357,18 @@ impl Folders {
     fn choose(&mut self, it: MenuItem, window: &mut Window, cx: &mut Context<Self>) {
         let Some(m) = self.menu.take() else { return };
         match it {
+            // Подпись группы «На этом компьютере» — новая папка в её корне.
+            MenuItem::New if m.id == crate::local::LOCAL => self.start(EditKind::New { account: Some(m.id), parent: None }, window, cx),
             MenuItem::New => {
                 let account = account_of(&m.id).map(str::to_owned);
                 self.start(EditKind::New { account, parent: Some(m.id) }, window, cx);
             }
             MenuItem::Rename => self.start_rename(&m.id, window, cx),
+            MenuItem::Delete => {
+                if let Some(id) = crate::local::local_folder(&m.id) {
+                    cx.emit(FolderEvent::Local(crate::local::FolderEdit::Delete(id)));
+                }
+            }
         }
         cx.notify();
     }
@@ -353,6 +421,21 @@ impl Folders {
     /// Enter в поле: команда серверу (дерево перечитается по `MailboxesChanged`), поле закрыто.
     fn commit(&mut self, text: &str, cx: &mut Context<Self>) {
         let Some(e) = self.edit.take() else { return };
+        // «На этом компьютере» (S8-15) — правкой базы, без сервера.
+        let local = match &e.what {
+            EditKind::New { account: Some(a), parent } if a == crate::local::LOCAL => Some(new_local(parent.as_deref(), text)),
+            EditKind::Rename(id) if crate::local::is_local(id) => {
+                Some(self.mailboxes.iter().find(|m| &m.id == id).and_then(|m| rename_local(m, text)))
+            }
+            _ => None,
+        };
+        if let Some(edit) = local {
+            if let Some(edit) = edit {
+                cx.emit(FolderEvent::Local(edit));
+            }
+            cx.notify();
+            return;
+        }
         let command = match &e.what {
             EditKind::New { account, parent } => new_folder(account.as_deref(), parent.as_deref(), text),
             EditKind::Rename(id) => self.mailboxes.iter().find(|m| &m.id == id).and_then(|m| rename(m, text)),
@@ -366,7 +449,9 @@ impl Folders {
     /// Папку бросили на `target`.
     fn dropped(&mut self, dragged: &DraggedFolder, target: DropTarget<'_>, cx: &mut Context<Self>) {
         let Some(m) = self.mailboxes.iter().find(|m| m.id == dragged.id) else { return };
-        if let Some(c) = drop_on(m, target) {
+        if let Some(e) = drop_local(m, target) {
+            cx.emit(FolderEvent::Local(e));
+        } else if let Some(c) = drop_on(m, target) {
             cx.emit(FolderEvent::Command(Some(c).into()));
         }
     }
@@ -394,12 +479,13 @@ impl Folders {
             window.focus(&m.focus, cx);
         }
         let m = self.menu.as_ref()?;
-        let fixed = self.mailboxes.iter().find(|f| f.id == m.id).is_some_and(|f| !changeable(f));
-        let items = MENU.iter().enumerate().map(|(k, &it)| {
-            let off = it == MenuItem::Rename && fixed;
+        let fixed = m.id == crate::local::LOCAL || self.mailboxes.iter().find(|f| f.id == m.id).is_some_and(|f| !changeable(f));
+        let items = menu_items(&m.id).iter().enumerate().map(|(k, &it)| {
+            let off = matches!(it, MenuItem::Rename | MenuItem::Delete) && fixed;
             let (glyph, key) = match it {
                 MenuItem::New => (crate::chrome::glyph::FOLDER, "folder-menu-new"),
                 MenuItem::Rename => (crate::chrome::glyph::EDIT, "folder-menu-rename"),
+                MenuItem::Delete => (crate::chrome::glyph::DELETE, "local-delete"),
             };
             crate::bulk::menu_line(("folder-menu-item", k), l)
                 .when(m.cursor == k && !off, |d| d.bg(l.hover()))
@@ -425,11 +511,13 @@ impl Folders {
             .children(items)
             .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, window, cx| {
                 let Some(m) = &mut this.menu else { return };
+                let items = menu_items(&m.id);
                 match ev.keystroke.key.as_str() {
-                    "down" | "up" => m.cursor = 1 - m.cursor,
+                    "down" => m.cursor = (m.cursor + 1) % items.len(),
+                    "up" => m.cursor = (m.cursor + items.len() - 1) % items.len(),
                     "enter" | "space" => {
-                        let it = MENU[m.cursor];
-                        if !(it == MenuItem::Rename && fixed) {
+                        let it = items[m.cursor % items.len()];
+                        if !(matches!(it, MenuItem::Rename | MenuItem::Delete) && fixed) {
                             this.choose(it, window, cx);
                         }
                     }
@@ -507,6 +595,14 @@ impl Folders {
                 rows.extend(tree(&theirs, &self.folded).into_iter().map(|(m, n)| Row::Folder(m, true, n)));
             }
         }
+        // «На этом компьютере» (S8-15) — последней группой, пока в ней есть папки.
+        let local: Vec<&MailboxRow> = self.of(Some(crate::local::LOCAL)).collect();
+        if !local.is_empty() {
+            rows.push(Row::Local);
+            if !self.collapsed.contains(crate::local::LOCAL) {
+                rows.extend(tree(&local, &self.folded).into_iter().map(|(m, n)| Row::Folder(m, true, n)));
+            }
+        }
         rows
     }
 
@@ -518,6 +614,7 @@ impl Folders {
             Row::Folder(m, ..) => m.id == id,
             Row::Own => group == OWN && self.collapsed.contains(OWN),
             Row::Branch(a) => group == a.id && self.collapsed.contains(&a.id),
+            Row::Local => group == crate::local::LOCAL && self.collapsed.contains(crate::local::LOCAL),
         })
     }
 
@@ -534,6 +631,7 @@ impl Folders {
         let fold = m.id.clone();
         let menu = m.id.clone();
         let drop = m.id.clone();
+        let letters_to = m.id.clone();
         // Шеврон подпапок (T1-04г): место под него — у каждой папки, чтобы значки уровня стояли ровно.
         let open = !self.folded.contains(&m.id);
         let chevron = div().id(SharedString::from(format!("mb-fold-{}", m.id))).w(px(12.)).flex_none().text_color(l.text3()).when(node.parent, |d| {
@@ -562,6 +660,16 @@ impl Folders {
             .child(div().flex_1().min_w_0().truncate().child(m.name.clone()))
             // Непрочитанные — с сервера (`Mailbox.unreadEmails`), а не по загруженной части папки.
             .when(m.unread > 0, |d| unread(d, m.unread, l))
+            // «На этом компьютере» (S8-15, макет): число писем — серым.
+            .when(crate::local::is_local(&m.id) && m.total > 0, |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .text_size(l.px(Metric::TypeCaption))
+                        .text_color(l.text3())
+                        .child(crate::migration::count_text(u64::from(m.total))),
+                )
+            })
             // Воронка — у открытой папки.
             .when_some(self.filters.as_ref().filter(|_| selected), |d, f| d.child(crate::filters::funnel(f, f.read(cx), l)))
             .on_click(cx.listener(move |_, _, _, cx| cx.emit(FolderEvent::Open(id.clone()))))
@@ -582,6 +690,49 @@ impl Folders {
                     this.dropped(d, DropTarget::Folder(&t), cx);
                 }
             }))
+            // Письма на папку (S8-15): в другую учётку и «На этом компьютере» — перенос ядром.
+            .drag_over::<crate::local::DraggedLetters>(|s, _, _, _| s.bg(crate::roles::now().row_hover()))
+            .on_drop(cx.listener(move |_, d: &crate::local::DraggedLetters, _, cx| cx.emit(FolderEvent::Letters(d.clone(), letters_to.clone()))))
+            .into_any_element()
+    }
+
+    /// Подпись группы «На этом компьютере» (S8-15, макет S8-D п. 4): шеврон, значок, имя; подсказка — где хранится
+    /// и сколько писем; меню — «Новая папка»; бросок локальной папки — в корень группы.
+    fn local_header(&self, l: &Look, cx: &mut Context<Self>) -> AnyElement {
+        use crate::local::LOCAL;
+        let open = !self.collapsed.contains(LOCAL);
+        let n: u64 = self.of(Some(LOCAL)).map(|m| u64::from(m.total)).sum();
+        let hint = tr!("local-group-hint", n = n as i64, count = crate::migration::count_text(n));
+        let selected = self.holds_current(LOCAL);
+        div()
+            .id("local-group")
+            .mt(px(10.))
+            .h(px(28.))
+            .flex_none()
+            .px(px(8.))
+            .rounded(l.px(Metric::RadiusControl))
+            .when(selected, |d| d.bg(l.c(Role::FillCursor)).font_weight(FontWeight::SEMIBOLD))
+            .when(!selected, |d| d.hover(|d| d.bg(l.hover())))
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .gap_1()
+            .text_size(l.px(Metric::TypeCaption))
+            .text_color(l.text2())
+            .child(chevron(open))
+            .child(crate::chrome::icon(crate::local::PC, 14.))
+            .child(div().flex_1().min_w_0().truncate().child(tr!("local-group")))
+            .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(hint.clone()).build(window, cx))
+            .on_click(cx.listener(|this, _, _, cx| this.toggle(LOCAL, cx)))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    this.open_menu(LOCAL.to_owned(), ev.position, cx);
+                }),
+            )
+            .drag_over::<DraggedFolder>(|s, _, _, _| s.bg(crate::roles::now().row_hover()))
+            .on_drop(cx.listener(|this, d: &DraggedFolder, _, cx| this.dropped(d, DropTarget::Account(Some(LOCAL)), cx)))
             .into_any_element()
     }
 
@@ -748,6 +899,7 @@ impl Render for Folders {
                 // Своя учётная запись — подписью над папками, без связи — с меткой «нет связи» (макет «Состояния»).
                 Row::Own => rows.push(self.own_header(&l, cx)),
                 Row::Branch(a) => rows.push(self.branch(a, &l, cx)),
+                Row::Local => rows.push(self.local_header(&l, cx)),
                 // Переименование — поле на месте строки; новая папка — поле под родителем.
                 Row::Folder(m, indent, node) if edit == Some(EditKind::Rename(m.id.clone())) => rows.extend(self.edit_row(node.depth, indent, &l)),
                 Row::Folder(m, indent, node) => {
@@ -857,6 +1009,7 @@ mod tests {
                 Row::Own => "@".to_owned(),
                 Row::Branch(a) => format!("+{}", a.id),
                 Row::Folder(m, ..) => m.id.clone(),
+                Row::Local => "~".to_owned(),
             })
             .collect()
     }

@@ -416,6 +416,7 @@ impl Mailer {
             .child(div().flex_1())
             .child(self.last_key.clone())
             .child(self.sandbox.map(crate::reading::sandbox_label).unwrap_or_default())
+            .children(self.migration_status(l, cx))
             .children(self.quota_indicator(l, cx))
             .child(
                 // 🔔 — история уведомлений панелью справа (S5-08); нажата, пока панель открыта.

@@ -120,6 +120,8 @@ pub(crate) struct Mailer {
     /// Палитра команд Ctrl+K (S5-10, `palette.rs`) и недавние её строки (новые первыми).
     pub(crate) palette: Option<crate::palette::Open>,
     pub(crate) recent: Vec<String>,
+    /// Перенос между учётками (S8-16): поток ядра, задания, полосы.
+    pub(crate) migration: crate::migration::Migrations,
     pub(crate) _subscriptions: Vec<Subscription>,
 }
 
@@ -148,7 +150,7 @@ impl Mailer {
                 });
             }
         });
-        let mailboxes = cache.mailboxes().unwrap_or_default();
+        let mailboxes = crate::local::mailboxes(&cache);
         let accounts = cache.accounts().unwrap_or_default();
         let inbox = crate::live::inbox(&mailboxes);
         let filters = cx.new(|_| crate::filters::FilterModel::new());
@@ -223,6 +225,8 @@ impl Mailer {
                     }
                 }
                 FolderEvent::Toast(text) => this.toast(pets_ui::Level::Info, text.clone(), cx),
+                FolderEvent::Local(e) => this.local_folder_edit(e.clone(), cx),
+                FolderEvent::Letters(d, to) => this.letters_dropped(d, to.clone(), cx),
             }),
             cx.subscribe(&reading, |this, _, ev: &ReadingEvent, cx| match ev {
                 ReadingEvent::Sandbox(level) => {
@@ -294,6 +298,11 @@ impl Mailer {
             let _ = this.update(cx, |m: &mut Mailer, cx| m.lifecycle_pass(false, cx));
         })
         .detach();
+        // Поток ядра (S8-16): перенос между учётками и его задания — на кэше этого экрана.
+        cx.spawn(async move |this, cx| {
+            let _ = this.update(cx, |m: &mut Mailer, cx| m.start_core(cx));
+        })
+        .detach();
         // Кто я и имена коллег — строке списка и шапке письма общего ящика (S5-28, `shared.rs`).
         let compose = crate::compose::Composers::default();
         cx.set_global(crate::shared::People { book: compose.book.clone(), me: Some(postman_demo::ME.to_owned()) });
@@ -343,6 +352,7 @@ impl Mailer {
             find: Default::default(),
             palette: None,
             recent: Vec::new(),
+            migration: Default::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -598,6 +608,8 @@ impl Render for Mailer {
             .when_some(self.settings.bar.clone().filter(|_| bars), |d, bar| {
                 d.child(bar.cached(StyleRefinement::default().w_full().h(px(crate::vacation::BAR_HEIGHT)).flex_none()))
             })
+            // Перенос между учётками (S8-16): вопрос, ход, «нет места», остановка — на месте полосы автоответа.
+            .children(self.migration_bar(&l, cx).filter(|_| bars))
             .map(|d| match (letter, meeting) {
                 (Some(view), _) => d.child(div().flex().flex_1().min_h_0().px(px(8.)).child(view.cached(StyleRefinement::default().size_full()))),
                 (None, Some(view)) => d.child(
@@ -802,7 +814,11 @@ impl Mailer {
             body = if l.gray() { body.child(card(l).w(px(w_folders)).flex_none().child(folders)) } else { body.child(folders) };
             body = body.child(self.splitter(Split::Folders, l, cx));
             let list_split = self.splitter(Split::List, l, cx);
-            let list = || self.list.clone().cached(full());
+            // Обновление хранилища (S8-16): строка вместо списка.
+            let list = || match self.store_upgrade(l) {
+                Some(e) => e,
+                None => self.list.clone().cached(full()).into_any_element(),
+            };
             // Ответ — в области чтения над письмом (S5-06б): своя кэшируемая view сверху карточки.
             // Выделено несколько писем — сводка на месте письма (S5-08).
             let picked = self.list.read(cx).selection.len() > 1;

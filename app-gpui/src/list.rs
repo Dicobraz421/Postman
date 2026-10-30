@@ -188,6 +188,10 @@ pub(crate) struct MailList {
     /// Поиск (S5-10, `search.rs`): строка над списком, чипы, подсветка; группы найденного — по папкам или датам.
     pub(crate) found: Option<crate::search::Found>,
     search_groups: Vec<(Group, usize)>,
+    /// Значки переноса строк окна (S8-16, `local::Mark`): письма без связи с сервером в папке учётки.
+    pub(crate) marks: HashMap<String, crate::local::Mark>,
+    /// Имена учёток (ключ — `local::home`): подсказки значков переноса.
+    pub(crate) servers: HashMap<String, String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -223,7 +227,14 @@ impl Job {
         let pins = !folders && self.query.sort == Sort::Date;
         let mut own = self.own || self.outlook;
         loop {
-            let (counts, hits, tops, threads) = self.pass(cache, own, pins, folders, &now);
+            let (counts, hits, tops, threads, seen) = self.pass(cache, own, pins, folders, &now);
+            // В папке письма без связи с сервером (S8-15: «На этом компьютере», перенесённые): обход их не видит —
+            // список — страницами папки по дате, без своего набора.
+            if let Scan::Mailbox(mb) = &self.scan
+                && seen < crate::local::count(cache, mb)
+            {
+                return Computed { counts, list: None, outline: None };
+            }
             if !own && tops > 0 {
                 own = true;
                 continue;
@@ -245,7 +256,9 @@ impl Job {
         let mut hits = Vec::new();
         let mut tops = 0;
         let mut threads = HashMap::new();
+        let mut seen = 0;
         let scanned = cache.scan(&self.scan, |row, to| {
+            seen += 1;
             let f = Facts::of(&self.me, &row, &to);
             let mut pass = counts.add(&self.query.criteria, &f, &row.keywords);
             if !pass && self.server_hits.contains(&row.id) {
@@ -268,12 +281,12 @@ impl Job {
         if let Err(e) = scanned {
             tracing::warn!("filters: {e}");
         }
-        (counts, hits, tops, threads)
+        (counts, hits, tops, threads, seen)
     }
 }
 
-/// Итог обхода: счётчики, письма набора, сколько наверху, цепочки (id → ключ цепочки).
-type Pass = (Counts, Vec<Hit>, usize, HashMap<String, String>);
+/// Итог обхода: счётчики, письма набора, сколько наверху, цепочки (id → ключ цепочки), сколько писем обойдено.
+type Pass = (Counts, Vec<Hit>, usize, HashMap<String, String>, usize);
 
 /// Откуда группы списка при перечитывании.
 enum Groups {
@@ -496,6 +509,8 @@ impl MailList {
             thread_groups: Vec::new(),
             found: None,
             search_groups: Vec::new(),
+            marks: HashMap::new(),
+            servers: HashMap::new(),
             _subscriptions: subscriptions,
         };
         list.me = list.who_am_i();
@@ -669,7 +684,8 @@ impl MailList {
         match (&self.search_ids, &self.view, &self.mailbox) {
             (Some(_), _, _) => Groups::Fixed(self.search_groups.clone()),
             (None, Some(_), _) => Groups::Fixed(self.groups.clone()),
-            (None, None, Some(mb)) if self.query.sort == Sort::Date => Groups::Days(mb.clone()),
+            // «На этом компьютере» (S8-15): дни считает старый API по ключам кэша — у локальных писем их нет.
+            (None, None, Some(mb)) if self.query.sort == Sort::Date && !crate::local::is_local(mb) => Groups::Days(mb.clone()),
             _ => Groups::None,
         }
     }
@@ -731,6 +747,11 @@ impl MailList {
         self.patch_row(&row);
         cx.emit(Labeled { ids: vec![row.id.clone()], add, remove });
         cx.notify();
+    }
+
+    /// Значок переноса — у видимой строки (снимки S8-16).
+    pub(crate) fn has_marks(&self) -> bool {
+        self.visible.clone().any(|i| self.row(i).is_some_and(|r| self.marks.contains_key(&r.id)))
     }
 
     /// Права и имена папок после перечитывания папок: права запоминаются только урезанные.
@@ -882,6 +903,7 @@ impl MailList {
         self.pending_open = None;
         let (offset, limit) = page_window(&self.visible);
         self.rows = (offset, source.read(&self.cache, offset, limit));
+        self.marks = crate::local::marks(&self.cache, &self.rows.1);
         self.take_restore();
     }
 
@@ -920,10 +942,12 @@ impl MailList {
         let (source, groups, cache) = (self.page_source(), self.group_source(), self.cache.clone());
         let task = cx.background_spawn(async move {
             let count = source.count(&cache);
-            (count, groups.read(&cache, count), source.read(&cache, offset, limit))
+            let rows = source.read(&cache, offset, limit);
+            let marks = crate::local::marks(&cache, &rows);
+            (count, groups.read(&cache, count), rows, marks)
         });
         cx.spawn(async move |this, cx| {
-            let (count, groups, rows) = task.await;
+            let (count, groups, rows, marks) = task.await;
             let _ = this.update(cx, |m, cx| {
                 if m.page_gen != generation {
                     return;
@@ -937,6 +961,7 @@ impl MailList {
                     m.restore = None;
                 }
                 m.rows = (offset, rows);
+                m.marks = marks;
                 if let Some(i) = select {
                     m.selected = None;
                     if count > 0 {
@@ -969,15 +994,20 @@ impl MailList {
         let generation = self.page_gen;
         self.page_pending = Some(offset..offset + limit);
         let (source, cache) = (self.page_source(), self.cache.clone());
-        let task = cx.background_spawn(async move { source.read(&cache, offset, limit) });
+        let task = cx.background_spawn(async move {
+            let rows = source.read(&cache, offset, limit);
+            let marks = crate::local::marks(&cache, &rows);
+            (rows, marks)
+        });
         cx.spawn(async move |this, cx| {
-            let rows = task.await;
+            let (rows, marks) = task.await;
             let _ = this.update(cx, |m, cx| {
                 if m.page_gen != generation {
                     return;
                 }
                 m.page_pending = None;
                 m.rows = (offset, rows);
+                m.marks = marks;
                 if let Some(row) = m.pending_open.take().and_then(|i| m.row(i).cloned()) {
                     m.open_row(row, cx);
                 }
@@ -1291,10 +1321,15 @@ impl Render for MailList {
                                 menu: this.menu_row == Some(i),
                                 thread: this.thread_mark(i),
                                 focused: this.focused,
+                                picked_n: this.selection.len(),
                             };
                             match state.thread {
                                 crate::outline::Mark::Child { .. } => crate::outline::child_row(i, &r, labels, state, &l, cx),
-                                _ => list_row(i, &r, labels, state, marks.as_deref().map(Vec::as_slice), &l, cx),
+                                _ => {
+                                    labels.migration =
+                                        this.marks.get(&r.id).map(|k| (k.glyph(), k.hint(this.servers.get(k.account()).map_or("", String::as_str))));
+                                    list_row(i, &r, labels, state, marks.as_deref().map(Vec::as_slice), &l, cx)
+                                }
                             }
                         }
                         None if matches!(this.thread_mark(i), crate::outline::Mark::Child { .. }) => crate::outline::empty_child(i, &l),
@@ -1378,7 +1413,8 @@ pub(crate) enum PageSource {
 impl PageSource {
     pub(crate) fn count(&self, cache: &Cache) -> usize {
         match self {
-            PageSource::Mailbox(mb) => cache.count(mb).unwrap_or(0),
+            // Папка — по `FolderId` (S8-15): и письма без связи с сервером (перенесённые, локальные).
+            PageSource::Mailbox(mb) => crate::local::count(cache, mb),
             PageSource::Ids(ids) => ids.len(),
             PageSource::Empty => 0,
         }
@@ -1386,7 +1422,7 @@ impl PageSource {
 
     pub(crate) fn read(&self, cache: &Cache, offset: usize, limit: usize) -> Vec<EmailRow> {
         match self {
-            PageSource::Mailbox(mb) => cache.page(mb, offset, limit).unwrap_or_default(),
+            PageSource::Mailbox(mb) => crate::local::page(cache, mb, offset, limit),
             PageSource::Ids(ids) => {
                 let end = (offset + limit).min(ids.len());
                 cache.rows_by_ids(&ids[offset.min(end)..end]).unwrap_or_default()
@@ -1421,6 +1457,8 @@ pub(crate) struct RowState {
     pub(crate) thread: crate::outline::Mark,
     /// Список в фокусе (T1-D).
     pub(crate) focused: bool,
+    /// Выделено писем (перетаскивание выделенной строки несёт их все, S8-15).
+    pub(crate) picked_n: usize,
 }
 
 /// Группа наведения строки: флажок на месте аватара по наведению (S5-08).
@@ -1530,6 +1568,14 @@ pub(crate) fn list_row(
         .when(encrypted, |d| d.child(crate::chrome::icon(crate::smime_enc::LOCK, 13.).text_color(l.text3())))
         .when(r.has_attachment && !encrypted, |d| d.child(crate::chrome::icon(crate::chrome::glyph::ATTACH, 13.).text_color(l.text3())))
         .when(r.flagged, |d| d.child(crate::chrome::icon(crate::chrome::glyph::FLAG, 13.).text_color(l.pm(Pm::Flag))))
+        // Перенос (S8-16, макет S8-D п. 3): перед временем, цветом подписей, с подсказкой.
+        .children(labels.migration.map(|(g, hint)| {
+            div()
+                .id(("migration-mark", i))
+                .flex_none()
+                .child(crate::chrome::icon(g, 12.).text_color(l.text2()))
+                .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(hint.clone()).build(window, cx))
+        }))
         .child(div().flex_none().text_size(l.px(Metric::TypeCaption)).text_color(l.text2()).child(format_date(r.received_at)));
     let subject = div()
         .flex_1()
@@ -1603,6 +1649,11 @@ pub(crate) fn list_row(
                 cx.stop_propagation();
                 cx.emit(crate::bulk::OpenMenu { index: i, at: Some(ev.position) });
             }),
+        )
+        // Перетаскивание на папку (S8-15): выделенная строка несёт всё выделение.
+        .on_drag(
+            crate::local::DraggedLetters { id: r.id.clone(), picked: state.picked, n: if state.picked { state.picked_n } else { 1 } },
+            |d, _, _, cx| cx.new(|_| d.clone()),
         )
         .into_any_element()
 }
