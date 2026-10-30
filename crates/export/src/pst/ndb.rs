@@ -348,11 +348,11 @@ impl Ndb {
 
 /// Служебных страниц в начале AMap `k`: сама AMap, PMap (каждая восьмая), FMap.
 fn reserved(k: u64) -> u64 {
-    1 + u64::from(k % 8 == 0) + u64::from(is_fmap(k))
+    1 + u64::from(k.is_multiple_of(8)) + u64::from(is_fmap(k))
 }
 
 fn is_fmap(k: u64) -> bool {
-    k >= FMAP_FIRST && (k - FMAP_FIRST) % FMAP_EVERY == 0
+    k >= FMAP_FIRST && (k - FMAP_FIRST).is_multiple_of(FMAP_EVERY)
 }
 
 /// Отметить в AMap участок от `offset` (от начала её области) длиной `size` (кратно 64).
