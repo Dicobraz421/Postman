@@ -39,7 +39,8 @@ pub enum Step {
     Content,
     /// Выгрузить в папку цели.
     Upload,
-    /// Выгрузка отправлена, ждём подтверждения: после перезапуска — повтор с проверкой по `Message-ID`.
+    /// Выгрузка отправлена, ждём подтверждения: после перезапуска и после отказа — повтор с проверкой по `Message-ID`
+    /// (ответ мог потеряться, а письмо — дойти).
     Confirm,
     /// Удалить у источника и снять `detached`-связь.
     DeleteSource,
@@ -530,8 +531,9 @@ impl<S: Store> Engine<S> {
                     j.remove(*letter);
                     return Ok(());
                 }
-                l.step = Step::Upload;
-                self.store.set_step(*job, *letter, Step::Upload)?;
+                // Повтор — с проверкой у цели: при обрыве связи выгрузка могла дойти без ответа.
+                l.step = Step::Confirm;
+                self.store.set_step(*job, *letter, Step::Confirm)?;
                 match error {
                     ImportError::Throttled { retry_after } => {
                         if let Some(p) = j.profile() {
@@ -1023,6 +1025,8 @@ mod tests {
         too_large: HashSet<LetterId>,
         /// Выгрузка с этим номером дошла до цели, ответ — нет: сбой клиента.
         crash_at: Option<u64>,
+        /// Выгрузка с этим номером дошла до цели, ответ — обрыв связи.
+        lost_at: Option<u64>,
         crashed: bool,
         /// Ответы на выгрузку не приходят (пауза посередине).
         hold: bool,
@@ -1066,6 +1070,9 @@ mod tests {
             if self.crash_at == Some(n) {
                 self.crashed = true;
                 return None;
+            }
+            if self.lost_at.take_if(|t| *t == n).is_some() {
+                return Some(Event::ImportFailed { job, letter, error: ImportError::Throttled { retry_after: RETRY.as_secs() } });
             }
             Some(Event::Imported { job, letter, remote: remote(&id) })
         }
@@ -1287,6 +1294,21 @@ mod tests {
         let big = &w.store().letters[&LetterId(5)];
         assert_eq!(big.place, Place::Kept(ImportError::TooLarge.to_string()));
         assert!(big.content.is_some() && big.links.is_empty());
+    }
+
+    /// Обрыв связи после выгрузки (письмо у цели, ответа нет): повтор — с проверкой по `Message-ID`, без дубля.
+    #[test]
+    fn lost_answer_is_not_a_duplicate() {
+        let mut path = Path::with_source(5);
+        path.lost_at = Some(2);
+        let mut w = World::new(Mem::moved("", Home::Account("@2".into()), 5, |_| true), path, "@2");
+        w.features(Features::ALL.with_import(true).with(Feature::Quota, false));
+        w.request(MigrationRequest::Answer { job: JOB, mode: MigrationMode::Upload });
+        w.run();
+        assert_eq!(w.last(), (5, 5, MigrationState::Done));
+        let mids: HashSet<&String> = w.path.target.values().collect();
+        assert_eq!((w.path.target.len(), mids.len(), w.path.retries), (5, 5, 1));
+        assert!(w.path.source.is_empty());
     }
 
     /// Пауза посередине: выгрузки в пути дойдут, новых нет; «Продолжить» — до конца.
