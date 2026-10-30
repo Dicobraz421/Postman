@@ -196,7 +196,7 @@ impl<'c, 'a> Store<'c, 'a> {
     fn open(cf: &'c mut Cf<'a>, dir: &str, header: usize, cp: u32) -> Self {
         let mut fixed = HashMap::new();
         if let Some((data, _)) = stream(cf, &format!("{dir}/__properties_version1.0"), 1 << 20) {
-            for e in data.get(header..).unwrap_or_default().chunks_exact(16) {
+            for e in data.get(header..).unwrap_or_default().as_chunks::<16>().0 {
                 let ty = u16::from_le_bytes([e[0], e[1]]);
                 let id = u16::from_le_bytes([e[2], e[3]]);
                 let mut value = [0u8; 8];
