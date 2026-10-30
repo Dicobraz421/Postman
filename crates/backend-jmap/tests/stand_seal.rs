@@ -12,7 +12,6 @@ use postman_cache::Cache;
 use postman_compose::{Address, Draft};
 use postman_core::sync::{self, Account, Command, Event, Status};
 use postman_jmap::{Auth, Client};
-use postman_smime::envelope;
 use postman_smime::seal::To;
 use postman_smime::soft::{self, SoftKey};
 use postman_smime::testkit::{Key, NOW, Pki};
@@ -65,8 +64,8 @@ async fn fetch(c: &Client, id: &str) -> (Vec<u8>, String) {
 fn opens_with(raw: &[u8], pki: &Pki) -> String {
     let Key::Rsa(k) = &pki.user_key else { unreachable!() };
     let key = SoftKey::new(&pki.user.der, &soft::pkcs1_der(k).unwrap()).unwrap();
-    let cek = soft::unwrap(&[key], &envelope::envelope(raw).unwrap()).unwrap();
-    envelope::open(raw, &cek, &Default::default(), NOW).unwrap().text.unwrap_or_default()
+    let cek = soft::unwrap(&[key], &postman_worker::smime::envelope(raw).unwrap()).unwrap();
+    postman_worker::smime::open(raw, &cek, &Default::default(), NOW).unwrap().text.unwrap_or_default()
 }
 
 #[tokio::test]

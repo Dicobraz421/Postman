@@ -1423,7 +1423,7 @@ pub(crate) mod scenes {
         let trust = ctx.anchors.trust();
         if let Some(raw) = postman_demo::smime::raw("rsa") {
             let now = jiff::Timestamp::now().as_second();
-            let report = postman_smime::verify(raw, &trust, u64::try_from(now).unwrap_or(0));
+            let report = postman_worker::smime::verify(raw, &trust, u64::try_from(now).unwrap_or(0));
             postman_core::smime::finish(&cache, "screens-seed-rsa", report, &ctx, now);
         }
         m.open_compose(samples::confidential_draft(), cx);

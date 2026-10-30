@@ -163,7 +163,7 @@ pub fn forget_all() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use postman_smime::envelope::{self, Cipher};
+    use postman_smime::envelope::Cipher;
     use postman_smime::soft::SoftKey;
     use postman_smime::testkit::{self, Head, Key, KeyAlg, Pki, To};
 
@@ -187,10 +187,10 @@ mod tests {
     #[test]
     fn soft_keys_and_not_for_you() {
         let me = Pki::rsa("Корпоративный УЦ", "Смирнова", "me@itt.test");
-        let env = envelope::envelope(&letter(&me)).unwrap();
+        let env = postman_worker::smime::envelope(&letter(&me)).unwrap();
         assert_eq!(soft(&me).cek(&env, Prompt::Silent).unwrap().as_slice(), &[9; 32]);
         let other = Pki::build(Key::rsa('a'), Key::rsa('c'), "Чужой УЦ", "Петров", "p@itt.test");
-        let env = envelope::envelope(&letter(&other)).unwrap();
+        let env = postman_worker::smime::envelope(&letter(&other)).unwrap();
         match soft(&me).cek(&env, Prompt::Silent) {
             Err(KeyError::NotForYou(l)) => assert!(l[0].starts_with("Чужой УЦ, № "), "{l:?}"),
             other => panic!("{other:?}"),

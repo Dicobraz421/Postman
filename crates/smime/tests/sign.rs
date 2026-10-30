@@ -50,7 +50,7 @@ fn own_signature_verifies() {
         let signer = TestSigner { cert: &pki.user, key: &pki.user_key, chain: Vec::new() };
         let signed = sign::sign_message(&letter(MIXED), &signer, NOW as i64 - 60).unwrap();
         assert!(signed.iter().all(|&b| b < 0x80), "{name}: 7 бит");
-        let r = postman_smime::verify(&signed, &pki.trust(), NOW);
+        let r = postman_worker::smime::verify(&signed, &pki.trust(), NOW);
         assert_eq!((r.kind, &r.status), (Kind::Detached, &Status::Valid), "{name}: {r:?}");
         assert!(r.address_ok, "{name}");
         assert_eq!(r.signing_time, Some(NOW as i64 - 60));
@@ -87,7 +87,7 @@ Pay 100
     )
     .unwrap();
     let text = String::from_utf8(signed).unwrap().replace("Pay 100", "Pay 900");
-    assert_eq!(postman_smime::verify(text.as_bytes(), &pki.trust(), NOW).status, Status::Invalid);
+    assert_eq!(postman_worker::smime::verify(text.as_bytes(), &pki.trust(), NOW).status, Status::Invalid);
 }
 
 /// `r‖s` (CNG) → DER `ECDSA-Sig-Value`, с нулём знака и без ведущих нулей.

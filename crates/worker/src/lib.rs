@@ -14,6 +14,7 @@ pub mod mapi;
 pub mod mime;
 pub mod preview;
 mod sandbox;
+pub mod smime;
 pub mod wasm;
 
 use std::io::{self, Read, Write};
@@ -140,7 +141,7 @@ pub enum SmimeFailure {
 
 /// Тело `signed-data` → IR (в песочнице).
 fn inner_document(content: &[u8]) -> Option<Document> {
-    match postman_smime::inner_body(content) {
+    match smime::inner_body(content) {
         (Some(html), _) => Some(postman_ir::from_html(&html)),
         (None, Some(text)) => Some(postman_ir::from_plain(&text)),
         (None, None) => None,
@@ -148,7 +149,7 @@ fn inner_document(content: &[u8]) -> Option<Document> {
 }
 
 fn smime_envelope(bin: &[u8]) -> Response {
-    Response::Envelope(postman_smime::envelope::envelope(bin))
+    Response::Envelope(smime::envelope(bin))
 }
 
 /// Расшифровка в песочнице: тело → IR; вложение — байты (только в памяти, на диск — нигде).
@@ -157,12 +158,12 @@ fn smime_open(bin: &[u8], now: u64, part: Option<u32>) -> (Response, Vec<u8>) {
         return (Response::Err("запрос расшифровки повреждён".into()), Vec::new());
     };
     if let Some(index) = part {
-        return match postman_smime::envelope::part(message, cek, index) {
+        return match smime::part(message, cek, index) {
             Ok(bytes) => (Response::Part, bytes.to_vec()),
             Err(e) => (Response::Opened { opened: Box::new(Err(e)), doc: None }, Vec::new()),
         };
     }
-    match postman_smime::envelope::open(message, cek, &trust, now) {
+    match smime::open(message, cek, &trust, now) {
         Ok(o) => {
             let doc = match (&o.html, &o.text) {
                 (Some(html), _) => Some(postman_ir::from_html(html)),
@@ -182,12 +183,12 @@ fn smime_inner(bin: &[u8], now: u64, from: &str, part: Option<u32>) -> (Response
         return (Response::Err("запрос разбора повреждён".into()), Vec::new());
     };
     if let Some(index) = part {
-        return match postman_smime::envelope::part_inner(inner, index) {
+        return match smime::part_inner(inner, index) {
             Ok(bytes) => (Response::Part, bytes.to_vec()),
             Err(e) => (Response::Opened { opened: Box::new(Err(e)), doc: None }, Vec::new()),
         };
     }
-    match postman_smime::envelope::open_inner(inner, from, postman_smime::envelope::Cipher::Gost28147, &trust, now) {
+    match smime::open_inner(inner, from, postman_smime::envelope::Cipher::Gost28147, &trust, now) {
         Ok(o) => {
             let doc = match (&o.html, &o.text) {
                 (Some(html), _) => Some(postman_ir::from_html(html)),
@@ -205,7 +206,7 @@ fn smime_verify(bin: &[u8], now: u64) -> (Response, Vec<u8>) {
     let Some((trust, message)) = postman_smime::wire::decode_request(bin) else {
         return (Response::Err("запрос проверки подписи повреждён".into()), Vec::new());
     };
-    let report = postman_smime::verify(message, &trust, now);
+    let report = smime::verify(message, &trust, now);
     let doc = report.content.as_deref().and_then(inner_document);
     let out = postman_smime::wire::encode_response(&report.chain, None);
     (Response::Smime { report: Box::new(report), doc }, out)
