@@ -3,12 +3,12 @@
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-pub(crate) use linux::{lockdown, spawn};
+pub(crate) use linux::{MEMORY_LIMIT, lockdown, spawn};
 
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub(crate) use windows::{lockdown, spawn};
+pub(crate) use windows::{MEMORY_LIMIT, lockdown, spawn};
 
 #[cfg(not(any(target_os = "linux", windows)))]
 pub(crate) fn lockdown() -> Result<(), String> {
@@ -16,7 +16,10 @@ pub(crate) fn lockdown() -> Result<(), String> {
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
-pub(crate) fn spawn(_: &std::path::Path, _relaxed: bool) -> std::io::Result<crate::Process> {
+pub(crate) const MEMORY_LIMIT: usize = 1 << 30;
+
+#[cfg(not(any(target_os = "linux", windows)))]
+pub(crate) fn spawn(_: &std::path::Path, _relaxed: bool, _memory: usize) -> std::io::Result<crate::Process> {
     Err(std::io::Error::other("платформа не поддерживается"))
 }
 
