@@ -114,5 +114,6 @@ ADR 0007 (просмотрщики форматов); порядок — `docs/s
 | [S8-33а](S8-33а.md) | PST: пробный файл | formats | A | todo | S8-30 |
 | [S8-33б](S8-33б.md) | PST: полный писатель | formats | A | blocked | S8-33а, решение №6 |
 | [S8-35](S8-35.md) | «Безопасность»: шифрование диска с базой (BitLocker) | app-gpui | A | todo | S8-D |
+| [S8-36](S8-36.md) | Разбор писем только в воркере: S/MIME, References, ENVELOPE | sandbox | B | todo | S8-13 |
 | [S8-34](S8-34.md) | Приёмка: руководство, размеры, замеры | docs | A | todo | все |
 | [S8-G](S8-G.md) | Перегенерация `docs/PARITY.md` | docs-gen | A | todo | S8-16, S8-27, S8-32 |
