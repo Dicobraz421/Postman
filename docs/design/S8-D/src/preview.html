@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><title>S8-D просмотр</title><link rel="stylesheet" href="s8.css">
+<style>
+.grid { display: grid; grid-template-columns: 580px 580px; gap: 20px; }
+.pv { background: var(--card); border: 1px solid var(--div); border-radius: 8px; height: 400px; overflow: hidden; display: flex; flex-direction: column; color: var(--t1); position: relative; }
+.pvh { height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 4px 0 12px; border-bottom: 1px solid var(--div); flex: none; }
+.pvh .nm { font-weight: 600; }
+.pvh .note { margin: 0; color: var(--t3); font-size: 12px; flex: 1; display: flex; gap: 5px; align-items: center; white-space: nowrap; overflow: hidden; }
+.pvh .note .i { font-size: 11px; }
+.ib { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; color: var(--t2); border-radius: 4px; }
+.tb { height: 36px; display: flex; align-items: center; gap: 4px; padding: 0 4px 0 8px; border-bottom: 1px solid var(--div); flex: none; }
+.tb .fb { white-space: nowrap; flex: none; display: flex; align-items: center; gap: 6px; padding: 0 8px; height: 28px; color: var(--t1); }
+.tb .sp { flex: 1; }
+.pivot { display: flex; height: 36px; align-items: stretch; }
+.pivot div { padding: 0 10px; display: flex; align-items: center; color: var(--t2); position: relative; }
+.pivot div.on { color: var(--t1); font-weight: 600; }
+.pivot div.on::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: 0; height: 3px; border-radius: 2px; background: var(--acc); }
+table { border-collapse: collapse; font-size: 12px; }
+td, th { border: 1px solid var(--div); padding: 3px 8px; white-space: nowrap; height: 24px; }
+th { background: var(--fill); font-weight: 600; text-align: left; position: sticky; top: 0; }
+td.n { text-align: right; font-variant-numeric: tabular-nums; }
+.cut { flex: none; height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-top: 1px solid var(--div); background: var(--fill); color: var(--t2); font-size: 12px; }
+.slide { margin: 16px 20px; }
+.slide h4 { font-size: 18px; margin: 0 0 10px; font-weight: 600; }
+.slide ul { margin: 0 0 10px 0; padding-left: 20px; line-height: 22px; }
+.fig { display: inline-flex; align-items: center; gap: 6px; color: var(--t2); background: var(--fill); border-radius: 4px; padding: 4px 8px; font-size: 12px; }
+.lhd { padding: 12px 16px 8px; border-bottom: 1px solid var(--div); }
+.lhd .s { font-size: 16px; font-weight: 600; margin-bottom: 6px; }
+.lhd .r { display: flex; gap: 8px; font-size: 12px; line-height: 19px; }
+.lhd .r span:first-child { color: var(--t2); width: 44px; flex: none; }
+.atts { display: flex; gap: 6px; padding: 8px 16px; border-bottom: 1px solid var(--div); }
+.att { height: 40px; border: 1px solid var(--div); border-radius: 6px; display: flex; align-items: center; gap: 8px; padding: 0 10px; font-size: 12px; }
+.att .sz { color: var(--t3); }
+.crumb { white-space: nowrap; overflow: hidden; min-width: 0; display: flex; align-items: center; gap: 6px; color: var(--t2); font-size: 12px; }
+.crumb .i { font-size: 10px; }
+</style></head>
+<body>
+<h1>S8-D · 6. Просмотр вложений: листы, слайды, письмо во вложении, сторонний модуль (светлая)</h1>
+<div class="grid">
+
+<div>
+<div class="cap" style="margin-top:0">Книга (xlsx, ods, csv): листы — вкладками в строке инструментов; первая строка закреплена, шире панели — прокрутка вбок</div>
+<div class="pv">
+  <div class="pvh"><span class="nm">Смета 2026.xlsx</span><span class="note"><span class="i">&#xE72E;</span>Встроенный просмотр · без запуска внешних программ</span><span class="ib"><span class="i">&#xE711;</span></span></div>
+  <div class="tb"><div class="pivot"><div class="on">Смета</div><div>Итоги</div><div>Справочник</div></div><span class="sp"></span><span class="fb"><span class="i">&#xE8A7;</span>Открыть в приложении</span><span class="fb"><span class="i">&#xE74E;</span>Сохранить…</span></div>
+  <div style="flex:1;overflow:hidden;padding:0">
+  <table style="width:100%"><tr><th>Позиция</th><th>Ед.</th><th>Кол-во</th><th>Цена, ₽</th><th>Сумма, ₽</th><th>Срок</th></tr>
+  <tr><td>Кабель ВВГнг 3×2,5</td><td>м</td><td class="n">1 200</td><td class="n">96,40</td><td class="n">115 680,00</td><td>15.11.2026</td></tr>
+  <tr><td>Автомат C16</td><td>шт</td><td class="n">48</td><td class="n">410,00</td><td class="n">19 680,00</td><td>15.11.2026</td></tr>
+  <tr><td>Щит ЩРН-24</td><td>шт</td><td class="n">6</td><td class="n">3 150,00</td><td class="n">18 900,00</td><td>20.11.2026</td></tr>
+  <tr><td>Монтаж, этап 1</td><td>усл.</td><td class="n">1</td><td class="n">240 000,00</td><td class="n">240 000,00</td><td>01.12.2026</td></tr>
+  <tr><td>Пусконаладка</td><td>усл.</td><td class="n">1</td><td class="n">60 000,00</td><td class="n">60 000,00</td><td>10.12.2026</td></tr>
+  <tr><td>Итого</td><td></td><td></td><td></td><td class="n"><b>454 260,00</b></td><td></td></tr>
+  <tr><td>Кабель-канал 40×25</td><td>м</td><td class="n">300</td><td class="n">72,00</td><td class="n">21 600,00</td><td>15.11.2026</td></tr>
+  <tr><td>Розетка двойная</td><td>шт</td><td class="n">120</td><td class="n">215,00</td><td class="n">25 800,00</td><td>20.11.2026</td></tr>
+  </table></div>
+  <div class="cut"><span class="i" style="font-size:12px">&#xE946;</span>Показано начало: 10 000 из 48 210 строк<span class="link" style="margin-left:auto">Сохранить…</span></div>
+</div>
+</div>
+
+<div>
+<div class="cap" style="margin-top:0">Презентация (pptx, odp): по слайду, листание ‹ › и ← / →, как страницы PDF; картинки — пометкой «[рисунок]»</div>
+<div class="pv">
+  <div class="pvh"><span class="nm">Запуск проекта.pptx</span><span class="note"><span class="i">&#xE72E;</span>Встроенный просмотр · без запуска внешних программ</span><span class="ib"><span class="i">&#xE711;</span></span></div>
+  <div class="tb"><span class="ib"><span class="i">&#xE76B;</span></span><span style="min-width:56px;text-align:center">3 / 12</span><span class="ib"><span class="i">&#xE76C;</span></span><span style="width:1px;height:16px;background:var(--div);margin:0 6px"></span><span style="color:var(--t2)">Слайд 3 · Этапы</span><span class="sp"></span><span class="fb"><span class="i">&#xE8A7;</span>Открыть в приложении</span><span class="fb"><span class="i">&#xE74E;</span>Сохранить…</span></div>
+  <div class="slide">
+    <h4>Этапы</h4>
+    <ul><li>Обследование объекта — до 15 ноября</li><li>Поставка оборудования — до 20 ноября</li><li>Монтаж — до 1 декабря</li><li>Пусконаладка и сдача — до 10 декабря</li></ul>
+    <span class="fig"><span class="i" style="font-size:12px">&#xEB9F;</span>[рисунок]</span>
+    <div style="margin-top:14px;color:var(--t2);font-size:12px">Заметки докладчика</div>
+    <div style="font-size:12px;line-height:18px">Сроки поставки подтверждены поставщиком 28.10.</div>
+  </div>
+</div>
+</div>
+
+<div>
+<div class="cap">Письмо во вложении (eml, msg): шапка, тело, свои вложения; вложенное письмо — глубже, путь в строке инструментов (до 3 уровней)</div>
+<div class="pv">
+  <div class="pvh"><span class="nm">RE: Договор поставки.msg</span><span class="note"><span class="i">&#xE72E;</span>Встроенный просмотр · без запуска внешних программ</span><span class="ib"><span class="i">&#xE711;</span></span></div>
+  <div class="tb"><span class="crumb"><span class="i" style="font-size:14px">&#xE72B;</span>Договор поставки<span class="i">&#xE76C;</span><b style="color:var(--t1);font-weight:400">RE: Договор поставки.msg</b></span><span class="sp"></span><span class="fb"><span class="i">&#xE8A7;</span>Открыть в приложении</span><span class="fb"><span class="i">&#xE74E;</span>Сохранить…</span></div>
+  <div class="lhd"><div class="s">RE: Договор поставки</div>
+    <div class="r"><span>От</span><span>Ольга Смирнова &lt;o.smirnova@vector.example&gt;</span></div>
+    <div class="r"><span>Кому</span><span>Антон Антропов; Сергей Ким</span></div>
+    <div class="r"><span>Копия</span><span>Анна Лебедева</span></div>
+    <div class="r"><span>Дата</span><span>пн 14.10.2026 16:05</span></div></div>
+  <div class="atts"><div class="att"><span class="i">&#xE8A5;</span>Договор_v3.docx<span class="sz">84 КБ</span></div><div class="att"><span class="i">&#xE715;</span>Замечания юриста.eml<span class="sz">22 КБ</span></div></div>
+  <div style="padding:12px 16px;line-height:20px">Добрый день!<br>Направляю третью редакцию договора с правками по срокам поставки. Замечания юриста — во вложенном письме.<div class="ph" style="width:70%"></div><div class="ph" style="width:52%"></div></div>
+</div>
+</div>
+
+<div>
+<div class="cap">Сторонний модуль (WASM): подпись вместо «Встроенный просмотр»; у модуля из Program Files — без «(сторонний)»</div>
+<div class="pv" style="height:186px">
+  <div class="pvh"><span class="nm">Мастер и Маргарита.fb2</span><span class="note"><span class="i">&#xE72E;</span>Просмотр: модуль «FB2» 1.0 (сторонний) · в песочнице</span><span class="ib"><span class="i">&#xE711;</span></span></div>
+  <div class="tb"><span style="color:var(--t2);padding-left:4px">Часть первая · Глава 1</span><span class="sp"></span><span class="fb"><span class="i">&#xE74E;</span>Сохранить…</span></div>
+  <div style="padding:12px 16px"><div class="ph" style="width:90%"></div><div class="ph" style="width:84%"></div><div class="ph" style="width:60%"></div></div>
+</div>
+<div class="cap">Модуль выключен (Настройки → Просмотр вложений) — карточка «нет просмотра»</div>
+<div class="pv" style="height:170px">
+  <div class="pvh"><span class="nm">Мастер и Маргарита.fb2</span><span class="note"><span class="i">&#xE72E;</span>Проверка вложения · файл не открывался</span><span class="ib"><span class="i">&#xE711;</span></span></div>
+  <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--t2)">
+    <div>Встроенного просмотра для этого типа файла нет.</div>
+    <div style="display:flex;gap:4px"><span class="link">Включить модуль «FB2»</span><span class="link">Сохранить…</span></div>
+  </div>
+</div>
+</div>
+
+</div>
+<p class="note">Подписи разделов — от интерфейса (Fluent): «Лист …» — в подсказке вкладки, «Слайд N», «[рисунок]». Вкладки листов не
+влезают — прокрутка колесом и стрелки ‹ › по краям строки. Esc закрывает просмотр; у вложенного письма — шаг назад по пути.</p>
+</body></html>
