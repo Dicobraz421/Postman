@@ -6171,6 +6171,7 @@ dependencies = [
  "postman-calendar",
  "postman-compose",
  "postman-demo",
+ "postman-export",
  "postman-ir",
  "postman-search",
  "postman-smime",

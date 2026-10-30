@@ -12,6 +12,8 @@ postman-worker.workspace = true
 postman-compose.workspace = true
 postman-search.workspace = true
 postman-calendar.workspace = true
+# Выгрузка писем в файлы (S8-31): задание экспорта ядра пишет файлы форматами крейта, I/O — в потоке ядра.
+postman-export.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

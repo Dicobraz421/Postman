@@ -1170,8 +1170,10 @@ async fn handle(
         Command::DestroyLetters { job, account, letters } => {
             destroy_letters(accounts, cache, job, &account, &letters).await.into_iter().for_each(notify);
         }
-        // Перенос в базе и задания — в потоке ядра (`Command::routes_by`), сюда не приходят.
-        cmd @ (Command::MoveLetters { .. } | Command::Migration(_)) => cmd.unsupported().into_iter().for_each(notify),
+        // Перенос в базе, задания и экспорт — в потоке ядра (`Command::routes_by`), сюда не приходят.
+        cmd @ (Command::MoveLetters { .. } | Command::Migration(_) | Command::Export { .. } | Command::StopExport { .. }) => {
+            cmd.unsupported().into_iter().for_each(notify)
+        }
     }
     Ok(())
 }
