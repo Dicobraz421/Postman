@@ -1,7 +1,8 @@
 //! Встроенный просмотр вложений (S5-07): картинка, страница PDF, оглавление ZIP, текст, документ Word `.docx`
 //! (T1-13а, [`docx`]), книга `.xlsx`/`.ods` ([`sheet`]) и таблица `.csv`/`.tsv` ([`csv`]) — S8-17, презентация
-//! `.pptx`/`.odp` ([`slides`], S8-18), проверка Office на макросы. Только здесь, в песочнице: UI получает пиксели,
-//! строки, числа и безопасный IR (документ — разделами: лист книги, слайд, ADR 0007).
+//! `.pptx`/`.odp` ([`slides`], S8-18), документ `.odt` ([`odt`]), `.rtf` ([`rtf`]) и `.md` ([`markdown`]) — S8-19,
+//! проверка Office на макросы. Только здесь, в песочнице: UI получает пиксели, строки, числа и безопасный IR
+//! (документ — разделами: лист книги, слайд, ADR 0007).
 //!
 //! Картинки — PNG, JPEG, GIF, WebP, BMP, ICO и TIFF (страницы — как у PDF, S8-21).
 //!
@@ -9,13 +10,17 @@
 //! стороне (страница PDF — шириной `width`, если задана), текст — [`MAX_TEXT`] байт, оглавление — [`MAX_LISTED`] строк; архив не распаковывается (размеры —
 //! из центрального каталога), из OOXML читается только `vbaProject.bin` и не больше [`MAX_VBA`], у `.docx` — пределы
 //! [`docx`] (распаковка, блоки, символы), у книги и таблицы — пределы [`sheet`] (листы, строки, столбцы, ячейки), у
-//! презентации — [`slides`]; все части книги или презентации вместе — не больше [`MAX_UNPACKED`] после распаковки. Время
+//! презентации — [`slides`]; все части книги или презентации вместе — не больше [`MAX_UNPACKED`] после распаковки; у
+//! `.odt`, `.rtf`, `.md` — блоки и символы как у `.docx`. Время
 //! ограничивает сторож в `serve` (процесс завершается с [`crate::EXIT_TIME`]), память — Job Object песочницы.
 
 use std::io::{self, Read};
 
 pub mod csv;
 pub mod docx;
+pub mod markdown;
+pub mod odt;
+pub mod rtf;
 pub mod sheet;
 pub mod slides;
 
@@ -45,7 +50,8 @@ pub enum PreviewKind {
     Text,
     /// Документ Office: только проверка на макросы.
     Office,
-    /// Документ Word `.docx` → IR (T1-13а); документ с макросами — проверка Office, как у `Office`.
+    /// Документ → IR (один раздел), формат — по содержимому: Word `.docx` (T1-13а) и OpenDocument `.odt` (ZIP),
+    /// `.rtf` (`{\rtf`), иначе текст `.md` (S8-19); документ с макросами — проверка Office, как у `Office`.
     Document,
     /// Книга `.xlsx`/`.xltx`/`.ods` → раздел на лист с таблицей (S8-17); с макросами — проверка Office.
     Sheet,
@@ -172,7 +178,7 @@ pub fn preview(kind: PreviewKind, bytes: &[u8], page: u32, max_side: u32, width:
             Ok((Preview::Text { text, truncated }, Vec::new()))
         }
         PreviewKind::Office => Ok((Preview::Office(scan_office(bytes)?), Vec::new())),
-        PreviewKind::Document => sections(bytes, |b| docx::docx(b).map(|(blocks, t)| (vec![Section { title: SectionTitle::None, blocks }], t))),
+        PreviewKind::Document => document(bytes),
         PreviewKind::Sheet => sections(bytes, sheet::sheet),
         PreviewKind::Slides => sections(bytes, slides::slides),
         PreviewKind::Table => {
@@ -180,6 +186,20 @@ pub fn preview(kind: PreviewKind, bytes: &[u8], page: u32, max_side: u32, width:
             Ok((Preview::Document { sections, truncated }, Vec::new()))
         }
     }
+}
+
+/// Документ одним разделом; формат — по содержимому: ZIP — `.odt` или `.docx`, `{\rtf` — RTF, иначе — Markdown.
+fn document(bytes: &[u8]) -> Result<(Preview, Vec<u8>), String> {
+    let one = |r: Result<(Vec<postman_ir::Block>, bool), String>| r.map(|(blocks, t)| (vec![Section { title: SectionTitle::None, blocks }], t));
+    if rtf::is_rtf(bytes) {
+        let (sections, truncated) = one(rtf::rtf(bytes))?;
+        return Ok((Preview::Document { sections, truncated }, Vec::new()));
+    }
+    if bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(OLE_MAGIC) {
+        return sections(bytes, |b| one(if odt::is_odf(b) { odt::odt(b) } else { docx::docx(b) }));
+    }
+    let (sections, truncated) = one(markdown::markdown(bytes))?;
+    Ok((Preview::Document { sections, truncated }, Vec::new()))
 }
 
 /// Документ Office разделами; с макросами (`.docm`, `.xlsm`, `.pptm`, `vbaProject.bin`) — не просмотр, а проверка: открытие
