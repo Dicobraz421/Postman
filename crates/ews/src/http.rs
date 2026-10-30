@@ -182,9 +182,19 @@ impl Http {
 
     /// POST тела XML; ответ — любой статус (разбирает вызывающий). Вход — по 401.
     pub(crate) async fn post(&mut self, url: &url::Url, body: Vec<u8>) -> Result<Reply> {
+        self.post_with(url, body, true).await
+    }
+
+    /// [`Http::post`] без повтора на новом соединении, когда сервер закрыл прежнее: для запросов, которые создают
+    /// объект (`CreateItem`), — запрос мог дойти, а ответ потеряться; повтор — у вызывающего, с проверкой.
+    pub(crate) async fn post_no_resend(&mut self, url: &url::Url, body: Vec<u8>) -> Result<Reply> {
+        self.post_with(url, body, false).await
+    }
+
+    async fn post_with(&mut self, url: &url::Url, body: Vec<u8>, resend: bool) -> Result<Reply> {
         self.pace().await;
         let body = Bytes::from(body);
-        tokio::time::timeout(self.timeout, async { collect(self.post_once(url, &body).await?).await }).await.map_err(|_| Error::Timeout)?
+        tokio::time::timeout(self.timeout, async { collect(self.post_once(url, &body, resend).await?).await }).await.map_err(|_| Error::Timeout)?
     }
 
     /// POST, ответ на который — поток: статус и тело кусками ([`Body`]). Предел времени — до заголовков ответа;
@@ -192,7 +202,7 @@ impl Http {
     pub(crate) async fn post_stream(&mut self, url: &url::Url, body: Vec<u8>) -> Result<(u16, Body)> {
         self.pace().await;
         let body = Bytes::from(body);
-        let resp = tokio::time::timeout(self.timeout, self.post_once(url, &body)).await.map_err(|_| Error::Timeout)??;
+        let resp = tokio::time::timeout(self.timeout, self.post_once(url, &body, true)).await.map_err(|_| Error::Timeout)??;
         let conn = self.conn.take().ok_or(Error::Closed)?;
         Ok((resp.status().as_u16(), Body { body: resp.into_body(), _conn: conn }))
     }
@@ -232,10 +242,10 @@ impl Http {
         reply.status == 401 && auth::choose(&reply.www_authenticate).is_some()
     }
 
-    async fn post_once(&mut self, url: &url::Url, body: &Bytes) -> Result<hyper::Response<Incoming>> {
-        // Сервер закрыл соединение, пока оно ждало (простой, перезапуск IIS), — одна попытка на новом.
+    async fn post_once(&mut self, url: &url::Url, body: &Bytes, resend: bool) -> Result<hyper::Response<Incoming>> {
+        // Сервер закрыл соединение, пока оно ждало (простой, перезапуск IIS), — одна попытка на новом (`resend`).
         let first = match self.conn(url).await?.request(url, body, None).await {
-            Err(Error::Closed) => {
+            Err(Error::Closed) if resend => {
                 self.conn = None;
                 self.conn(url).await?.request(url, body, None).await?
             }

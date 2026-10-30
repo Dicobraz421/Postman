@@ -1114,7 +1114,7 @@ static UPLOADED: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 static UPLOADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 /// На этой выгрузке ящик полон.
 static QUOTA_AT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-/// Эта выгрузка дошла, ответ — обрыв; повтор клиента на новом соединении тоже обрывается.
+/// Эта выгрузка дошла, ответ — обрыв.
 static LOST_AT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 fn envelope(op: &str, messages: &str) -> String {
@@ -1135,9 +1135,6 @@ fn transfer(body: &str) -> Option<String> {
     if body.contains("<m:CreateItem") && body.contains(r#"MessageDisposition="SaveOnly""#) && body.contains("<t:MimeContent>") {
         let n = UPLOADS.fetch_add(1, SeqCst) + 1;
         let lost = LOST_AT.load(SeqCst);
-        if n == lost + 1 && lost > 0 {
-            return Some(DROP.to_owned());
-        }
         if n == QUOTA_AT.load(SeqCst) {
             let msg = r#"<m:CreateItemResponseMessage ResponseClass="Error"><m:MessageText>quota</m:MessageText><m:ResponseCode>ErrorQuotaExceeded</m:ResponseCode><m:Items/></m:CreateItemResponseMessage>"#;
             return Some(envelope("CreateItem", msg));
@@ -1302,6 +1299,7 @@ fn fifty_letters_to_exchange_with_quota_and_a_lost_answer() {
     let uploaded = UPLOADED.lock().unwrap().clone();
     let mids: std::collections::HashSet<&String> = uploaded.iter().map(|(_, m)| m).collect();
     assert_eq!((uploaded.len(), mids.len()), (50, 50), "без дублей");
+    assert_eq!(UPLOADS.load(SeqCst), 51, "выгрузок — 50 и отказ «ящик полон»: после обрыва клиент CreateItem сам не повторяет");
     assert!(requests(&log, 0, "FindItem").iter().any(|b| b.contains("0x1035")), "повтор — с поиском по Message-ID");
     let upload = requests(&log, 0, "CreateItem").into_iter().find(|b| b.contains("<t:MimeContent>")).unwrap();
     assert!(upload.contains(r#"PropertyTag="0x0E06""#) && upload.contains("SavedItemFolderId"), "{upload}");
@@ -1345,4 +1343,64 @@ fn exchange_letters_to_this_computer() {
         assert_eq!((row.place, row.folders.as_slice()), (postman_cache::Place::Local, &[local][..]));
         assert!(live.cache.remotes(*l).unwrap().is_empty() && live.cache.letter_content(*l).unwrap().is_some());
     }
+}
+
+/// Выгрузки подменного сервера теста обрыва (свои: тесты одного процесса `cargo test` идут параллельно): Message-ID
+/// принятых писем.
+static CUT_UPLOADED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Подменный сервер, который принимает каждую выгрузку и обрывает связь вместо ответа; `FindItem` по
+/// `PR_INTERNET_MESSAGE_ID` — среди принятых.
+fn cut_after_create(body: &str) -> Option<String> {
+    if body.contains("<m:CreateItem") && body.contains("<t:MimeContent>") {
+        let mime = b64_decode(between(body, "<t:MimeContent>", "</t:MimeContent>").unwrap());
+        let mid = String::from_utf8_lossy(&mime).lines().find_map(|l| l.strip_prefix("Message-ID: ").map(str::to_owned)).unwrap();
+        CUT_UPLOADED.lock().unwrap().push(mid);
+        return Some(DROP.to_owned());
+    }
+    if body.contains("<m:FindItem") && body.contains(r#"PropertyTag="0x1035""#) {
+        let mid = between(body, r#"<t:Constant Value=""#, "\"").unwrap().replace("&lt;", "<").replace("&gt;", ">");
+        let found: String = CUT_UPLOADED
+            .lock()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| **m == mid)
+            .map(|(i, _)| format!(r#"<t:Message><t:ItemId Id="AAMkADcut{i}" ChangeKey="CK"/></t:Message>"#))
+            .collect();
+        let msg = format!(
+            r#"<m:FindItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:RootFolder IndexedPagingOffset="0" TotalItemsInView="1" IncludesLastItemInRange="true"><t:Items>{found}</t:Items></m:RootFolder></m:FindItemResponseMessage>"#
+        );
+        return Some(envelope("FindItem", &msg));
+    }
+    later_sync(body).then(|| quiet(""))
+}
+
+/// Обрыв связи после `CreateItem` (сервер письмо принял, ответа нет): клиент EWS запрос не повторяет — ни на новом
+/// соединении, ни иначе; повтор — шаг ядра `Confirm` (поиск по `Message-ID` из воркера) находит письмо: у Exchange
+/// один экземпляр, письмо связано с ним.
+#[test]
+fn lost_create_item_answer_leaves_one_copy() {
+    use postman_core::model::{FolderId as Folder, LetterId as Letter, MigrationMode, MigrationRequest, MigrationState};
+    let (url, log) = server_with(cut_after_create);
+    let live = ready(&url);
+    let inbox = live.cache.folder_of("", &inbox_of(&live)).unwrap().unwrap();
+    let ids = letters_of_another_account(&live.cache, 1);
+    let mut engine = engine_on(&live.cache);
+    engine.features(None, postman_core::model::Features::NONE.with_import(true));
+    let ticket = postman_core::store::move_letters(&mut engine, &[Letter(ids[0].0)], Folder(inbox.0)).unwrap();
+    let job = postman_core::model::JobId(ticket.job.unwrap().0);
+    engine.request(MigrationRequest::Answer { job, mode: MigrationMode::Upload }).unwrap();
+    let states = drive(&mut engine, &live, &mut |cmd| match cmd {
+        Command::DestroyLetters { job, letters, .. } => letters.into_iter().map(|letter| Event::Destroyed { job, letter }).collect(),
+        _ => panic!("источнику — только удаление"),
+    });
+    assert_eq!(states.last(), Some(&MigrationState::Done));
+    assert_eq!(*CUT_UPLOADED.lock().unwrap(), ["<m1@example.test>"], "у Exchange — один экземпляр");
+    assert_eq!(requests(&log, 0, "CreateItem").iter().filter(|b| b.contains("<t:MimeContent>")).count(), 1, "CreateItem — один раз");
+    let find = requests(&log, 0, "FindItem").into_iter().filter(|b| b.contains("0x1035")).count();
+    assert_eq!(find, 1, "повтор — поиском по Message-ID");
+    let refs = live.cache.remotes(ids[0]).unwrap();
+    assert_eq!(refs.len(), 1);
+    assert_eq!(refs[0].id, postman_backend_ews::sync::encode_id("AAMkADcut0"));
 }
