@@ -19,11 +19,20 @@ const SETTINGS_FILE: &str = "account.json";
 pub(crate) struct Settings {
     pub(crate) url: String,
     pub(crate) user: String,
+    /// Вход учётной записью Windows без пароля (T1-02б): пароль не спрашивается и не хранится.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) windows: bool,
 }
 
 impl Settings {
     pub(crate) fn of(account: &Account) -> Self {
-        Self { url: account.url.clone(), user: user_of(account).to_owned() }
+        let windows = matches!(&account.auth, Auth::Basic { password, .. } if password.is_empty());
+        Self { url: account.url.clone(), user: user_of(account).to_owned(), windows }
+    }
+
+    /// Учётная запись входа Windows: пустой пароль — путь EWS входит учётными данными текущего входа (T1-02а).
+    pub(crate) fn windows_account(&self) -> Account {
+        Account { url: self.url.clone(), auth: Auth::Basic { user: self.user.clone(), password: String::new() } }
     }
 
     pub(crate) fn load(dir: &Path) -> Option<Self> {
@@ -77,6 +86,10 @@ pub(crate) enum Stored {
 
 pub(crate) fn load_stored(dir: &Path) -> Stored {
     let Some(s) = Settings::load(dir) else { return Stored::None };
+    // Вход Windows (T1-02б): пароля нет и не нужно.
+    if s.windows {
+        return Stored::Account(s.windows_account());
+    }
     match sys::credentials::read(&s.credential_target()) {
         Ok(Some(password)) => Stored::Account(Account { url: s.url, auth: Auth::Basic { user: s.user, password } }),
         Ok(None) => Stored::Settings(s),
@@ -91,7 +104,10 @@ pub(crate) fn load_stored(dir: &Path) -> Stored {
 /// нигде: тогда прежний пароль этой записи из диспетчера удаляется, при запуске — строка входа с адресом и логином.
 pub(crate) fn remember(dir: &Path, account: &Account, store: bool) -> Result<(), String> {
     let s = Settings::of(account);
-    if let Auth::Basic { password, .. } = &account.auth {
+    // Вход Windows (T1-02б): в диспетчер учётных данных ничего не пишется.
+    if let Auth::Basic { password, .. } = &account.auth
+        && !s.windows
+    {
         if store {
             sys::credentials::write(&s.credential_target(), &s.user, password)?;
         } else {
@@ -148,6 +164,9 @@ fn next_profile(list: &[Extra]) -> String {
 /// Учётная запись для синхронизации: пароль — из диспетчера. Нет пароля — `None` (её покажут «Настройки →
 /// Аккаунты», синхронизации нет).
 pub(crate) fn extra_account(e: &Extra) -> Option<Account> {
+    if e.settings.windows {
+        return Some(e.settings.windows_account());
+    }
     match sys::credentials::read(&e.settings.credential_target()) {
         Ok(Some(password)) => Some(Account { url: e.settings.url.clone(), auth: Auth::Basic { user: e.settings.user.clone(), password } }),
         Ok(None) => None,
@@ -162,7 +181,9 @@ pub(crate) fn extra_account(e: &Extra) -> Option<Account> {
 /// учётная запись ещё раз — прежняя запись (новым паролем).
 pub(crate) fn add_extra(dir: &Path, account: &Account, store: bool) -> Result<Extra, String> {
     let settings = Settings::of(account);
-    if let Auth::Basic { password, .. } = &account.auth {
+    if let Auth::Basic { password, .. } = &account.auth
+        && !settings.windows
+    {
         if store {
             sys::credentials::write(&settings.credential_target(), &settings.user, password)?;
         } else {
@@ -257,7 +278,7 @@ mod tests {
 
     #[test]
     fn extras_get_their_own_prefix() {
-        let s = |u: &str| Settings { url: "http://a".into(), user: u.into() };
+        let s = |u: &str| Settings { url: "http://a".into(), user: u.into(), windows: false };
         assert_eq!(next_profile(&[]), "@2");
         let list = vec![Extra { profile: "@2".into(), settings: s("a") }, Extra { profile: "@5".into(), settings: s("b") }];
         assert_eq!(next_profile(&list), "@6");
@@ -305,9 +326,38 @@ mod tests {
         assert!(matches!(choose(f(false, false, true, true), None, || unreachable!()), Start::SignIn(None)));
         assert!(matches!(choose(f(false, false, false, false), env(), || unreachable!()), Start::Live(_)));
         assert!(matches!(choose(f(false, false, false, false), None, none), Start::SignIn(None)));
-        let partial = || Stored::Settings(Settings { url: "http://a".into(), user: "u".into() });
+        let partial = || Stored::Settings(Settings { url: "http://a".into(), user: "u".into(), windows: false });
         assert!(matches!(choose(f(false, false, false, false), None, partial), Start::SignIn(Some(_))));
         let saved = || Stored::Account(basic("http://a", "u", "p"));
         assert!(matches!(choose(f(false, false, false, false), None, saved), Start::Live(_)));
+    }
+}
+
+#[cfg(test)]
+mod windows_tests {
+    use postman_core::model::Auth;
+    use postman_core::sync::Account;
+
+    use super::Settings;
+
+    /// Вход Windows (T1-02б): пустой пароль — признак в настройках; при запуске — учётная запись без пароля, без
+    /// диспетчера; файл прежних настроек (без признака) читается как вход с паролем.
+    #[test]
+    fn windows_sign_in_keeps_no_password() {
+        let a = Account {
+            url: "https://mail.corp.test/EWS/Exchange.asmx".into(),
+            auth: Auth::Basic { user: "a@corp.test".into(), password: String::new() },
+        };
+        let s = Settings::of(&a);
+        assert!(s.windows);
+        assert!(matches!(s.windows_account().auth, Auth::Basic { password, .. } if password.is_empty()));
+        let dir = tempfile::Builder::new().prefix("postman-win-").tempdir().unwrap();
+        super::remember(dir.path(), &a, true).unwrap();
+        assert!(
+            matches!(super::load_stored(dir.path()), super::Stored::Account(Account { auth: Auth::Basic { password, .. }, .. }) if password.is_empty())
+        );
+        let old: Settings = serde_json::from_str(r#"{"url": "u", "user": "x"}"#).unwrap();
+        assert!(!old.windows);
+        assert!(!serde_json::to_string(&old).unwrap().contains("windows"), "признак — только у входа Windows");
     }
 }

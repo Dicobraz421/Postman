@@ -436,7 +436,36 @@ pub(crate) mod scenes {
         Scene::new("list", list, list_ready).live(),
         // Первое письмо выбрано, тело разобрано воркером.
         Scene::new("letter", letter, letter_ready).live().continues(),
+        // «Отправленные» (T1-22): письма выбираются и открываются, как в других папках, — и у Exchange (`--live`).
+        Scene::new("sent", sent, sent_ready).live(),
+        Scene::new("sent-letter", letter, sent_letter_ready).live().continues(),
     ];
+
+    /// «Отправленные» своей учётки.
+    fn sent_box(m: &Mailer, cx: &App) -> Option<String> {
+        let own = |b: &&postman_cache::MailboxRow| postman_cache::account_of(&b.id).is_none();
+        m.folders.read(cx).mailboxes.iter().filter(own).find(|b| b.role.as_deref() == Some("sent")).map(|b| b.id.clone())
+    }
+
+    fn in_sent(m: &Mailer, cx: &App) -> bool {
+        let current = m.folders.read(cx).current.clone();
+        current.is_some() && current == sent_box(m, cx)
+    }
+
+    fn sent(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.set_section(Section::Mail, cx);
+        let id = sent_box(m, cx).ok_or("no sent folder")?;
+        m.open_mailbox(id, cx);
+        Ok(())
+    }
+
+    fn sent_ready(s: &Scene, m: &Mailer, cx: &App) -> bool {
+        in_sent(m, cx) && list_ready(s, m, cx)
+    }
+
+    fn sent_letter_ready(s: &Scene, m: &Mailer, cx: &App) -> bool {
+        in_sent(m, cx) && letter_ready(s, m, cx)
+    }
 
     fn list(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
         m.set_section(Section::Mail, cx);

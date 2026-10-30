@@ -668,3 +668,4 @@ settings-bitlocker-open = BitLocker settings
 settings-bitlocker-on = Drive { $drive } with Postman data is encrypted with BitLocker
 settings-bitlocker-unknown = Encryption of drive { $drive } is unknown
 settings-bitlocker-unknown-hint = Windows didn’t report BitLocker status without administrator rights.
+settings-account-windows = Windows account — no password

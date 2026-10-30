@@ -671,3 +671,4 @@ settings-bitlocker-open = Параметры BitLocker
 settings-bitlocker-on = Диск { $drive } с данными Postman зашифрован BitLocker
 settings-bitlocker-unknown = Шифрование диска { $drive } неизвестно
 settings-bitlocker-unknown-hint = Windows не сообщила состояние BitLocker без прав администратора.
+settings-account-windows = Учётная запись Windows — без пароля
