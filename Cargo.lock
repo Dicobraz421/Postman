@@ -6378,6 +6378,7 @@ dependencies = [
  "libc",
  "mail-parser",
  "postcard",
+ "postman-export",
  "postman-ir",
  "postman-smime",
  "postman-worker",
