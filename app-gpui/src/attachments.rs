@@ -769,7 +769,7 @@ mod tests {
         let items = listed(&all, &HashSet::new(), false, &scans);
         assert_eq!(items.iter().map(|i| i.risk).collect::<Vec<_>>(), [Risk::Macros, Risk::Macros, Risk::Safe]);
         assert_eq!(items.iter().map(|i| i.can_open).collect::<Vec<_>>(), [false, false, true]);
-        assert_eq!(items.iter().map(|i| i.viewer).collect::<Vec<_>>(), [Viewer::Office, Viewer::Office, Viewer::Document]);
+        assert_eq!(items.iter().map(|i| i.viewer).collect::<Vec<_>>(), [Viewer::Office, Viewer::Sheet, Viewer::Document]);
         // Перетаскивание (T1-18): у файла с макросами источника нет, как и «Открыть».
         assert_eq!(items.iter().map(super::draggable).collect::<Vec<_>>(), [false, false, true]);
         let exe = listed(&[att("setup.exe", "", None), att("photo.jpg", "image/jpeg", None)], &HashSet::new(), false, &HashMap::new());
