@@ -1,7 +1,7 @@
 # T1-G: перегенерация `docs/PARITY.md` после новых команд T1
 
 lane: docs-gen
-status: todo
+status: done
 deps: [T1-04д, T1-17, T1-23]
 class: A
 files: [docs/PARITY.md]

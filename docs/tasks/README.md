@@ -69,7 +69,7 @@
 | [T1-25б](T1-25б.md) | Ядро: справочник по страницам | core | A | todo | — |
 | [T1-25в](T1-25в.md) | Плагин EWS: контакты и справочник | backends | A | todo | T1-25а, T1-25б |
 | [T1-25г](T1-25г.md) | Контакты Exchange в интерфейсе | app-gpui | A | todo | T1-25б, T1-25в |
-| [T1-G](T1-G.md) | Перегенерация `docs/PARITY.md` | docs-gen | A | todo | T1-04д, T1-17, T1-23 |
+| [T1-G](T1-G.md) | Перегенерация `docs/PARITY.md` | docs-gen | A | done | T1-04д, T1-17, T1-23 |
 
 ## S8 — к 1.0 (`docs/specs/S8.md`)
 
@@ -116,4 +116,4 @@ ADR 0007 (просмотрщики форматов); порядок — `docs/s
 | [S8-35](S8-35.md) | «Безопасность»: шифрование диска с базой (BitLocker) | app-gpui | A | done | S8-D |
 | [S8-36](S8-36.md) | Разбор писем только в воркере: S/MIME, References, ENVELOPE | sandbox | B | todo | S8-13 |
 | [S8-34](S8-34.md) | Приёмка: руководство, размеры, замеры | docs | A | todo | все |
-| [S8-G](S8-G.md) | Перегенерация `docs/PARITY.md` | docs-gen | A | todo | S8-16, S8-27, S8-32 |
+| [S8-G](S8-G.md) | Перегенерация `docs/PARITY.md` | docs-gen | A | done | S8-16, S8-27, S8-32 |
