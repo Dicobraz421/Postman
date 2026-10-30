@@ -57,6 +57,9 @@ pub enum Request {
     /// Письмо целиком для хранилища (S8-07, ADR 0006 §2) в бинарной части → [`mime::Split`] (части и `Message-ID`),
     /// раскодированные части подряд — в бинарной части ответа.
     MimeSplit,
+    /// Заголовки цепочки писем (S8-36, список IMAP): в бинарной части — строки `In-Reply-To` и `References` каждого
+    /// письма как пришли ([`mime::encode_heads`]) → [`mime::Thread`] каждого, по порядку.
+    Threads,
     Html(String),
     Text(String),
     /// Приглашение iCalendar (.ics) в бинарной части; ответ — METHOD и JSCalendar (JSON).
@@ -244,6 +247,8 @@ enum Response {
     Mime(Box<mime::Mime>),
     /// Листовые части письма; раскодированные — в бинарной части.
     Split(mime::Split),
+    /// Заголовки цепочки писем по порядку запроса.
+    Threads(Vec<mime::Thread>),
     /// RGBA8 в бинарной части.
     Image {
         width: u32,
@@ -548,6 +553,10 @@ fn handle(req: Result<Request, serde_json::Error>, bin: &[u8]) -> (Response, Vec
             }
             Err(e) => Response::Err(e),
         },
+        Ok(Request::Threads) => match mime::threads(bin) {
+            Ok(t) => Response::Threads(t),
+            Err(e) => Response::Err(e),
+        },
         Ok(Request::Mapi { seen }) => match mapi::mapi(bin, seen).map(|m| mapi::encode(&m)) {
             Ok(bytes) if bytes.len() <= MAX_SPLIT_FRAME => {
                 out_bin = bytes;
@@ -736,6 +745,7 @@ impl Client {
             | Response::Part
             | Response::Mime(_)
             | Response::Split(_)
+            | Response::Threads(_)
             | Response::Prepared(_)
             | Response::Crl(_)
             | Response::Mapi
@@ -956,6 +966,21 @@ impl Client {
         let timeout = self.timeout.max(SPLIT_TIMEOUT);
         match self.call_for(&Request::MimeSplit, raw, timeout)? {
             (Response::Split(split), bytes) if split.fits(raw.len(), bytes.len()) => Ok((split, bytes)),
+            (Response::Err(e), _) => Err(e),
+            _ => Err("неожиданный ответ".into()),
+        }
+    }
+
+    /// Заголовки цепочки писем (S8-36, список IMAP) — в песочнице: `heads` — строки `In-Reply-To` и `References`
+    /// каждого письма как пришли (длиннее [`mime::MAX_THREAD_HEAD`] — без цепочки). Ответ — по письму на строки, по
+    /// порядку, идентификаторы сверены ([`mime::is_message_id`]).
+    pub fn threads(&mut self, heads: &[Vec<u8>]) -> Result<Vec<mime::Thread>, String> {
+        if heads.len() > mime::MAX_THREADS {
+            return Err("слишком много писем".into());
+        }
+        let heads: Vec<Vec<u8>> = heads.iter().map(|h| if h.len() > mime::MAX_THREAD_HEAD { Vec::new() } else { h.clone() }).collect();
+        match self.call(&Request::Threads, &mime::encode_heads(&heads))? {
+            (Response::Threads(t), _) if t.len() == heads.len() && t.iter().all(mime::Thread::fits) => Ok(t),
             (Response::Err(e), _) => Err(e),
             _ => Err("неожиданный ответ".into()),
         }
