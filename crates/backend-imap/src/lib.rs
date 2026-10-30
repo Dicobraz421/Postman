@@ -1402,7 +1402,9 @@ impl Imap {
     /// письму. Связи больше нет (синхронизация видела удаление) — удалено; папку сбросили на сервере — отказ.
     async fn destroy_letters(&mut self, job: JobId, account: &str, letters: &[postman_core::model::LetterId]) -> Vec<Event> {
         let mut out = Vec::new();
-        let mut by: Vec<(Folder, u32, Vec<(postman_core::model::LetterId, u32)>)> = Vec::new();
+        // Папка, её UIDVALIDITY и письма в ней: (письмо, UID).
+        type InFolder = (Folder, u32, Vec<(postman_core::model::LetterId, u32)>);
+        let mut by: Vec<InFolder> = Vec::new();
         for &letter in letters {
             let found = match self.cache.remotes(LetterId(letter.0)) {
                 Ok(refs) => refs.into_iter().find(|r| r.account == account).map(|r| r.id),
