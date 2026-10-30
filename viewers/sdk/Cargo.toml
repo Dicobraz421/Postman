@@ -1,0 +1,14 @@
+[package]
+name = "postman-viewer-sdk"
+description = "SDK модулей просмотра Postman (ABI v1, ADR 0007): ответ модуля и экспорты для wasm32-unknown-unknown"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+
+[lints]
+workspace = true

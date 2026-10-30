@@ -1,0 +1,13 @@
+{
+  "name": "FB2",
+  "version": "1.0",
+  "abi": 1,
+  "extensions": ["fb2"],
+  "mime": ["application/x-fictionbook+xml", "application/x-fictionbook"],
+  "signatures": [
+    { "prefix": "<?xml", "contains": "<FictionBook" },
+    { "prefix": "\ufeff<?xml", "contains": "<FictionBook" },
+    { "prefix": "<FictionBook" }
+  ],
+  "limits": { "memory": 134217728 }
+}

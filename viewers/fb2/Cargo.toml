@@ -1,0 +1,18 @@
+[package]
+name = "postman-viewer-fb2"
+description = "Модуль просмотра Postman: книга FictionBook (.fb2) → главы разделами (образец SDK, ADR 0007)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+# Готовый модуль — `fb2.wasm` (`target/wasm32-unknown-unknown/release/`), описание — `fb2.json` рядом.
+[lib]
+name = "fb2"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+postman-viewer-sdk.workspace = true
+
+[lints]
+workspace = true
