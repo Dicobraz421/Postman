@@ -112,7 +112,8 @@ impl Pv {
             Viewer::Document => Some(PreviewKind::Document),
             // Новые виды S8-22 — запросом ядра; листы, слайды и письмо во вложении покажет S8-23.
             v @ (Viewer::Sheet | Viewer::Table | Viewer::Slides | Viewer::Letter) => v.kind(),
-            Viewer::Office | Viewer::None => None,
+            // Модули просмотра (S8-26) интерфейс пока не выбирает: `classify::viewer` их не даёт.
+            Viewer::Office | Viewer::Module { .. } | Viewer::None => None,
         }
     }
 }

@@ -41,3 +41,4 @@ pub mod taskparse;
 pub mod tasks;
 pub mod thread;
 pub mod viewer;
+pub mod viewers;
