@@ -923,8 +923,15 @@ mod tests {
         let (events, _) = run(&mut e, &cache, &|_| None, Duration::from_secs(60));
         let (done, total, _, state) = last(&events);
         let State::Done { unfetched } = state else { panic!("готово") };
-        // Без связи со всеми учётками: записаны два письма с содержимым, прочие — в итог по учёткам.
-        assert_eq!((done, unfetched.iter().map(|(_, n)| n).sum::<u64>()), (2, total - 2));
+        // Без связи со всеми учётками: записаны письма с содержимым в базе (два выбранных и те, что демо хранит
+        // целиком), прочие — в итог по учёткам.
+        let mut stored = HashSet::new();
+        for (f, _) in cache.folders().unwrap() {
+            stored.extend(cache.folder_page(f, 0, usize::MAX).unwrap().into_iter().filter(|(_, r)| r.content.is_some()).map(|(id, _)| id));
+        }
+        let stored = stored.len() as u64;
+        assert!(stored >= 2);
+        assert_eq!((done, unfetched.iter().map(|(_, n)| n).sum::<u64>()), (stored, total - stored));
         assert!(unfetched.iter().all(|(h, _)| matches!(h, Home::Account(_))));
         for d in [
             "me@corp.example/Входящие/cur",
