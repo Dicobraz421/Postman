@@ -94,14 +94,19 @@ pub(crate) fn listed(all: &[AttachmentRow], shown_cids: &HashSet<String>, invite
         .filter(|a| !(invite_card && is_invite(a)))
         .map(|a| {
             let risk = classify::risk_with(&a.name, scans.get(&a.blob_id).map(|s| s.macros));
-            Item {
-                row: a.clone(),
-                name: files::safe_name(&a.name),
-                kind: kind(&a.name, &a.mime),
-                risk,
-                viewer: classify::viewer(&a.name, &a.mime),
-                can_open: risk == Risk::Safe && files::can_open(&a.name),
-            }
+            let name = files::safe_name(&a.name);
+            let viewer = match classify::viewer(&a.name, &a.mime) {
+                // Письмо во вложении покажет S8-23; до него — как раньше: `.msg` — карточкой, `.eml` — текстом.
+                Viewer::Letter
+                    if name.rsplit_once('.').is_some_and(|(_, e)| e.eq_ignore_ascii_case("msg"))
+                        || a.mime.to_ascii_lowercase().starts_with("application/vnd.ms-outlook") =>
+                {
+                    Viewer::None
+                }
+                Viewer::Letter => Viewer::Text,
+                v => v,
+            };
+            Item { row: a.clone(), name, kind: kind(&a.name, &a.mime), risk, viewer, can_open: risk == Risk::Safe && files::can_open(&a.name) }
         })
         .collect()
 }
@@ -774,6 +779,19 @@ mod tests {
         assert_eq!(items.iter().map(super::draggable).collect::<Vec<_>>(), [false, false, true]);
         let exe = listed(&[att("setup.exe", "", None), att("photo.jpg", "image/jpeg", None)], &HashSet::new(), false, &HashMap::new());
         assert_eq!(exe.iter().map(super::draggable).collect::<Vec<_>>(), [false, true], "исполняемый — тоже нет");
+    }
+
+    /// До S8-23 письмо во вложении — как раньше: `.eml` и `message/rfc822` текстом, `.msg` — карточкой без просмотра.
+    #[test]
+    fn attached_letters_as_before() {
+        let all = [
+            att("Отчёт.eml", "message/rfc822", None),
+            att("fwd", "message/rfc822", None),
+            att("Outlook.MSG", "application/octet-stream", None),
+            att("outlook", "application/vnd.ms-outlook", None),
+        ];
+        let items = listed(&all, &HashSet::new(), false, &HashMap::new());
+        assert_eq!(items.iter().map(|i| i.viewer).collect::<Vec<_>>(), [Viewer::Text, Viewer::Text, Viewer::None, Viewer::None]);
     }
 
     #[test]
