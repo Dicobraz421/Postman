@@ -1,6 +1,8 @@
 //! Письмо целиком (RFC 5322) → поля тела и вложения (S7-04б): у JMAP разбор MIME делает сервер, у IMAP — Postman, и
 //! только здесь, в песочнице (`docs/HANDOFF.md` §3a). Вложения — по номеру в списке; байты — отдельным запросом.
-//! Для хранилища (S8-07, ADR 0006 §2) — диапазоны крупных листовых частей и их раскодированные байты ([`split`]).
+//! Для хранилища (S8-07, ADR 0006 §2) — диапазоны крупных листовых частей и их раскодированные байты ([`split`]) и
+//! `Message-ID` письма: ядро ищет по нему письмо у цели при повторе выгрузки (решение владельца 2026-10-30 — заголовки
+//! чужого письма вне воркера не разбираются).
 
 use std::ops::Range;
 
@@ -134,16 +136,31 @@ pub struct SplitPart {
     pub decoded_len: u64,
 }
 
-/// Крупные листовые части письма по порядку в нём.
+/// Длиннее `Message-ID` не отдаём (предел строки заголовка RFC 5322).
+pub const MAX_MESSAGE_ID: usize = 998;
+
+/// Крупные листовые части письма по порядку в нём и его `Message-ID`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Split {
     pub parts: Vec<SplitPart>,
+    /// `Message-ID` письма с угловыми скобками, как в заголовке (`<id@host>`); нет или не годится — `None`.
+    pub message_id: Option<String>,
+}
+
+/// `<id>` годится в запрос к серверу: в скобках, не длиннее [`MAX_MESSAGE_ID`], без пробелов, управляющих символов и
+/// скобок внутри.
+pub fn is_message_id(s: &str) -> bool {
+    let inner = s.strip_prefix('<').and_then(|s| s.strip_suffix('>')).unwrap_or_default();
+    !inner.is_empty() && s.len() <= MAX_MESSAGE_ID && !inner.chars().any(|c| c.is_whitespace() || c.is_control() || c == '<' || c == '>')
 }
 
 impl Split {
     /// Ответ воркера согласован с письмом длины `raw_len` и бинарной частью длины `bin_len`: диапазоны внутри
-    /// письма, по порядку и без наложений, раскодированное — ровно бинарная часть.
+    /// письма, по порядку и без наложений, раскодированное — ровно бинарная часть, `Message-ID` — годный.
     pub(crate) fn fits(&self, raw_len: usize, bin_len: usize) -> bool {
+        if self.message_id.as_deref().is_some_and(|m| !is_message_id(m)) {
+            return false;
+        }
         let mut end = 0;
         let mut decoded = 0u64;
         for p in &self.parts {
@@ -169,6 +186,7 @@ pub fn split(raw: &[u8]) -> Result<(Split, Vec<u8>), String> {
     if msg.parts.first().is_none_or(|p| p.headers.is_empty()) {
         return Err("не письмо RFC 5322".into());
     }
+    let message_id = msg.message_id().map(|m| format!("<{}>", m.trim())).filter(|m| is_message_id(m));
     let mut leaves = Vec::new();
     let mut count = 0;
     collect_leaves(&msg, &mut leaves, &mut count)?;
@@ -197,7 +215,7 @@ pub fn split(raw: &[u8]) -> Result<(Split, Vec<u8>), String> {
     if out.len() > MAX_SPLIT {
         return Err("письмо слишком большое".into());
     }
-    Ok((Split { parts }, out))
+    Ok((Split { parts, message_id }, out))
 }
 
 /// Листовые части `msg` (и вложенных писем без кодировки: их смещения — в том же письме) по порядку.
@@ -235,7 +253,7 @@ fn collect_leaves(msg: &mail_parser::Message<'_>, out: &mut Vec<(Range<usize>, E
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
-    use super::{Encoding, MAX_SPLIT_PARTS, parse, part, split};
+    use super::{Encoding, MAX_MESSAGE_ID, MAX_SPLIT_PARTS, parse, part, split};
 
     const SAMPLE: &str = "From: Анна <anna@example.test>\r\nTo: Пётр <petr@example.test>, ivan@example.test\r\nCc: team@example.test\r\nSubject: =?utf-8?B?0J7RgtGH0ZHRgg==?=\r\nMessage-ID: <m1@example.test>\r\nReferences: <a@example.test> <b@example.test>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b1\"\r\n\r\n--b1\r\nContent-Type: multipart/alternative; boundary=\"b2\"\r\n\r\n--b2\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nПривет\r\n--b2\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>Привет</p>\r\n--b2--\r\n--b1\r\nContent-Type: application/pdf; name=\"report.pdf\"\r\nContent-Disposition: attachment; filename=\"report.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\nSGVsbG8=\r\n--b1--\r\n";
 
@@ -330,6 +348,25 @@ mod tests {
         assert!(s.fits(raw.len(), bin.len()));
         assert!(!s.fits(raw.len(), bin.len() + 1));
         assert!(!s.fits(a.range.end as usize, bin.len()));
+    }
+
+    /// `Message-ID` — из заголовка письма (не из вложенного и не из тела), со скобками; нет или негодный — `None`, ответ
+    /// с негодным не принимается.
+    #[test]
+    fn split_gives_the_message_id() {
+        let mid = |raw: &str| split(raw.as_bytes()).unwrap().0.message_id;
+        assert_eq!(mid(SAMPLE).as_deref(), Some("<m1@example.test>"));
+        let folded = "Subject: s\r\nMESSAGE-ID:\r\n <a.b@x.test>\r\nTo: i@x.test\r\n\r\nMessage-ID: <body@x.test>\r\n";
+        assert_eq!(mid(folded).as_deref(), Some("<a.b@x.test>"), "перенос строки, регистр");
+        assert_eq!(mid("Subject: s\r\n\r\nMessage-ID: <body@x.test>\r\n"), None, "только заголовок");
+        let nested = letter("message/rfc822", "Message-ID: <inner@x.test>\r\nSubject: i\r\n\r\ntext\r\n");
+        assert_eq!(mid(&nested), None, "не из вложенного письма");
+        assert_eq!(mid("Message-ID: <>\r\nSubject: s\r\n\r\nx"), None);
+        assert_eq!(mid(&format!("Message-ID: <{}@x>\r\nSubject: s\r\n\r\nx", "a".repeat(MAX_MESSAGE_ID))), None, "слишком длинный");
+        assert_eq!(mid("Message-ID: <ё@x.test>\r\nSubject: s\r\n\r\nx").as_deref(), Some("<ё@x.test>"));
+        let bad = super::Split { parts: Vec::new(), message_id: Some("<a b@x>".into()) };
+        assert!(!bad.fits(10, 0), "ответ с негодным Message-ID");
+        assert!(super::Split { message_id: Some("<a@x>".into()), ..bad }.fits(10, 0));
     }
 
     /// `multipart/signed`: части внутри подписанного — тоже; вложенное письмо без кодировки — рекурсивно.

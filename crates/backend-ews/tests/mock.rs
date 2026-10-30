@@ -1143,7 +1143,7 @@ fn transfer(body: &str) -> Option<String> {
             return Some(envelope("CreateItem", msg));
         }
         let mime = b64_decode(between(body, "<t:MimeContent>", "</t:MimeContent>").unwrap());
-        let mid = postman_core::store::message_id(&mime).unwrap();
+        let mid = String::from_utf8_lossy(&mime).lines().find_map(|l| l.strip_prefix("Message-ID: ").map(str::to_owned)).unwrap();
         let id = format!("AAMkADup{n}");
         UPLOADED.lock().unwrap().push((id.clone(), mid));
         if n == lost {
@@ -1257,8 +1257,10 @@ fn letters_of_another_account(cache: &Cache, n: u32) -> Vec<postman_cache::Lette
     ids
 }
 
+/// Движок над хранилищем; части и `Message-ID` — кодом воркера в процессе теста.
 fn engine_on(cache: &Cache) -> postman_core::migrate::Engine<postman_core::store::CacheStore> {
-    let store = postman_core::store::CacheStore::new(cache.clone(), Box::new(|_| Ok(Vec::new())));
+    let split = |raw: &[u8]| postman_worker::mime::split(raw).and_then(|(s, d)| postman_core::store::split_of(s, &d));
+    let store = postman_core::store::CacheStore::new(cache.clone(), Box::new(split));
     postman_core::migrate::Engine::open(store).unwrap()
 }
 

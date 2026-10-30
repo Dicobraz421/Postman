@@ -287,13 +287,16 @@ pub enum Command {
     /// `$flagged`) и датой получения (Unix-секунды) → `Event::Imported` или `Event::ImportFailed`. Путь без выгрузки
     /// ([`Features::import`](crate::model::Features::import)) отвечает отказом. `retry` — повтор после сбоя (выгрузка
     /// могла дойти, ответ — нет): путь, у которого сервер не отвечает `alreadyExists`, сначала ищет письмо по
-    /// `Message-ID` в папке цели и, если нашёл, отвечает `Imported` с ним — без дубля.
+    /// `message_id` в папке цели и, если нашёл, отвечает `Imported` с ним — без дубля. `message_id` — с угловыми
+    /// скобками, из ответа воркера (`MimeSplit`): письмо в процессе приложения путь не разбирает; `None` — у письма его
+    /// нет (или воркер не ответил), искать нечем.
     Import {
         job: JobId,
         letter: LetterId,
         folder: FolderId,
         keywords: Vec<String>,
         received_at: i64,
+        message_id: Option<String>,
         retry: bool,
     },
     /// Сервер сам переносит письма в папку `to` другого аккаунта той же сессии, без выгрузки
@@ -1229,6 +1232,7 @@ mod tests {
             folder: FolderId(folder),
             keywords: vec![],
             received_at: 0,
+            message_id: None,
             retry: false,
         };
         assert_eq!(route(import(11)), [sync(Some("@3"))], "выгрузка — в поток цели, а не источника");
@@ -1261,7 +1265,15 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
-        let import = Command::Import { job: JobId(5), letter: LetterId(2), folder: FolderId(9), keywords: vec![], received_at: 0, retry: false };
+        let import = Command::Import {
+            job: JobId(5),
+            letter: LetterId(2),
+            folder: FolderId(9),
+            keywords: vec![],
+            received_at: 0,
+            message_id: None,
+            retry: false,
+        };
         assert_eq!(failed(import.unsupported()), [(5, 2)]);
         let copy = Command::ServerCopy { job: JobId(5), letters: vec![LetterId(2), LetterId(3)], to: FolderId(9) };
         assert_eq!(failed(copy.unsupported()), [(5, 2), (5, 3)]);
