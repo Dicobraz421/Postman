@@ -105,6 +105,9 @@ async fn serve(mut s: TcpStream, log: Arc<Mutex<Vec<String>>>, extra: Extra) {
         if reply == STREAM {
             return stream(s).await;
         }
+        if reply == DROP {
+            return;
+        }
         let out = format!("HTTP/1.1 200 OK\r\nContent-Type: text/xml; charset=utf-8\r\nContent-Length: {}\r\n\r\n{reply}", reply.len());
         s.write_all(out.as_bytes()).await.unwrap();
     }
@@ -1098,4 +1101,246 @@ fn detached_letters_take_only_deletion() {
     live.wait("EmailsChanged", |e| matches!(e, Event::EmailsChanged));
     assert!(live.cache.remotes(letter).unwrap().is_empty(), "удаление — связь снята");
     assert_eq!(live.cache.letter(letter).unwrap().unwrap().folders, [local], "письмо — там, куда перенесено");
+}
+
+// --- Перенос между учётками (S8-13): шаги задания ядра (`migrate::Engine`) на подменном EWS. ---
+
+/// Ответа нет: сервер закрыл соединение (обрыв связи).
+const DROP: &str = "<!-- drop -->";
+
+/// Выгрузки подменного сервера (только у тестов переноса; nextest — процесс на тест): id → Message-ID.
+static UPLOADED: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+/// Запросов выгрузки пришло.
+static UPLOADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// На этой выгрузке ящик полон.
+static QUOTA_AT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Эта выгрузка дошла, ответ — обрыв; повтор клиента на новом соединении тоже обрывается.
+static LOST_AT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn envelope(op: &str, messages: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><m:{op}Response xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><m:ResponseMessages>{messages}</m:ResponseMessages></m:{op}Response></s:Body></s:Envelope>"#
+    )
+}
+
+fn between<'a>(text: &'a str, from: &str, to: &str) -> Option<&'a str> {
+    let start = text.find(from)? + from.len();
+    Some(&text[start..start + text[start..].find(to)?])
+}
+
+/// Подменный сервер переноса: `CreateItem` `SaveOnly` — выгрузка (Message-ID — из MIME), `FindItem` по
+/// `PR_INTERNET_MESSAGE_ID` — среди выгруженных, сверка папок — без изменений.
+fn transfer(body: &str) -> Option<String> {
+    use std::sync::atomic::Ordering::SeqCst;
+    if body.contains("<m:CreateItem") && body.contains(r#"MessageDisposition="SaveOnly""#) && body.contains("<t:MimeContent>") {
+        let n = UPLOADS.fetch_add(1, SeqCst) + 1;
+        let lost = LOST_AT.load(SeqCst);
+        if n == lost + 1 && lost > 0 {
+            return Some(DROP.to_owned());
+        }
+        if n == QUOTA_AT.load(SeqCst) {
+            let msg = r#"<m:CreateItemResponseMessage ResponseClass="Error"><m:MessageText>quota</m:MessageText><m:ResponseCode>ErrorQuotaExceeded</m:ResponseCode><m:Items/></m:CreateItemResponseMessage>"#;
+            return Some(envelope("CreateItem", msg));
+        }
+        let mime = b64_decode(between(body, "<t:MimeContent>", "</t:MimeContent>").unwrap());
+        let mid = postman_core::store::message_id(&mime).unwrap();
+        let id = format!("AAMkADup{n}");
+        UPLOADED.lock().unwrap().push((id.clone(), mid));
+        if n == lost {
+            return Some(DROP.to_owned());
+        }
+        let msg = format!(
+            r#"<m:CreateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:Message><t:ItemId Id="{id}" ChangeKey="CK"/></t:Message></m:Items></m:CreateItemResponseMessage>"#
+        );
+        return Some(envelope("CreateItem", &msg));
+    }
+    if body.contains("<m:FindItem") && body.contains(r#"PropertyTag="0x1035""#) {
+        let mid = between(body, r#"<t:Constant Value=""#, "\"").unwrap().replace("&lt;", "<").replace("&gt;", ">");
+        let found: String = UPLOADED
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, m)| *m == mid)
+            .map(|(id, _)| format!(r#"<t:Message><t:ItemId Id="{id}" ChangeKey="CK"/></t:Message>"#))
+            .collect();
+        let msg = format!(
+            r#"<m:FindItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:RootFolder IndexedPagingOffset="0" TotalItemsInView="1" IncludesLastItemInRange="true"><t:Items>{found}</t:Items></m:RootFolder></m:FindItemResponseMessage>"#
+        );
+        return Some(envelope("FindItem", &msg));
+    }
+    later_sync(body).then(|| quiet(""))
+}
+
+/// Ответы пути на команду задания: столько, сколько писем в ней.
+fn answers(live: &Live, cmd: Command) -> Vec<Event> {
+    let n = match &cmd {
+        Command::DestroyLetters { letters, .. } | Command::ServerCopy { letters, .. } => letters.len(),
+        _ => 1,
+    };
+    live.commands.send(cmd).unwrap();
+    (0..n)
+        .map(|_| {
+            live.wait("ответ задания", |e| {
+                matches!(
+                    e,
+                    Event::Raw { .. } | Event::Imported { .. } | Event::ImportFailed { .. } | Event::Destroyed { .. } | Event::DestroyFailed { .. }
+                )
+            })
+        })
+        .collect()
+}
+
+/// Задание ядра до остановки: команды основной учётной записи — пути EWS, прочих — `other`; время задания — к его
+/// сроку (повторы, пауза сервера) без ожидания. Ответ — состояния хода.
+fn drive(
+    engine: &mut postman_core::migrate::Engine<postman_core::store::CacheStore>,
+    live: &Live,
+    other: &mut dyn FnMut(Command) -> Vec<Event>,
+) -> Vec<postman_core::model::MigrationState> {
+    use postman_core::sync::{Route, Target};
+    let mut now = Instant::now();
+    let mut states = Vec::new();
+    for _ in 0..10_000 {
+        let out = engine.poll(now).unwrap();
+        states.extend(out.events.iter().filter_map(|e| match e {
+            Event::Migration { state, .. } => Some(*state),
+            _ => None,
+        }));
+        if out.commands.is_empty() {
+            match engine.wake_at() {
+                Some(t) => now = now.max(t),
+                None => return states,
+            }
+            continue;
+        }
+        for (route, cmd) in out.commands {
+            let events = if route == Route::Sync(Target::Profile(None)) { answers(live, cmd) } else { other(cmd) };
+            for e in events {
+                engine.event(&e, now).unwrap();
+            }
+        }
+    }
+    panic!("задание не остановилось");
+}
+
+/// Письма другой учётки профиля (`@9`, её сервер — в тесте): `n` писем с содержимым в её папке.
+fn letters_of_another_account(cache: &Cache, n: u32) -> Vec<postman_cache::LetterId> {
+    let folder = cache
+        .upsert_folder(&postman_cache::FolderRow {
+            owner: postman_cache::Owner::Account("@9".into()),
+            parent: None,
+            name: "Входящие".into(),
+            role: Some("inbox".into()),
+            remote: Some("in9".into()),
+        })
+        .unwrap();
+    let rows: Vec<(String, postman_cache::LetterRow)> = (1..=n)
+        .map(|i| {
+            let row = postman_cache::LetterRow {
+                thread_id: format!("t{i}"),
+                received_at: 1_790_000_000 + i64::from(i),
+                subject: format!("Письмо {i}"),
+                seen: i % 2 == 0,
+                flagged: i % 5 == 0,
+                folders: vec![folder],
+                ..Default::default()
+            };
+            (format!("s{i}"), row)
+        })
+        .collect();
+    let ids = cache.upsert_remotes("@9", &rows).unwrap();
+    for (i, id) in (1..=n).zip(&ids) {
+        let raw =
+            format!("Message-ID: <m{i}@example.test>\r\nSubject: =?utf-8?B?0J/QuNGB0YzQvNC+?= {i}\r\nFrom: a@example.test\r\n\r\nтекст {i}\r\n");
+        cache.put_content(*id, raw.as_bytes(), &[]).unwrap();
+    }
+    ids
+}
+
+fn engine_on(cache: &Cache) -> postman_core::migrate::Engine<postman_core::store::CacheStore> {
+    let store = postman_core::store::CacheStore::new(cache.clone(), Box::new(|_| Ok(Vec::new())));
+    postman_core::migrate::Engine::open(store).unwrap()
+}
+
+/// 50 писем другой учётки — в «Входящие» Exchange: `CreateItem` полученными («прочитано» и флаг), ящик полон на
+/// 30-й — «нет места», «Продолжить» — до конца; обрыв связи после выгрузки — повтор с поиском по `Message-ID`, без
+/// дубля; у источника удаляется по ответу его сервера; письма связаны с Exchange тем же `LetterId`.
+#[test]
+fn fifty_letters_to_exchange_with_quota_and_a_lost_answer() {
+    use postman_core::model::{FolderId as Folder, LetterId as Letter, MigrationMode, MigrationRequest, MigrationState};
+    use std::sync::atomic::Ordering::SeqCst;
+    LOST_AT.store(12, SeqCst);
+    QUOTA_AT.store(30, SeqCst);
+    let (url, log) = server_with(transfer);
+    let live = ready(&url);
+    let inbox = live.cache.folder_of("", &inbox_of(&live)).unwrap().unwrap();
+    let ids = letters_of_another_account(&live.cache, 50);
+    let mut engine = engine_on(&live.cache);
+    engine.features(None, postman_core::model::Features::NONE.with_import(true));
+    let letters: Vec<Letter> = ids.iter().map(|l| Letter(l.0)).collect();
+    let ticket = postman_core::store::move_letters(&mut engine, &letters, Folder(inbox.0)).unwrap();
+    let job = postman_core::model::JobId(ticket.job.unwrap().0);
+    engine.request(MigrationRequest::Answer { job, mode: MigrationMode::Upload }).unwrap();
+
+    let mut destroyed = Vec::new();
+    let mut source = |cmd: Command| match cmd {
+        Command::DestroyLetters { job, account, letters } => {
+            assert_eq!(account, "@9");
+            destroyed.extend(letters.iter().copied());
+            letters.into_iter().map(|letter| Event::Destroyed { job, letter }).collect()
+        }
+        _ => panic!("источнику — только удаление"),
+    };
+    let states = drive(&mut engine, &live, &mut source);
+    assert_eq!(states.last(), Some(&MigrationState::QuotaFull), "ящик полон — задание стоит");
+    engine.request(MigrationRequest::Resume { job }).unwrap();
+    let states = drive(&mut engine, &live, &mut source);
+    assert_eq!(states.last(), Some(&MigrationState::Done));
+
+    let uploaded = UPLOADED.lock().unwrap().clone();
+    let mids: std::collections::HashSet<&String> = uploaded.iter().map(|(_, m)| m).collect();
+    assert_eq!((uploaded.len(), mids.len()), (50, 50), "без дублей");
+    assert!(requests(&log, 0, "FindItem").iter().any(|b| b.contains("0x1035")), "повтор — с поиском по Message-ID");
+    let upload = requests(&log, 0, "CreateItem").into_iter().find(|b| b.contains("<t:MimeContent>")).unwrap();
+    assert!(upload.contains(r#"PropertyTag="0x0E06""#) && upload.contains("SavedItemFolderId"), "{upload}");
+    destroyed.sort();
+    assert_eq!(destroyed, letters, "у источника — каждое, после подтверждения цели");
+    // Письма — те же (`LetterId`), связь — только с Exchange, по id выгрузки.
+    let mut linked: Vec<String> = Vec::new();
+    for l in &ids {
+        let refs = live.cache.remotes(*l).unwrap();
+        assert!(refs.len() == 1 && !refs[0].detached && refs[0].account.is_empty(), "{refs:?}");
+        linked.push(refs[0].id.clone());
+    }
+    let mut expected: Vec<String> = uploaded.iter().map(|(id, _)| postman_backend_ews::sync::encode_id(id)).collect();
+    linked.sort();
+    expected.sort();
+    assert_eq!(linked, expected);
+    assert!(live.cache.jobs().unwrap().is_empty());
+}
+
+/// Письма Exchange — в «На этом компьютере»: письмо целиком с сервера (`GetItem` `MimeContent`), затем удаление у
+/// источника (`DeleteItem` `HardDelete`) — письмо только в базе, когда сервер ответил.
+#[test]
+fn exchange_letters_to_this_computer() {
+    use postman_core::model::{FolderId as Folder, LetterId as Letter, MigrationState};
+    let (url, log) = server_with(transfer);
+    let live = ready(&url);
+    let inbox = inbox_of(&live);
+    let ids: Vec<postman_cache::LetterId> =
+        live.cache.page(&inbox, 0, 10).unwrap().iter().map(|r| live.cache.letter_of("", &r.id).unwrap().unwrap()).collect();
+    assert_eq!(ids.len(), 2);
+    let local = live.cache.create_folder(None, "Архив 2025").unwrap();
+    let mut engine = engine_on(&live.cache);
+    let letters: Vec<Letter> = ids.iter().map(|l| Letter(l.0)).collect();
+    postman_core::store::move_letters(&mut engine, &letters, Folder(local.0)).unwrap();
+    let states = drive(&mut engine, &live, &mut |_| panic!("всё — у Exchange"));
+    assert_eq!(states.last(), Some(&MigrationState::Done));
+    let delete = requests(&log, 0, "DeleteItem").pop().unwrap();
+    assert!(delete.contains(r#"DeleteType="HardDelete""#) && delete.contains("AAMkADmsg1") && delete.contains("AAMkADmsg2"), "{delete}");
+    for l in &ids {
+        let row = live.cache.letter(*l).unwrap().unwrap();
+        assert_eq!((row.place, row.folders.as_slice()), (postman_cache::Place::Local, &[local][..]));
+        assert!(live.cache.remotes(*l).unwrap().is_empty() && live.cache.letter_content(*l).unwrap().is_some());
+    }
 }

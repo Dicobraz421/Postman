@@ -2,6 +2,12 @@
 //! очередью правок) — вход, первая загрузка, push (EventSource), опрос-страховка, предзагрузка тел — и команды
 //! договора `postman_core::sync::Command` → события `Event`. UI шлёт команды, в ответ получает события и перечитывает
 //! кэш.
+//!
+//! Перенос из другой учётки (S8-13, ADR 0006 п. 4) — шаги задания ядра: письмо целиком (`FetchRaw` — блоб
+//! `Email.blobId`), выгрузка (`Import` — `uploadUrl` и `Email/import` в папку со всеми ключевыми словами и датой
+//! получения; повтор без дубля — `alreadyExists`), перенос сервером между аккаунтами сессии (`ServerCopy` —
+//! `Email/copy` с `onSuccessDestroyOriginal`), удаление у источника (`DestroyLetters` — `Email/set` `destroy`, ответ по
+//! письму).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
@@ -15,7 +21,7 @@ use postman_core::backend::BoxFuture;
 use postman_core::invite::Delivery;
 use postman_core::lifecycle;
 use postman_core::link::{Connection, Link};
-use postman_core::model::{ContactCard, Filter, Principal, Release};
+use postman_core::model::{ContactCard, Filter, FolderId, ImportError, JobId, LetterId, Principal, Release, Remote};
 use postman_core::send_later::{self, Scheduled};
 use postman_core::sync::{
     Account, Command, Debounce, ErrorKind, Event, Index, Sender, Session, Stage, Status, SyncError, UnboundedSender, owned_by, retry_at, supervise,
@@ -276,14 +282,15 @@ async fn run(
     notify(Event::Status(Status::Connecting { url: account.url.clone() }));
     let client = Client::connect(&account.url, account.auth.to_jmap()).await.map_err(|e| sync_error(Stage::Connect, &e))?;
     notify(Event::Status(Status::SignedIn { user: client.session().username.clone() }));
-    // Что видно на экране — по основной учётной записи (S7-03б).
-    if profile.is_none() {
-        notify(Event::Features(crate::convert::features(&client)));
-    }
     let own_id = client.mail_account().map_err(|e| sync_error(Stage::Connect, &e))?.to_string();
 
     // Общие и делегированные ящики (S4-06) — аккаунты сессии, кроме своего.
     let shared = client.session().shared_accounts();
+    // Что видно на экране — по основной учётной записи (S7-03б). Выгрузка писем из других учёток (S8-13) — всегда,
+    // перенос сервером (`Email/copy`) — между аккаунтами сессии, если их несколько.
+    if profile.is_none() {
+        notify(Event::Features(crate::convert::features(&client).with_import(true).with_server_copy(!shared.is_empty())));
+    }
     let main = profile.is_none();
     let p = profile.as_deref();
     // Дополнительная учётная запись — группой в дереве папок, как общий ящик (S7-03б): строка её самой и её общих.
@@ -1148,17 +1155,180 @@ async fn handle(
             let people = postman_core::contacts::directory(client.directory(DIRECTORY_LIMIT).await?.into_iter().map(Principal::from_jmap).collect());
             notify(Event::directory_slice(account, &people, offset, max));
         }
-        // Перенос между учётками (S8-08): шаги пути — в S8-13; пока отказ, задание не ждёт.
-        cmd @ (Command::MoveLetters { .. }
-        | Command::FetchRaw { .. }
-        | Command::Import { .. }
-        | Command::ServerCopy { .. }
-        | Command::DestroyLetters { .. }
-        | Command::Migration(_)) => {
-            cmd.unsupported().into_iter().for_each(notify);
+        // Шаги задания переноса (S8-13): ответ — по письму, задание ведёт ядро.
+        Command::FetchRaw { letter } => notify(fetch_raw(accounts, cache, letter).await),
+        Command::Import { job, letter, folder, keywords, received_at, .. } => {
+            notify(match import(accounts, cache, letter, folder, &keywords, received_at).await {
+                Ok(remote) => Event::Imported { job, letter, remote },
+                Err(error) => {
+                    tracing::info!(job = job.0, letter = letter.0, "jmap import refused: {error}");
+                    Event::ImportFailed { job, letter, error }
+                }
+            });
         }
+        Command::ServerCopy { job, letters, to } => server_copy(accounts, cache, job, &letters, to).await.into_iter().for_each(notify),
+        Command::DestroyLetters { job, account, letters } => {
+            destroy_letters(accounts, cache, job, &account, &letters).await.into_iter().for_each(notify);
+        }
+        // Перенос в базе и задания — в потоке ядра (`Command::routes_by`), сюда не приходят.
+        cmd @ (Command::MoveLetters { .. } | Command::Migration(_)) => cmd.unsupported().into_iter().for_each(notify),
     }
     Ok(())
+}
+
+impl Accounts {
+    /// Аккаунт по учётке связи с сервером (аккаунт ключей кэша; свой основной — пустая строка).
+    fn by_account(&self, account: &str) -> Option<&MailAccount> {
+        self.by_scope(Some(account).filter(|a| !a.is_empty()))
+    }
+}
+
+/// Связь письма с сервером в одном из аккаунтов этой учётной записи — и `detached` (письмо задания переноса у
+/// источника): аккаунт и id письма на сервере.
+fn remote_in<'a>(accounts: &'a Accounts, cache: &Cache, letter: LetterId) -> postman_jmap::Result<Option<(&'a MailAccount, String)>> {
+    let refs = cache.remotes(postman_cache::LetterId(letter.0)).map_err(db_err)?;
+    Ok(refs.into_iter().find_map(|r| Some((accounts.by_account(&r.account)?, r.id))))
+}
+
+/// Папка хранилища → аккаунт этой учётной записи, его учётка связей и id папки на сервере.
+fn folder_in<'a>(accounts: &'a Accounts, cache: &Cache, folder: FolderId) -> Option<(&'a MailAccount, String, String)> {
+    let row = cache.folder(postman_cache::FolderId(folder.0)).ok()??;
+    let postman_cache::Owner::Account(account) = row.owner else { return None };
+    Some((accounts.by_account(&account)?, account, row.remote?))
+}
+
+/// Ошибка JMAP при выгрузке → отказ задания переноса: больше предела, нет места; сервер просит подождать или связи нет
+/// — пауза повтора задания; прочее — отказ с ответом сервера.
+fn import_error(e: postman_jmap::Error) -> ImportError {
+    let pause = || ImportError::Throttled { retry_after: postman_core::migrate::RETRY.as_secs() };
+    match &e {
+        postman_jmap::Error::Method { kind, .. } if kind == "overQuota" => ImportError::Quota,
+        postman_jmap::Error::Method { kind, .. } if kind == "tooLarge" => ImportError::TooLarge,
+        postman_jmap::Error::Method { kind, .. } if kind == "rateLimit" => pause(),
+        postman_jmap::Error::Http(h) => match h.status().map(|s| s.as_u16()) {
+            Some(413) => ImportError::TooLarge,
+            Some(429 | 503) => pause(),
+            _ if kind_of(&e) == ErrorKind::Network => pause(),
+            _ => ImportError::Rejected(e.to_string()),
+        },
+        _ => ImportError::Rejected(e.to_string()),
+    }
+}
+
+/// `Command::FetchRaw`: письмо целиком — блоб `Email.blobId` его аккаунта.
+async fn fetch_raw(accounts: &Accounts, cache: &Cache, letter: LetterId) -> Event {
+    let data = async {
+        let (acc, id) =
+            remote_in(accounts, cache, letter)?.ok_or_else(|| postman_jmap::Error::Protocol("the letter has no link with this account".into()))?;
+        let blob =
+            acc.client.email_blobs(&[id]).await?.pop().ok_or_else(|| postman_jmap::Error::Protocol("the letter is gone from the server".into()))?;
+        acc.client.download(&acc.id, &blob.blob_id, "message.eml", "message/rfc822").await
+    }
+    .await;
+    Event::Raw { letter, data: data.map(Arc::new).map_err(|e| e.to_string()) }
+}
+
+/// `Command::Import`: письмо из хранилища — блобом в аккаунт папки и `Email/import` в неё (ключевые слова — все, дата
+/// получения — как у письма). Повтор без дубля — `alreadyExists` сервера. Ответ — связь нового письма с сервером.
+async fn import(
+    accounts: &Accounts,
+    cache: &Cache,
+    letter: LetterId,
+    folder: FolderId,
+    keywords: &[String],
+    received_at: i64,
+) -> Result<Remote, ImportError> {
+    let (acc, account, mailbox) = folder_in(accounts, cache, folder).ok_or_else(|| ImportError::Rejected("no such folder".into()))?;
+    let raw = match cache.letter_content(postman_cache::LetterId(letter.0)) {
+        Ok(Some(raw)) => raw,
+        Ok(None) => return Err(ImportError::Rejected("letter content is not stored".into())),
+        Err(e) => return Err(ImportError::Rejected(e.to_string())),
+    };
+    if raw.len() as u64 > acc.client.session().limits().max_size_upload {
+        return Err(ImportError::TooLarge);
+    }
+    let blob = acc.client.upload(&acc.id, raw, "message/rfc822").await.map_err(import_error)?;
+    let imported = acc
+        .client
+        .import_email(&acc.id, &blob, &[mailbox], &server_words(keywords), Some(received_at).filter(|t| *t > 0))
+        .await
+        .map_err(import_error)?;
+    Ok(Remote { account, id: imported.id, data: Vec::new() })
+}
+
+/// `Command::ServerCopy`: письма аккаунтов этой сессии — в папку другого аккаунта сервером (`Email/copy` с удалением
+/// источника), по аккаунту источника. Источник остался (сервер не удалил) — удалить отдельно: задание считает его
+/// удалённым сервером.
+async fn server_copy(accounts: &Accounts, cache: &Cache, job: JobId, letters: &[LetterId], to: FolderId) -> Vec<Event> {
+    let failed = |letter: LetterId, error: ImportError| Event::ImportFailed { job, letter, error };
+    let Some((target, account, mailbox)) = folder_in(accounts, cache, to) else {
+        return letters.iter().map(|l| failed(*l, ImportError::Rejected("no such folder".into()))).collect();
+    };
+    let mut out = Vec::new();
+    let mut by: Vec<(&MailAccount, Vec<(LetterId, String)>)> = Vec::new();
+    for &letter in letters {
+        match remote_in(accounts, cache, letter) {
+            Ok(Some((acc, id))) => match by.iter_mut().find(|(a, _)| a.id == acc.id) {
+                Some((_, list)) => list.push((letter, id)),
+                None => by.push((acc, vec![(letter, id)])),
+            },
+            Ok(None) => out.push(failed(letter, ImportError::Rejected("the letter has no link with this account".into()))),
+            Err(e) => out.push(failed(letter, ImportError::Rejected(e.to_string()))),
+        }
+    }
+    for (from, list) in by {
+        let ids: Vec<String> = list.iter().map(|(_, id)| id.clone()).collect();
+        let copied = match accounts.own.client.copy_emails(&from.id, &target.id, &ids, &mailbox, true).await {
+            Ok(c) => c,
+            Err(e) => {
+                let error = import_error(e);
+                out.extend(list.iter().map(|(l, _)| failed(*l, error.clone())));
+                continue;
+            }
+        };
+        for ((letter, id), c) in list.into_iter().zip(copied) {
+            match c.copy {
+                Ok(copy) => {
+                    if c.original_left
+                        && let Err(e) = from.client.destroy_email(&id).await
+                    {
+                        tracing::warn!(job = job.0, letter = letter.0, "jmap copy left the original: {e}");
+                    }
+                    out.push(Event::Imported { job, letter, remote: Remote { account: account.clone(), id: copy.id, data: Vec::new() } });
+                }
+                Err(e) => out.push(failed(letter, import_error(e))),
+            }
+        }
+    }
+    out
+}
+
+/// `Command::DestroyLetters`: письма задания — насовсем (`Email/set` `destroy`) по `detached`-связям учётки
+/// `account`; ответ по письму. Письма уже нет на сервере (`notFound`, связи больше нет) — удалено.
+async fn destroy_letters(accounts: &Accounts, cache: &Cache, job: JobId, account: &str, letters: &[LetterId]) -> Vec<Event> {
+    let Some(acc) = accounts.by_account(account) else {
+        return letters.iter().map(|l| Event::DestroyFailed { job, letter: *l, error: format!("no account {account}") }).collect();
+    };
+    let mut out = Vec::with_capacity(letters.len());
+    for &letter in letters {
+        let id = match cache.remotes(postman_cache::LetterId(letter.0)) {
+            Ok(refs) => refs.into_iter().find(|r| r.account == account).map(|r| r.id),
+            Err(e) => {
+                out.push(Event::DestroyFailed { job, letter, error: e.to_string() });
+                continue;
+            }
+        };
+        let done = match id {
+            Some(id) => acc.client.destroy_email(&id).await,
+            None => Ok(()),
+        };
+        out.push(match done {
+            Ok(()) => Event::Destroyed { job, letter },
+            Err(postman_jmap::Error::Method { kind, .. }) if kind == "notFound" => Event::Destroyed { job, letter },
+            Err(e) => Event::DestroyFailed { job, letter, error: e.to_string() },
+        });
+    }
+    out
 }
 
 /// Создать, переименовать или перенести папку (T1-04в): `Mailbox/set` в аккаунте папки, затем папки заново и
@@ -1905,6 +2075,18 @@ mod tests {
         assert_eq!(shared.clone().or(Changed::ALL).mail, MailChange::All);
         let merged = shared.or(Changed::of(r#"{"@type":"StateChange","changed":{"e":{"Email":"s"}}}"#));
         assert!(merged.mail.touches("e") && merged.mail.touches("i"));
+    }
+
+    /// Отказы `Email/import` и `Email/copy` (S8-13) — отказы задания переноса: нет места, больше предела, частота;
+    /// прочее — ответ сервера как есть.
+    #[test]
+    fn import_errors_become_migration_errors() {
+        let method = |kind: &str| postman_jmap::Error::Method { method: "Email/import".into(), kind: kind.into(), description: String::new() };
+        assert_eq!(import_error(method("overQuota")), ImportError::Quota);
+        assert_eq!(import_error(method("tooLarge")), ImportError::TooLarge);
+        assert!(matches!(import_error(method("rateLimit")), ImportError::Throttled { retry_after } if retry_after > 0));
+        assert!(matches!(import_error(method("invalidEmail")), ImportError::Rejected(e) if e.contains("invalidEmail")));
+        assert!(matches!(import_error(postman_jmap::Error::Protocol("x".into())), ImportError::Rejected(_)));
     }
 
     fn identity(id: &str, email: &str) -> Identity {

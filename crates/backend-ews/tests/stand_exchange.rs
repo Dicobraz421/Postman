@@ -6,7 +6,7 @@
 //! `[postman-test <прогон>]` в теме, убирается в начале и в конце (`cleanup`, только ящики из окружения); справочник и
 //! занятость — только чтение; запросы — последовательно (клиент EWS — не чаще 5 в секунду), ожидание — раз в 5 с, не
 //! дольше минуты. Вывод — только счётчики и коды. Встречи (S7-07) — только между тестовыми учётками; справочник и
-//! занятость (S7-08) — только чтение.
+//! занятость (S7-08) — только чтение. Перенос (S8-13) — не больше 20 писем за прогон, только в ящик тестовой учётки.
 //!
 //! Окружение — как у `postman-ews` (`crates/ews/tests/stand.rs`): POSTMAN_EWS_URL (или Autodiscover по адресу),
 //! POSTMAN_EWS_USER, POSTMAN_EWS_PASSWORD, POSTMAN_EWS_USER2/PASSWORD2 (необязательно).
@@ -802,4 +802,124 @@ fn exchange_contacts_through_sync() {
     assert!(search_only && people.len() <= 20, "справочник — поиском");
     rt().block_on(cleanup(&a));
     println!("контакт: создан, изменён, удалён; справочник — поиском");
+}
+
+/// Задание переноса ядра до остановки: команды основной учётной записи — пути EWS (по одной, ответы — по письму),
+/// третьей учётке (`@9`, источник писем — тест) — только удаление, отвечает тест.
+fn drive(engine: &mut postman_core::migrate::Engine<postman_core::store::CacheStore>, live: &Live) -> postman_core::model::MigrationState {
+    use postman_core::sync::{Route, Target};
+    let mut now = Instant::now();
+    let mut last = postman_core::model::MigrationState::Running;
+    for _ in 0..1_000 {
+        let out = engine.poll(now).unwrap();
+        for e in &out.events {
+            if let Event::Migration { state, .. } = e {
+                last = *state;
+            }
+        }
+        if out.commands.is_empty() {
+            match engine.wake_at() {
+                Some(t) => now = now.max(t),
+                None => return last,
+            }
+            continue;
+        }
+        for (route, cmd) in out.commands {
+            let events: Vec<Event> = match (route, cmd) {
+                (Route::Sync(Target::Profile(None)), cmd) => {
+                    let n = match &cmd {
+                        Command::DestroyLetters { letters, .. } => letters.len(),
+                        _ => 1,
+                    };
+                    live.send(cmd);
+                    (0..n)
+                        .map(|_| {
+                            live.wait("ответ задания", |e| {
+                                matches!(
+                                    e,
+                                    Event::Raw { .. }
+                                        | Event::Imported { .. }
+                                        | Event::ImportFailed { .. }
+                                        | Event::Destroyed { .. }
+                                        | Event::DestroyFailed { .. }
+                                )
+                            })
+                        })
+                        .collect()
+                }
+                (_, Command::DestroyLetters { job, letters, .. }) => letters.into_iter().map(|letter| Event::Destroyed { job, letter }).collect(),
+                (route, _) => panic!("маршрут {route:?}"),
+            };
+            for e in events {
+                engine.event(&e, now).unwrap();
+            }
+        }
+    }
+    panic!("задание не остановилось");
+}
+
+/// Перенос (S8-13): 10 писем с меткой из другой учётки (её сервер — тест) — во «Входящие» Exchange (`CreateItem`
+/// `SaveOnly`: полученными, с датой и «прочитано»), затем обратно — в «На этом компьютере» (письмо целиком
+/// `MimeContent`, удаление `HardDelete` по ответу сервера). Не больше 20 писем за прогон, запросы — последовательно;
+/// уборка — по метке.
+#[test]
+#[ignore = "боевой Exchange: S7 «Проверка на боевом Exchange»"]
+fn exchange_migration_round_trip() {
+    use postman_core::model::{FolderId, JobId, LetterId, MigrationMode, MigrationRequest, MigrationState};
+    let a = first();
+    rt().block_on(cleanup(&a));
+    let live = Live::start(&a);
+    let tag = tag();
+    let source = live
+        .cache
+        .upsert_folder(&postman_cache::FolderRow {
+            owner: postman_cache::Owner::Account("@9".into()),
+            parent: None,
+            name: "Входящие".into(),
+            role: None,
+            remote: Some("in9".into()),
+        })
+        .unwrap();
+    let rows: Vec<(String, postman_cache::LetterRow)> = (1..=10)
+        .map(|i| {
+            (
+                format!("s{i}"),
+                postman_cache::LetterRow { received_at: now() - 3600 * i, seen: i % 2 == 0, folders: vec![source], ..Default::default() },
+            )
+        })
+        .collect();
+    let ids = live.cache.upsert_remotes("@9", &rows).unwrap();
+    let stamp = tag.trim_start_matches(TAG).trim_end_matches(']').trim().to_owned();
+    for (id, i) in ids.iter().zip(1..) {
+        let raw =
+            format!("Message-ID: <{i}.{stamp}@postman.test>\r\nSubject: {tag} {i}\r\nFrom: {me}\r\nTo: {me}\r\n\r\nперенос {i}\r\n", me = live.me);
+        live.cache.put_content(*id, raw.as_bytes(), &[]).unwrap();
+    }
+    let letters: Vec<LetterId> = ids.iter().map(|l| LetterId(l.0)).collect();
+    let mut engine =
+        postman_core::migrate::Engine::open(postman_core::store::CacheStore::new(live.cache.clone(), Box::new(|_| Ok(Vec::new())))).unwrap();
+    engine.features(None, live.features);
+
+    let inbox = live.cache.folder_of("", &live.inbox()).unwrap().unwrap();
+    let ticket = postman_core::store::move_letters(&mut engine, &letters, FolderId(inbox.0)).unwrap();
+    engine.request(MigrationRequest::Answer { job: JobId(ticket.job.unwrap().0), mode: MigrationMode::Upload }).unwrap();
+    assert_eq!(drive(&mut engine, &live), MigrationState::Done, "в Exchange");
+    for l in &ids {
+        let refs = live.cache.remotes(*l).unwrap();
+        assert!(refs.len() == 1 && refs[0].account.is_empty() && !refs[0].detached, "письмо связано с Exchange");
+    }
+
+    let local = live.cache.create_folder(None, "Архив теста").unwrap();
+    postman_core::store::move_letters(&mut engine, &letters, FolderId(local.0)).unwrap();
+    assert_eq!(drive(&mut engine, &live), MigrationState::Done, "обратно");
+    for l in &ids {
+        assert!(live.cache.remotes(*l).unwrap().is_empty() && live.cache.letter_content(*l).unwrap().is_some(), "только в базе");
+    }
+    let left = rt().block_on(async {
+        let mut c = Client::new(&ews_url(&a).await, postman_backend_ews::auth(&a.user, &a.password)).unwrap();
+        c.find_by_subject(WellKnown::Inbox, &tag, 20).await.unwrap().len()
+    });
+    assert_eq!(left, 0, "у Exchange удалено");
+    rt().block_on(cleanup(&a));
+    println!("перенос: 10 писем в Exchange и обратно");
 }

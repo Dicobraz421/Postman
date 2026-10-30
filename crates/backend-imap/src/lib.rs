@@ -16,6 +16,11 @@
 //! - **Отправка** — SMTP submission, копия — `APPEND` в «Отправленные». «Отменить» — письмо держит сама синхронизация
 //!   (`Release::After`, S7-04в): до срока его можно вернуть в черновики; закрыли Postman — уходит сразу. «Отправить
 //!   позже» — нет (сервер не держит письмо): `Scheduled` с `max_delay: 0` — интерфейс прячет «позже».
+//! - **Перенос из другой учётки** (S8-13, ADR 0006 п. 4) — шаги задания ядра: письмо целиком (`FetchRaw`), выгрузка
+//!   (`Import` — `APPEND` с флагами, ключевыми словами при `PERMANENTFLAGS \*` и `INTERNALDATE`; UID — `APPENDUID`,
+//!   иначе поиск по `Message-ID`), повтор — сначала поиск по `Message-ID` в папке; удаление у источника
+//!   (`DestroyLetters` — `\Deleted` и `UID EXPUNGE`, ответ по письму); квота — `GETQUOTAROOT` (`Feature::Quota`).
+//!   Копии на сервере между учётками у IMAP нет.
 //! - Календарь, задачи, занятость и контакты — пути областей рядом (`?<ключ>=https://…` в адресе: `dav=` — плагин
 //!   `postman-backend-dav`, S7-05б; `postman_core::backend::Areas`): `Features` — по тому, что нашлось на сервере.
 //!   Без них, как и правил и автоответа, — нет.
@@ -30,12 +35,13 @@ use postman_cache::{
 };
 use postman_compose::{Address, Draft};
 use postman_imap::state::{FolderState, Plan};
-use postman_imap::{Config, Header, Role, Security, Session, flags, smtp, uid_set};
+use postman_imap::{AppendError, Config, Header, Role, Security, Session, flags, smtp, uid_set};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use postman_core::backend::Login;
 use postman_core::backend::{AreaCtx, AreaPlugin, Areas, BoxFuture, MailPlugin, Spawn};
-use postman_core::model::{Auth, Feature, Features};
+use postman_core::model::{Auth, Feature, Features, ImportError, JobId, Remote};
+use postman_core::settings;
 use postman_core::sync::{Account, Command, ErrorKind, Event, Index, Sender, Stage, Status, SyncError};
 
 /// Писем папки при первом входе — не больше (дальше — «Загрузить ещё»).
@@ -299,6 +305,31 @@ fn db(e: postman_cache::Error) -> postman_imap::Error {
     postman_imap::Error::Protocol(format!("cache: {e}"))
 }
 
+/// Связь нет (обрыв, тайм-аут): соединение — заново.
+fn is_network(e: &postman_imap::Error) -> bool {
+    matches!(e, postman_imap::Error::Io(_) | postman_imap::Error::Timeout | postman_imap::Error::Tls(_))
+}
+
+/// Ошибка IMAP при выгрузке → отказ задания переноса: больше предела, ящик полон; сеть — пауза повтора задания;
+/// прочее — отказ с ответом сервера.
+fn import_error(e: &AppendError) -> ImportError {
+    match e {
+        AppendError::TooBig(_) => ImportError::TooLarge,
+        AppendError::OverQuota(_) => ImportError::Quota,
+        AppendError::Imap(e) if is_network(e) => ImportError::Throttled { retry_after: postman_core::migrate::RETRY.as_secs() },
+        AppendError::Imap(e) => ImportError::Rejected(e.to_string()),
+    }
+}
+
+/// Флаги выгрузки по ключевым словам письма: системные (`\Seen`, `\Flagged`…) — всегда, свои (`$forwarded`, `pm.*`) —
+/// если папка их хранит (`PERMANENTFLAGS \*`); не годные в атом IMAP — без них.
+fn append_flags(keywords: &[String], custom: bool) -> Vec<String> {
+    let mut out: Vec<String> = keywords.iter().filter_map(|k| flags::flag(k)).filter(|f| custom || f.starts_with('\\')).collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// Тело под новым ключом письма: вложения — `<ключ>#<номер>`, письмо целиком — ключ.
 fn body_as(mut b: BodyRow, key: &str) -> BodyRow {
     for a in &mut b.attachments {
@@ -442,12 +473,16 @@ async fn run(
     if me.profile.is_none() {
         // Основная учётная запись IMAP: почта и то, что нашлось по CalDAV/CardDAV (S7-03а «Нет у сервера — нет на
         // экране»). Ключевые слова (категории, сроки, «Ждём») — если сервер их хранит: `PERMANENTFLAGS \*` у «Входящих».
-        let keywords = match me.session().await {
-            Ok(s) => s.select("INBOX").await.is_ok_and(|sel| sel.keywords),
-            Err(_) => false,
+        // Выгрузка писем из других учёток (S8-13) — `APPEND`; квота — если сервер объявил `QUOTA` (RFC 9208).
+        let (keywords, quota) = match me.session().await {
+            Ok(s) => {
+                let quota = s.capabilities().iter().any(|c| c.eq_ignore_ascii_case("QUOTA") || c.to_ascii_uppercase().starts_with("QUOTA="));
+                (s.select("INBOX").await.is_ok_and(|sel| sel.keywords), quota)
+            }
+            Err(_) => (false, false),
         };
         let areas = me.areas.iter().fold(Features::NONE, |f, (_, a)| f.union(a.features()));
-        notify(Event::Features(areas.with(Feature::Keywords, keywords)));
+        notify(Event::Features(areas.with(Feature::Keywords, keywords).with(Feature::Quota, quota).with_import(true)));
         notify(Event::Me { address: address.clone(), signature: String::new() });
     }
     notify(Event::Senders(vec![Sender { account: me.scope.clone(), address, signature: String::new() }]));
@@ -1260,11 +1295,170 @@ impl Imap {
                 }
                 notify(Event::Withheld { ticket, too_late, error: None });
             }
+            Command::FetchRaw { letter } => {
+                let data = match self.remote_of(letter) {
+                    Ok(Some(id)) => self.raw(&scoped(self.scope(), &id)).await.map(Arc::new).map_err(|e| e.to_string()),
+                    Ok(None) => Err("the letter has no link with this account".to_owned()),
+                    Err(e) => Err(e.to_string()),
+                };
+                notify(Event::Raw { letter, data });
+            }
+            Command::Import { job, letter, folder, keywords, received_at, retry } => {
+                notify(match self.import(letter, folder, &keywords, received_at, retry).await {
+                    Ok(id) => Event::Imported { job, letter, remote: Remote { account: self.account().to_owned(), id, data: Vec::new() } },
+                    Err(error) => {
+                        tracing::info!(job = job.0, letter = letter.0, "imap import refused: {error}");
+                        Event::ImportFailed { job, letter, error }
+                    }
+                });
+            }
+            Command::DestroyLetters { job, account, letters } => {
+                for e in self.destroy_letters(job, &account, &letters).await {
+                    notify(e);
+                }
+            }
+            // Копии на сервере между учётками у IMAP нет (`Features::server_copy`): ядро выгружает письмо.
+            cmd @ Command::ServerCopy { .. } => cmd.unsupported().into_iter().for_each(notify),
+            Command::Settings(settings::Request::Quota) => notify(Event::Settings(self.quota().await)),
             // Календарь, задачи, занятость, контакты — путям областей. Правил и автоответа у IMAP нет, календаря и
             // контактов без путей областей — тоже: интерфейс их не показывает (`Features`).
             other => self.area_command(other, notify).await,
         }
         Ok(())
+    }
+
+    /// Связь письма с сервером этой учётки — и `detached` (письмо задания переноса у источника); `None` — связи нет.
+    fn remote_of(&self, letter: postman_core::model::LetterId) -> postman_cache::Result<Option<String>> {
+        Ok(self.cache.remotes(LetterId(letter.0))?.into_iter().find(|r| r.account == self.account()).map(|r| r.id))
+    }
+
+    /// Папка этой учётки по папке хранилища (цель выгрузки).
+    fn folder_at(&self, folder: postman_core::model::FolderId) -> Option<&Folder> {
+        let row = self.cache.folder(postman_cache::FolderId(folder.0)).ok()??;
+        let Owner::Account(a) = &row.owner else { return None };
+        let remote = row.remote.as_deref().filter(|_| a == self.account())?;
+        self.folder_by_id(remote)
+    }
+
+    /// `Command::Import`: письмо из хранилища — в папку (`APPEND` с флагами и `INTERNALDATE`); `retry` — сначала поиск
+    /// по `Message-ID` в папке (выгрузка могла дойти, ответ — нет). Ответ — связь нового письма с сервером.
+    async fn import(
+        &mut self,
+        letter: postman_core::model::LetterId,
+        folder: postman_core::model::FolderId,
+        keywords: &[String],
+        received_at: i64,
+        retry: bool,
+    ) -> Result<String, ImportError> {
+        let f = self.folder_at(folder).cloned().ok_or_else(|| ImportError::Rejected("no such folder".into()))?;
+        let raw = match self.cache.letter_content(LetterId(letter.0)) {
+            Ok(Some(raw)) => raw,
+            Ok(None) => return Err(ImportError::Rejected("letter content is not stored".into())),
+            Err(e) => return Err(ImportError::Rejected(e.to_string())),
+        };
+        let mid = postman_core::store::message_id(&raw);
+        let result = self.append(&f, &raw, mid.as_deref(), keywords, received_at, retry).await;
+        if let Err(AppendError::Imap(e)) = &result
+            && is_network(e)
+        {
+            self.session = None;
+        }
+        result.map_err(|e| import_error(&e))
+    }
+
+    async fn append(
+        &mut self,
+        f: &Folder,
+        raw: &[u8],
+        mid: Option<&str>,
+        keywords: &[String],
+        received_at: i64,
+        retry: bool,
+    ) -> Result<String, AppendError> {
+        let session = self.session().await?;
+        let sel = session.select(&f.raw).await?;
+        let key = |validity: u32, uid: u32| format!("{}.{validity}.{uid}", f.id);
+        if retry
+            && let Some(m) = mid
+            && let Some(uid) = session.find_message_id(m).await?.into_iter().max()
+        {
+            return Ok(key(sel.state.uid_validity, uid));
+        }
+        let next = sel.state.uid_next;
+        if let Some(a) = session.append_message(&f.raw, &append_flags(keywords, sel.keywords), Some(received_at).filter(|t| *t > 0), raw).await? {
+            return Ok(key(a.uid_validity, a.uid));
+        }
+        // Без UIDPLUS: новое письмо — по `Message-ID`, без него — первое с прежнего `UIDNEXT`.
+        let sel = session.select(&f.raw).await?;
+        let found = match mid {
+            Some(m) => session.find_message_id(m).await?,
+            None => session.search(&format!("UID {next}:*")).await?,
+        };
+        let uid = found.into_iter().filter(|&u| u >= next).max().ok_or_else(|| postman_imap::Error::Protocol("appended letter not found".into()))?;
+        Ok(key(sel.state.uid_validity, uid))
+    }
+
+    /// `Command::DestroyLetters`: письма задания — насовсем (`\Deleted`, `UID EXPUNGE`) по `detached`-связям; ответ по
+    /// письму. Связи больше нет (синхронизация видела удаление) — удалено; папку сбросили на сервере — отказ.
+    async fn destroy_letters(&mut self, job: JobId, account: &str, letters: &[postman_core::model::LetterId]) -> Vec<Event> {
+        let mut out = Vec::new();
+        let mut by: Vec<(Folder, u32, Vec<(postman_core::model::LetterId, u32)>)> = Vec::new();
+        for &letter in letters {
+            let found = match self.cache.remotes(LetterId(letter.0)) {
+                Ok(refs) => refs.into_iter().find(|r| r.account == account).map(|r| r.id),
+                Err(e) => {
+                    out.push(Event::DestroyFailed { job, letter, error: e.to_string() });
+                    continue;
+                }
+            };
+            let Some(id) = found else {
+                out.push(Event::Destroyed { job, letter });
+                continue;
+            };
+            let Some((f, validity, uid)) = parse_key(&id).and_then(|(fid, v, u)| Some((self.folder_by_id(fid)?.clone(), v, u))) else {
+                out.push(Event::DestroyFailed { job, letter, error: format!("no folder for {id}") });
+                continue;
+            };
+            match by.iter_mut().find(|(g, v, _)| g.id == f.id && *v == validity) {
+                Some((_, _, list)) => list.push((letter, uid)),
+                None => by.push((f, validity, vec![(letter, uid)])),
+            }
+        }
+        for (f, validity, list) in by {
+            let uids: Vec<u32> = list.iter().map(|(_, u)| *u).collect();
+            let done = async {
+                let session = self.session().await?;
+                if session.select(&f.raw).await?.state.uid_validity != validity {
+                    return Err(postman_imap::Error::Protocol(format!("folder {} was reset on the server", f.name)));
+                }
+                session.delete(&uid_set(&uids)).await
+            }
+            .await;
+            if let Err(e) = &done
+                && is_network(e)
+            {
+                self.session = None;
+            }
+            for (letter, _) in list {
+                out.push(match &done {
+                    Ok(()) => Event::Destroyed { job, letter },
+                    Err(e) => Event::DestroyFailed { job, letter, error: e.to_string() },
+                });
+            }
+        }
+        out
+    }
+
+    /// Квота «Входящих» (`GETQUOTAROOT`): объём корня; сервер без `QUOTA` или без предела объёма — `None`.
+    async fn quota(&mut self) -> settings::Reply {
+        let quota = match self.session().await {
+            Ok(s) => s.quota("INBOX").await,
+            Err(e) => Err(e),
+        };
+        match quota {
+            Ok(q) => settings::Reply::Quota(q.into_iter().find_map(|q| q.storage).map(|u| settings::Usage { used: u.used, limit: u.limit })),
+            Err(e) => settings::Reply::Failed { area: settings::Area::Quota, error: e.to_string() },
+        }
     }
 
     /// Окно «Отменить» держит синхронизация: письмо уйдёт по сроку (`release_held`).
@@ -1422,7 +1616,22 @@ fn command_name(c: &Command) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{Folder, ImapAccount, email_key, folder_id, is_imap_url, parse_key, rekey};
+    use super::{Folder, ImapAccount, append_flags, email_key, folder_id, import_error, is_imap_url, parse_key, rekey};
+    use postman_core::model::ImportError;
+    use postman_imap::AppendError;
+
+    /// Выгрузка (S8-13): ключевые слова — флаги IMAP, свои — только при `PERMANENTFLAGS \*`; отказы сервера — отказы
+    /// задания: больше предела, ящик полон, обрыв — пауза.
+    #[test]
+    fn append_flags_and_errors() {
+        let kw = ["$seen".to_string(), "$flagged".into(), "pm.due".into(), "$forwarded".into(), "two words".into()];
+        assert_eq!(append_flags(&kw, true), ["$forwarded", "\\Flagged", "\\Seen", "pm.due"]);
+        assert_eq!(append_flags(&kw, false), ["\\Flagged", "\\Seen"], "свои ключевые слова папка не хранит");
+        assert_eq!(import_error(&AppendError::TooBig("5 MB".into())), ImportError::TooLarge);
+        assert_eq!(import_error(&AppendError::OverQuota("full".into())), ImportError::Quota);
+        assert!(matches!(import_error(&AppendError::Imap(postman_imap::Error::Timeout)), ImportError::Throttled { retry_after } if retry_after > 0));
+        assert!(matches!(import_error(&AppendError::Imap(postman_imap::Error::Protocol("x".into()))), ImportError::Rejected(_)));
+    }
     use postman_cache::{AttachmentRow, BodyRow, Cache, EmailRow, MailboxRow, Rights};
     use postman_imap::Security;
 
