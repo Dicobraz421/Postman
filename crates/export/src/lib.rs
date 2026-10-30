@@ -2,12 +2,14 @@
 //! отдаёт байты файлов; без I/O, интерфейса не знает.
 //!
 //! EML, mbox и Maildir — обрамление байтов письма без разбора: пишут в `Write`, пути файлов дают `Tree` и
-//! `maildir::Maildir`; создание каталогов и файлов — у вызывающего.
+//! `maildir::Maildir`; создание каталогов и файлов — у вызывающего. MSG и PST собираются из свойств MAPI ([`mapi`]),
+//! которые из письма делает воркер.
 
 pub mod eml;
 pub mod maildir;
 pub mod mapi;
 pub mod mbox;
+pub mod msg;
 pub mod tree;
 
 pub use tree::{Layout, Tree, safe_name};
