@@ -2,7 +2,8 @@
 //! capability и доступа к профилю пользователя), с mitigation policies на
 //! старте (win32k off, только Microsoft-DLL, без динамического кода, без
 //! дочерних процессов), в Job Object (kill-on-close, 1 процесс, лимит памяти,
-//! UI-ограничения), и только потом запускается.
+//! UI-ограничения), и только потом запускается. Хост модулей просмотра
+//! (`postman-viewer`, S8-24) — так же, с пределом памяти 512 МиБ.
 //!
 //! Exe воркера должен быть читаем для AppContainer (ALL APPLICATION PACKAGES):
 //! так по умолчанию в Program Files. Если запуск в AppContainer не удался или
@@ -41,7 +42,8 @@ use super::Level;
 use crate::Process;
 
 const PROFILE: &str = "Postman.MailWorker";
-const MEMORY_LIMIT: usize = 1 << 30;
+/// Предел памяти воркера; у хоста модулей — свой (`wasm::JOB_MEMORY`).
+pub(crate) const MEMORY_LIMIT: usize = 1 << 30;
 
 // PROCESS_CREATION_MITIGATION_POLICY_* (winbase.h), значения *_ALWAYS_ON.
 const DEP_ENABLE: u64 = 0x01;
@@ -128,29 +130,29 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 
-/// `relaxed` — сразу без AppContainer (строгий запуск уже не дал воркеру работать).
-pub(crate) fn spawn(exe: &Path, relaxed: bool) -> io::Result<Process> {
+/// `relaxed` — сразу без AppContainer (строгий запуск уже не дал воркеру работать); `memory` — предел памяти процесса
+/// (Job Object).
+pub(crate) fn spawn(exe: &Path, relaxed: bool, memory: usize) -> io::Result<Process> {
     if relaxed {
         // Причину (воркер не ответил в AppContainer) знает клиент.
-        return create(exe, None);
+        return create(exe, None, memory);
     }
     if dropped("appcontainer") {
-        return partial(exe, "POSTMAN_SANDBOX_DROP=appcontainer".into());
+        return partial(exe, "POSTMAN_SANDBOX_DROP=appcontainer".into(), memory);
     }
     let sid = match app_container_sid() {
         Ok(sid) => sid,
-        Err(hr) => return partial(exe, format!("профиль AppContainer: HRESULT 0x{hr:08X}")),
+        Err(hr) => return partial(exe, format!("профиль AppContainer: HRESULT 0x{hr:08X}"), memory),
     };
-    match create_in_container(exe, &sid) {
+    match create_in_container(exe, &sid, memory) {
         Ok(mut p) => {
             p.level = Level::Full;
             Ok(p)
         }
         // Любой отказ AppContainer — запуск с остальными ограничениями; причина — в `fallback` и в ошибке, если и он
         // не удался.
-        Err(strict) => {
-            partial(exe, format!("запуск в AppContainer: {strict}")).map_err(|e| io::Error::new(e.kind(), format!("{e}; в AppContainer: {strict}")))
-        }
+        Err(strict) => partial(exe, format!("запуск в AppContainer: {strict}"), memory)
+            .map_err(|e| io::Error::new(e.kind(), format!("{e}; в AppContainer: {strict}"))),
     }
 }
 
@@ -166,11 +168,11 @@ const CONTAINER_STEP: std::time::Duration = std::time::Duration::from_millis(20)
 /// контейнера, удерживаемый родителем, окно не закрывают. Ошибка временная и не наша — повторяем до [`CONTAINER_WAIT`],
 /// прежде чем уйти в частичную изоляцию (с повтором — 0 из 40 параллельных прогонов). Так же повторяем
 /// ERROR_GEN_FAILURE (31): та же гонка на runner CI (`verdicts_through_the_sandbox`, #88).
-fn create_in_container(exe: &Path, sid: &Sid) -> io::Result<Process> {
+fn create_in_container(exe: &Path, sid: &Sid, memory: usize) -> io::Result<Process> {
     let start = std::time::Instant::now();
     let mut attempt = 1u32;
     loop {
-        match create(exe, Some(sid.0)) {
+        match create(exe, Some(sid.0), memory) {
             Err(e) if start.elapsed() < CONTAINER_WAIT && matches!(e.raw_os_error(), Some(2 | 3 | 31)) => {
                 std::thread::sleep(CONTAINER_STEP);
                 attempt += 1;
@@ -182,8 +184,8 @@ fn create_in_container(exe: &Path, sid: &Sid) -> io::Result<Process> {
 }
 
 /// Запуск без AppContainer с остальными ограничениями; `reason` — почему.
-fn partial(exe: &Path, reason: String) -> io::Result<Process> {
-    let mut p = create(exe, None)?;
+fn partial(exe: &Path, reason: String, memory: usize) -> io::Result<Process> {
+    let mut p = create(exe, None, memory)?;
     p.fallback = Some(reason);
     Ok(p)
 }
@@ -251,7 +253,7 @@ fn pipe(child_reads: bool) -> io::Result<(Owned, Owned)> {
     Ok((child, parent))
 }
 
-fn job() -> io::Result<Owned> {
+fn job(memory: usize) -> io::Result<Owned> {
     // SAFETY: безымянный джоб с атрибутами по умолчанию.
     let job = Owned(unsafe { CreateJobObjectW(null(), null()) });
     if job.0.is_null() {
@@ -264,7 +266,7 @@ fn job() -> io::Result<Owned> {
         | JOB_OBJECT_LIMIT_PROCESS_MEMORY
         | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
     limits.BasicLimitInformation.ActiveProcessLimit = 1;
-    limits.ProcessMemoryLimit = MEMORY_LIMIT;
+    limits.ProcessMemoryLimit = memory;
     let ui = JOBOBJECT_BASIC_UI_RESTRICTIONS { UIRestrictionsClass: if dropped("job_ui") { 0 } else { JOB_OBJECT_UILIMIT_ALL } };
     // SAFETY: указатели на локальные структуры правильного размера.
     let ok = unsafe {
@@ -327,10 +329,10 @@ impl Drop for Attributes {
     }
 }
 
-fn create(exe: &Path, sid: Option<PSID>) -> io::Result<Process> {
+fn create(exe: &Path, sid: Option<PSID>, memory: usize) -> io::Result<Process> {
     let (child_in, parent_in) = pipe(true)?;
     let (child_out, parent_out) = pipe(false)?;
-    let job = job()?;
+    let job = job(memory)?;
 
     let mitigations: u64 = mitigations();
     let child_policy: u32 = PROCESS_CREATION_CHILD_PROCESS_RESTRICTED;

@@ -30,9 +30,21 @@ pulldown-cmark = { version = "0.13", default-features = false }
 # Хост модулей просмотра на WASM (S8, ADR 0007, решение A): интерпретатор без `wat` — модуль только двоичный.
 # Только для `postman-viewer.exe` (признак `viewer`): интерфейс, ядро и плагины зависят от воркера без него.
 wasmi = { version = "2", default-features = false, features = ["std", "stable", "validate", "auto-dispatch"], optional = true }
+# Ответ модуля просмотра (ABI v1, ADR 0007) — postcard, как у `cache`; разбирает только `postman-viewer.exe`.
+postcard = { version = "1", default-features = false, features = ["use-std"], optional = true }
 
 [features]
-viewer = ["dep:wasmi"]
+viewer = ["dep:wasmi", "dep:postcard"]
+
+[[bin]]
+name = "postman-worker"
+path = "src/bin/postman-worker.rs"
+
+# Хост модулей просмотра (S8-24): та же песочница, только с признаком `viewer` — в воркере `wasmi` нет.
+[[bin]]
+name = "postman-viewer"
+path = "src/bin/postman-viewer.rs"
+required-features = ["viewer"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
@@ -58,6 +70,8 @@ embed-resource = "3"
 
 [dev-dependencies]
 tempfile = "3"
+# Тесты хоста модулей (tests/viewer.rs) и сборка `postman-viewer.exe` к ним: признак `viewer` у себя.
+postman-worker = { path = ".", features = ["viewer"] }
 postman-smime = { workspace = true, features = ["testkit"] }
 
 [lints]

@@ -6,10 +6,14 @@
 //! первого запроса: без сети, без файловой системы, без дочерних процессов,
 //! на Windows — без win32k. Зависание или падение воркера стоит одного письма:
 //! клиент убивает процесс и поднимает новый.
+//!
+//! Модули просмотра WASM (S8-24, [`wasm`]) — в отдельном процессе `postman-viewer` с той же песочницей и тем же
+//! обменом ([`Client::viewer`]).
 
 pub mod mime;
 pub mod preview;
 mod sandbox;
+pub mod wasm;
 
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
@@ -104,6 +108,11 @@ pub enum Request {
     /// скачанный ядром (`postman_smime::wire::encode_crl`). Ответ — «не отозван / отозван» или почему не проверен.
     SmimeCrl {
         now: u64,
+    },
+    /// Модуль просмотра (только `postman-viewer`, S8-24): в бинарной части — модуль (`wasm` байт), за ним вход.
+    /// Ответ — [`wasm::ViewerOutput`] или [`wasm::Refusal`]; пиксели картинки — в бинарной части.
+    ViewModule {
+        wasm: u32,
     },
     /// Проверки песочницы для тестов: попытка открыть файл / сокет / зависнуть.
     #[cfg(debug_assertions)]
@@ -254,6 +263,8 @@ enum Response {
     Prepared(Vec<Result<postman_smime::prepare::Prepared, String>>),
     /// Итог проверки по CRL (12.1д).
     Crl(Result<postman_smime::crl::Checked, postman_smime::crl::CrlError>),
+    /// Ответ модуля просмотра; пиксели картинки — в бинарной части.
+    View(Result<wasm::ViewerOutput, wasm::Refusal>),
     Err(String),
 }
 
@@ -470,11 +481,16 @@ fn read_frame(r: &mut impl Read, max: usize) -> io::Result<Vec<u8>> {
 
 /// Точка входа процесса-воркера.
 pub fn serve() -> ! {
+    run(TIME_LIMIT, handle)
+}
+
+/// Обмен процесса песочницы (воркера и хоста модулей): сторож `limit` на запрос, запирание, затем запросы по одному.
+pub(crate) fn run(limit: Duration, handle: impl Fn(Result<Request, serde_json::Error>, &[u8]) -> (Response, Vec<u8>)) -> ! {
     let mut stdin = io::stdin().lock();
     let mut stdout = io::stdout().lock();
-    // Сторож времени — до запирания (потом новые потоки могут быть запрещены): запрос дольше `TIME_LIMIT`
-    // завершает процесс; клиент видит код `EXIT_TIME` и поднимает новый воркер.
-    let watchdog = watchdog();
+    // Сторож времени — до запирания (потом новые потоки могут быть запрещены): запрос дольше `limit`
+    // завершает процесс; клиент видит код `EXIT_TIME` и поднимает новый процесс.
+    let watchdog = watchdog(limit);
     if let Err(e) = sandbox::lockdown() {
         // Без песочницы не работаем: лучше показать письмо текстом, чем разбирать HTML без защиты.
         let json = serde_json::to_vec(&Response::Err(format!("песочница: {e}"))).unwrap_or_default();
@@ -490,92 +506,7 @@ pub fn serve() -> ! {
         let req = serde_json::from_slice::<Request>(&frame);
         let max = req.as_ref().map_or(MAX_FRAME, max_bin);
         let Ok(bin) = read_frame(&mut stdin, max) else { std::process::exit(0) };
-        let mut out_bin = Vec::new();
-        let resp = match req {
-            Ok(Request::Mime) => match mime::parse(&bin) {
-                Ok(m) => Response::Mime(Box::new(m)),
-                Err(e) => Response::Err(e),
-            },
-            Ok(Request::MimePart { index }) => match mime::part(&bin, index) {
-                Ok(bytes) => {
-                    out_bin = bytes;
-                    Response::Part
-                }
-                Err(e) => Response::Err(e),
-            },
-            Ok(Request::MimeSplit) => match mime::split(&bin) {
-                Ok((split, bytes)) => {
-                    out_bin = bytes;
-                    Response::Split(split)
-                }
-                Err(e) => Response::Err(e),
-            },
-            Ok(Request::Html(h)) => Response::Ok(postman_ir::from_html(&h)),
-            Ok(Request::Text(t)) => Response::Ok(postman_ir::from_plain(&t)),
-            Ok(Request::Calendar) => match parse_calendar(&bin) {
-                Ok(v) => Response::Calendar(v),
-                Err(e) => Response::Err(e),
-            },
-            Ok(Request::Contacts) => match parse_contacts(&bin) {
-                Ok(v) => Response::Contacts(v),
-                Err(e) => Response::Err(e),
-            },
-            Ok(Request::Image { max_side }) => match decode_image(&bin, max_side) {
-                Ok(img) => {
-                    out_bin = img.pixels;
-                    Response::Image { width: img.width, height: img.height }
-                }
-                Err(e) => Response::Err(e),
-            },
-            Ok(Request::Preview { kind, page, max_side, width }) => {
-                // Сбой разборщика на чужом файле — ошибка этого просмотра, а не смерть процесса.
-                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| preview::preview(kind, &bin, page, max_side, width)));
-                match r {
-                    Ok(Ok((p, pixels))) => {
-                        out_bin = pixels;
-                        Response::Preview(p)
-                    }
-                    Ok(Err(e)) => Response::Err(e),
-                    Err(_) => Response::Err("файл не разобран: сбой разборщика".into()),
-                }
-            }
-            Ok(Request::SmimeVerify { now }) => {
-                let (resp, bin) = smime_verify(&bin, now);
-                out_bin = bin;
-                resp
-            }
-            Ok(Request::SmimeEnvelope) => smime_envelope(&bin),
-            Ok(Request::SmimeOpen { now, part }) => {
-                let (resp, bin) = smime_open(&bin, now, part);
-                out_bin = bin;
-                resp
-            }
-            Ok(Request::SmimeInner { now, from, part }) => {
-                let (resp, bin) = smime_inner(&bin, now, &from, part);
-                out_bin = bin;
-                resp
-            }
-            Ok(Request::SmimePrepare { now }) => match postman_smime::wire::decode_prepare(&bin) {
-                Some((trust, certs)) => Response::Prepared(
-                    certs
-                        .iter()
-                        .enumerate()
-                        .map(|(i, c)| {
-                            let others: Vec<Vec<u8>> = certs.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, d)| d.clone()).collect();
-                            postman_smime::prepare::prepare(c, &others, &trust, now)
-                        })
-                        .collect(),
-                ),
-                None => Response::Err("запрос подготовки повреждён".into()),
-            },
-            Ok(Request::SmimeCrl { now }) => match postman_smime::wire::decode_crl(&bin) {
-                Some((cert, issuer, crl)) => Response::Crl(postman_smime::crl::check(cert, issuer, crl, now)),
-                None => Response::Err("запрос проверки CRL повреждён".into()),
-            },
-            #[cfg(debug_assertions)]
-            Ok(Request::Probe(p)) => probe(p),
-            Err(e) => Response::Err(e.to_string()),
-        };
+        let (resp, out_bin) = handle(req, &bin);
         if let Some(w) = &watchdog {
             let _ = w.send(false);
         }
@@ -586,17 +517,109 @@ pub fn serve() -> ! {
     }
 }
 
-/// Поток-сторож: `true` — запрос начат, `false` — закончен. Не закончен за [`TIME_LIMIT`] — выход с [`EXIT_TIME`].
+/// Запрос воркера → ответ и его бинарная часть.
+fn handle(req: Result<Request, serde_json::Error>, bin: &[u8]) -> (Response, Vec<u8>) {
+    let mut out_bin = Vec::new();
+    let resp = match req {
+        Ok(Request::Mime) => match mime::parse(bin) {
+            Ok(m) => Response::Mime(Box::new(m)),
+            Err(e) => Response::Err(e),
+        },
+        Ok(Request::MimePart { index }) => match mime::part(bin, index) {
+            Ok(bytes) => {
+                out_bin = bytes;
+                Response::Part
+            }
+            Err(e) => Response::Err(e),
+        },
+        Ok(Request::MimeSplit) => match mime::split(bin) {
+            Ok((split, bytes)) => {
+                out_bin = bytes;
+                Response::Split(split)
+            }
+            Err(e) => Response::Err(e),
+        },
+        Ok(Request::Html(h)) => Response::Ok(postman_ir::from_html(&h)),
+        Ok(Request::Text(t)) => Response::Ok(postman_ir::from_plain(&t)),
+        Ok(Request::Calendar) => match parse_calendar(bin) {
+            Ok(v) => Response::Calendar(v),
+            Err(e) => Response::Err(e),
+        },
+        Ok(Request::Contacts) => match parse_contacts(bin) {
+            Ok(v) => Response::Contacts(v),
+            Err(e) => Response::Err(e),
+        },
+        Ok(Request::Image { max_side }) => match decode_image(bin, max_side) {
+            Ok(img) => {
+                out_bin = img.pixels;
+                Response::Image { width: img.width, height: img.height }
+            }
+            Err(e) => Response::Err(e),
+        },
+        Ok(Request::Preview { kind, page, max_side, width }) => {
+            // Сбой разборщика на чужом файле — ошибка этого просмотра, а не смерть процесса.
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| preview::preview(kind, bin, page, max_side, width)));
+            match r {
+                Ok(Ok((p, pixels))) => {
+                    out_bin = pixels;
+                    Response::Preview(p)
+                }
+                Ok(Err(e)) => Response::Err(e),
+                Err(_) => Response::Err("файл не разобран: сбой разборщика".into()),
+            }
+        }
+        Ok(Request::SmimeVerify { now }) => {
+            let (resp, bin) = smime_verify(bin, now);
+            out_bin = bin;
+            resp
+        }
+        Ok(Request::SmimeEnvelope) => smime_envelope(bin),
+        Ok(Request::SmimeOpen { now, part }) => {
+            let (resp, bin) = smime_open(bin, now, part);
+            out_bin = bin;
+            resp
+        }
+        Ok(Request::SmimeInner { now, from, part }) => {
+            let (resp, bin) = smime_inner(bin, now, &from, part);
+            out_bin = bin;
+            resp
+        }
+        Ok(Request::SmimePrepare { now }) => match postman_smime::wire::decode_prepare(bin) {
+            Some((trust, certs)) => Response::Prepared(
+                certs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| {
+                        let others: Vec<Vec<u8>> = certs.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, d)| d.clone()).collect();
+                        postman_smime::prepare::prepare(c, &others, &trust, now)
+                    })
+                    .collect(),
+            ),
+            None => Response::Err("запрос подготовки повреждён".into()),
+        },
+        Ok(Request::SmimeCrl { now }) => match postman_smime::wire::decode_crl(bin) {
+            Some((cert, issuer, crl)) => Response::Crl(postman_smime::crl::check(cert, issuer, crl, now)),
+            None => Response::Err("запрос проверки CRL повреждён".into()),
+        },
+        Ok(Request::ViewModule { .. }) => Response::Err("модули просмотра — только в postman-viewer".into()),
+        #[cfg(debug_assertions)]
+        Ok(Request::Probe(p)) => probe(p),
+        Err(e) => Response::Err(e.to_string()),
+    };
+    (resp, out_bin)
+}
+
+/// Поток-сторож: `true` — запрос начат, `false` — закончен. Не закончен за `limit` — выход с [`EXIT_TIME`].
 /// В простое поток спит в `recv` и процессор не тратит. Поток не запустился — работаем без сторожа (клиент всё
 /// равно убьёт воркер по своему таймауту).
-fn watchdog() -> Option<mpsc::Sender<bool>> {
+fn watchdog(limit: Duration) -> Option<mpsc::Sender<bool>> {
     let (tx, rx) = mpsc::channel::<bool>();
     let spawned = std::thread::Builder::new().name("watchdog".into()).spawn(move || {
         while let Ok(started) = rx.recv() {
             if !started {
                 continue;
             }
-            match rx.recv_timeout(TIME_LIMIT) {
+            match rx.recv_timeout(limit) {
                 Ok(_) => {}
                 Err(mpsc::RecvTimeoutError::Timeout) => std::process::exit(EXIT_TIME),
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -645,11 +668,25 @@ pub struct Client {
     relaxed: bool,
     /// Почему уровень не `Full` ([`Client::fallback`]).
     fallback: Option<String>,
+    /// Предел памяти процесса (Windows: Job Object).
+    memory: usize,
 }
 
 impl Client {
     pub fn new(exe: PathBuf, timeout: Duration) -> Self {
-        Self { exe, timeout, running: None, level: Level::None, relaxed: false, fallback: None }
+        Self { exe, timeout, running: None, level: Level::None, relaxed: false, fallback: None, memory: sandbox::MEMORY_LIMIT }
+    }
+
+    /// Клиент хоста модулей просмотра `postman-viewer` (S8-24): та же песочница, память — [`wasm::JOB_MEMORY`];
+    /// процесс — по первому запросу, после выхода (сторож, падение) — новый на следующем.
+    pub fn viewer(exe: PathBuf) -> Self {
+        Self { memory: wasm::JOB_MEMORY, ..Self::new(exe, wasm::VIEW_TIMEOUT) }
+    }
+
+    /// `postman-viewer` рядом с основным исполняемым файлом.
+    pub fn default_viewer_exe() -> PathBuf {
+        let name = if cfg!(windows) { "postman-viewer.exe" } else { "postman-viewer" };
+        std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join(name))).unwrap_or_else(|| PathBuf::from(name))
     }
 
     /// Рядом с основным исполняемым файлом.
@@ -683,7 +720,8 @@ impl Client {
             | Response::Mime(_)
             | Response::Split(_)
             | Response::Prepared(_)
-            | Response::Crl(_) => Err("неожиданный ответ".into()),
+            | Response::Crl(_)
+            | Response::View(_) => Err("неожиданный ответ".into()),
             Response::Err(e) => Err(e),
         }
     }
@@ -905,6 +943,24 @@ impl Client {
         }
     }
 
+    /// Показать файл `input` модулем просмотра `module` (клиент [`Client::viewer`]): ответ модуля, проверенный хостом,
+    /// или почему не показан; `Err` — хост не ответил.
+    pub fn view_module(&mut self, module: &[u8], input: &[u8]) -> Result<Result<wasm::ViewerOutput, wasm::Refusal>, String> {
+        if module.len() > wasm::MAX_MODULE || input.len() > wasm::MAX_INPUT {
+            return Ok(Err(wasm::Refusal::TooLarge));
+        }
+        let wasm = u32::try_from(module.len()).map_err(|e| e.to_string())?;
+        let bin = [module, input].concat();
+        match self.call(&Request::ViewModule { wasm }, &bin)? {
+            (Response::View(Ok(wasm::ViewerOutput::Image { width, height, .. })), rgba) => {
+                Ok(wasm::checked(wasm::ViewerOutput::Image { width, height, rgba }))
+            }
+            (Response::View(r), _) => Ok(r),
+            (Response::Err(e), _) => Err(e),
+            _ => Err("неожиданный ответ".into()),
+        }
+    }
+
     /// Разобрать приглашение (.ics) в песочнице.
     pub fn parse_calendar(&mut self, ics: &[u8]) -> Result<serde_json::Value, String> {
         match self.call(&Request::Calendar, ics)?.0 {
@@ -972,7 +1028,7 @@ impl Client {
     }
 
     fn start(&mut self) -> Result<Running, String> {
-        let p = sandbox::spawn(&self.exe, self.relaxed).map_err(|e| format!("запуск {}: {e}", self.exe.display()))?;
+        let p = sandbox::spawn(&self.exe, self.relaxed, self.memory).map_err(|e| format!("запуск {}: {e}", self.exe.display()))?;
         self.level = p.level;
         match (p.level, p.fallback) {
             (Level::Full, _) => self.fallback = None,

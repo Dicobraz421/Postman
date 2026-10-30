@@ -12,10 +12,11 @@ use super::Level;
 use crate::Process;
 
 /// Предел адресного пространства воркера.
-const MEMORY_LIMIT: u64 = 1 << 30;
+pub(crate) const MEMORY_LIMIT: usize = 1 << 30;
 
-/// `_relaxed` на Linux не используется: ослабление решает сам воркер (namespaces — по возможности).
-pub(crate) fn spawn(exe: &Path, _relaxed: bool) -> io::Result<Process> {
+/// `_relaxed` на Linux не используется: ослабление решает сам воркер (namespaces — по возможности). `_memory` — тоже:
+/// предел памяти ставит себе сам процесс ([`MEMORY_LIMIT`] в `lockdown`).
+pub(crate) fn spawn(exe: &Path, _relaxed: bool, _memory: usize) -> io::Result<Process> {
     let mut cmd = Command::new(exe);
     cmd.env_clear().current_dir("/").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
     // SAFETY: в pre_exec вызываются только async-signal-safe системные вызовы.
@@ -65,7 +66,7 @@ fn set_rlimits() -> Result<(), String> {
         }
         Ok(())
     };
-    set(libc::RLIMIT_AS, MEMORY_LIMIT)?;
+    set(libc::RLIMIT_AS, MEMORY_LIMIT as u64)?;
     set(libc::RLIMIT_CORE, 0)?;
     set(libc::RLIMIT_FSIZE, 0)?;
     set(libc::RLIMIT_NOFILE, 16)
