@@ -43,7 +43,7 @@ pub struct Mime {
     pub parts: Vec<Part>,
 }
 
-fn addrs(a: Option<&Address<'_>>) -> Vec<Addr> {
+pub(crate) fn addrs(a: Option<&Address<'_>>) -> Vec<Addr> {
     a.map(|a| {
         a.iter()
             .filter_map(|x| {

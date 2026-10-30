@@ -1,8 +1,8 @@
 //! Встроенный просмотр вложений (S5-07): картинка, страница PDF, оглавление ZIP, текст, документ Word `.docx`
 //! (T1-13а, [`docx`]), книга `.xlsx`/`.ods` ([`sheet`]) и таблица `.csv`/`.tsv` ([`csv`]) — S8-17, презентация
 //! `.pptx`/`.odp` ([`slides`], S8-18), документ `.odt` ([`odt`]), `.rtf` ([`rtf`]) и `.md` ([`markdown`]) — S8-19,
-//! проверка Office на макросы. Только здесь, в песочнице: UI получает пиксели, строки, числа и безопасный IR
-//! (документ — разделами: лист книги, слайд, ADR 0007).
+//! письмо во вложении `.eml`/`.msg` ([`letter`], [`msg`], S8-20), проверка Office на макросы. Только здесь, в
+//! песочнице: UI получает пиксели, строки, числа и безопасный IR (документ — разделами: лист книги, слайд, ADR 0007).
 //!
 //! Картинки — PNG, JPEG, GIF, WebP, BMP, ICO и TIFF (страницы — как у PDF, S8-21).
 //!
@@ -11,14 +11,16 @@
 //! из центрального каталога), из OOXML читается только `vbaProject.bin` и не больше [`MAX_VBA`], у `.docx` — пределы
 //! [`docx`] (распаковка, блоки, символы), у книги и таблицы — пределы [`sheet`] (листы, строки, столбцы, ячейки), у
 //! презентации — [`slides`]; все части книги или презентации вместе — не больше [`MAX_UNPACKED`] после распаковки; у
-//! `.odt`, `.rtf`, `.md` — блоки и символы как у `.docx`. Время
+//! `.odt`, `.rtf`, `.md` — блоки и символы как у `.docx`, у письма — [`letter`] (вложенность писем). Время
 //! ограничивает сторож в `serve` (процесс завершается с [`crate::EXIT_TIME`]), память — Job Object песочницы.
 
 use std::io::{self, Read};
 
 pub mod csv;
 pub mod docx;
+pub mod letter;
 pub mod markdown;
+pub mod msg;
 pub mod odt;
 pub mod rtf;
 pub mod sheet;
@@ -27,6 +29,7 @@ pub mod slides;
 use serde::{Deserialize, Serialize};
 
 use crate::Rgba;
+use crate::mime::Addr;
 
 /// Больше не смотрим: файл слишком большой для просмотра (сохранить можно).
 pub const MAX_INPUT: usize = 48 * 1024 * 1024;
@@ -59,6 +62,8 @@ pub enum PreviewKind {
     Table,
     /// Презентация `.pptx`/`.ppsx`/`.potx`/`.odp` → раздел на слайд (S8-18); с макросами — проверка Office.
     Slides,
+    /// Письмо во вложении: `.eml`/`message/rfc822` или `.msg` Outlook (по содержимому) → [`Preview::Letter`] (S8-20).
+    Letter,
 }
 
 /// Итог просмотра. У `Image` и `Pdf` пиксели RGBA — в бинарной части ответа.
@@ -92,6 +97,20 @@ pub enum Preview {
     /// Документ разделами: безопасный IR (как тело письма); `truncated` — показано начало.
     Document {
         sections: Vec<Section>,
+        truncated: bool,
+    },
+    /// Письмо во вложении (S8-20): шапка — данными (подписи полей — у интерфейса), тело — безопасный IR тем же путём,
+    /// что тело письма; `truncated` — показано начало тела или списка вложений.
+    Letter {
+        from: Vec<Addr>,
+        to: Vec<Addr>,
+        cc: Vec<Addr>,
+        /// Время отправки, Unix-секунды UTC.
+        date: Option<i64>,
+        subject: String,
+        blocks: Vec<postman_ir::Block>,
+        /// Вложения: имя, MIME, размер в байтах (открыть вложенное — не в S8).
+        attachments: Vec<(String, String, u64)>,
         truncated: bool,
     },
 }
@@ -185,6 +204,7 @@ pub fn preview(kind: PreviewKind, bytes: &[u8], page: u32, max_side: u32, width:
             let (sections, truncated) = csv::csv(bytes);
             Ok((Preview::Document { sections, truncated }, Vec::new()))
         }
+        PreviewKind::Letter => Ok((letter::letter(bytes)?, Vec::new())),
     }
 }
 
