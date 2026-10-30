@@ -12,7 +12,7 @@ use std::io::{self, Cursor, Read, Seek, Write};
 use cfb::CompoundFile;
 
 use crate::mapi::{
-    ATTACH_BY_VALUE, MapiMessage, PR_ATTACH_DATA_OBJ, PR_ATTACH_LONG_FILENAME_W, PR_ATTACH_NUM, PR_DISPLAY_NAME_W, PR_MESSAGE_CLASS_W, PR_ROWID,
+    MapiMessage, PR_ATTACH_DATA_OBJ, PR_ATTACH_LONG_FILENAME_W, PR_ATTACH_NUM, PR_DISPLAY_NAME_W, PR_MESSAGE_CLASS_W, PR_ROWID,
     PR_STORE_SUPPORT_MASK, PR_SUBJECT_W, STORE_UNICODE_OK, Tag, Value,
 };
 
@@ -177,7 +177,7 @@ fn too_big() -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mapi::{Attachment, IPM_NOTE, PR_ATTACH_DATA_BIN, PR_ATTACH_METHOD, PR_SUBJECT_PREFIX_W};
+    use crate::mapi::{ATTACH_BY_VALUE, Attachment, IPM_NOTE, PR_ATTACH_DATA_BIN, PR_ATTACH_METHOD, PR_SUBJECT_PREFIX_W};
 
     fn read(file: &[u8], path: &str) -> Vec<u8> {
         let mut cf = CompoundFile::open(Cursor::new(file)).unwrap();
