@@ -53,6 +53,16 @@ impl Backend {
         ok
     }
 
+    /// Команда в синхронизацию учётной записи профиля `profile` (`None` — основной) как есть: маршрут уже решило ядро
+    /// (`Command::routes_by`, задания переноса). `false` — сервера нет или учётная запись остановилась.
+    pub(crate) fn send_to(&self, profile: Option<&str>, command: Command) -> bool {
+        let Backend::Live { commands, extra, .. } = self else { return false };
+        match profile {
+            None => commands.send(command).is_ok(),
+            Some(p) => extra.iter().find(|(q, _)| q == p).is_some_and(|(_, tx)| tx.send(command).is_ok()),
+        }
+    }
+
     /// Дополнительная учётная запись профиля начала синхронизацию.
     pub(crate) fn add_extra(&mut self, profile: String, tx: UnboundedSender<Command>) {
         if let Backend::Live { extra, .. } = self {

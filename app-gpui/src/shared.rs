@@ -52,7 +52,7 @@ pub(crate) fn is_shared(row: &EmailRow) -> bool {
 
 /// Ключ кэша (письмо, папка) — общего ящика, а не своей учётной записи.
 fn in_shared(key: &str) -> bool {
-    account_of(key).is_some_and(|a| postman_cache::profile_of(Some(a)) != Some(a))
+    account_of(key).is_some_and(|a| a != crate::local::LOCAL && postman_cache::profile_of(Some(a)) != Some(a))
 }
 
 /// Кто держит письмо общего ящика; своё письмо — никто.

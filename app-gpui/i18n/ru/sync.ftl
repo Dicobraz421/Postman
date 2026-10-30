@@ -4,6 +4,7 @@ sync-signed-in = Вход выполнен: { $user }
 sync-loading = Загрузка: { $mailbox }…
 sync-synced = Синхронизировано
 sync-store-upgrade = Обновление хранилища: { $percent } %
+sync-store-upgrade-hint = Один раз после обновления Postman. Письма на сервере не меняются.
 sync-error = { $what }: { $detail }
 sync-error-auth = Сервер отклонил вход
 sync-error-network = Нет связи с сервером
