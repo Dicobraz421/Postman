@@ -6291,8 +6291,8 @@ name = "postman-imap"
 version = "0.1.0"
 dependencies = [
  "async-imap",
+ "encoding_rs",
  "futures",
- "mail-parser",
  "mail-send",
  "rustls-platform-verifier",
  "thiserror 2.0.21",
