@@ -52,6 +52,10 @@ pub(crate) struct SignIn {
     password: Entity<InputState>,
     /// Пароль — в диспетчер учётных данных Windows (`false` — не хранить, спрашивать при запуске).
     store: bool,
+    /// Машина в домене: у Exchange — выбор «Войти как пользователь Windows» (T1-02б).
+    pub(crate) domain: bool,
+    /// Выбран вход Windows: шага «Пароль» нет, пароль пустой.
+    pub(crate) windows: bool,
     /// Первый запуск: приветствие, тема и плотность; иначе — карточка в настройках с «Отмена».
     welcome: bool,
     /// Вход идёт: ждём сервер.
@@ -93,7 +97,47 @@ impl SignIn {
             (false, true) => Step::Login,
             (false, false) => Step::Password,
         };
-        Self { step, url, user, password, store: true, welcome, busy: false, error: None, focus: true, _subscriptions: subscriptions }
+        let domain = crate::sys::shell::in_domain();
+        let windows = prefill.windows;
+        Self {
+            step,
+            url,
+            user,
+            password,
+            store: true,
+            domain,
+            windows,
+            welcome,
+            busy: false,
+            error: None,
+            focus: true,
+            _subscriptions: subscriptions,
+        }
+    }
+
+    /// Выбор входа Windows виден: адрес — EWS Exchange, машина в домене.
+    fn windows_offered(&self, cx: &App) -> bool {
+        self.domain && postman_backend_ews::is_ews_url(&normalize_url(&self.url.read(cx).value()))
+    }
+
+    /// «Войти как пользователь Windows»: логин — UPN из Windows (в фоне; можно поправить).
+    fn set_windows(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.windows = on;
+        self.error = None;
+        if on && self.user.read(cx).value().trim().is_empty() {
+            let task = cx.background_spawn(async { crate::sys::shell::upn() });
+            cx.spawn_in(window, async move |this, cx| {
+                if let Some(upn) = task.await {
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        if this.user.read(cx).value().trim().is_empty() {
+                            this.user.update(cx, |s, cx| s.set_value(upn, window, cx));
+                        }
+                    });
+                }
+            })
+            .detach();
+        }
+        cx.notify();
     }
 
     fn go(&mut self, step: Step, cx: &mut Context<Self>) {
@@ -114,6 +158,8 @@ impl SignIn {
                 Err(e) => self.fail(e, cx),
             },
             Step::Login if self.user.read(cx).value().trim().is_empty() => self.fail(tr!("signin-fill-user"), cx),
+            // Вход Windows (T1-02б): шага «Пароль» нет.
+            Step::Login if self.windows && self.windows_offered(cx) => self.submit(cx),
             Step::Login => self.go(Step::Password, cx),
             Step::Password => self.submit(cx),
         }
@@ -138,8 +184,10 @@ impl SignIn {
             Err(e) => return self.fail(e, cx),
         };
         let user = self.user.read(cx).value().trim().to_owned();
-        let password = self.password.read(cx).value().to_string();
-        if user.is_empty() || password.is_empty() {
+        let windows = self.windows && self.windows_offered(cx);
+        // Вход Windows: пустой пароль — путь EWS входит учётными данными текущего входа (T1-02а).
+        let password = if windows { String::new() } else { self.password.read(cx).value().to_string() };
+        if user.is_empty() || (password.is_empty() && !windows) {
             return self.fail(tr!("signin-fill"), cx);
         }
         self.busy = true;
@@ -156,10 +204,18 @@ impl SignIn {
         cx.notify();
     }
 
-    /// Вход не удался: показать причину, поля остаются для новой попытки.
+    /// Вход не удался: показать причину, поля остаются для новой попытки. Вход Windows не удался (T1-02а) — строкой
+    /// и предложением войти с паролем: шаг «Пароль».
     pub(crate) fn failed(&mut self, error: &str, cx: &mut Context<Self>) {
         self.busy = false;
-        self.error = Some(tr!("signin-failed", error = error.to_owned()));
+        if self.windows && error.contains(postman_backend_ews::WINDOWS_SIGN_IN_UNAVAILABLE) {
+            self.windows = false;
+            self.step = Step::Password;
+            self.focus = true;
+            self.error = Some(tr!("signin-windows-failed"));
+        } else {
+            self.error = Some(tr!("signin-failed", error = error.to_owned()));
+        }
         cx.notify();
     }
 }
@@ -282,6 +338,30 @@ impl SignIn {
                     &self.user,
                     Some(tr!("signin-user-hint")),
                 ));
+                // Exchange в домене (T1-02б): вход учётной записью Windows без пароля.
+                if self.windows_offered(cx) {
+                    let on = self.windows;
+                    let choice = |id: &'static str, value: bool, label: String| {
+                        div()
+                            .id(id)
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .cursor_pointer()
+                            .child(crate::settings_tab::radio(on == value, l))
+                            .child(label)
+                            .on_click(cx.listener(move |this, _, window, cx| this.set_windows(value, window, cx)))
+                    };
+                    body = body.child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(choice("signin-windows", true, tr!("signin-windows")))
+                            .child(choice("signin-with-password", false, tr!("signin-with-password")))
+                            .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("signin-windows-hint"))),
+                    );
+                }
             }
             Step::Password => {
                 let (tls, ok) = security_line();
@@ -311,9 +391,10 @@ impl SignIn {
             }
         }
         let busy = self.busy;
-        let primary = match (self.step, busy) {
-            (Step::Password, true) => tr!("signin-busy"),
-            (Step::Password, false) => tr!("signin-submit"),
+        let last = self.step == Step::Password || (self.step == Step::Login && self.windows && self.windows_offered(cx));
+        let primary = match (last, busy) {
+            (true, true) => tr!("signin-busy"),
+            (true, false) => tr!("signin-submit"),
             _ => tr!("signin-next"),
         };
         let actions = div()
@@ -454,7 +535,30 @@ pub(crate) mod scenes {
     pub(crate) const SCENES: &[Scene] = &[
         // Первый запуск (S5-09): добавление аккаунта на месте экрана почты (сроки прошлых сцен сняты).
         Scene::new(FIRSTRUN, firstrun, firstrun_ready),
+        // Шаг «Логин» у Exchange в домене (T1-02б): «Войти как пользователь Windows (без пароля)».
+        Scene::new("signin", signin, signin_ready),
     ];
+
+    fn signin(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        let prefill = crate::account::Settings {
+            url: "https://mail.corp.example/EWS/Exchange.asmx".into(),
+            user: "a.antropov@corp.example".into(),
+            windows: true,
+        };
+        m.show_signin(Some(prefill), window, cx);
+        if let Some(panel) = &m.live.signin {
+            panel.update(cx, |p, cx| {
+                // Снимок не зависит от машины: «в домене».
+                p.domain = true;
+                p.go(super::Step::Login, cx);
+            });
+        }
+        Ok(())
+    }
+
+    fn signin_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.live.signin.as_ref().is_some_and(|p| p.read(cx).windows && p.read(cx).domain)
+    }
 
     fn firstrun(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
         // Уведомления сцены `toasts` — убрать: первый запуск без них.

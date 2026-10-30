@@ -35,3 +35,8 @@ signin-fill-url = Укажите адрес сервера.
 signin-fill-user = Укажите логин.
 signin-bad-url = Адрес сервера не похож на адрес: mail.example.com или https://mail.example.com.
 signin-demo = Без сервера — запуск с --demo · Ctrl+, — настройки
+# Вход учётной записью Windows (T1-02б).
+signin-windows = Войти как пользователь Windows (без пароля)
+signin-with-password = Войти с паролем
+signin-windows-hint = Exchange в домене: Postman войдёт учётной записью, с которой вы вошли в Windows. Пароль не спрашивается и не хранится.
+signin-windows-failed = Не удалось войти учётной записью Windows — введите пароль.

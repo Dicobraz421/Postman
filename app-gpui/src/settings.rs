@@ -129,7 +129,7 @@ impl Mailer {
                     .accounts
                     .iter()
                     .filter(|a| postman_cache::profile_of(Some(&a.id)) == Some(a.id.as_str()))
-                    .map(|a| (a.id.clone(), crate::account::Settings { url: String::new(), user: a.name.clone() }, of(Some(&a.id))))
+                    .map(|a| (a.id.clone(), crate::account::Settings { url: String::new(), user: a.name.clone(), windows: false }, of(Some(&a.id))))
                     .collect()
             },
             folders: folders.of(None).map(|m| (m.id.clone(), m.name.clone())).collect(),

@@ -135,6 +135,25 @@ pub fn open_bitlocker() -> Result<(), String> {
         .map_err(|e| format!("control: {e}"))
 }
 
+/// UPN текущего пользователя Windows (`user@corp.example`) для входа Windows (T1-02б): `whoami /upn`; нет (не в
+/// домене) — `USERNAME@USERDNSDOMAIN`. Звать в фоне.
+pub fn upn() -> Option<String> {
+    use std::os::windows::process::CommandExt as _;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let out = std::process::Command::new("whoami.exe").arg("/upn").creation_flags(CREATE_NO_WINDOW).output().ok();
+    let upn = out.filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).filter(|u| u.contains('@'));
+    upn.or_else(|| {
+        let user = std::env::var("USERNAME").ok()?;
+        let domain = std::env::var("USERDNSDOMAIN").ok()?;
+        Some(format!("{user}@{}", domain.to_lowercase()))
+    })
+}
+
+/// Машина в домене (вход Windows в Exchange имеет смысл): у пользователя домена есть `USERDNSDOMAIN`.
+pub fn in_domain() -> bool {
+    std::env::var_os("USERDNSDOMAIN").is_some_and(|d| !d.is_empty())
+}
+
 /// Показать файл в Проводнике.
 pub fn reveal(path: &Path) -> Result<(), String> {
     std::process::Command::new("explorer.exe").arg(format!("/select,{}", path.display())).spawn().map(|_| ()).map_err(|e| format!("explorer: {e}"))

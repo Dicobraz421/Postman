@@ -1759,4 +1759,22 @@ mod tests {
         let own = row("1", false, false);
         assert!(may(&rights, &own, |x| x.remove));
     }
+
+    /// «Отправленные» (T1-22): права — только из `MailboxRow.rights` этой папки. Со всеми правами можно всё; только для
+    /// чтения — переноса, удаления и пометок нет, а выбор и открытие прав не спрашивают (`select`, `open_row`).
+    #[test]
+    fn sent_folder_rights_are_its_own() {
+        let mut sent = row("s1", true, false);
+        sent.mailbox_ids = vec!["sent".into()];
+        let all: HashMap<String, Rights> = HashMap::new();
+        for check in [|x: &Rights| x.remove, |x: &Rights| x.keywords, |x: &Rights| x.seen] {
+            assert!(may(&all, &sent, check), "«Отправленные» со всеми правами");
+        }
+        let ro = Rights { read: true, add: false, remove: false, seen: false, keywords: false, submit: false };
+        let rights: HashMap<String, Rights> = [("sent".to_string(), ro)].into();
+        assert!(!may(&rights, &sent, |x| x.remove) && !may(&rights, &sent, |x| x.keywords));
+        let mut inbox = row("i1", false, false);
+        inbox.mailbox_ids = vec!["inbox".into()];
+        assert!(may(&rights, &inbox, |x| x.remove), "права «Отправленных» не трогают другие папки");
+    }
 }

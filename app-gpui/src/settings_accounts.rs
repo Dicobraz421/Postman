@@ -92,6 +92,8 @@ impl SettingsView {
         match (&self.info.account, self.info.live) {
             (Some(a), true) => {
                 let password = match self.stored {
+                    // Вход учётной записью Windows (T1-02б): пароля нет.
+                    _ if a.windows => tr!("settings-account-windows"),
                     Some(true) => tr!("settings-account-password-stored"),
                     Some(false) => tr!("settings-account-password-none"),
                     None => String::new(),

@@ -35,3 +35,8 @@ signin-fill-url = Enter the server address.
 signin-fill-user = Enter the login.
 signin-bad-url = This does not look like a server address: mail.example.com or https://mail.example.com.
 signin-demo = No server? Run with --demo · Ctrl+, — settings
+# Windows account sign-in (T1-02b).
+signin-windows = Sign in as the Windows user (no password)
+signin-with-password = Sign in with a password
+signin-windows-hint = Exchange in a domain: Postman signs in with the account you used to sign in to Windows. No password is asked for or stored.
+signin-windows-failed = Couldn’t sign in with the Windows account — enter the password.

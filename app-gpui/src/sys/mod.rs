@@ -89,6 +89,14 @@ pub mod shell {
         Err("BitLocker is Windows only".into())
     }
 
+    pub fn upn() -> Option<String> {
+        None
+    }
+
+    pub fn in_domain() -> bool {
+        false
+    }
+
     pub fn set_autostart(_on: bool) -> Result<(), String> {
         Err("autostart is Windows only".into())
     }
