@@ -304,6 +304,14 @@ pub enum Command {
         letters: Vec<LetterId>,
         to: FolderId,
     },
+    /// Удалить письма задания у источника — учётки `account` (аккаунт ключей кэша, основной — пустая строка) по их
+    /// `detached`-связям → по письму `Event::Destroyed` или `Event::DestroyFailed` (решение владельца 2026-10-29:
+    /// письмо у источника удалено только по ответу сервера). Письма уже нет на сервере — тоже `Destroyed`.
+    DestroyLetters {
+        job: JobId,
+        account: String,
+        letters: Vec<LetterId>,
+    },
     /// Ответ, пауза, продолжение, отмена задания переноса — в поток ядра → `Event::Migration`.
     Migration(MigrationRequest),
 }
@@ -386,13 +394,15 @@ pub enum Route {
 
 impl Command {
     /// Маршрут с письмами и папками формата 6: команда над [`LetterId`] — по учётке письма (`FetchRaw`), выгрузка —
-    /// по учётке папки цели (`Import`, `ServerCopy`); «На этом компьютере», перенос (`MoveLetters`) и задания
-    /// (`Migration`) — в ядро. Прочие команды — по ключам кэша, как [`Command::routes`].
+    /// по учётке папки цели (`Import`, `ServerCopy`), удаление у источника — по учётке источника (`DestroyLetters`);
+    /// «На этом компьютере», перенос (`MoveLetters`) и задания (`Migration`) — в ядро. Прочие команды — по ключам
+    /// кэша, как [`Command::routes`].
     pub fn routes_by(self, homes: &dyn Homes) -> Vec<(Route, Command)> {
         let route = match &self {
             Command::FetchRaw { letter } => homes.letter(*letter).route(),
             Command::Import { folder, .. } => homes.folder(*folder).route(),
             Command::ServerCopy { to, .. } => homes.folder(*to).route(),
+            Command::DestroyLetters { account, .. } => Home::Account(account.clone()).route(),
             Command::MoveLetters { .. } | Command::Migration(_) => Route::Core,
             _ => return self.routes().into_iter().map(|(t, c)| (Route::Sync(t), c)).collect(),
         };
@@ -785,6 +795,17 @@ pub enum Event {
         letter: LetterId,
         error: ImportError,
     },
+    /// Сервер источника удалил письмо задания (`Command::DestroyLetters`) или его там уже нет.
+    Destroyed {
+        job: JobId,
+        letter: LetterId,
+    },
+    /// Сервер источника письмо не удалил: ответ сервера или сети как есть. Задание повторит.
+    DestroyFailed {
+        job: JobId,
+        letter: LetterId,
+        error: String,
+    },
     /// Обновление хранилища (перенос формата 5 в 6, ADR 0006 п. 6): писем перенесено из `total` — строка
     /// «Обновление хранилища: N %» вместо списка; первый кадр её не ждёт.
     StoreUpgrade {
@@ -818,8 +839,8 @@ pub const FOLDER_OTHER_ACCOUNT: &str = "folder cannot be moved to another accoun
 
 impl Command {
     /// Ответ пути, который команду не умеет, — чтобы интерфейс и задание переноса не ждали: у команд над папками —
-    /// `FolderFailed` «not supported», у страницы справочника — пустая страница, у письма целиком и выгрузки — отказ
-    /// по письму. У прочих — пусто (путь пишет в журнал).
+    /// `FolderFailed` «not supported», у страницы справочника — пустая страница, у письма целиком, выгрузки и
+    /// удаления у источника — отказ по письму. У прочих — пусто (путь пишет в журнал).
     pub fn unsupported(&self) -> Vec<Event> {
         let not = || FOLDER_UNSUPPORTED.to_owned();
         let failed = |job: JobId, letter: LetterId| Event::ImportFailed { job, letter, error: ImportError::Rejected(not()) };
@@ -830,6 +851,9 @@ impl Command {
             Command::FetchRaw { letter } => return vec![Event::Raw { letter: *letter, data: Err(not()) }],
             Command::Import { job, letter, .. } => return vec![failed(*job, *letter)],
             Command::ServerCopy { job, letters, .. } => return letters.iter().map(|l| failed(*job, *l)).collect(),
+            Command::DestroyLetters { job, letters, .. } => {
+                return letters.iter().map(|l| Event::DestroyFailed { job: *job, letter: *l, error: not() }).collect();
+            }
             _ => return Vec::new(),
         };
         vec![Event::FolderFailed { mailbox, error: not() }]
@@ -1206,11 +1230,14 @@ mod tests {
         assert_eq!(route(Command::MoveLetters { ids: vec![LetterId(2)], to: FolderId(11) }), [Route::Core]);
         assert_eq!(route(Command::MoveLetters { ids: vec![LetterId(1)], to: FolderId(10) }), [Route::Core]);
         assert_eq!(route(Command::Migration(MigrationRequest::Pause { job: JobId(1) })), [Route::Core]);
+        let destroy = |account: &str| Command::DestroyLetters { job: JobId(1), account: account.into(), letters: vec![LetterId(1)] };
+        assert_eq!(route(destroy("@2.shared")), [sync(Some("@2"))], "удаление — у источника, письмо уже в другой учётке");
+        assert_eq!(route(destroy("")), [sync(None)]);
         assert_eq!(route(Command::Body("@2/e1".into())), [sync(Some("@2"))], "прежние команды — по ключам");
         assert_eq!(route(Command::Search { query: "q".into(), mailbox: None, ticket: 1 }), [Route::Sync(Target::All)]);
         let split = Command::SetKeywords { ids: vec!["a".into(), "@2/b".into()], add: vec![], remove: vec![] };
         assert_eq!(route(split), [sync(None), sync(Some("@2"))]);
-        for c in [raw(2), import(11), Command::Migration(MigrationRequest::Resume { job: JobId(1) })] {
+        for c in [raw(2), import(11), destroy("@2"), Command::Migration(MigrationRequest::Resume { job: JobId(1) })] {
             assert!(c.replayable().is_none() && c.for_each_account().is_none(), "задание переноса повторяет само");
         }
     }
@@ -1233,6 +1260,8 @@ mod tests {
         assert_eq!(failed(copy.unsupported()), [(5, 2), (5, 3)]);
         let raw = Command::FetchRaw { letter: LetterId(4) }.unsupported();
         assert!(matches!(&raw[..], [Event::Raw { letter: LetterId(4), data: Err(_) }]));
+        let destroy = Command::DestroyLetters { job: JobId(5), account: "@2".into(), letters: vec![LetterId(6), LetterId(7)] }.unsupported();
+        assert!(matches!(&destroy[..], [Event::DestroyFailed { letter: LetterId(6), .. }, Event::DestroyFailed { letter: LetterId(7), .. }]));
         assert!(Command::MoveLetters { ids: vec![LetterId(1)], to: FolderId(1) }.unsupported().is_empty());
     }
 

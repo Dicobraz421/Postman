@@ -12,7 +12,8 @@
 //! - **Перенос между учётками** (ADR 0006 п. 4) — функция ядра: задание ведёт ядро, почтовый путь выполняет шаги
 //!   своей учётки — письмо целиком (`Command::FetchRaw`), выгрузку (`Command::Import`, если `Features::import`),
 //!   перенос сервером между аккаунтами сессии (`Command::ServerCopy`, если `Features::server_copy`), квоту
-//!   (`settings::Request::Quota`, если `Feature::Quota`). Не умеет — `Command::unsupported`.
+//!   (`settings::Request::Quota`, если `Feature::Quota`), удаление у источника с ответом по письму
+//!   (`Command::DestroyLetters`). Не умеет — `Command::unsupported`.
 //! - **Реестр** ([`Registry`]) собирает композиционный корень (`app-gpui`): какие плагины есть и в каком порядке.
 //!   Новый протокол — новый крейт и строка в корне; `core` не меняется.
 

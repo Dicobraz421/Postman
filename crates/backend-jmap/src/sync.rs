@@ -1153,6 +1153,7 @@ async fn handle(
         | Command::FetchRaw { .. }
         | Command::Import { .. }
         | Command::ServerCopy { .. }
+        | Command::DestroyLetters { .. }
         | Command::Migration(_)) => {
             cmd.unsupported().into_iter().for_each(notify);
         }

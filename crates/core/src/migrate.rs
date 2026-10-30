@@ -2,8 +2,10 @@
 //!
 //! Задание создаёт перенос в базе (`Command::MoveLetters` → строки `outbound`); движок ведёт его письма по шагам:
 //! содержимое есть в базе (нет — `FetchRaw` у источника) → выгрузка в папку цели (`Import`, между аккаунтами одной
-//! сессии — `ServerCopy` пачкой) → сервер подтвердил (связь с целью, `Synced`) → удаление у источника (`Destroy`),
-//! снять `detached`-связь. Режим «локальный архив» — содержимое (хэш сверен), затем удаление у источника, `Local`.
+//! сессии — `ServerCopy` пачкой) → сервер подтвердил (связь с целью, `Synced`) → удаление у источника
+//! (`DestroyLetters`), снять `detached`-связь. Письмо у источника удалено только по ответу его сервера
+//! (`Event::Destroyed`, решение владельца 2026-10-29): отказ — повтор после паузы, письмо остаётся в задании. Режим
+//! «локальный архив» — содержимое (хэш сверен), затем удаление у источника, `Local`.
 //! Каждый шаг записан в хранилище до команды и после ответа: после перезапуска задание идёт с того же шага.
 //!
 //! Движок без I/O и без потоков: поток ядра отдаёт ему ответы путей ([`Engine::event`], [`Engine::quota`]) и
@@ -106,7 +108,7 @@ pub trait Store: Homes {
     /// Сервер цели письмо не берёт: оно только в базе с пометкой `why`, строка задания убрана; у источника не
     /// удаляется.
     fn refused(&mut self, job: JobId, letter: LetterId, why: &ImportError) -> Result<()>;
-    /// Удаление у источника ушло: строка задания и `detached`-связи письма убраны.
+    /// Источник подтвердил удаление: строка задания и `detached`-связи письма убраны.
     fn finish(&mut self, job: JobId, letter: LetterId) -> Result<()>;
     /// Отмена: письма — одной транзакцией обратно в папку источника с прежними связями, строки задания убраны.
     fn restore(&mut self, job: JobId, letters: &[LetterId]) -> Result<()>;
@@ -126,11 +128,6 @@ fn profile_of(account: &str) -> Profile {
     postman_cache::profile_of(Some(account).filter(|a| !a.is_empty())).map(str::to_owned)
 }
 
-/// Ключ кэша письма у источника — для `Command::Destroy`.
-fn source_key(r: &Remote) -> String {
-    postman_cache::scoped(Some(r.account.as_str()).filter(|a| !a.is_empty()), &r.id)
-}
-
 struct Letter {
     to: FolderId,
     step: Step,
@@ -142,6 +139,15 @@ struct Letter {
     slot: Option<u64>,
     /// Перенесено `ServerCopy`: источник удалил сервер.
     copied: bool,
+    /// Удаление у источника: ответов ещё ждём (по учётке источника) и был ли отказ.
+    pending: usize,
+    failed: bool,
+}
+
+impl Letter {
+    fn new(to: FolderId, step: Step, size: u64) -> Self {
+        Self { to, step, busy: false, attempts: 0, size, slot: None, copied: false, pending: 0, failed: false }
+    }
 }
 
 #[derive(Default)]
@@ -163,9 +169,6 @@ struct Job {
     upload: VecDeque<LetterId>,
     delete: VecDeque<LetterId>,
     waiting: Vec<(Instant, LetterId)>,
-    /// Удаление у источника отдано прошлым [`Engine::poll`]: письмо кончается на следующем, когда команды уже ушли в
-    /// потоки путей (сбой между ними — после перезапуска удаление повторится, а не потеряется).
-    sent: Vec<LetterId>,
     fetching: usize,
     quota: Quota,
     /// Отменено: `Some(keep_local)`.
@@ -188,7 +191,6 @@ impl Job {
             upload: VecDeque::new(),
             delete: VecDeque::new(),
             waiting: Vec::new(),
-            sent: Vec::new(),
             fetching: 0,
             quota: Quota::default(),
             cancel: None,
@@ -336,13 +338,12 @@ pub struct Engine<S: Store> {
     store: S,
     jobs: BTreeMap<JobId, Job>,
     net: Net,
-    polled: Option<Instant>,
 }
 
 impl<S: Store> Engine<S> {
     /// Задания из хранилища — с того шага, где их застал выход (или сбой).
     pub fn open(store: S) -> Result<Self> {
-        let mut e = Self { store, jobs: BTreeMap::new(), net: Net::default(), polled: None };
+        let mut e = Self { store, jobs: BTreeMap::new(), net: Net::default() };
         for row in e.store.jobs()? {
             e.load(row)?;
         }
@@ -380,7 +381,7 @@ impl<S: Store> Engine<S> {
         }
         for (id, ob) in rows {
             let Some(info) = self.store.info(id)? else { continue };
-            job.letters.insert(id, Letter { to: ob.to, step: ob.step, busy: false, attempts: 0, size: info.size, slot: None, copied: false });
+            job.letters.insert(id, Letter::new(ob.to, ob.step, info.size));
             job.queue(id, ob.step);
         }
         self.jobs.insert(row.id, job);
@@ -402,8 +403,7 @@ impl<S: Store> Engine<S> {
                     Some(l) => l.to = ob.to,
                     None => {
                         let Some(info) = self.store.info(id)? else { continue };
-                        j.letters
-                            .insert(id, Letter { to: ob.to, step: ob.step, busy: false, attempts: 0, size: info.size, slot: None, copied: false });
+                        j.letters.insert(id, Letter::new(ob.to, ob.step, info.size));
                         j.queue(id, ob.step);
                         j.row.total += 1;
                     }
@@ -472,7 +472,7 @@ impl<S: Store> Engine<S> {
         Ok(())
     }
 
-    /// Ответ пути: письмо целиком, выгрузка принята или нет. Прочие события — не движку.
+    /// Ответ пути: письмо целиком, выгрузка принята или нет, удаление у источника. Прочие события — не движку.
     pub fn event(&mut self, e: &Event, now: Instant) -> Result<()> {
         match e {
             Event::Raw { letter, data } => {
@@ -552,6 +552,25 @@ impl<S: Store> Engine<S> {
                     j.settle_cancelled(&[*letter], &mut self.store)?;
                 }
             }
+            Event::Destroyed { job, letter } | Event::DestroyFailed { job, letter, .. } => {
+                let Some(j) = self.jobs.get_mut(job) else { return Ok(()) };
+                let Some(l) = j.letters.get_mut(letter).filter(|l| l.busy && l.step == Step::DeleteSource) else { return Ok(()) };
+                if let Event::DestroyFailed { error, .. } = e {
+                    tracing::warn!(job = job.0, letter = letter.0, "migration: source delete failed: {error}");
+                    l.failed = true;
+                }
+                l.pending = l.pending.saturating_sub(1);
+                if l.pending > 0 {
+                    return Ok(());
+                }
+                l.busy = false;
+                if std::mem::take(&mut l.failed) {
+                    j.later(*letter, now);
+                } else {
+                    self.store.finish(*job, *letter)?;
+                    j.remove(*letter);
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -574,7 +593,6 @@ impl<S: Store> Engine<S> {
 
     /// Шаги, которые можно сделать сейчас: команды путям и ход заданий интерфейсу.
     pub fn poll(&mut self, now: Instant) -> Result<Output> {
-        self.polled = Some(now);
         let ids: Vec<JobId> = self.jobs.keys().copied().collect();
         for id in ids {
             let Some(j) = self.jobs.get_mut(&id) else { continue };
@@ -609,9 +627,6 @@ impl<S: Store> Engine<S> {
             {
                 soon(t + PROGRESS_EVERY);
             }
-            if let Some(t) = self.polled.filter(|_| !j.sent.is_empty()) {
-                soon(t);
-            }
             // Задание стоит — ни повторов, ни квоты.
             if matches!(j.row.state, MigrationState::Paused | MigrationState::QuotaFull) {
                 continue;
@@ -642,10 +657,6 @@ fn show(j: &mut Job, out: &mut Output, now: Instant) {
 
 /// Шаги задания, которые можно сделать сейчас.
 fn pump(j: &mut Job, store: &mut dyn Store, net: &mut Net, now: Instant) -> Result<()> {
-    for id in std::mem::take(&mut j.sent) {
-        store.finish(j.row.id, id)?;
-        j.remove(id);
-    }
     if matches!(j.row.state, MigrationState::Paused | MigrationState::QuotaFull) {
         return Ok(());
     }
@@ -808,19 +819,35 @@ fn upload(j: &mut Job, store: &mut dyn Store, net: &mut Net, now: Instant) -> Re
     Ok(())
 }
 
-/// Шаг «удалить у источника»: цель подтвердила или письмо — локальный архив.
+/// Шаг «удалить у источника»: цель подтвердила или письмо — локальный архив. Источнику — `DestroyLetters` пачками по
+/// его учётке; письмо кончается по ответу ([`Engine::event`]). Источник удалил сервер цели (`ServerCopy`) или
+/// источника нет — сразу.
 fn delete(j: &mut Job, store: &mut dyn Store, net: &mut Net) -> Result<()> {
+    let mut by_source: BTreeMap<String, Vec<LetterId>> = BTreeMap::new();
     while let Some(id) = j.delete.pop_front() {
         let Some(copied) = j.letters.get(&id).filter(|l| !l.busy && l.step == Step::DeleteSource).map(|l| l.copied) else { continue };
-        if !copied {
-            for s in store.info(id)?.map(|l| l.sources).unwrap_or_default() {
-                net.send(Home::Account(s.account.clone()).route(), Command::Destroy(source_key(&s)));
-            }
+        let mut accounts: Vec<String> =
+            if copied { Vec::new() } else { store.info(id)?.map(|l| l.sources).unwrap_or_default() }.into_iter().map(|s| s.account).collect();
+        accounts.sort();
+        accounts.dedup();
+        if accounts.is_empty() {
+            store.finish(j.row.id, id)?;
+            j.remove(id);
+            continue;
         }
         if let Some(l) = j.letters.get_mut(&id) {
-            l.busy = true;
+            (l.busy, l.pending, l.failed) = (true, accounts.len(), false);
         }
-        j.sent.push(id);
+        for a in accounts {
+            by_source.entry(a).or_default().push(id);
+        }
+    }
+    for (account, letters) in by_source {
+        let batch = net.limits(&profile_of(&account)).batch.max(1);
+        for chunk in letters.chunks(batch) {
+            let cmd = Command::DestroyLetters { job: j.row.id, account: account.clone(), letters: chunk.to_vec() };
+            net.send(Home::Account(account.clone()).route(), cmd);
+        }
     }
     Ok(())
 }
@@ -999,7 +1026,11 @@ mod tests {
         crashed: bool,
         /// Ответы на выгрузку не приходят (пауза посередине).
         hold: bool,
+        /// Ответы источника на удаление не приходят.
+        hold_destroy: bool,
         held: Vec<Event>,
+        /// Столько удалений у источника кончатся отказом.
+        destroy_fails: u32,
     }
 
     impl Path {
@@ -1073,19 +1104,33 @@ mod tests {
                         })
                         .collect()
                 }
-                Command::Destroy(key) => {
-                    let id = postman_cache::unscoped(&key).1.to_owned();
-                    // Письмо `m<n>` источника — `LetterId(n)`.
-                    let n: u64 = id.trim_start_matches('m').parse().expect("письмо источника");
-                    let row = &store.letters[&LetterId(n)];
-                    match &row.place {
-                        Place::Synced => assert!(row.links.iter().any(|l| l.account == target), "удаление у источника — после подтверждения цели"),
-                        Place::Local => assert!(row.content.is_some(), "локальный архив — с содержимым"),
-                        p => panic!("удаление у источника письма {p:?}"),
+                Command::DestroyLetters { job, account, letters } => {
+                    let mut out = Vec::new();
+                    for letter in letters {
+                        let row = &store.letters[&letter];
+                        let src = row.sources.iter().find(|s| s.account == account).expect("письмо источника этой учётки");
+                        assert_eq!(route, Home::Account(account.clone()).route(), "удаление — в поток источника");
+                        match &row.place {
+                            Place::Synced => {
+                                assert!(row.links.iter().any(|l| l.account == target), "удаление у источника — после подтверждения цели")
+                            }
+                            Place::Local => assert!(row.content.is_some(), "локальный архив — с содержимым"),
+                            p => panic!("удаление у источника письма {p:?}"),
+                        }
+                        if self.destroy_fails > 0 {
+                            self.destroy_fails -= 1;
+                            out.push(Event::DestroyFailed { job, letter, error: "busy".into() });
+                            continue;
+                        }
+                        // Повтор после сбоя — письма у источника уже нет: путь отвечает «удалено», не ошибкой.
+                        self.source.remove(&src.id);
+                        out.push(Event::Destroyed { job, letter });
                     }
-                    // Повтор после сбоя — письма у источника уже нет: путь отвечает «не найдено», не ошибкой.
-                    self.source.remove(&id);
-                    Vec::new()
+                    if self.hold_destroy {
+                        self.held.extend(out);
+                        return Vec::new();
+                    }
+                    out
                 }
                 Command::Settings(settings::Request::Quota) => {
                     self.quota_asks += 1;
@@ -1260,11 +1305,13 @@ mod tests {
             w.engine.event(e, w.now).unwrap();
         }
         let out = w.engine.poll(w.now).unwrap();
-        assert!(out.commands.iter().all(|(_, c)| matches!(c, Command::Destroy(_))), "на паузе — только удаление подтверждённых");
+        assert!(out.commands.iter().all(|(_, c)| matches!(c, Command::DestroyLetters { .. })), "на паузе — только удаление подтверждённых");
         assert!(matches!(out.events[..], [Event::Migration { state: MigrationState::Paused, .. }]));
         w.progress.push((w.now, JOB, 2, 10, MigrationState::Paused));
         for (route, cmd) in out.commands {
-            w.path.handle(route, cmd, w.engine.store(), "@2");
+            for e in w.path.handle(route, cmd, w.engine.store(), "@2") {
+                w.engine.event(&e, w.now).unwrap();
+            }
         }
         assert_eq!(w.engine.poll(w.now + Duration::from_secs(1)).unwrap().commands.len(), 0);
 
@@ -1380,5 +1427,36 @@ mod tests {
         assert_eq!(w.path.target.len(), 7);
         assert!(w.path.source.is_empty());
         assert_eq!(w.last(), (7, 7, MigrationState::Done));
+    }
+
+    /// Удаление у источника — только по ответу его сервера (решение владельца 2026-10-29): без ответа письмо в задании
+    /// и после перезапуска (удаление повторится); отказ — повтор после паузы; задание кончается по последнему ответу.
+    #[test]
+    fn source_delete_waits_for_the_server() {
+        let mut w = World::new(Mem::moved("", Home::Account("@2".into()), 3, |_| true), Path::with_source(3), "@2");
+        w.features(Features::ALL.with_import(true).with(Feature::Quota, false));
+        w.request(MigrationRequest::Answer { job: JOB, mode: MigrationMode::Upload });
+        w.path.hold_destroy = true;
+        w.run();
+        assert_eq!(w.path.target.len(), 3);
+        assert!(w.path.source.is_empty(), "сервер источника удалил");
+        assert_eq!(w.last().0, 0, "ответа нет — не готово");
+        assert!(w.store().letters.values().all(|r| r.sources.len() == 1), "связи источника — до ответа");
+        assert!(w.store().outbound.values().all(|o| o.step == Step::DeleteSource));
+
+        // Перезапуск без ответов: удаление — снова, ответ «удалено» (письма у источника уже нет).
+        w.path.held.clear();
+        let store = std::mem::replace(&mut w.engine, Engine::open(Mem::default()).unwrap()).into_store();
+        w.engine = Engine::open(store).unwrap();
+        w.progress.clear();
+        w.path.hold_destroy = false;
+        w.path.destroy_fails = 1;
+        let start = w.now;
+        w.run();
+        assert!(w.now >= start + RETRY, "отказ — повтор после паузы");
+        assert_eq!(w.last(), (3, 3, MigrationState::Done));
+        let s = w.store();
+        assert!(s.letters.values().all(|r| r.sources.is_empty() && r.place == Place::Synced));
+        assert!(s.outbound.is_empty() && s.jobs.is_empty());
     }
 }
