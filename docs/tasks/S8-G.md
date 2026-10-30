@@ -1,7 +1,7 @@
 # S8-G: перегенерация `docs/PARITY.md` после новых команд S8
 
 lane: docs-gen
-status: todo
+status: done
 deps: [S8-16, S8-27, S8-32]
 class: A
 files: [docs/PARITY.md]
