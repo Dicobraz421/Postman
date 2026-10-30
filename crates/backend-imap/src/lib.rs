@@ -5,13 +5,14 @@
 //!
 //! - **Папки** — `LIST` с ролями (SPECIAL-USE, иначе по имени); ключ папки в кэше — `f<хэш имени>` (в имени IMAP
 //!   бывает `/`, а он — разделитель аккаунта в ключах кэша).
-//! - **Письма** — ключ `f<хэш>.<UIDVALIDITY>.<UID>`: письмо, перенесённое на сервере, — новое письмо в другой папке
-//!   (ADR 0003). При первом входе — последние [`INITIAL`] писем папки; дальше — по состоянию папки
+//! - **Письма** — связь с сервером `f<хэш>.<UIDVALIDITY>.<UID>` (ключ кэша — с аккаунтом): письмо, перенесённое на
+//!   сервере, — новое письмо в другой папке (ADR 0003); `RENAME` папки меняет связь, `LetterId` тот же (ADR 0006
+//!   п. 1). Письмо, перенесённое в другую учётку (`detached`-связь), синхронизация не возвращает. При первом входе — последние [`INITIAL`] писем папки; дальше — по состоянию папки
 //!   (`postman_imap::state`): новые с `UIDNEXT`, флаги после `HIGHESTMODSEQ` (без CONDSTORE — все), удалённые —
 //!   сверкой UID.
 //! - **Push** — IDLE на «Входящих» отдельным соединением; остальные папки — опросом ([`POLL`]).
 //! - **Тело** — письмо целиком (`BODY.PEEK[]`), разбор MIME — в воркере-песочнице (`postman_worker::mime`);
-//!   письмо целиком лежит в кэше блобом под своим ключом, вложения — `<ключ>#<номер>`.
+//!   письмо целиком — содержимым письма в хранилище (ADR 0006 п. 2, части — воркером), вложения — `<ключ>#<номер>`.
 //! - **Отправка** — SMTP submission, копия — `APPEND` в «Отправленные». «Отменить» — письмо держит сама синхронизация
 //!   (`Release::After`, S7-04в): до срока его можно вернуть в черновики; закрыли Postman — уходит сразу. «Отправить
 //!   позже» — нет (сервер не держит письмо): `Scheduled` с `max_delay: 0` — интерфейс прячет «позже».
@@ -23,7 +24,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
-use postman_cache::{AccountRow, Addr, AttachmentRow, BodyRow, Cache, EmailRow, MailboxRow, Rights, in_profile, scoped, unscoped};
+use postman_cache::{
+    AccountRow, Addr, AttachmentRow, BodyRow, Cache, EmailRow, FolderRow, LetterId, MailboxRow, Owner, RemoteRef, Rights, in_profile, scoped,
+    unscoped,
+};
 use postman_compose::{Address, Draft};
 use postman_imap::state::{FolderState, Plan};
 use postman_imap::{Config, Header, Role, Security, Session, flags, smtp, uid_set};
@@ -295,6 +299,57 @@ fn db(e: postman_cache::Error) -> postman_imap::Error {
     postman_imap::Error::Protocol(format!("cache: {e}"))
 }
 
+/// Тело под новым ключом письма: вложения — `<ключ>#<номер>`, письмо целиком — ключ.
+fn body_as(mut b: BodyRow, key: &str) -> BodyRow {
+    for a in &mut b.attachments {
+        let n = a.blob_id.rsplit_once('#').map_or("", |(_, n)| n);
+        a.blob_id = format!("{key}#{n}");
+    }
+    b.blob_id = Some(key.to_owned());
+    b
+}
+
+/// Письма папки `g` — под связи папки с новым именем на сервере `raw` (UID и UIDVALIDITY у `RENAME` те же): у письма
+/// меняется связь с сервером, `LetterId` — тот же (T1-04в, ADR 0006 п. 1); содержимое остаётся при письме, тело —
+/// под новым ключом. `scope` — аккаунт ключей учётной записи.
+fn rekey(cache: &Cache, scope: Option<&str>, g: &Folder, raw: &str) -> postman_cache::Result<()> {
+    let account = scope.unwrap_or("");
+    let id = folder_id(raw);
+    let to = cache.upsert_folder(&FolderRow {
+        owner: Owner::Account(account.to_owned()),
+        parent: None,
+        name: g.name.clone(),
+        role: g.role.map(|r| r.jmap().to_owned()),
+        remote: Some(id.clone()),
+    })?;
+    let from = cache.folder_of(account, &g.id)?;
+    let mut rows = Vec::new();
+    let mut old = Vec::new();
+    for r in letters(cache, &g.key)? {
+        let Some((_, validity, uid)) = parse_key(&r.id) else { continue };
+        let Some(letter) = cache.letter_of(account, unscoped(&r.id).1)? else { continue };
+        let Some(mut row) = cache.letter(letter)? else { continue };
+        let new = format!("{id}.{validity}.{uid}");
+        cache.attach_remote(letter, RemoteRef { account: account.to_owned(), id: new.clone(), data: Vec::new(), detached: false })?;
+        for f in row.folders.iter_mut().filter(|f| Some(**f) == from) {
+            *f = to;
+        }
+        if let Some(b) = cache.body(&r.id)? {
+            cache.put_body(&scoped(scope, &new), &body_as(b, &scoped(scope, &new)))?;
+        }
+        rows.push((new, row));
+        old.push(r.id);
+    }
+    cache.upsert_remotes(account, &rows)?;
+    // Прежние связи (и тела под прежними ключами): у письма уже есть новая — само письмо остаётся.
+    cache.delete_emails(&old)?;
+    let state = |fid: &str| scoped(scope, &format!("imap.{fid}"));
+    if let Some(s) = cache.state(&state(&g.id))? {
+        cache.set_state(&state(&id), &s)?;
+    }
+    Ok(())
+}
+
 /// Синхронизация учётной записи IMAP: свой поток, как у JMAP (`postman_core::sync::spawn_thread`). `areas` — пути
 /// областей реестра: подключаются те, чьи адреса есть у учётной записи.
 pub fn spawn(
@@ -515,6 +570,11 @@ impl Imap {
         self.scope.as_deref()
     }
 
+    /// Учётка связей с сервером (аккаунт ключей кэша; основная — пустая строка).
+    fn account(&self) -> &str {
+        self.scope.as_deref().unwrap_or("")
+    }
+
     fn folder_by_role(&self, role: Role) -> Option<&Folder> {
         self.folders.iter().find(|f| f.role == Some(role))
     }
@@ -673,16 +733,36 @@ impl Imap {
         Ok((f, uid))
     }
 
-    /// Письмо целиком: из кэша (блоб под ключом письма) или с сервера.
+    /// Письмо целиком: содержимое письма в хранилище или с сервера (тогда — в содержимое).
     async fn raw(&mut self, key: &str) -> postman_imap::Result<Vec<u8>> {
         let key = key.split_once('#').map_or(key, |(k, _)| k);
-        if let Some(b) = self.cache.blob(key).map_err(db)? {
-            return Ok(b);
+        let letter = self.cache.letter_of(self.account(), unscoped(key).1).map_err(db)?;
+        if let Some(l) = letter
+            && let Some(raw) = self.cache.letter_content(l).map_err(db)?
+        {
+            return Ok(raw);
         }
         let (_, uid) = self.locate(key).await?;
         let raw = self.session().await?.message(uid).await?.ok_or_else(|| postman_imap::Error::Protocol(format!("no message {key}")))?;
-        self.cache.put_blob(key, &raw).map_err(db)?;
+        if let Some(l) = letter {
+            self.put_content(l, &raw).await?;
+        }
         Ok(raw)
+    }
+
+    /// Письмо целиком — содержимым письма: крупные части — отдельно (разбор — воркером); не разобралось — целиком.
+    async fn put_content(&mut self, letter: LetterId, raw: &[u8]) -> postman_imap::Result<()> {
+        let bytes = raw.to_vec();
+        let parts = match self.in_worker(move |w| w.mime_split(&bytes).and_then(|(split, decoded)| postman_core::store::parts(split, &decoded))).await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::debug!("imap: content split: {e}");
+                Vec::new()
+            }
+        };
+        self.cache.put_content(letter, raw, &parts).map_err(db)?;
+        Ok(())
     }
 
     /// Работа воркера-песочницы — в отдельном потоке (он блокирует).
@@ -1005,7 +1085,8 @@ impl Imap {
         notify(Event::EmailsChanged);
     }
 
-    /// `RENAME` папки в `name` под `parent`, затем письма её и подпапок — под новые ключи (без перезагрузки с сервера).
+    /// `RENAME` папки в `name` под `parent`, затем письма её и подпапок — под новые связи с тем же `LetterId` (без
+    /// перезагрузки с сервера).
     async fn rename(&mut self, f: &Folder, parent: Option<&str>, name: &str) -> postman_imap::Result<()> {
         let session = self.session().await?;
         let delimiter = session.delimiter().await?;
@@ -1020,32 +1101,7 @@ impl Imap {
             })
             .collect();
         for (g, raw) in moved {
-            self.rekey(&g, &raw).map_err(db)?;
-        }
-        Ok(())
-    }
-
-    /// Письма папки `g` — под ключи папки с новым именем на сервере `raw` (UID и UIDVALIDITY у `RENAME` те же);
-    /// тела загрузятся при открытии.
-    fn rekey(&self, g: &Folder, raw: &str) -> postman_cache::Result<()> {
-        let id = folder_id(raw);
-        let key = scoped(self.scope(), &id);
-        let old = letters(&self.cache, &g.key)?;
-        let rows: Vec<EmailRow> = old
-            .iter()
-            .filter_map(|r| {
-                let (_, validity, uid) = parse_key(&r.id)?;
-                let mut n = r.clone();
-                n.id = email_key(self.scope(), &id, validity, uid);
-                n.mailbox_ids = vec![key.clone()];
-                Some(n)
-            })
-            .collect();
-        self.cache.delete_emails(&old.into_iter().map(|r| r.id).collect::<Vec<_>>())?;
-        self.cache.upsert_emails(&rows)?;
-        let state = |fid: &str| scoped(self.scope(), &format!("imap.{fid}"));
-        if let Some(s) = self.cache.state(&state(&g.id))? {
-            self.cache.set_state(&state(&id), &s)?;
+            rekey(&self.cache, self.scope(), &g, &raw).map_err(db)?;
         }
         Ok(())
     }
@@ -1366,8 +1422,73 @@ fn command_name(c: &Command) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{ImapAccount, email_key, folder_id, is_imap_url, parse_key};
+    use super::{Folder, ImapAccount, email_key, folder_id, is_imap_url, parse_key, rekey};
+    use postman_cache::{AttachmentRow, BodyRow, Cache, EmailRow, MailboxRow, Rights};
     use postman_imap::Security;
+
+    /// `RENAME` папки (T1-04в, ADR 0006 п. 1): у писем — новые связи с сервером, `LetterId`, содержимое и тело (под
+    /// новым ключом) — те же; письмо, перенесённое в другую учётку (`detached`), не трогается.
+    #[test]
+    fn rename_keeps_letter_ids() {
+        let cache = Cache::open_in_memory().unwrap();
+        let old = folder_id("Old");
+        let mailbox = |id: &str, name: &str| MailboxRow {
+            id: id.into(),
+            parent_id: None,
+            name: name.into(),
+            role: None,
+            sort_order: 0,
+            total: 0,
+            unread: 0,
+            rights: Rights::ALL,
+        };
+        cache.replace_mailboxes(None, &[mailbox(&old, "Old")]).unwrap();
+        let row = |uid: u32| EmailRow {
+            id: email_key(None, &old, 7, uid),
+            thread_id: format!("t{uid}"),
+            mailbox_ids: vec![old.clone()],
+            received_at: i64::from(uid),
+            subject: format!("s{uid}"),
+            from_name: String::new(),
+            from_addr: String::new(),
+            preview: String::new(),
+            seen: false,
+            flagged: false,
+            has_attachment: false,
+            size: 0,
+            keywords: Vec::new(),
+        };
+        cache.upsert_emails(&[row(1), row(2)]).unwrap();
+        let (k1, k2) = (email_key(None, &old, 7, 1), email_key(None, &old, 7, 2));
+        let l1 = cache.letter_of("", &k1).unwrap().unwrap();
+        let l2 = cache.letter_of("", &k2).unwrap().unwrap();
+        cache.put_content(l1, b"Subject: s1\r\n\r\nhi\r\n", &[]).unwrap();
+        let attachment = AttachmentRow { blob_id: format!("{k1}#0"), name: "a.pdf".into(), ..Default::default() };
+        cache.put_body(&k1, &BodyRow { attachments: vec![attachment], blob_id: Some(k1.clone()), ..Default::default() }).unwrap();
+        cache.set_state(&format!("imap.{old}"), "state").unwrap();
+        // Письмо 2 перенесено в «На этом компьютере»: связь с IMAP — `detached`.
+        let local = cache.create_folder(None, "Архив").unwrap();
+        cache.move_letters(&[l2], local).unwrap();
+
+        let g = Folder { key: old.clone(), id: old.clone(), raw: "Old".into(), name: "Old".into(), parent: None, role: None, selectable: true };
+        rekey(&cache, None, &g, "New").unwrap();
+
+        let new = folder_id("New");
+        let n1 = email_key(None, &new, 7, 1);
+        assert_eq!(cache.letter_of("", &n1).unwrap(), Some(l1), "тот же LetterId");
+        assert_eq!(cache.letter_of("", &k1).unwrap(), None, "прежней связи нет");
+        let rows = cache.page(&new, 0, 10).unwrap();
+        assert_eq!(rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), [n1.as_str()]);
+        assert!(cache.page(&old, 0, 10).unwrap().is_empty());
+        assert_eq!(cache.letter_content(l1).unwrap().as_deref(), Some(&b"Subject: s1\r\n\r\nhi\r\n"[..]), "содержимое — при письме");
+        let body = cache.body(&n1).unwrap().unwrap();
+        assert_eq!((body.blob_id.as_deref(), body.attachments[0].blob_id.as_str()), (Some(n1.as_str()), format!("{n1}#0").as_str()));
+        assert!(cache.body(&k1).unwrap().is_none());
+        assert_eq!(cache.state(&format!("imap.{new}")).unwrap().as_deref(), Some("state"));
+        let refs = cache.remotes(l2).unwrap();
+        assert!(refs.len() == 1 && refs[0].detached && refs[0].id == k2, "перенесённое в другую учётку — не трогается");
+        assert!(cache.check_index().unwrap().is_empty() && cache.check_refs().unwrap().is_empty());
+    }
 
     #[test]
     fn imap_urls() {

@@ -4,13 +4,15 @@
 //! - **Папки** — `SyncFolderHierarchy`; сервер на нём падает (Exchange 2013 CU23 — `ErrorInternalServerError`,
 //!   `docs/EXCHANGE.md`) — дерево `FindFolder` (Deep). Роли — по стандартным папкам (`GetFolder`). Ключ папки в
 //!   кэше — `f<хэш id>` (в id EWS бывает `/`, а он — разделитель аккаунта в ключах кэша).
-//! - **Письма** — ключ `m<id EWS>` (`+` → `-`, `/` → `_`). Первый вход — последние [`INITIAL`] писем папки
-//!   (`FindItem` по дате), затем состояние `SyncFolderItems` «сейчас»; дальше — изменения по состоянию: новые и
-//!   изменённые — заголовки заново, удалённые — из кэша, «прочитано» — по `ReadFlagChange`. Перенос на сервере —
-//!   новое письмо в другой папке (у EWS при переносе меняется id).
+//! - **Письма** — связь с сервером `m<id EWS>` (`+` → `-`, `/` → `_`; ключ кэша — с аккаунтом). Первый вход —
+//!   последние [`INITIAL`] писем папки (`FindItem` по дате), затем состояние `SyncFolderItems` «сейчас»; дальше —
+//!   изменения по состоянию: новые и изменённые — заголовки заново, удалённые — из кэша, «прочитано» — по
+//!   `ReadFlagChange`. Перенос на сервере в другом клиенте — новое письмо в другой папке (у EWS при переносе меняется
+//!   id); свой перенос (`MoveItem`) — та же строка письма (`LetterId`) со связью на новый id (ADR 0006 п. 1). Письмо,
+//!   перенесённое в другую учётку (`detached`-связь), синхронизация не возвращает.
 //! - **Тело** — `MimeContent` целиком, разбор MIME — воркер-песочница (`postman_worker::mime`), как у IMAP; письмо
-//!   целиком — блоб под своим ключом, вложения — `<ключ>#<номер>`. Цепочка — по `References` из MIME (заголовков
-//!   `Message-ID`/`References` Exchange 2013 в списке не отдаёт).
+//!   целиком — содержимым письма в хранилище (ADR 0006 п. 2, части — воркером), вложения — `<ключ>#<номер>`. Цепочка —
+//!   по `References` из MIME (заголовков `Message-ID`/`References` Exchange 2013 в списке не отдаёт).
 //! - **Прочитано и флаг** — `UpdateItem`; другие ключевые слова EWS не хранит (метки Postman у Exchange — нет).
 //! - **Отправка** — `CreateItem` из MIME, копия в «Отправленные» — сервером (`SendAndSaveCopy`); «Отменить» — письмо
 //!   держит синхронизация, как у IMAP; «Отправить позже» — нет. **Черновик** — `SaveOnly` в «Черновики».
@@ -27,7 +29,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use postman_cache::{AccountRow, Addr, AttachmentRow, BodyRow, Cache, EmailRow, MailboxRow, Rights, in_profile, scoped, unscoped};
+use postman_cache::{
+    AccountRow, Addr, AttachmentRow, BodyRow, Cache, EmailRow, LetterId, MailboxRow, RemoteRef, Rights, in_profile, scoped, unscoped,
+};
 use postman_compose::{Address, Draft};
 use postman_core::backend::{AreaCtx, Spawn};
 use postman_core::sync::{Command, ErrorKind, Event, Sender, Stage, Status, SyncError};
@@ -237,6 +241,16 @@ fn no_folder() -> postman_ews::Error {
 
 fn db(e: postman_cache::Error) -> postman_ews::Error {
     postman_ews::Error::Xml(format!("cache: {e}"))
+}
+
+/// Тело под новым ключом письма: вложения — `<ключ>#<номер>`, письмо целиком — ключ.
+fn body_as(mut b: BodyRow, key: &str) -> BodyRow {
+    for a in &mut b.attachments {
+        let n = a.blob_id.rsplit_once('#').map_or("", |(_, n)| n);
+        a.blob_id = format!("{key}#{n}");
+    }
+    b.blob_id = Some(key.to_owned());
+    b
 }
 
 /// Синхронизация учётной записи EWS: свой поток.
@@ -636,6 +650,11 @@ impl Ews {
         self.scope.as_deref()
     }
 
+    /// Учётка связей с сервером (аккаунт ключей кэша; основная — пустая строка).
+    fn account(&self) -> &str {
+        self.scope.as_deref().unwrap_or("")
+    }
+
     fn folder_by_role(&self, role: MailRole) -> Option<&Folder> {
         self.folders.iter().find(|f| f.role == Some(role))
     }
@@ -1000,17 +1019,37 @@ impl Ews {
         Ok(added > 0)
     }
 
-    /// Письмо целиком: из кэша (блоб под ключом письма) или с сервера (`MimeContent`).
+    /// Письмо целиком: содержимое письма в хранилище или с сервера (`MimeContent`, тогда — в содержимое).
     async fn raw(&mut self, key: &str) -> postman_ews::Result<Vec<u8>> {
         let key = key.split_once('#').map_or(key, |(k, _)| k);
-        if let Some(b) = self.cache.blob(key).map_err(db)? {
-            return Ok(b);
+        let letter = self.cache.letter_of(self.account(), unscoped(key).1).map_err(db)?;
+        if let Some(l) = letter
+            && let Some(raw) = self.cache.letter_content(l).map_err(db)?
+        {
+            return Ok(raw);
         }
         let id = parse_key(key).ok_or_else(|| postman_ews::Error::Xml(format!("not an ews key: {key}")))?;
         let mail =
             self.client.get_mail(&id).await?.ok_or_else(|| postman_ews::Error::Ews { code: "ErrorItemNotFound".into(), message: String::new() })?;
-        self.cache.put_blob(key, &mail.mime).map_err(db)?;
+        if let Some(l) = letter {
+            self.put_content(l, &mail.mime).await?;
+        }
         Ok(mail.mime)
+    }
+
+    /// Письмо целиком — содержимым письма: крупные части — отдельно (разбор — воркером); не разобралось — целиком.
+    async fn put_content(&mut self, letter: LetterId, raw: &[u8]) -> postman_ews::Result<()> {
+        let bytes = raw.to_vec();
+        let parts = match self.in_worker(move |w| w.mime_split(&bytes).and_then(|(split, decoded)| postman_core::store::parts(split, &decoded))).await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::debug!("ews: content split: {e}");
+                Vec::new()
+            }
+        };
+        self.cache.put_content(letter, raw, &parts).map_err(db)?;
+        Ok(())
     }
 
     /// Работа воркера-песочницы — в отдельном потоке (он блокирует).
@@ -1154,13 +1193,40 @@ impl Ews {
     }
 
     async fn move_letters(&mut self, keys: &[String], to: &Folder) -> postman_ews::Result<()> {
-        let ids = Self::ids(keys);
-        if !ids.is_empty() {
-            self.client.move_mail(&ids, &to.at()).await?;
-            // У перенесённого — новый id: прежние строки убрать, новые придут сверкой папки.
-            self.cache.delete_emails(keys).map_err(db)?;
+        let (keys, ids): (Vec<String>, Vec<ItemId>) = keys.iter().filter_map(|k| Some((k.clone(), parse_key(k)?))).unzip();
+        if ids.is_empty() {
+            return Ok(());
         }
-        Ok(())
+        let moved = self.client.move_mail(&ids, &to.at()).await?;
+        if moved.len() == keys.len() {
+            self.relink(&keys, &moved, to).map_err(db)
+        } else {
+            // Новых id сервер не назвал: прежние строки убрать, новые придут сверкой папки.
+            self.cache.delete_emails(&keys).map_err(db)
+        }
+    }
+
+    /// Свой перенос (`MoveItem`): у письма новый id на сервере — связь с ним, папка — `to`; `LetterId`, содержимое и
+    /// тело (под новым ключом) — те же (ADR 0006 п. 1).
+    fn relink(&self, keys: &[String], moved: &[ItemId], to: &Folder) -> postman_cache::Result<()> {
+        let account = self.account();
+        let folder = self.cache.folder_of(account, &to.hash)?;
+        let mut rows = Vec::new();
+        for (key, new) in keys.iter().zip(moved) {
+            let Some(letter) = self.cache.letter_of(account, unscoped(key).1)? else { continue };
+            let Some(mut row) = self.cache.letter(letter)? else { continue };
+            let id = encode_id(&new.id);
+            self.cache.attach_remote(letter, RemoteRef { account: account.to_owned(), id: id.clone(), data: Vec::new(), detached: false })?;
+            row.folders = folder.into_iter().collect();
+            if let Some(b) = self.cache.body(key)? {
+                let k = scoped(self.scope(), &id);
+                self.cache.put_body(&k, &body_as(b, &k))?;
+            }
+            rows.push((id, row));
+        }
+        self.cache.upsert_remotes(account, &rows)?;
+        // Прежние связи (и тела под прежними ключами): у письма уже есть новая — само письмо остаётся.
+        self.cache.delete_emails(keys)
     }
 
     async fn destroy(&mut self, keys: &[String]) -> postman_ews::Result<()> {

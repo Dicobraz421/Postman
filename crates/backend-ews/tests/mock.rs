@@ -1016,3 +1016,86 @@ fn people_search_pages() {
     let Event::PeopleFound { people, more, .. } = live.wait("PeopleFound", |e| matches!(e, Event::PeopleFound { .. })) else { unreachable!() };
     assert!(people.is_empty() && !more, "у ResolveNames страниц нет");
 }
+
+// --- Письма формата 6 (S8-12): связь с сервером, `LetterId`, `detached`. ---
+
+/// `SyncFolderItems` с состоянием без изменений — во всех папках.
+fn quiet(changes: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><m:SyncFolderItemsResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><m:ResponseMessages><m:SyncFolderItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>c3RhdGUz</m:SyncState><m:IncludesLastItemInRange>true</m:IncludesLastItemInRange><m:Changes>{changes}</m:Changes></m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse></s:Body></s:Envelope>"#
+    )
+}
+
+fn later_sync(body: &str) -> bool {
+    body.contains("<m:SyncFolderItems") && body.contains("<m:SyncState>")
+}
+
+fn inbox_of(live: &Live) -> String {
+    live.cache.mailboxes().unwrap().into_iter().find(|b| b.role.as_deref() == Some("inbox")).unwrap().id
+}
+
+/// Свой перенос в другую папку (`MoveItem`): у письма новый id сервера, строка та же — `LetterId`, содержимое и тело.
+#[test]
+fn own_move_keeps_the_letter() {
+    let (url, _log) = server_with(|b| if b.contains("<m:MoveItem") { Some(fixture("move_item.xml")) } else { later_sync(b).then(|| quiet("")) });
+    let live = ready(&url);
+    let inbox = inbox_of(&live);
+    let project = live.cache.mailboxes().unwrap().into_iter().find(|b| b.name == "Проект").unwrap().id;
+    let key = postman_backend_ews::sync::encode_id("AAMkADmsg1");
+    let letter = live.cache.letter_of("", &key).unwrap().unwrap();
+    live.cache.put_content(letter, b"Subject: s\r\n\r\nhi\r\n", &[]).unwrap();
+
+    live.commands.send(Command::Move { id: key.clone(), from: inbox.clone(), to: project.clone() }).unwrap();
+    live.wait("MailboxesChanged", |e| matches!(e, Event::MailboxesChanged));
+    let moved = postman_backend_ews::sync::encode_id("AAMkADmoved");
+    assert_eq!(live.cache.letter_of("", &moved).unwrap(), Some(letter), "тот же LetterId");
+    assert_eq!(live.cache.letter_of("", &key).unwrap(), None);
+    assert_eq!(live.cache.page(&project, 0, 10).unwrap().iter().map(|r| r.id.clone()).collect::<Vec<_>>(), [moved]);
+    assert!(!live.cache.page(&inbox, 0, 10).unwrap().iter().any(|r| r.id == key));
+    assert!(live.cache.letter_content(letter).unwrap().is_some(), "содержимое — при письме");
+}
+
+/// Шаг сценария `detached`: 0 — письмо изменилось на сервере, 1 — удалено. Только для
+/// `detached_letters_take_only_deletion` (nextest — процесс на тест).
+static DETACHED_STEP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn detached_changes(body: &str) -> Option<String> {
+    if !later_sync(body) {
+        return None;
+    }
+    let changes = match (body.contains("AAMkADinbox"), DETACHED_STEP.load(std::sync::atomic::Ordering::SeqCst)) {
+        (false, _) => "",
+        (true, 0) => {
+            r#"<t:Update><t:Message><t:ItemId Id="AAMkADmsg1" ChangeKey="MK9"/></t:Message></t:Update><t:ReadFlagChange><t:ItemId Id="AAMkADmsg1"/><t:IsRead>false</t:IsRead></t:ReadFlagChange>"#
+        }
+        (true, _) => r#"<t:Delete><t:ItemId Id="AAMkADmsg1"/></t:Delete>"#,
+    };
+    Some(quiet(changes))
+}
+
+/// Письмо перенесено в другую учётку (`detached`-связь): изменения сервера его не возвращают и не правят; удаление на
+/// сервере — снимает связь, письмо остаётся там, куда перенесено.
+#[test]
+fn detached_letters_take_only_deletion() {
+    let (url, _log) = server_with(detached_changes);
+    let live = ready(&url);
+    let inbox = inbox_of(&live);
+    let key = postman_backend_ews::sync::encode_id("AAMkADmsg1");
+    let letter = live.cache.letter_of("", &key).unwrap().unwrap();
+    let before = live.cache.letter(letter).unwrap().unwrap();
+    let local = live.cache.create_folder(None, "Архив").unwrap();
+    live.cache.move_letters(&[letter], local).unwrap();
+
+    live.commands.send(Command::Reconnect).unwrap();
+    live.wait("EmailsChanged", |e| matches!(e, Event::EmailsChanged));
+    assert!(!live.cache.page(&inbox, 0, 10).unwrap().iter().any(|r| r.id == key), "в прежнюю папку не вернулось");
+    let row = live.cache.letter(letter).unwrap().unwrap();
+    assert_eq!((row.folders.as_slice(), row.seen), (&[local][..], before.seen), "изменения сервера не применены");
+    assert!(live.cache.remotes(letter).unwrap().iter().all(|r| r.detached));
+
+    DETACHED_STEP.store(1, std::sync::atomic::Ordering::SeqCst);
+    live.commands.send(Command::Reconnect).unwrap();
+    live.wait("EmailsChanged", |e| matches!(e, Event::EmailsChanged));
+    assert!(live.cache.remotes(letter).unwrap().is_empty(), "удаление — связь снята");
+    assert_eq!(live.cache.letter(letter).unwrap().unwrap().folders, [local], "письмо — там, куда перенесено");
+}
