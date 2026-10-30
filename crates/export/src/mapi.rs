@@ -37,17 +37,23 @@ pub const PR_HTML: Tag = 0x1013_0102;
 pub const PR_INTERNET_MESSAGE_ID_W: Tag = 0x1035_001F;
 pub const PR_IN_REPLY_TO_ID_W: Tag = 0x1042_001F;
 pub const PR_INTERNET_CPID: Tag = 0x3FDE_0003;
+/// Что умеет хранилище: в MSG — [`STORE_UNICODE_OK`], строки `_W`.
+pub const PR_STORE_SUPPORT_MASK: Tag = 0x340D_0003;
 pub const PR_SENDER_SMTP_ADDRESS_W: Tag = 0x5D01_001F;
 pub const PR_SENT_REPRESENTING_SMTP_ADDRESS_W: Tag = 0x5D02_001F;
 
 // Получатель.
 pub const PR_RECIPIENT_TYPE: Tag = 0x0C15_0003;
+/// Номер получателя в письме.
+pub const PR_ROWID: Tag = 0x3000_0003;
 pub const PR_DISPLAY_NAME_W: Tag = 0x3001_001F;
 pub const PR_ADDRTYPE_W: Tag = 0x3002_001F;
 pub const PR_EMAIL_ADDRESS_W: Tag = 0x3003_001F;
 pub const PR_SMTP_ADDRESS_W: Tag = 0x39FE_001F;
 
 // Вложение.
+/// Номер вложения в письме.
+pub const PR_ATTACH_NUM: Tag = 0x0E21_0003;
 pub const PR_ATTACH_DATA_BIN: Tag = 0x3701_0102;
 /// Вложенное письмо: в MSG — хранилище `__substg1.0_3701000D` ([`Attachment::embedded`]).
 pub const PR_ATTACH_DATA_OBJ: Tag = 0x3701_000D;
@@ -69,6 +75,8 @@ pub const ATTACH_BY_VALUE: i32 = 1;
 pub const ATTACH_EMBEDDED_MSG: i32 = 5;
 /// `PR_INTERNET_CPID`: UTF-8 (`PR_HTML` — байты в этой кодировке).
 pub const CP_UTF8: i32 = 65001;
+/// `PR_STORE_SUPPORT_MASK`: строки в Unicode.
+pub const STORE_UNICODE_OK: i32 = 0x0004_0000;
 /// `PR_*_ADDRTYPE_W`.
 pub const ADDRTYPE_SMTP: &str = "SMTP";
 /// FILETIME начала эпохи Unix (сотни наносекунд от 1601-01-01 UTC).
