@@ -1,6 +1,7 @@
 //! Синтетический ящик для замеров памяти/FPS без сервера.
 
 pub mod smime;
+pub mod store;
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -151,6 +152,8 @@ pub fn ensure(path: &Path, n: usize) -> postman_cache::Result<()> {
         if !cache.accounts()?.iter().any(|a| Some(a.id.as_str()) == EXCHANGE.profile) || !boxes.iter().any(|m| m.id == exchange_nested) {
             extra_accounts(&cache, jiff::Timestamp::now().as_second())?;
         }
+        // …и «На этом компьютере» с общим вложением (S8-14).
+        store::fill(&cache, jiff::Timestamp::now().as_second())?;
         return Ok(());
     }
     cache.replace_mailboxes(None, &main_boxes())?;
@@ -221,7 +224,8 @@ pub fn ensure(path: &Path, n: usize) -> postman_cache::Result<()> {
     shared(&cache, now)?;
     extra_accounts(&cache, now)?;
     chain(&cache, now)?;
-    delegations::letters(&cache, now)
+    delegations::letters(&cache, now)?;
+    store::fill(&cache, now)
 }
 
 /// Ключевые слова демо-письма `i` (S5-02): категории по умолчанию (`postman_core::labels::DEFAULTS`) и метка
@@ -621,6 +625,23 @@ pub fn body(id: &str) -> BodyRow {
     if let Some(b) = chain_body(id) {
         return b;
     }
+    // Общее вложение (S8-14): одна и та же сводка в письмах трёх учёток.
+    if id.starts_with("share") {
+        return BodyRow {
+            to: vec![Addr { name: ME_NAME.into(), email: account.and_then(|a| self::account(Some(a))).map_or(ME, |a| a.email).into() }],
+            message_id: Some(format!("{id}@corp.example")),
+            html: Some(store::SHARED_HTML.into()),
+            attachments: vec![AttachmentRow {
+                blob_id: store::SHARED_PDF_BLOB.into(),
+                name: store::SHARED_PDF.into(),
+                mime: "application/pdf".into(),
+                size: store::pdf().len() as u64,
+                cid: None,
+                inline: false,
+            }],
+            ..Default::default()
+        };
+    }
     let n: usize = id.trim_start_matches("demo").parse().unwrap_or(0);
     // Подписанное письмо (S5-12): тело — как его разобрал бы сервер, `smime.p7s` во вложениях, письмо целиком —
     // блоб `smime-<вид>`.
@@ -818,6 +839,7 @@ pub fn blob(blob_id: &str) -> Option<Vec<u8>> {
         "xlsm" => Some(BUDGET.to_vec()),
         "photo" => Some(PHOTO.to_vec()),
         "xlsx" | "exe" | "rtlo" => Some(b"demo".to_vec()),
+        store::SHARED_PDF_BLOB => Some(store::pdf().to_vec()),
         other => other.strip_prefix("smime-").and_then(smime::raw).map(<[u8]>::to_vec),
     }
 }
