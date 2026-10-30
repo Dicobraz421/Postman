@@ -95,17 +95,8 @@ pub(crate) fn listed(all: &[AttachmentRow], shown_cids: &HashSet<String>, invite
         .map(|a| {
             let risk = classify::risk_with(&a.name, scans.get(&a.blob_id).map(|s| s.macros));
             let name = files::safe_name(&a.name);
-            let viewer = match classify::viewer(&a.name, &a.mime) {
-                // Письмо во вложении покажет S8-23; до него — как раньше: `.msg` — карточкой, `.eml` — текстом.
-                Viewer::Letter
-                    if name.rsplit_once('.').is_some_and(|(_, e)| e.eq_ignore_ascii_case("msg"))
-                        || a.mime.to_ascii_lowercase().starts_with("application/vnd.ms-outlook") =>
-                {
-                    Viewer::None
-                }
-                Viewer::Letter => Viewer::Text,
-                v => v,
-            };
+            // Встроенный просмотр главнее; нет его — модуль просмотра (S8-27), выключенные — как нет их.
+            let viewer = crate::settings_viewers::viewer(&a.name, &a.mime);
             Item { row: a.clone(), name, kind: kind(&a.name, &a.mime), risk, viewer, can_open: risk == Risk::Safe && files::can_open(&a.name) }
         })
         .collect()
@@ -677,7 +668,7 @@ pub(crate) mod scenes {
     fn docx_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
         screens::reading(m, cx)
             .and_then(|r| r.preview.as_ref())
-            .is_some_and(|p| matches!(p.state, crate::preview::PvState::Ready(crate::preview::Shown::Document { .. })))
+            .is_some_and(|p| matches!(p.state, crate::preview::PvState::Ready(crate::preview::Shown::Sections { .. })))
     }
 
     /// Документ Word для снимка: заголовок (уровень структуры), два пункта списка, таблица 2×2.
@@ -781,9 +772,9 @@ mod tests {
         assert_eq!(exe.iter().map(super::draggable).collect::<Vec<_>>(), [false, true], "исполняемый — тоже нет");
     }
 
-    /// До S8-23 письмо во вложении — как раньше: `.eml` и `message/rfc822` текстом, `.msg` — карточкой без просмотра.
+    /// Письмо во вложении (S8-23): `.eml`, `.msg` и `message/rfc822` — встроенным просмотром письма.
     #[test]
-    fn attached_letters_as_before() {
+    fn attached_letters_open_as_letters() {
         let all = [
             att("Отчёт.eml", "message/rfc822", None),
             att("fwd", "message/rfc822", None),
@@ -791,7 +782,7 @@ mod tests {
             att("outlook", "application/vnd.ms-outlook", None),
         ];
         let items = listed(&all, &HashSet::new(), false, &HashMap::new());
-        assert_eq!(items.iter().map(|i| i.viewer).collect::<Vec<_>>(), [Viewer::Text, Viewer::Text, Viewer::None, Viewer::None]);
+        assert!(items.iter().all(|i| i.viewer == Viewer::Letter));
     }
 
     #[test]

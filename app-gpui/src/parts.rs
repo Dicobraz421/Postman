@@ -8,6 +8,8 @@ pub(crate) const PARTS: &[Part] = &[
     crate::actions::PART,
     crate::thread::PART,
     crate::attachments::PART,
+    crate::sections::PART,
+    crate::settings_viewers::PART,
     crate::chrome::PART,
     crate::smime::PART,
     crate::search::PART,

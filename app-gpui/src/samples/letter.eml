@@ -1,0 +1,30 @@
+From: Ольга Смирнова <o.smirnova@vector.example>
+To: Антон Антропов <a.antropov@corp.example>, Сергей Ким <s.kim@corp.example>
+Cc: Анна Лебедева <a.lebedeva@corp.example>
+Date: Wed, 14 Oct 2026 16:05:00 +0300
+Subject: RE: Договор поставки
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="b1"
+
+--b1
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Добрый день!
+
+Направляю третью редакцию договора с правками по срокам поставки. Замечания юриста — во вложенном письме.
+
+--b1
+Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document; name="Договор_v3.docx"
+Content-Disposition: attachment; filename="Договор_v3.docx"
+Content-Transfer-Encoding: base64
+
+UEsDBAoAAAAAAA==
+--b1
+Content-Type: message/rfc822; name="Замечания юриста.eml"
+Content-Disposition: attachment; filename="Замечания юриста.eml"
+
+Subject: notes
+
+notes
+--b1--

@@ -219,8 +219,23 @@ fn block(b: &Block, key: &str, images: &Images, hits: &Hits, col: Pixels, cx: &m
             .into_any_element(),
         Block::Code(code) => div().p_2().rounded_md().bg(l.fill()).font_family("Cascadia Mono").child(code.clone()).into_any_element(),
         Block::Rule => div().h(px(1.)).bg(l.border()).into_any_element(),
-        // Пометку картинки документа (Fluent) нарисует S8-23.
-        Block::Figure => div().into_any_element(),
+        // Картинка документа (S8-23): пометкой — воркер отдаёт место, не пиксели.
+        Block::Figure => div()
+            .flex()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .px(px(8.))
+                    .py(px(2.))
+                    .rounded(px(4.))
+                    .bg(l.fill())
+                    .text_color(l.text2())
+                    .child(crate::chrome::icon('\u{EB9F}', 12.))
+                    .child(pets_i18n::tr!("att-pv-figure")),
+            )
+            .into_any_element(),
         Block::Table(rows) => div()
             .flex()
             .flex_col()

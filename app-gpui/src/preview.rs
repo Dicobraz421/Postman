@@ -79,11 +79,17 @@ pub(crate) enum Shown {
         truncated: bool,
     },
     Office(OfficeScan),
-    /// Документ Word (T1-13в): блоки IR, как тело письма; `truncated` — показано начало.
-    Document {
-        blocks: Vec<postman_ir::Block>,
+    /// Документ разделами (T1-13в, S8-23): книга — листами, презентация — по слайду, прочее — подряд; `at` — открытый
+    /// лист или слайд; `module` — показал модуль просмотра (S8-27): имя, версия, сторонний.
+    Sections {
+        layout: crate::sections::Layout,
+        sections: Vec<postman_worker::Section>,
         truncated: bool,
+        at: usize,
+        module: Option<(String, String, bool)>,
     },
+    /// Письмо во вложении (S8-23).
+    Letter(Box<crate::sections::Letter>),
     /// Встроенного просмотра нет: карточка (исполняемый файл — блокировка).
     Card,
 }
@@ -102,6 +108,19 @@ impl Pv {
         }
     }
 
+    /// Открытый лист или слайд.
+    pub(crate) fn section(&self) -> Option<usize> {
+        match &self.state {
+            PvState::Ready(Shown::Sections { at, .. }) => Some(*at),
+            _ => None,
+        }
+    }
+
+    /// Разбирает воркер или модуль просмотра: байты нужны.
+    fn wants_data(&self) -> bool {
+        self.kind().is_some() || matches!(self.viewer, Viewer::Module { .. })
+    }
+
     fn kind(&self) -> Option<PreviewKind> {
         match self.viewer {
             Viewer::Image => Some(PreviewKind::Image),
@@ -110,9 +129,9 @@ impl Pv {
             Viewer::Text => Some(PreviewKind::Text),
             // Документ Word — текстом IR (T1-13в); с макросами воркер отвечает проверкой Office.
             Viewer::Document => Some(PreviewKind::Document),
-            // Новые виды S8-22 — запросом ядра; листы, слайды и письмо во вложении покажет S8-23.
+            // Листы, таблицы, слайды, письмо во вложении (S8-23) — запросом ядра.
             v @ (Viewer::Sheet | Viewer::Table | Viewer::Slides | Viewer::Letter) => v.kind(),
-            // Модули просмотра (S8-26) интерфейс пока не выбирает: `classify::viewer` их не даёт.
+            // Модуль просмотра (S8-27) — хостом `postman-viewer`, не воркером.
             Viewer::Office | Viewer::Module { .. } | Viewer::None => None,
         }
     }
@@ -148,8 +167,12 @@ impl ReadingPane {
         true
     }
 
-    /// ← / → в просмотре: соседнее вложение; `false` — просмотр не открыт.
+    /// ← / → в просмотре: у презентации — соседний слайд (как страницы PDF), иначе — соседнее вложение; `false` —
+    /// просмотр не открыт.
     pub(crate) fn step_preview(&mut self, delta: isize, cx: &mut Context<Self>) -> bool {
+        if self.step_slide(delta, cx) {
+            return true;
+        }
         let Some(r) = &self.reading else { return false };
         let Some(current) = r.preview.as_ref().map(|p| p.row.blob_id.clone()) else { return false };
         let items = attachments::items(r);
@@ -238,7 +261,7 @@ impl ReadingPane {
             self.run_scan(blob.to_string(), data.clone(), cx);
         }
         let shown = match self.reading.as_mut().and_then(|r| r.preview.as_mut()) {
-            Some(p) if p.row.blob_id == blob && p.kind().is_some() && p.data.is_none() => {
+            Some(p) if p.row.blob_id == blob && p.wants_data() && p.data.is_none() => {
                 p.data = Some(data.clone());
                 true
             }
@@ -324,8 +347,12 @@ impl ReadingPane {
     }
 
     fn run_preview(&mut self, cx: &mut Context<Self>) {
+        if self.reading.as_ref().and_then(|r| r.preview.as_ref()).is_some_and(|p| matches!(p.viewer, Viewer::Module { .. })) {
+            return self.run_module(cx);
+        }
         let Some(r) = &mut self.reading else { return };
         let Some(p) = &mut r.preview else { return };
+        let layout = crate::sections::Layout::of(p.viewer);
         let (Some(kind), Some(data)) = (p.kind(), p.data.clone()) else { return };
         let (id, blob, page) = (r.row.id.clone(), p.row.blob_id.clone(), p.page);
         let (side, width) = match kind {
@@ -367,9 +394,20 @@ impl ReadingPane {
                     Ok((Preview::Archive(l), _)) => PvState::Ready(Shown::Archive(l)),
                     Ok((Preview::Text { text, truncated }, _)) => PvState::Ready(Shown::Text { text, truncated }),
                     Ok((Preview::Office(s), _)) => PvState::Ready(Shown::Office(s)),
-                    // Разделы (листы, слайды) и их заголовки покажет S8-23; пока — подряд.
                     Ok((Preview::Document { sections, truncated }, _)) => {
-                        PvState::Ready(Shown::Document { blocks: sections.into_iter().flat_map(|s| s.blocks).collect(), truncated })
+                        PvState::Ready(Shown::Sections { layout, sections, truncated, at: 0, module: None })
+                    }
+                    Ok((Preview::Letter { from, to, cc, date, subject, blocks, attachments, truncated }, _)) => {
+                        PvState::Ready(Shown::Letter(Box::new(crate::sections::Letter {
+                            from,
+                            to,
+                            cc,
+                            date,
+                            subject,
+                            blocks,
+                            attachments,
+                            truncated,
+                        })))
                     }
                     Ok(_) => PvState::Failed("?".into()),
                     Err(e) => PvState::Failed(e),
@@ -384,22 +422,35 @@ impl ReadingPane {
 
     /// Снимок `preview-docx`: документ Word из байтов (`docx` — собран сценой) — через воркер, как вложение.
     pub(crate) fn screen_document(&mut self, docx: Vec<u8>, cx: &mut Context<Self>) {
+        self.screen_preview("report.docx", Viewer::Document, docx, cx);
+    }
+
+    /// Снимки просмотра (S8-23, S8-27): файл `name` из байтов (собран сценой) — тем же путём, что вложение.
+    pub(crate) fn screen_preview(&mut self, name: &str, viewer: Viewer, bytes: Vec<u8>, cx: &mut Context<Self>) {
+        self.screen_pv(name, viewer, Some(bytes));
+        self.run_preview(cx);
+        cx.notify();
+    }
+
+    /// Просмотр снимка без разбора: байты `data` (нет — состояние ставит сцена).
+    pub(crate) fn screen_pv(&mut self, name: &str, viewer: Viewer, data: Option<Vec<u8>>) {
         let Some(r) = &mut self.reading else { return };
+        let bytes = data.unwrap_or_default();
         let row = AttachmentRow {
-            blob_id: "screen-docx".into(),
-            name: "report.docx".into(),
+            blob_id: format!("screen-{name}"),
+            name: name.into(),
             mime: String::new(),
-            size: docx.len() as u64,
+            size: bytes.len() as u64,
             cid: None,
             inline: false,
         };
         let pv = Pv {
             name: row.name.clone(),
             row,
-            viewer: Viewer::Document,
+            viewer,
             risk: Risk::Safe,
             page: 0,
-            data: Some(Arc::new(docx)),
+            data: (!bytes.is_empty()).then(|| Arc::new(bytes)),
             state: PvState::Loading,
             busy: false,
             scroll: ScrollHandle::new(),
@@ -408,8 +459,32 @@ impl ReadingPane {
         if let Some(old) = r.preview.replace(pv) {
             self.retired.extend(old.image());
         }
-        self.run_preview(cx);
-        cx.notify();
+    }
+
+    /// Лист или слайд `i` (вкладка, листание).
+    pub(crate) fn screen_section(&mut self, i: usize, cx: &mut Context<Self>) {
+        self.go_section(i, cx);
+    }
+
+    fn go_section(&mut self, i: usize, cx: &mut Context<Self>) {
+        let Some(p) = self.reading.as_mut().and_then(|r| r.preview.as_mut()) else { return };
+        if let PvState::Ready(Shown::Sections { sections, at, .. }) = &mut p.state
+            && i < sections.len()
+            && *at != i
+        {
+            *at = i;
+            p.scroll = ScrollHandle::new();
+            cx.notify();
+        }
+    }
+
+    /// ← / → у презентации: соседний слайд; `false` — не презентация.
+    fn step_slide(&mut self, delta: isize, cx: &mut Context<Self>) -> bool {
+        let Some(p) = self.reading.as_ref().and_then(|r| r.preview.as_ref()) else { return false };
+        let PvState::Ready(Shown::Sections { layout: crate::sections::Layout::Slides, sections, at, .. }) = &p.state else { return false };
+        let next = at.saturating_add_signed(delta).min(sections.len().saturating_sub(1));
+        self.go_section(next, cx);
+        true
     }
 
     /// Страница PDF: соседняя по кнопке.
@@ -518,6 +593,12 @@ impl ReadingPane {
     pub(crate) fn preview_pane(&self, p: &Pv, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let l = crate::roles::look(cx);
         let note = match (&p.state, p.viewer) {
+            // Показал модуль просмотра (S8-27): имя и версия, сторонний — с пометкой.
+            (PvState::Ready(Shown::Sections { module: Some((name, version, third)), .. }), _) => {
+                let key = if *third { "att-pv-module-third" } else { "att-pv-module" };
+                tr!(key, name = name.as_str(), version = version.as_str())
+            }
+            (_, Viewer::Module { id }) => crate::settings_viewers::module_note(id),
             (_, Viewer::Archive) => tr!("att-pv-note-archive"),
             (_, Viewer::Office | Viewer::None) => tr!("att-pv-note-check"),
             _ => tr!("att-pv-note-builtin"),
@@ -635,22 +716,13 @@ impl ReadingPane {
                 }
                 col.child(text.clone()).into_any_element()
             }
-            PvState::Ready(Shown::Document { blocks, truncated }) => {
-                // Тем же видом, что тело письма (`ir_view::blocks`), с прокруткой; картинок у просмотра нет.
-                let key = format!("pv-doc-{}", p.row.blob_id);
-                let els = crate::ir_view::blocks(blocks, &key, &crate::ir_view::Images::new(), self.column.get(), cx);
-                div()
-                    .id("pv-doc")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .p(px(14.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .when(*truncated, |d| d.child(div().text_size(l.px(Metric::TypeCaption)).text_color(l.text2()).child(tr!("att-pv-doc-cut"))))
-                    .children(els)
-                    .into_any_element()
+            PvState::Ready(Shown::Sections { layout, sections, truncated, at, .. }) => {
+                self.sections_view(p, *layout, sections, *truncated, *at, &l, cx)
+            }
+            PvState::Ready(Shown::Letter(m)) => {
+                let bar = toolbar(&l).child(div().flex_1()).children(self.file_buttons(p, &l, cx));
+                let key = format!("pv-letter-{}", p.row.blob_id);
+                div().flex_1().min_h_0().flex().flex_col().child(bar).child(self.letter_view(m, &key, &l, cx)).into_any_element()
             }
             PvState::Ready(Shown::Office(scan)) => self.check_card(p, Some(scan), &l, cx),
             PvState::Ready(Shown::Card) => self.check_card(p, None, &l, cx),
@@ -667,6 +739,149 @@ impl ReadingPane {
             .child(header)
             .child(body)
             .into_any_element()
+    }
+
+    /// Документ разделами (S8-23): книга — вкладки листов и сетка; презентация — листание и слайд; прочее — подряд.
+    #[allow(clippy::too_many_arguments)]
+    fn sections_view(
+        &self,
+        p: &Pv,
+        layout: crate::sections::Layout,
+        sections: &[postman_worker::Section],
+        truncated: bool,
+        at: usize,
+        l: &Look,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use crate::sections::{self as sec, Layout};
+        let key = format!("pv-doc-{}-{at}", p.row.blob_id);
+        let cut = |d: Stateful<Div>| d.child(div().text_size(l.px(Metric::TypeCaption)).text_color(l.text2()).child(tr!("att-pv-doc-cut")));
+        let col = self.column.get();
+        match layout {
+            Layout::Book => {
+                let tabs = sections.len() > 1 || sections.first().is_some_and(|s| !matches!(s.title, postman_worker::SectionTitle::None));
+                let mut bar = toolbar(l);
+                if tabs {
+                    bar = bar.children(sections.iter().enumerate().map(|(i, s)| {
+                        let on = i == at;
+                        let hint = sec::title(&s.title);
+                        div()
+                            .id(("pv-sheet", i))
+                            .h_full()
+                            .px(px(10.))
+                            .flex()
+                            .items_center()
+                            .cursor_pointer()
+                            .when(on, |d| d.font_weight(FontWeight::SEMIBOLD).text_color(l.accent_text()).border_b_2().border_color(l.accent()))
+                            .when(!on, |d| d.text_color(l.text2()).hover(|d| d.text_color(l.text())))
+                            .child(sec::tab_name(s, i))
+                            .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(hint.clone()).build(window, cx))
+                            .on_click(cx.listener(move |this, _, _, cx| this.go_section(i, cx)))
+                    }));
+                }
+                let bar = bar.child(div().flex_1()).children(self.file_buttons(p, l, cx));
+                let Some(s) = sections.get(at) else { return div().into_any_element() };
+                let table = s.blocks.iter().find_map(|b| if let postman_ir::Block::Table(rows) = b { Some(rows) } else { None });
+                let body = match table {
+                    Some(rows) => sec::grid(rows, &key, l),
+                    None => div()
+                        .id("pv-doc")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .p(px(14.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.))
+                        .children(crate::ir_view::blocks(&s.blocks, &key, &crate::ir_view::Images::new(), col, cx))
+                        .into_any_element(),
+                };
+                // Показано начало (S8-23): строк — сколько дал воркер; «Сохранить…» — весь файл.
+                let row = p.row.clone();
+                let foot = truncated.then(|| {
+                    div()
+                        .h(px(32.))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .px(px(12.))
+                        .border_t_1()
+                        .border_color(l.border())
+                        .bg(l.fill())
+                        .text_size(l.px(Metric::TypeCaption))
+                        .child(icon(glyph::INFO, 12.).text_color(l.text2()))
+                        .child(div().flex_1().text_color(l.text2()).child(tr!("att-pv-cut-rows-shown", shown = sec::rows_of(s) as i64)))
+                        .child(
+                            div()
+                                .id("pv-cut-save")
+                                .cursor_pointer()
+                                .text_color(l.accent_text())
+                                .child(tr!("att-pv-save"))
+                                .on_click(cx.listener(move |this, _, _, cx| this.file_action(row.clone(), FileAct::SaveAs, cx))),
+                        )
+                });
+                div().flex_1().min_h_0().flex().flex_col().child(bar).child(body).children(foot).into_any_element()
+            }
+            Layout::Slides => {
+                let n = sections.len();
+                let pager = |id: &'static str, g: char, delta: isize, text: String, on: bool| {
+                    crate::calendar::icon_button(id, g, l)
+                        .when(!on, |d| d.opacity(0.4))
+                        .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(text.clone()).build(window, cx))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.step_slide(delta, cx);
+                        }))
+                };
+                let caption = sections.get(at).map(sec::slide_caption).unwrap_or_default();
+                let bar = toolbar(l)
+                    .child(pager("pv-prev-slide", glyph::PREV, -1, tr!("att-pv-prev-slide"), at > 0))
+                    .child(div().min_w(px(56.)).flex().justify_center().child(tr!("att-pv-page", page = (at + 1) as i64, pages = n as i64)))
+                    .child(pager("pv-next-slide", glyph::NEXT, 1, tr!("att-pv-next-slide"), at + 1 < n))
+                    .child(div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(l.border()))
+                    .child(div().flex_1().min_w_0().truncate().text_color(l.text2()).child(caption))
+                    .children(self.file_buttons(p, l, cx));
+                let Some(s) = sections.get(at) else { return div().into_any_element() };
+                let (body, notes) = sec::split_notes(&s.blocks);
+                let notes = notes.map(|n| {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .pt(px(8.))
+                        .child(div().text_size(l.px(Metric::TypeCaption)).text_color(l.text2()).child(tr!("att-pv-notes")))
+                        .children(crate::ir_view::blocks(n, &format!("{key}-notes"), &crate::ir_view::Images::new(), col, cx))
+                });
+                let canvas = div()
+                    .id("pv-slide")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .px(px(20.))
+                    .py(px(16.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.))
+                    .children(crate::ir_view::blocks(body, &key, &crate::ir_view::Images::new(), col, cx))
+                    .children(notes)
+                    .when(truncated, cut);
+                div().flex_1().min_h_0().flex().flex_col().child(bar).child(canvas).into_any_element()
+            }
+            Layout::Doc => {
+                // Тем же видом, что тело письма (`ir_view::blocks`), с прокруткой; картинок у просмотра нет. Разделы
+                // с заголовком (модуль, книга без вкладок) — подписью над своими блоками.
+                let mut col_el =
+                    div().id("pv-doc").flex_1().min_h_0().overflow_y_scroll().p(px(14.)).flex().flex_col().gap(px(8.)).when(truncated, cut);
+                for (i, s) in sections.iter().enumerate() {
+                    let t = sec::title(&s.title);
+                    if !t.is_empty() {
+                        col_el = col_el.child(div().pt(px(6.)).text_size(l.px(Metric::TypeCaption)).text_color(l.text2()).child(t));
+                    }
+                    col_el = col_el.children(crate::ir_view::blocks(&s.blocks, &format!("{key}-{i}"), &crate::ir_view::Images::new(), col, cx));
+                }
+                col_el.into_any_element()
+            }
+        }
     }
 
     /// «Открыть в приложении» (если можно) и «Сохранить…».
@@ -776,7 +991,11 @@ impl ReadingPane {
             };
         } else {
             let text = if scan.is_some() { tr!("att-pv-office-clean") } else { tr!("att-pv-none") };
-            card = card.child(div().text_color(l.text2()).child(text)).child(div().flex().gap(px(8.)).children(self.file_buttons(p, l, cx)));
+            // Подходящий модуль выключен (S8-27): «Включить модуль «…»».
+            let enable = self.enable_module_link(&p.row.name, &p.row.mime, l, cx);
+            card = card
+                .child(div().text_color(l.text2()).child(text))
+                .child(div().flex().items_center().gap(px(8.)).children(enable).children(self.file_buttons(p, l, cx)));
         }
         div().id("pv-card").flex_1().min_h_0().overflow_y_scroll().bg(l.base()).px(px(16.)).py(px(14.)).child(card).into_any_element()
     }
