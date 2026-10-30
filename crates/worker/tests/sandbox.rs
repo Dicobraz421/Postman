@@ -208,12 +208,12 @@ fn mime_split_round_trip() {
     let lines = 64 * 1024 * 1024 / line.len() + 1000;
     let body = vec![line; lines].join("=\r\n");
     let raw = format!(
-        "From: a@example.test\r\nTo: b@example.test\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n\
+        "From: a@example.test\r\nTo: b@example.test\r\nMessage-ID: <big@example.test>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n\
          --b\r\nContent-Type: text/plain\r\n\r\nТело\r\n--b\r\nContent-Type: application/octet-stream\r\n\
          Content-Transfer-Encoding: quoted-printable\r\n\r\n{body}\r\n--b--\r\n"
     );
     let (split, bin) = c.mime_split(raw.as_bytes()).unwrap();
-    assert_eq!(split.parts.len(), 1);
+    assert_eq!((split.parts.len(), split.message_id.as_deref()), (1, Some("<big@example.test>")));
     let p = &split.parts[0];
     assert_eq!(&raw.as_bytes()[p.range.start as usize..p.range.end as usize], body.as_bytes());
     assert_eq!(bin.len(), lines * 75);

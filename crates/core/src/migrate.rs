@@ -106,6 +106,9 @@ pub trait Store: Homes {
     fn info(&self, id: LetterId) -> Result<Option<LetterInfo>>;
     /// Письмо целиком с сервера источника → содержимое (части — воркером, хэш сверен).
     fn put_content(&mut self, letter: LetterId, raw: &[u8]) -> Result<()>;
+    /// `Message-ID` письма с содержимым (с угловыми скобками) — из ответа воркера `MimeSplit`, не разбором в процессе
+    /// приложения; нет — `None`.
+    fn message_id(&mut self, letter: LetterId) -> Result<Option<String>>;
     /// Сервер цели принял письмо: связь с ним, `place = Synced`, шаг — [`Step::DeleteSource`].
     fn confirm(&mut self, job: JobId, letter: LetterId, remote: &Remote) -> Result<()>;
     /// Локальный архив: письмо только в базе (`place = Local`), шаг — [`Step::DeleteSource`].
@@ -836,7 +839,9 @@ fn upload(j: &mut Job, store: &mut dyn Store, net: &mut Net, now: Instant) -> Re
             if let Some(l) = j.letters.get_mut(&id) {
                 (l.step, l.busy, l.slot) = (Step::Confirm, true, Some(slot));
             }
-            let cmd = Command::Import { job: j.row.id, letter: id, folder: to, keywords: info.keywords, received_at: info.received_at, retry };
+            let message_id = store.message_id(id)?;
+            let cmd =
+                Command::Import { job: j.row.id, letter: id, folder: to, keywords: info.keywords, received_at: info.received_at, message_id, retry };
             net.send(j.target.route(), cmd);
         }
     }
@@ -998,6 +1003,9 @@ mod tests {
             self.row(letter)?.content = Some(raw.to_vec());
             Ok(())
         }
+        fn message_id(&mut self, letter: LetterId) -> Result<Option<String>> {
+            Ok(self.row(letter)?.content.as_deref().map(message_id))
+        }
         fn confirm(&mut self, job: JobId, letter: LetterId, remote: &Remote) -> Result<()> {
             let r = self.row(letter)?;
             r.links.push(remote.clone());
@@ -1072,12 +1080,13 @@ mod tests {
             Path { source: (1..=n).map(|i| format!("m{i}")).collect(), quota: Some(Usage { used: 0, limit: u64::MAX }), ..Path::default() }
         }
 
-        fn import(&mut self, job: JobId, letter: LetterId, account: &str, raw: &[u8], retry: bool) -> Option<Event> {
+        /// Выгрузка: `found` — `Message-ID` из команды, по нему повтор ищет письмо у цели.
+        fn import(&mut self, job: JobId, letter: LetterId, account: &str, raw: &[u8], found: Option<String>, retry: bool) -> Option<Event> {
             let mid = message_id(raw);
             let remote = |id: &String| Remote { account: account.into(), id: id.clone(), data: Vec::new() };
             if retry {
                 self.retries += 1;
-                if let Some((id, _)) = self.target.iter().find(|(_, m)| **m == mid) {
+                if let Some((id, _)) = self.target.iter().find(|(_, m)| Some(*m) == found.as_ref()) {
                     return Some(Event::Imported { job, letter, remote: remote(id) });
                 }
             }
@@ -1116,11 +1125,12 @@ mod tests {
                     let data = if self.source.contains(&src.id) { Ok(Arc::new(raw(letter.0))) } else { Err("gone".into()) };
                     vec![Event::Raw { letter, data }]
                 }
-                Command::Import { job, letter, folder, keywords, received_at, retry } => {
+                Command::Import { job, letter, folder, keywords, received_at, message_id: mid, retry } => {
                     assert_eq!(route, store.folder(folder).route(), "выгрузка — в поток цели");
                     assert_eq!((keywords, received_at), (vec!["$seen".to_string()], letter.0 as i64));
                     let raw = store.letters[&letter].content.clone().expect("выгрузка — только с содержимым");
-                    let e = self.import(job, letter, target, &raw, retry);
+                    assert_eq!(mid.as_deref(), Some(message_id(&raw).as_str()), "Message-ID — от хранилища (воркера)");
+                    let e = self.import(job, letter, target, &raw, mid, retry);
                     if self.hold {
                         self.held.extend(e);
                         return Vec::new();

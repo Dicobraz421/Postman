@@ -1528,8 +1528,8 @@ impl Ews {
                 None => notify(Event::UnsendFailed { ticket, too_late: true, error: String::new() }),
             },
             Command::FetchRaw { letter } => notify(self.fetch_raw(letter).await),
-            Command::Import { job, letter, folder, keywords, received_at, retry } => {
-                notify(match self.import(letter, folder, &keywords, received_at, retry).await {
+            Command::Import { job, letter, folder, keywords, received_at, message_id, retry } => {
+                notify(match self.import(letter, folder, &keywords, received_at, message_id.as_deref(), retry).await {
                     Ok(id) => Event::Imported { job, letter, remote: Remote { account: self.account().to_owned(), id, data: Vec::new() } },
                     Err(error) => {
                         tracing::info!(job = job.0, letter = letter.0, "ews import refused: {error}");
@@ -1603,14 +1603,16 @@ impl Ews {
         self.folders.iter().find(|f| f.hash == remote)
     }
 
-    /// `Command::Import`: письмо из хранилища — в папку (`CreateItem` `SaveOnly`); `retry` — сначала поиск по
-    /// `Message-ID` в папке (выгрузка могла дойти, ответ — нет). Ответ — связь нового письма с сервером.
+    /// `Command::Import`: письмо из хранилища — в папку (`CreateItem` `SaveOnly`, клиент EWS его сам не повторяет);
+    /// `retry` — сначала поиск по `Message-ID` в папке (выгрузка могла дойти, ответ — нет). `Message-ID` — из команды
+    /// (его прочёл воркер): письмо здесь не разбирается. Ответ — связь нового письма с сервером.
     async fn import(
         &mut self,
         letter: postman_core::model::LetterId,
         folder: postman_core::model::FolderId,
         keywords: &[String],
         received_at: i64,
+        mid: Option<&str>,
         retry: bool,
     ) -> Result<String, ImportError> {
         let to = self.folder_at(folder).map(Folder::at).ok_or_else(|| ImportError::Rejected("no such folder".into()))?;
@@ -1619,8 +1621,8 @@ impl Ews {
             Ok(None) => return Err(ImportError::Rejected("letter content is not stored".into())),
             Err(e) => return Err(ImportError::Rejected(e.to_string())),
         };
-        if retry && let Some(mid) = postman_core::store::message_id(&raw) {
-            match self.client.find_message_id(&to, &mid).await {
+        if retry && let Some(mid) = mid {
+            match self.client.find_message_id(&to, mid).await {
                 Ok(found) => {
                     if let Some(id) = found.first() {
                         return Ok(encode_id(&id.id));

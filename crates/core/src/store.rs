@@ -1,14 +1,15 @@
 //! Хранилище формата 6 в ядре (ADR 0006, S8-09): открытие с переносом формата 5 (ход — `Event::StoreUpgrade`),
-//! письмо целиком — частями через воркер (`MimeSplit`) в содержимое, тело из содержимого без сети, хранилище заданий
+//! письмо целиком — частями через воркер (`MimeSplit`, с ним и `Message-ID`) в содержимое, тело из содержимого без сети, хранилище заданий
 //! переноса для [`migrate::Engine`] и мост между `LetterId` и ключами кэша, которые пока держат плагины путей.
 //!
 //! Ссылка на письмо в строковых полях (id документа поиска, ключ тела из содержимого, ссылка задачи на письмо) —
 //! [`letter_ref`], `#<LetterId>`: с `#` ключи кэша не начинаются, ссылка с ключом не путается.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use postman_cache::{BodyRow, Cache, Encoding, Hash, Migrated, Migration, MoveTicket, Owner, RemoteRef, SplitPart};
+use postman_cache::{BodyRow, Cache, Encoding, Migrated, Migration, MoveTicket, Owner, RemoteRef, SplitPart};
 use postman_worker::{Client, mime};
 
 use crate::migrate::{self, Engine, JobRow, LetterInfo, Outbound, Step};
@@ -84,56 +85,41 @@ pub fn parts(split: mime::Split, decoded: &[u8]) -> std::result::Result<Vec<Spli
     Ok(out)
 }
 
-/// Части письма целиком для хранилища; ошибка — текст для журнала.
-pub type Splitter = Box<dyn FnMut(&[u8]) -> std::result::Result<Vec<SplitPart>, String> + Send>;
+/// Письмо целиком по ответу воркера `MimeSplit`: части для [`Cache::put_content`] и `Message-ID` (с угловыми
+/// скобками) — по нему путь цели ищет письмо при повторе выгрузки (`Command::Import`). Заголовки чужого письма в
+/// процессе приложения не разбираются (решение владельца 2026-10-30).
+#[derive(Debug, Default)]
+pub struct Parts {
+    pub parts: Vec<SplitPart>,
+    pub message_id: Option<String>,
+}
 
-/// Части письма — воркером в песочнице (`MimeSplit`): разбор MIME чужого письма — только там.
+/// Ответ воркера `MimeSplit` целиком → [`Parts`]. Несогласованный ответ — ошибка.
+pub fn split_of(split: mime::Split, decoded: &[u8]) -> std::result::Result<Parts, String> {
+    let message_id = split.message_id.clone();
+    Ok(Parts { parts: parts(split, decoded)?, message_id })
+}
+
+/// Письмо целиком → [`Parts`]; ошибка — текст для журнала.
+pub type Splitter = Box<dyn FnMut(&[u8]) -> std::result::Result<Parts, String> + Send>;
+
+/// Части письма и `Message-ID` — воркером в песочнице (`MimeSplit`): разбор чужого письма — только там.
 pub fn worker_splitter(mut client: Client) -> Splitter {
     Box::new(move |raw| {
         let (split, decoded) = client.mime_split(raw)?;
-        parts(split, &decoded)
+        split_of(split, &decoded)
     })
 }
 
-/// Письмо целиком `raw` — содержимым письма `id`. Не разобралось (не RFC 5322, воркер не ответил) — хранится одним
-/// скелетом: байты те же, только без дедупликации частей.
-pub fn put_raw(cache: &Cache, split: &mut Splitter, id: LetterId, raw: &[u8]) -> postman_cache::Result<Hash> {
-    let parts = split(raw).unwrap_or_else(|_| {
+/// Письмо целиком `raw` — содержимым письма `id`; ответ — его `Message-ID` от воркера. Не разобралось (не RFC 5322,
+/// воркер не ответил) — хранится одним скелетом: байты те же, только без дедупликации частей; `Message-ID` — `None`.
+pub fn put_raw(cache: &Cache, split: &mut Splitter, id: LetterId, raw: &[u8]) -> postman_cache::Result<Option<String>> {
+    let p = split(raw).unwrap_or_else(|_| {
         tracing::warn!(letter = id.0, "content split failed, letter stored whole");
-        Vec::new()
+        Parts::default()
     });
-    cache.put_content(cache_id(id), raw, &parts)
-}
-
-/// `Message-ID` письма целиком (с угловыми скобками): повтор выгрузки без дублей (`Command::Import` с `retry`) у путей,
-/// чей сервер не отвечает `alreadyExists`. Только это поле заголовка в первых 64 КиБ, без разбора MIME (как
-/// `postman_imap::references` у ответа сервера); нет — `None`.
-pub fn message_id(raw: &[u8]) -> Option<String> {
-    const NAME: &str = "message-id:";
-    let text = String::from_utf8_lossy(&raw[..raw.len().min(64 * 1024)]);
-    let mut value: Option<String> = None;
-    for line in text.split('\n').map(|l| l.trim_end_matches('\r')) {
-        if line.is_empty() {
-            break;
-        }
-        if line.starts_with([' ', '\t']) {
-            if let Some(v) = value.as_mut() {
-                v.push_str(line);
-            }
-            continue;
-        }
-        if value.is_some() {
-            break;
-        }
-        if line.get(..NAME.len()).is_some_and(|n| n.eq_ignore_ascii_case(NAME)) {
-            value = Some(line[NAME.len()..].to_owned());
-        }
-    }
-    let value = value?;
-    let start = value.find('<')?;
-    let len = value[start..].find('>')?;
-    let id: String = value[start..=start + len].chars().filter(|c| !c.is_whitespace()).collect();
-    (id.len() > 2).then_some(id)
+    cache.put_content(cache_id(id), raw, &p.parts)?;
+    Ok(p.message_id)
 }
 
 /// Открыть хранилище; файл формата 5 — перенести в формат 6 (ADR 0006 п. 6): ход — `Event::StoreUpgrade` в `notify`,
@@ -145,7 +131,7 @@ pub fn open(path: &Path, split: Option<Splitter>, notify: &dyn Fn(Event)) -> pos
     let mut how = Migration {
         progress: Box::new(|done, total| notify(Event::StoreUpgrade { done, total })),
         // Письмо, которое воркер не разобрал, хранится целиком: перенос из-за него не прерывается.
-        split: split.as_mut().map(|s| -> postman_cache::Split<'_> { Box::new(move |raw: &[u8]| Ok(s(raw).unwrap_or_default())) }),
+        split: split.as_mut().map(|s| -> postman_cache::Split<'_> { Box::new(move |raw: &[u8]| Ok(s(raw).map(|p| p.parts).unwrap_or_default())) }),
     };
     let (cache, migrated) = Cache::open_with(path, &mut how)?;
     match &migrated {
@@ -244,15 +230,17 @@ fn folder_home(cache: &Cache, id: FolderId) -> Home {
 }
 
 /// Хранилище заданий переноса для [`migrate::Engine`] поверх кэша формата 6: каждая запись — одна транзакция кэша;
-/// письмо целиком от источника — частями через `split`.
+/// письмо целиком от источника — частями через `split`, его `Message-ID` — оттуда же.
 pub struct CacheStore {
     cache: Cache,
     split: Splitter,
+    /// `Message-ID` писем заданий от `split`: в базе его нет, у содержимого из базы — спросить воркер снова.
+    message_ids: HashMap<LetterId, Option<String>>,
 }
 
 impl CacheStore {
     pub fn new(cache: Cache, split: Splitter) -> Self {
-        Self { cache, split }
+        Self { cache, split, message_ids: HashMap::new() }
     }
 
     pub fn cache(&self) -> &Cache {
@@ -379,8 +367,27 @@ impl migrate::Store for CacheStore {
     }
 
     fn put_content(&mut self, letter: LetterId, raw: &[u8]) -> Result<()> {
-        put_raw(&self.cache, &mut self.split, letter, raw)?;
+        let message_id = put_raw(&self.cache, &mut self.split, letter, raw)?;
+        self.message_ids.insert(letter, message_id);
         Ok(())
+    }
+
+    fn message_id(&mut self, letter: LetterId) -> Result<Option<String>> {
+        if let Some(m) = self.message_ids.get(&letter) {
+            return Ok(m.clone());
+        }
+        let Some(raw) = self.cache.letter_content(cache_id(letter))? else { return Ok(None) };
+        match (self.split)(&raw) {
+            Ok(p) => {
+                self.message_ids.insert(letter, p.message_id.clone());
+                Ok(p.message_id)
+            }
+            // Воркер не ответил: без `Message-ID` сейчас, в следующий раз — спросить снова.
+            Err(e) => {
+                tracing::warn!(letter = letter.0, "message id not read: {e}");
+                Ok(None)
+            }
+        }
     }
 
     fn confirm(&mut self, job: JobId, letter: LetterId, remote: &Remote) -> Result<()> {
@@ -397,18 +404,24 @@ impl migrate::Store for CacheStore {
             ImportError::TooLarge => postman_cache::Refused::TooLarge,
             _ => postman_cache::Refused::Rejected,
         };
+        self.message_ids.remove(&letter);
         Ok(self.cache.refused(cache_job(job), cache_id(letter), why)?)
     }
 
     fn finish(&mut self, job: JobId, letter: LetterId) -> Result<()> {
+        self.message_ids.remove(&letter);
         Ok(self.cache.finish(cache_job(job), cache_id(letter))?)
     }
 
     fn kept(&mut self, job: JobId, letter: LetterId) -> Result<()> {
+        self.message_ids.remove(&letter);
         Ok(self.cache.kept(cache_job(job), cache_id(letter))?)
     }
 
     fn restore(&mut self, job: JobId, letters: &[LetterId]) -> Result<()> {
+        for l in letters {
+            self.message_ids.remove(l);
+        }
         let ids: Vec<postman_cache::LetterId> = letters.iter().map(|id| cache_id(*id)).collect();
         Ok(self.cache.restore(cache_job(job), &ids)?)
     }
@@ -427,7 +440,7 @@ pub(crate) mod tests {
     pub(crate) fn splitter() -> Splitter {
         Box::new(|raw| {
             let (split, decoded) = mime::split(raw)?;
-            parts(split, &decoded)
+            split_of(split, &decoded)
         })
     }
 
@@ -471,14 +484,32 @@ Content-Disposition: attachment; filename=r.pdf\r\n\r\n{}\r\n--b--\r\n",
         letter_of_key(cache, key).unwrap().unwrap()
     }
 
+    /// `Message-ID` для выгрузки — из ответа воркера: при записи содержимого, у содержимого из базы — воркер снова
+    /// (один раз); воркер не ответил — `None` и спросить снова.
     #[test]
-    fn message_id_of_a_letter() {
-        assert_eq!(message_id(&raw(7)).as_deref(), Some("<m7@x.ru>"));
-        let folded = b"Subject: s\r\nMESSAGE-ID:\r\n <a.b@x.ru>\r\nTo: i@x.ru\r\n\r\nMessage-ID: <body@x.ru>\r\n";
-        assert_eq!(message_id(folded).as_deref(), Some("<a.b@x.ru>"), "перенос строки, регистр");
-        assert_eq!(message_id(b"Subject: s\r\n\r\nMessage-ID: <body@x.ru>\r\n"), None, "только заголовок");
-        assert_eq!(message_id(b"Message-ID: <>\r\n\r\n"), None);
-        assert_eq!(message_id("Тема: ё\nMessage-ID: <ё@x>\n\n".as_bytes()).as_deref(), Some("<ё@x>"));
+    fn message_id_comes_from_the_worker() {
+        use crate::migrate::Store as _;
+        let (_dir, cache) = demo();
+        let (a, b, c) = (id(&cache, "demo3"), id(&cache, "demo4"), id(&cache, "demo5"));
+        assert_eq!(put_raw(&cache, &mut splitter(), a, &raw(3)).unwrap().as_deref(), Some("<m3@x.ru>"));
+        put_raw(&cache, &mut splitter(), b, &raw(4)).unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let n = calls.clone();
+        let mut inner = splitter();
+        let counted: Splitter = Box::new(move |raw| {
+            n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            inner(raw)
+        });
+        let mut store = CacheStore::new(cache.clone(), counted);
+        store.put_content(c, &raw(5)).unwrap();
+        assert_eq!(store.message_id(c).unwrap().as_deref(), Some("<m5@x.ru>"));
+        assert_eq!(store.message_id(b).unwrap().as_deref(), Some("<m4@x.ru>"));
+        assert_eq!(store.message_id(b).unwrap().as_deref(), Some("<m4@x.ru>"));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2, "воркер — при записи и раз у содержимого из базы");
+        assert_eq!(store.message_id(id(&cache, "demo6")).unwrap(), None, "содержимого нет");
+        let mut down = CacheStore::new(cache.clone(), Box::new(|_| Err("worker is down".into())));
+        assert_eq!(down.message_id(a).unwrap(), None);
+        assert!(!down.message_ids.contains_key(&a), "не ответил — спросить снова");
     }
 
     #[test]
