@@ -6,7 +6,8 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
-postman-cache.workspace = true
+# Формат 6 (S8-14): «На этом компьютере», содержимое по хэшу, задания переноса.
+postman-cache = { workspace = true, features = ["store6"] }
 jiff = "0.2"
 postman-calendar.workspace = true
 # Большая картинка в тексте письма (S5-07б) — собирается при первом запросе, а не лежит в репозитории.
