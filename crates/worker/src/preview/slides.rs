@@ -475,7 +475,7 @@ impl PptxPart {
 // --- odp ---
 
 /// Марки текста из свойств стиля OpenDocument.
-fn odf_marks(a: &[(Vec<u8>, String)]) -> Marks {
+pub(super) fn odf_marks(a: &[(Vec<u8>, String)]) -> Marks {
     let on = |key: &[u8]| attr(a, key).is_some_and(|v| v != "none");
     Marks {
         bold: attr(a, b"font-weight").is_some_and(|v| v == "bold" || v.parse::<u16>().is_ok_and(|w| w >= 600)),
@@ -486,7 +486,7 @@ fn odf_marks(a: &[(Vec<u8>, String)]) -> Marks {
     }
 }
 
-fn or(a: Marks, b: Marks) -> Marks {
+pub(super) fn or(a: Marks, b: Marks) -> Marks {
     Marks { bold: a.bold || b.bold, italic: a.italic || b.italic, underline: a.underline || b.underline, strike: a.strike || b.strike, code: false }
 }
 
