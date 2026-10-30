@@ -1,8 +1,9 @@
 //! S/MIME (RFC 8551): проверка подписи входящих писем — S5-12 Ф1 (`docs/SMIME.md`).
 //!
 //! Чужие данные: разбор и проверка идут **только в воркере-песочнице** (решение владельца №1, вариант B). Крейт без
-//! I/O и без Windows: вход — байты письма и якоря доверия, выход — [`Report`] (итог, сводка сертификатов, DER
-//! цепочки). Подтверждение цепочки и отзыв — в ядре (`postman_core::smime`, решение №3).
+//! I/O и без Windows: вход — части письма, разобранные воркером ([`Letter`]: MIME — `postman_worker::smime`, S8-36),
+//! и якоря доверия, выход — [`Report`] (итог, сводка сертификатов, DER цепочки). Подтверждение цепочки и отзыв — в
+//! ядре (`postman_core::smime`, решение №3).
 //!
 //! Что умеет: `multipart/signed` (отдельная подпись, канонизация CRLF) и `application/pkcs7-mime;
 //! smime-type=signed-data` (подпись внутри); SignedData с подписью RSA PKCS#1 v1.5 и PSS, ECDSA P-256/P-384,
@@ -36,6 +37,7 @@ pub mod testkit;
 use serde::{Deserialize, Serialize};
 
 pub use algs::{Hash, KeyKind, Scheme};
+pub use mime::{Letter, Parts};
 
 /// Больше письма не проверяем: кадр воркера — 64 МБ, вместе с якорями.
 pub const MAX_MESSAGE: usize = 62 * 1024 * 1024;
@@ -154,7 +156,8 @@ pub struct Report {
 }
 
 impl Report {
-    fn new(kind: Kind, status: Status) -> Self {
+    /// Итог без подписанта: вид и состояние, остальное пусто (воркер — для письма, которое не дошло до проверки).
+    pub fn new(kind: Kind, status: Status) -> Self {
         Report {
             kind,
             status,
@@ -191,46 +194,40 @@ pub fn is_smime_part(mime: &str, name: &str) -> bool {
         || (mime == "application/octet-stream" && (name.ends_with(".p7s") || name.ends_with(".p7m")))
 }
 
-/// Тело подписанного содержимого `signed-data` (внутренний MIME): HTML и текст — для показа письма вместо пустого
-/// тела (сервер видит только `smime.p7m`). Только в воркере.
-pub fn inner_body(content: &[u8]) -> (Option<String>, Option<String>) {
-    let Some(msg) = mail_parser::MessageParser::default().parse(content) else { return (None, None) };
-    let html = msg.body_html(0).map(|h| h.into_owned());
-    let text = msg.body_text(0).map(|t| t.into_owned());
-    (html, text)
+/// Корень письма зашифрован: `enveloped-data` по `smime-type` или по типу содержимого CMS.
+pub fn is_encrypted(letter: &Letter) -> bool {
+    matches!(letter.parts.as_ref().map(mime::find), Ok(Ok(mime::Found::Encrypted { .. })))
 }
 
-/// Проверить подпись письма `message` (RFC 5322 как пришло) к якорям `trust` на момент `now` (Unix, секунды).
-/// Не паникует: любой сбой разбора — [`Status::Malformed`].
-pub fn verify(message: &[u8], trust: &Trust, now: u64) -> Report {
-    if message.len() > MAX_MESSAGE {
-        return Report::new(Kind::None, Status::Malformed("message too large".into()));
-    }
+/// Проверить подпись письма к якорям `trust` на момент `now` (Unix, секунды). Письмо — корень, разобранный воркером
+/// ([`Letter`]: «От» и S/MIME-части); MIME здесь не разбирается. Не паникует: любой сбой разбора — [`Status::Malformed`].
+pub fn verify(letter: &Letter, trust: &Trust, now: u64) -> Report {
     // Сбой разборщика на чужих данных — итог «повреждено», а не падение воркера.
-    match std::panic::catch_unwind(|| verify_inner(message, trust, now)) {
+    match std::panic::catch_unwind(|| verify_inner(letter, trust, now)) {
         Ok(r) => r,
         Err(_) => Report::new(Kind::None, Status::Malformed("parser failure".into())),
     }
 }
 
-fn verify_inner(message: &[u8], trust: &Trust, now: u64) -> Report {
-    let found = match mime::find(message) {
+fn verify_inner(letter: &Letter, trust: &Trust, now: u64) -> Report {
+    let from = letter.from.clone();
+    let found = match letter.parts.as_ref().map_err(String::clone).and_then(mime::find) {
         Ok(f) => f,
         Err(e) => return Report::new(Kind::None, Status::Malformed(e)),
     };
-    let (kind, cms, content, from) = match found {
-        mime::Found::None { from } => {
+    let (kind, cms, content) = match found {
+        mime::Found::None => {
             let mut r = Report::new(Kind::None, Status::NotSigned);
             r.from = from;
             return r;
         }
-        mime::Found::Encrypted { from, .. } => {
+        mime::Found::Encrypted { .. } => {
             let mut r = Report::new(Kind::Encrypted, Status::NotSigned);
             r.from = from;
             return r;
         }
-        mime::Found::Detached { signed, signature, from } => (Kind::Detached, signature, Some(signed), from),
-        mime::Found::Opaque { cms, from } => (Kind::Opaque, cms, None, from),
+        mime::Found::Detached { signed, signature } => (Kind::Detached, signature, Some(signed)),
+        mime::Found::Opaque { cms } => (Kind::Opaque, cms, None),
     };
     let mut report = Report::new(kind, Status::NotSigned);
     report.from = from;

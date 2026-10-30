@@ -1,5 +1,6 @@
 //! Шифрованное письмо S/MIME (S5-12 Ф2, `docs/SMIME.md` §6.2): EnvelopedData (RFC 5652 §6) и AuthEnvelopedData
-//! (RFC 5083) — разбор получателей, расшифровка содержимого по готовому ключу (CEK), внутреннее письмо.
+//! (RFC 5083) — разбор получателей, расшифровка содержимого по готовому ключу (CEK). Внутреннее письмо отдаётся
+//! байтами: его MIME, как и MIME внешнего, разбирает воркер (`postman_worker::smime`, S8-36).
 //!
 //! Вариант B (решение владельца №1): **CMS разбирает воркер**. Ядру уходят только типизированные поля получателей
 //! ([`Envelope`]: издатель и серийный номер или SKI — байтами как есть, алгоритм, зашифрованный ключ); ядро
@@ -23,7 +24,7 @@ use spki::AlgorithmIdentifierOwned;
 use zeroize::Zeroizing;
 
 use crate::ber::{self, Tlv};
-use crate::{Hash, Report, Trust, mime, oid};
+use crate::{Hash, Letter, Report, mime, oid};
 
 /// Ключ содержимого: только в памяти, обнуляется при освобождении.
 pub type Cek = Zeroizing<Vec<u8>>;
@@ -543,14 +544,11 @@ fn gost_content(cms: &[u8], data: Vec<u8>) -> Option<GostContent> {
     Some(GostContent { iv, param_set, data })
 }
 
-/// DER CMS шифрованного письма (корень — `application/pkcs7-mime`).
-fn cms_of(message: &[u8]) -> Result<(Vec<u8>, String), OpenError> {
-    if message.len() > crate::MAX_MESSAGE {
-        return Err(OpenError::TooLarge);
-    }
-    match mime::find(message) {
-        Ok(mime::Found::Encrypted { cms: Some(cms), from }) => Ok((cms, from)),
-        Ok(mime::Found::Encrypted { cms: None, .. }) => Err(malformed("pkcs7-mime body")),
+/// DER CMS шифрованного письма (корень — `application/pkcs7-mime`, части — от воркера).
+fn cms_of(letter: &Letter) -> Result<Vec<u8>, OpenError> {
+    match letter.parts.as_ref().map_err(String::clone).and_then(mime::find) {
+        Ok(mime::Found::Encrypted { cms: Some(cms) }) => Ok(cms),
+        Ok(mime::Found::Encrypted { cms: None }) => Err(malformed("pkcs7-mime body")),
         Ok(_) => Err(OpenError::NotEncrypted),
         Err(e) => Err(OpenError::Malformed(e)),
     }
@@ -560,17 +558,17 @@ fn guarded<T>(f: impl FnOnce() -> Result<T, OpenError> + std::panic::UnwindSafe)
     std::panic::catch_unwind(f).unwrap_or_else(|_| Err(malformed("parser failure")))
 }
 
-/// Получатели и шифр письма `message` (RFC 5322 целиком) — для ядра. Ничего не расшифровывает.
-pub fn envelope(message: &[u8]) -> Result<Envelope, OpenError> {
+/// Получатели и шифр письма (корень разобран воркером) — для ядра. Ничего не расшифровывает.
+pub fn envelope(letter: &Letter) -> Result<Envelope, OpenError> {
     guarded(|| {
-        let (cms, _) = cms_of(message)?;
+        let cms = cms_of(letter)?;
         let p = parse(&cms)?;
         let gost = (p.content.cipher == Ok(Cipher::Gost28147)).then(|| gost_content(&cms, p.content.data.clone())).flatten();
         Ok(Envelope { recipients: p.recipients, cipher: p.content.cipher, authenticated: p.authenticated, gost })
     })
 }
 
-fn decrypt(c: &Content, cek: &[u8]) -> Result<Zeroizing<Vec<u8>>, OpenError> {
+fn decrypt_content(c: &Content, cek: &[u8]) -> Result<Zeroizing<Vec<u8>>, OpenError> {
     use aes::cipher::block_padding::Pkcs7;
     let cipher = c.cipher.clone().map_err(OpenError::Unsupported)?;
     if cek.len() != cipher.key_len() {
@@ -631,7 +629,7 @@ fn gcm(bits: u16, cek: &[u8], c: &Content) -> Result<Vec<u8>, OpenError> {
 /// Вложение расшифрованного письма (без содержимого).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Part {
-    /// Номер вложения по порядку (для [`part`]).
+    /// Номер вложения по порядку (для `postman_worker::smime::part`).
     pub index: u32,
     pub name: String,
     pub mime: String,
@@ -652,120 +650,22 @@ pub struct Opened {
     pub parts: Vec<Part>,
 }
 
-/// Внутреннее письмо после расшифровки и, если подписано, подпись и тело для показа.
-fn layers(message: &[u8], cek: &[u8], trust: &Trust, now: u64) -> Result<(Parsed, Vec<u8>, Report), OpenError> {
-    let (cms, from) = cms_of(message)?;
-    let p = parse(&cms)?;
-    let inner = decrypt(&p.content, cek)?;
-    let (body, report) = inner_layers(&inner, &from, trust, now)?;
-    Ok((p, body, report))
+/// Расшифрованное содержимое: шифр и внутреннее письмо (MIME) — его разбирает воркер.
+pub struct Decrypted {
+    pub cipher: Cipher,
+    pub authenticated: bool,
+    pub inner: Zeroizing<Vec<u8>>,
 }
 
-/// Расшифрованное внутреннее письмо: подпись внутри и тело для показа (шифрование внутри — не открываем).
-fn inner_layers(inner: &[u8], from: &str, trust: &Trust, now: u64) -> Result<(Vec<u8>, Report), OpenError> {
-    if matches!(mime::find(inner), Ok(mime::Found::Encrypted { .. })) {
-        return Err(OpenError::Nested);
-    }
-    let mut report = crate::verify(inner, trust, now);
-    // Внутренняя часть без заголовков письма: «От» — внешнего письма (его и показывает список).
-    if report.from.is_empty() {
-        report.address_ok =
-            report.status.signature_ok() && report.certs.first().is_some_and(|c| c.emails.iter().any(|e| e.eq_ignore_ascii_case(from)));
-        report.from = from.to_owned();
-    }
-    // Подпись внутри (`signed-data`): тело — подписанное содержимое; иначе — само внутреннее письмо.
-    let body = match &report.content {
-        Some(c) if report.kind == crate::Kind::Opaque => {
-            if matches!(mime::find(c), Ok(mime::Found::Encrypted { .. })) {
-                return Err(OpenError::Nested);
-            }
-            c.clone()
-        }
-        _ => inner.to_vec(),
-    };
-    Ok((body, report))
-}
-
-/// Расшифровать письмо `message` ключом `cek`: тело, вложения и подпись внутри (к якорям `trust`).
-pub fn open(message: &[u8], cek: &[u8], trust: &Trust, now: u64) -> Result<Opened, OpenError> {
+/// Расшифровать письмо (корень разобран воркером) ключом `cek`. Внутреннее письмо — байтами: тело, вложения и подпись
+/// внутри разбирает воркер (`postman_worker::smime::open`).
+pub fn decrypt(letter: &Letter, cek: &[u8]) -> Result<Decrypted, OpenError> {
     guarded(std::panic::AssertUnwindSafe(|| {
-        let (p, body, inner) = layers(message, cek, trust, now)?;
+        let cms = cms_of(letter)?;
+        let p = parse(&cms)?;
+        let inner = decrypt_content(&p.content, cek)?;
         let cipher = p.content.cipher.clone().map_err(OpenError::Unsupported)?;
-        let msg = mail_parser::MessageParser::default().parse(&body).ok_or_else(|| malformed("inner MIME"))?;
-        let html = msg.body_html(0).map(|h| h.into_owned());
-        let text = msg.body_text(0).map(|t| t.into_owned());
-        let parts = parts_of(&msg);
-        Ok(Opened { cipher, authenticated: p.authenticated, inner, html, text, parts })
-    }))
-}
-
-/// Вложения расшифрованного письма без подписи (`smime.p7s` — значком, не вложением).
-fn attachments<'a>(msg: &'a mail_parser::Message<'a>) -> Vec<&'a mail_parser::MessagePart<'a>> {
-    use mail_parser::MimeHeaders;
-    msg.attachments()
-        .filter(|a| {
-            let t = a.content_type().map(|c| format!("{}/{}", c.ctype(), c.subtype().unwrap_or_default()).to_ascii_lowercase()).unwrap_or_default();
-            !matches!(t.as_str(), "application/pkcs7-signature" | "application/x-pkcs7-signature")
-        })
-        .collect()
-}
-
-fn parts_of(msg: &mail_parser::Message<'_>) -> Vec<Part> {
-    use mail_parser::MimeHeaders;
-    attachments(msg)
-        .into_iter()
-        .enumerate()
-        .map(|(i, a)| {
-            let mime = a
-                .content_type()
-                .map(|c| format!("{}/{}", c.ctype(), c.subtype().unwrap_or("octet-stream")))
-                .unwrap_or_else(|| "application/octet-stream".into());
-            let cid = a.content_id().map(|c| c.trim_matches(['<', '>']).to_string());
-            let inline = a.content_disposition().is_some_and(|d| d.is_inline());
-            Part {
-                index: i as u32,
-                name: a.attachment_name().unwrap_or("attachment").to_string(),
-                mime: mime.to_ascii_lowercase(),
-                size: a.contents().len() as u64,
-                cid,
-                inline,
-            }
-        })
-        .collect()
-}
-
-/// Письмо, расшифрованное в ядре (ГОСТ — СКЗИ): тело, вложения, подпись внутри — как [`open`], без расшифровки.
-/// `from` — «От» внешнего письма.
-pub fn open_inner(inner: &[u8], from: &str, cipher: Cipher, trust: &Trust, now: u64) -> Result<Opened, OpenError> {
-    guarded(std::panic::AssertUnwindSafe(|| {
-        let (body, inner_report) = inner_layers(inner, from, trust, now)?;
-        let msg = mail_parser::MessageParser::default().parse(&body).ok_or_else(|| malformed("inner MIME"))?;
-        let html = msg.body_html(0).map(|h| h.into_owned());
-        let text = msg.body_text(0).map(|t| t.into_owned());
-        let parts = parts_of(&msg);
-        Ok(Opened { cipher, authenticated: false, inner: inner_report, html, text, parts })
-    }))
-}
-
-/// Вложение письма, расшифрованного в ядре.
-pub fn part_inner(inner: &[u8], index: u32) -> Result<Zeroizing<Vec<u8>>, OpenError> {
-    guarded(std::panic::AssertUnwindSafe(|| {
-        let (body, _) = inner_layers(inner, "", &Trust::default(), 0)?;
-        let msg = mail_parser::MessageParser::default().parse(&body).ok_or_else(|| malformed("inner MIME"))?;
-        let all = attachments(&msg);
-        let a = all.get(index as usize).ok_or_else(|| malformed("no such part"))?;
-        Ok(Zeroizing::new(a.contents().to_vec()))
-    }))
-}
-
-/// Байты вложения `index` расшифрованного письма.
-pub fn part(message: &[u8], cek: &[u8], index: u32) -> Result<Zeroizing<Vec<u8>>, OpenError> {
-    guarded(std::panic::AssertUnwindSafe(|| {
-        let (_, body, _) = layers(message, cek, &Trust::default(), 0)?;
-        let msg = mail_parser::MessageParser::default().parse(&body).ok_or_else(|| malformed("inner MIME"))?;
-        let all = attachments(&msg);
-        let a = all.get(index as usize).ok_or_else(|| malformed("no such part"))?;
-        Ok(Zeroizing::new(a.contents().to_vec()))
+        Ok(Decrypted { cipher, authenticated: p.authenticated, inner })
     }))
 }
 

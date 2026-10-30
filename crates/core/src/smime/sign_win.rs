@@ -358,7 +358,7 @@ mod tests {
         let (_p, key) = import(NCRYPT_PKCS8_PRIVATE_KEY_BLOB, &pki.user_key.rsa_pkcs8().unwrap());
         let s = CngSigner { cert: pki.user.der.clone(), chain: Vec::new(), scheme: Scheme::RsaPkcs1(Hash::Sha256), key: key.0, silent: true };
         let signed = postman_smime::sign::sign_message(LETTER, &s, NOW as i64).unwrap();
-        let r = postman_smime::verify(&signed, &pki.trust(), NOW);
+        let r = postman_worker::smime::verify(&signed, &pki.trust(), NOW);
         assert_eq!((r.kind, &r.status), (Kind::Detached, &Status::Valid), "{r:?}");
 
         let ec = Pki::build(Key::rsa('a'), Key::p256("cng-sign"), "Postman Test Root", "Иванов", "user1@itt.test");
@@ -371,7 +371,7 @@ mod tests {
         let (_p, key) = import(BCRYPT_ECCPRIVATE_BLOB, &blob);
         let s = CngSigner { cert: ec.user.der.clone(), chain: Vec::new(), scheme: Scheme::Ecdsa(Hash::Sha256), key: key.0, silent: true };
         let signed = postman_smime::sign::sign_message(LETTER, &s, NOW as i64).unwrap();
-        let r = postman_smime::verify(&signed, &ec.trust(), NOW);
+        let r = postman_worker::smime::verify(&signed, &ec.trust(), NOW);
         assert_eq!((r.kind, &r.status), (Kind::Detached, &Status::Valid), "{r:?}");
     }
 

@@ -4,7 +4,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // интеграционный тест: «не падать» — для кода приложения (S2-03)
 
 use postman_smime::testkit::{self, Eku, Head, Key, NOW, Pki, Sign, Spec};
-use postman_smime::{Anchor, Hash, Kind, Scheme, Status, Trust, oid, verify};
+use postman_smime::{Anchor, Hash, Kind, Scheme, Status, Trust, oid};
+use postman_worker::smime::verify;
 
 const HTML: &str = "<p>Договор согласован, подписанная версия — во вложении.</p>";
 

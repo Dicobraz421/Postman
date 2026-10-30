@@ -8,7 +8,7 @@
 use std::time::{Duration, Instant};
 
 use postman_jmap::{Auth, Client, Envelope};
-use postman_smime::envelope::{self, Cipher};
+use postman_smime::envelope::Cipher;
 use postman_smime::soft::{self, SoftKey};
 use postman_smime::testkit::{self, Head, Key, KeyAlg, Pki, Sign, To};
 use postman_smime::{Hash, Kind, Status};
@@ -79,13 +79,13 @@ async fn encrypted_mail_survives_the_server() {
     let blob = receiver.email_blobs(std::slice::from_ref(&id)).await.unwrap().remove(0);
     let account = receiver.session().primary_accounts.get(postman_jmap::MAIL).cloned().unwrap();
     let got = receiver.download(&account, &blob.blob_id, "message.eml", "message/rfc822").await.unwrap();
-    let env_ = envelope::envelope(&got).unwrap();
+    let env_ = postman_worker::smime::envelope(&got).unwrap();
     assert_eq!(env_.recipients.len(), 2);
     let Key::Rsa(k) = &pki_to.user_key else { unreachable!() };
     let key = SoftKey::new(&pki_to.user.der, &soft::pkcs1_der(k).unwrap()).unwrap();
     let cek_got = soft::unwrap(std::slice::from_ref(&key), &env_).unwrap();
     assert_eq!(cek_got.as_slice(), &cek);
-    let opened = envelope::open(&got, &cek_got, &pki_from.trust(), jiff::Timestamp::now().as_second() as u64).unwrap();
+    let opened = postman_worker::smime::open(&got, &cek_got, &pki_from.trust(), jiff::Timestamp::now().as_second() as u64).unwrap();
     assert_eq!((opened.inner.kind, &opened.inner.status), (Kind::Detached, &Status::Valid), "{:?}", opened.inner);
     assert_eq!(opened.html.as_deref(), Some("<p>Секрет стенда</p>"));
 

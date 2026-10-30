@@ -16,6 +16,8 @@ png = "0.17"
 [dev-dependencies]
 # Сборка и проверка подписанных образцов (S5-12, `tests/smime_samples.rs`).
 postman-smime = { workspace = true, features = ["testkit"] }
+# Проверка образцов письмами целиком: MIME S/MIME разбирает воркер (S8-36).
+postman-worker.workspace = true
 
 [lints]
 workspace = true

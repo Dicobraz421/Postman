@@ -475,7 +475,7 @@ mod tests {
             &[&pki.root],
             &Sign::default(),
         );
-        postman_smime::verify(&m, &pki.trust(), NOW)
+        postman_worker::smime::verify(&m, &pki.trust(), NOW)
     }
 
     /// Повторное открытие — из кэша без воркера; сертификат подписанта запомнен по адресу.
@@ -526,7 +526,7 @@ mod tests {
             &[&pki.root],
             &Sign::default(),
         );
-        let report = postman_smime::verify(&m, &trust, NOW);
+        let report = postman_worker::smime::verify(&m, &trust, NOW);
         let v = finish(&cache, "m", report, &Context::system(), NOW as i64);
         assert_eq!(v.report.status, postman_smime::Status::Distrusted);
         assert_eq!(v.revocation, Revocation::NotChecked);

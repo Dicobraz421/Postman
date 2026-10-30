@@ -105,7 +105,7 @@ fn samples_give_expected_verdicts() {
     }
     let trust = Trust { roots: anchors().into_iter().map(|(der, corporate)| Anchor { der, corporate }).collect(), ..Default::default() };
     let now = 1_792_600_000;
-    let check = |kind: &str| postman_smime::verify(raw(kind).unwrap(), &trust, now);
+    let check = |kind: &str| postman_worker::smime::verify(raw(kind).unwrap(), &trust, now);
     let r = check("rsa");
     assert_eq!(r.status, Status::Valid, "{r:?}");
     assert!(r.corporate && r.address_ok);
@@ -115,18 +115,18 @@ fn samples_give_expected_verdicts() {
     assert!(matches!(check("untrusted").status, Status::Untrusted(_)));
 
     // Шифрованные (Ф2): демо-ключом — «мне и подписано», «не мне», «повреждено».
-    use postman_smime::envelope::{self, OpenError};
+    use postman_smime::envelope::OpenError;
     use postman_smime::soft::{SoftError, SoftKey};
     let (cert, key) = postman_demo::smime::my_key();
     let keys = [SoftKey::new(cert, key).unwrap()];
     let enc = raw("enc").unwrap();
-    let cek = postman_smime::soft::unwrap(&keys, &envelope::envelope(enc).unwrap()).unwrap();
-    let opened = envelope::open(enc, &cek, &trust, now).unwrap();
+    let cek = postman_smime::soft::unwrap(&keys, &postman_worker::smime::envelope(enc).unwrap()).unwrap();
+    let opened = postman_worker::smime::open(enc, &cek, &trust, now).unwrap();
     assert_eq!(opened.inner.status, Status::Valid, "{:?}", opened.inner);
     assert!(opened.inner.address_ok);
     assert_eq!(opened.parts.len(), 1);
-    assert_eq!(postman_smime::soft::unwrap(&keys, &envelope::envelope(raw("enc-other").unwrap()).unwrap()), Err(SoftError::NotForYou));
+    assert_eq!(postman_smime::soft::unwrap(&keys, &postman_worker::smime::envelope(raw("enc-other").unwrap()).unwrap()), Err(SoftError::NotForYou));
     let bad = raw("enc-bad").unwrap();
-    let cek = postman_smime::soft::unwrap(&keys, &envelope::envelope(bad).unwrap()).unwrap();
-    assert_eq!(envelope::open(bad, &cek, &trust, now), Err(OpenError::Damaged));
+    let cek = postman_smime::soft::unwrap(&keys, &postman_worker::smime::envelope(bad).unwrap()).unwrap();
+    assert_eq!(postman_worker::smime::open(bad, &cek, &trust, now), Err(OpenError::Damaged));
 }

@@ -79,7 +79,7 @@ async fn signed_by_postman_is_verified() {
     let blob = receiver.email_blobs(std::slice::from_ref(&id)).await.unwrap().remove(0);
     let account = receiver.session().primary_accounts.get(postman_jmap::MAIL).cloned().unwrap();
     let got = receiver.download(&account, &blob.blob_id, "message.eml", "message/rfc822").await.unwrap();
-    let r = postman_smime::verify(&got, &pki.trust(), u64::try_from(jiff::Timestamp::now().as_second()).unwrap());
+    let r = postman_worker::smime::verify(&got, &pki.trust(), u64::try_from(jiff::Timestamp::now().as_second()).unwrap());
     assert_eq!((r.kind, &r.status), (Kind::Detached, &Status::Valid), "{r:?}");
     assert!(r.address_ok);
 

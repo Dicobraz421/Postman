@@ -6211,6 +6211,7 @@ dependencies = [
  "postman-cache",
  "postman-calendar",
  "postman-smime",
+ "postman-worker",
 ]
 
 [[package]]
@@ -6346,10 +6347,10 @@ dependencies = [
  "der",
  "des",
  "digest 0.11.3",
- "mail-parser",
  "p256",
  "p384",
  "postman-smime",
+ "postman-worker",
  "rand_core 0.10.1",
  "rsa",
  "rustls-pki-types",

@@ -30,7 +30,6 @@ streebog = "0.11"
 # Цепочка к якорям (ISC, решение №14); алгоритмы подписи — свои (`algs`), без ring и aws-lc.
 webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["std"] }
 pki-types = { package = "rustls-pki-types", version = "1.12", default-features = false, features = ["std"] }
-mail-parser = { version = "0.11", default-features = false }
 # Расшифровка содержимого (Ф2): AES-CBC/GCM, 3DES (только чтение старых писем, решение №10). Поколение cipher 0.4 —
 # то же, что уже в сборке.
 aes = "0.8"
@@ -45,6 +44,8 @@ p384 = { version = "0.14", optional = true, features = ["ecdsa", "ecdh"] }
 
 [dev-dependencies]
 postman-smime = { path = ".", features = ["testkit"] }
+# Письма целиком в тестах: MIME разбирает воркер (S8-36), здесь — только CMS по готовым частям.
+postman-worker.workspace = true
 
 [lints]
 workspace = true

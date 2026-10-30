@@ -59,6 +59,10 @@ const CORE: &str = "postman-core";
 /// воркер, S8-29), сама — ни от них, ни от протоколов.
 const EXPORT: &str = "postman-export";
 
+/// Разбор MIME писем (S8-36): чужие письма разбирает только воркер-песочница.
+const MIME_PARSER: &str = "mail-parser";
+const WORKER: &str = "postman-worker";
+
 fn cargo_tree(args: &[&str]) -> Vec<String> {
     let out = Command::new(env!("CARGO"))
         .args(["tree", "--offline", "--prefix", "none", "-e", "normal"])
@@ -153,4 +157,13 @@ fn interface_does_not_know_protocols() {
         let known: Vec<_> = PROTOCOL_CRATES.iter().filter(|p| deps.contains(**p)).collect();
         assert!(known.is_empty(), "{name} зависит от протокольных крейтов (только через плагины backend-*): {known:?}");
     }
+}
+
+/// Разборщик MIME — только в зависимостях воркера (S8-36): без поддерева воркера он не нужен ни одному крейту —
+/// S/MIME, протоколы, ядро и интерфейс получают от воркера готовые части, сами письмо не разбирают.
+#[test]
+fn only_the_worker_parses_mail() {
+    let users: BTreeSet<String> =
+        cargo_tree(&["--workspace", "-i", MIME_PARSER, "--prune", WORKER]).into_iter().filter(|d| layer(d).is_some()).collect();
+    assert!(users.is_empty(), "{MIME_PARSER} нужен не только через {WORKER}: {users:?}");
 }

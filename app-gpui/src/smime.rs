@@ -620,7 +620,7 @@ mod tests {
             ..Default::default()
         };
         let seal = |kind: &str, revocation: Revocation| {
-            let report = postman_smime::verify(postman_demo::smime::raw(kind).unwrap(), &trust, 1_792_600_000);
+            let report = postman_worker::smime::verify(postman_demo::smime::raw(kind).unwrap(), &trust, 1_792_600_000);
             Seal::Done(Box::new(Verdict { chain: report.chain.clone(), report, revocation, checked_at: 0, gost: None }))
         };
         assert_eq!(badge(&seal("rsa", Revocation::NotChecked)).1, Tone::Neutral);

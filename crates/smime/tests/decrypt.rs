@@ -51,7 +51,7 @@ fn rsa_recipients_and_ciphers() {
         let k = cek(cipher.key_len());
         let cms = testkit::enveloped(&testkit::html_part(HTML), &[To { cert: &pki.user, key: &pki.user_key, alg, ski }], cipher, &k, false);
         let m = letter(&cms, cipher);
-        let env = envelope::envelope(&m).unwrap();
+        let env = postman_worker::smime::envelope(&m).unwrap();
         assert_eq!(env.cipher, Ok(cipher), "{alg:?} {cipher:?}");
         assert_eq!(env.authenticated, matches!(cipher, Cipher::AesGcm(_)));
         let r = &env.recipients[0];
@@ -63,7 +63,7 @@ fn rsa_recipients_and_ciphers() {
         }
         let got = soft::unwrap(std::slice::from_ref(&key), &env).unwrap();
         assert_eq!(got.as_slice(), k.as_slice(), "{alg:?}");
-        let opened = envelope::open(&m, &got, &pki.trust(), NOW).unwrap();
+        let opened = postman_worker::smime::open(&m, &got, &pki.trust(), NOW).unwrap();
         assert_eq!(opened.cipher, cipher);
         assert_eq!(opened.html.as_deref(), Some(HTML));
         assert_eq!(opened.inner.kind, Kind::None, "внутри не подписано");
@@ -86,7 +86,7 @@ fn ecdh_recipients() {
             false,
         );
         let m = letter(&cms, Cipher::AesCbc(256));
-        let env = envelope::envelope(&m).unwrap();
+        let env = postman_worker::smime::envelope(&m).unwrap();
         let r = &env.recipients[0];
         let Wrap::Ecdh { kdf, wrap_bits, ephemeral, ukm } = &r.wrap else { panic!("{:?}", r.wrap) };
         assert_eq!((*kdf, *wrap_bits, ukm.as_deref()), (Hash::Sha256, bits, Some(&b"postman-ukm"[..])));
@@ -106,7 +106,7 @@ fn ecdh_recipients() {
         let mut bad = z.clone();
         bad[0] ^= 1;
         assert!(envelope::ecdh_cek(&bad, &r.wrap, &r.encrypted_key).is_none(), "чужой секрет — обёртка не снимается");
-        assert_eq!(envelope::open(&m, &got, &Default::default(), NOW).unwrap().html.as_deref(), Some(HTML));
+        assert_eq!(postman_worker::smime::open(&m, &got, &Default::default(), NOW).unwrap().html.as_deref(), Some(HTML));
     }
 }
 
@@ -120,24 +120,24 @@ fn one_error_for_every_oracle() {
     let m = letter(&testkit::enveloped(&testkit::html_part(HTML), &to, Cipher::AesCbc(256), &k, false), Cipher::AesCbc(256));
     let mut wrong = k.clone();
     wrong[3] ^= 0x40;
-    assert_eq!(envelope::open(&m, &wrong, &Default::default(), NOW), Err(OpenError::Damaged));
+    assert_eq!(postman_worker::smime::open(&m, &wrong, &Default::default(), NOW), Err(OpenError::Damaged));
     // Ключ содержимого испорчен в письме: PKCS#1 не снимается — ключ из нулей, та же ошибка.
-    let mut env = envelope::envelope(&m).unwrap();
+    let mut env = postman_worker::smime::envelope(&m).unwrap();
     env.recipients[0].encrypted_key[10] ^= 1;
     let zero = soft::unwrap(std::slice::from_ref(&key), &env).unwrap();
-    assert_eq!(envelope::open(&m, &zero, &Default::default(), NOW), Err(OpenError::Damaged));
+    assert_eq!(postman_worker::smime::open(&m, &zero, &Default::default(), NOW), Err(OpenError::Damaged));
     // Короткий ключ — та же ошибка.
-    assert_eq!(envelope::open(&m, &k[..16], &Default::default(), NOW), Err(OpenError::Damaged));
+    assert_eq!(postman_worker::smime::open(&m, &k[..16], &Default::default(), NOW), Err(OpenError::Damaged));
 
     let gcm = letter(&testkit::enveloped(&testkit::html_part(HTML), &to, Cipher::AesGcm(256), &k, true), Cipher::AesGcm(256));
-    assert_eq!(envelope::open(&gcm, &k, &Default::default(), NOW), Err(OpenError::Damaged));
+    assert_eq!(postman_worker::smime::open(&gcm, &k, &Default::default(), NOW), Err(OpenError::Damaged));
     let cbc = letter(&testkit::enveloped(&testkit::html_part(HTML), &to, Cipher::AesCbc(256), &k, true), Cipher::AesCbc(256));
-    assert_eq!(envelope::open(&cbc, &k, &Default::default(), NOW), Err(OpenError::Damaged));
+    assert_eq!(postman_worker::smime::open(&cbc, &k, &Default::default(), NOW), Err(OpenError::Damaged));
 
     let other = Pki::rsa("Other", "Петров", "p@itt.test");
     let theirs = [To { cert: &other.user, key: &other.user_key, alg: KeyAlg::RsaPkcs1, ski: false }];
     let m = letter(&testkit::enveloped(&testkit::html_part(HTML), &theirs, Cipher::AesCbc(256), &k, false), Cipher::AesCbc(256));
-    let env = envelope::envelope(&m).unwrap();
+    let env = postman_worker::smime::envelope(&m).unwrap();
     // Тот же ключ RSA «b», но сертификат другого издателя — не наш получатель.
     assert_eq!(soft::unwrap(std::slice::from_ref(&key), &env), Err(SoftError::NotForYou));
 }
@@ -155,18 +155,18 @@ fn signed_inside_and_attachments() {
         To { cert: &pki.user, key: &pki.user_key, alg: KeyAlg::RsaOaep(Hash::Sha256), ski: false },
     ];
     let m = letter(&testkit::enveloped(&signed, &to, Cipher::AesGcm(256), &k, false), Cipher::AesGcm(256));
-    let env = envelope::envelope(&m).unwrap();
+    let env = postman_worker::smime::envelope(&m).unwrap();
     assert_eq!(env.recipients.len(), 2, "себе тоже");
     let got = soft::unwrap(std::slice::from_ref(&key), &env).unwrap();
-    let opened = envelope::open(&m, &got, &sender.trust(), NOW).unwrap();
+    let opened = postman_worker::smime::open(&m, &got, &sender.trust(), NOW).unwrap();
     assert_eq!(opened.inner.kind, Kind::Detached);
     assert_eq!(opened.inner.status, Status::Valid, "{:?}", opened.inner.status);
     assert!(opened.inner.address_ok, "«От» внешнего письма сверяется с сертификатом подписи внутри");
     assert_eq!(opened.html.as_deref(), Some(HTML));
     assert_eq!(opened.parts.len(), 1);
     assert_eq!((opened.parts[0].name.as_str(), opened.parts[0].mime.as_str()), ("Договор.pdf", "application/pdf"));
-    assert_eq!(envelope::part(&m, &got, 0).unwrap().as_slice(), b"%PDF-1.7 test");
-    assert!(envelope::part(&m, &got, 1).is_err());
+    assert_eq!(postman_worker::smime::part(&m, &got, 0).unwrap().as_slice(), b"%PDF-1.7 test");
+    assert!(postman_worker::smime::part(&m, &got, 1).is_err());
 }
 
 /// Шифрование внутри шифрования — не открываем; письмо без шифрования — «не зашифровано».
@@ -181,12 +181,12 @@ fn nested_and_plain() {
         testkit::base64(&inner_cms)
     );
     let m = letter(&testkit::enveloped(inner.as_bytes(), &to, Cipher::AesCbc(256), &k, false), Cipher::AesCbc(256));
-    let got = soft::unwrap(std::slice::from_ref(&key), &envelope::envelope(&m).unwrap()).unwrap();
-    assert_eq!(envelope::open(&m, &got, &Default::default(), NOW), Err(OpenError::Nested));
+    let got = soft::unwrap(std::slice::from_ref(&key), &postman_worker::smime::envelope(&m).unwrap()).unwrap();
+    assert_eq!(postman_worker::smime::open(&m, &got, &Default::default(), NOW), Err(OpenError::Nested));
     let plain = b"From: a@x\r\nContent-Type: text/plain\r\n\r\nhi".to_vec();
-    assert_eq!(envelope::envelope(&plain), Err(OpenError::NotEncrypted));
+    assert_eq!(postman_worker::smime::envelope(&plain), Err(OpenError::NotEncrypted));
     // Подписанное письмо (Ф1) — не шифрованное, а `verify` по-прежнему видит «зашифровано» у шифрованного.
-    assert_eq!(postman_smime::verify(&m, &pki.trust(), NOW).kind, Kind::Encrypted);
+    assert_eq!(postman_worker::smime::verify(&m, &pki.trust(), NOW).kind, Kind::Encrypted);
 }
 
 /// Враждебный CMS: обрезанный на каждом байте и с мусором — ошибка без паники; ГОСТ и RC2 — «не поддерживается».
@@ -198,8 +198,8 @@ fn truncated_and_unsupported() {
     let cms = testkit::enveloped(&testkit::html_part(HTML), &to, Cipher::AesGcm(128), &k, false);
     for cut in (0..cms.len()).step_by(3) {
         let m = letter(&cms[..cut], Cipher::AesGcm(128));
-        let _ = envelope::envelope(&m);
-        let _ = envelope::open(&m, &k, &Default::default(), NOW);
+        let _ = postman_worker::smime::envelope(&m);
+        let _ = postman_worker::smime::open(&m, &k, &Default::default(), NOW);
     }
     // RC2 вместо 3DES: OID той же длины (1.2.840.113549.3.7 → .3.2).
     let des = testkit::enveloped(&testkit::html_part(HTML), &to, Cipher::Des3, &cek(24), false);
@@ -207,7 +207,7 @@ fn truncated_and_unsupported() {
     let at = des.windows(oid.len()).position(|w| w == oid).unwrap();
     let mut rc2 = des.clone();
     rc2[at + 7] = 0x02;
-    let env = envelope::envelope(&letter(&rc2, Cipher::Des3)).unwrap();
+    let env = postman_worker::smime::envelope(&letter(&rc2, Cipher::Des3)).unwrap();
     assert_eq!(env.cipher, Err("RC2".into()));
 }
 
@@ -226,7 +226,7 @@ fn gost_recipient_is_parsed_for_the_skzi() {
         false,
     );
     let m = letter(&cms, Cipher::Gost28147);
-    let env = envelope::envelope(&m).unwrap();
+    let env = postman_worker::smime::envelope(&m).unwrap();
     assert_eq!(env.cipher, Ok(Cipher::Gost28147));
     let Wrap::Gost(t) = &env.recipients[0].wrap else { panic!("{:?}", env.recipients[0].wrap) };
     assert_eq!(t.key, GostKey::G2012_256);
@@ -237,8 +237,8 @@ fn gost_recipient_is_parsed_for_the_skzi() {
     assert_eq!((g.iv.len(), g.param_set.as_str()), (8, oid::GOST28147_PARAM_A.to_string().as_str()));
     assert_eq!(g.data, testkit::html_part(HTML), "шифр ГОСТ в тесте — заглушка: содержимое как есть");
     let Key::Gost { .. } = pki.user_key else { unreachable!() };
-    assert!(matches!(envelope::open(&m, &[0; 32], &Default::default(), NOW), Err(E::Unsupported(_))));
+    assert!(matches!(postman_worker::smime::open(&m, &[0; 32], &Default::default(), NOW), Err(E::Unsupported(_))));
     // Письмо, расшифрованное в ядре (СКЗИ): тело и вложения — тем же разбором.
-    let o = envelope::open_inner(&g.data, "a@itt.test", Cipher::Gost28147, &Default::default(), NOW).unwrap();
+    let o = postman_worker::smime::open_inner(&g.data, "a@itt.test", Cipher::Gost28147, &Default::default(), NOW).unwrap();
     assert_eq!(o.html.as_deref(), Some(HTML));
 }

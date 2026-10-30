@@ -310,12 +310,12 @@ mod tests {
         let p = prepare::prepare(&user.der, &[], &trust, NOW).unwrap();
         let raw = b"From: a@itt.test\r\nTo: me@itt.test\r\nSubject: s\r\nContent-Type: text/plain\r\n\r\nCNG ECDH\r\n";
         let m = postman_smime::seal::seal_message(raw, &[To { prepared: p, gcm: false }], &WindowsOps).unwrap();
-        let env = envelope::envelope(&m).unwrap();
+        let env = postman_worker::smime::envelope(&m).unwrap();
         let r = &env.recipients[0];
         let Wrap::Ecdh { ephemeral, .. } = &r.wrap else { panic!("{:?}", r.wrap) };
         let z = postman_smime::testkit::ecdh_with(&key, ephemeral).unwrap();
         let cek = envelope::ecdh_cek(&z, &r.wrap, &r.encrypted_key).unwrap();
-        let o = envelope::open(&m, &cek, &trust, NOW).unwrap();
+        let o = postman_worker::smime::open(&m, &cek, &trust, NOW).unwrap();
         assert_eq!(o.text.as_deref().map(str::trim), Some("CNG ECDH"));
     }
 }

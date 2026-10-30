@@ -36,11 +36,11 @@ fn rsa_round_trips() {
         let text = String::from_utf8(m.clone()).unwrap();
         assert!(text.starts_with("From: user1@itt.test") && text.contains("Subject: Secret"), "заголовки — открыто");
         assert!(text.contains("application/pkcs7-mime"));
-        let env = envelope::envelope(&m).unwrap();
+        let env = postman_worker::smime::envelope(&m).unwrap();
         assert_eq!(env.cipher, Ok(want));
         assert_eq!(env.recipients[0].wrap, if gcm { Wrap::RsaOaep(postman_smime::Hash::Sha256) } else { Wrap::RsaPkcs1 });
         let cek = soft::unwrap(&[soft_key(&pki)], &env).unwrap();
-        assert_eq!(envelope::open(&m, &cek, &pki.trust(), NOW).unwrap().html.as_deref(), Some(HTML));
+        assert_eq!(postman_worker::smime::open(&m, &cek, &pki.trust(), NOW).unwrap().html.as_deref(), Some(HTML));
     }
     // Хоть один без GCM — CBC.
     let to = [To { prepared: p.clone(), gcm: true }, To { prepared: p, gcm: false }];
@@ -59,7 +59,7 @@ fn ec_round_trips() {
         let to = [To { prepared: p, gcm: true }];
         assert_eq!(seal::choose_cipher(&to), Cipher::AesCbc(256), "EC — CBC");
         let m = seal::seal_message(RAW, &to, &TestOps::default()).unwrap();
-        let env = envelope::envelope(&m).unwrap();
+        let env = postman_worker::smime::envelope(&m).unwrap();
         let r = &env.recipients[0];
         let Wrap::Ecdh { ephemeral, .. } = &r.wrap else { panic!("{:?}", r.wrap) };
         let z = match &key {
@@ -72,7 +72,7 @@ fn ec_round_trips() {
             _ => unreachable!(),
         };
         let cek = envelope::ecdh_cek(&z, &r.wrap, &r.encrypted_key).unwrap();
-        assert_eq!(envelope::open(&m, &cek, &trust, NOW).unwrap().html.as_deref(), Some(HTML));
+        assert_eq!(postman_worker::smime::open(&m, &cek, &trust, NOW).unwrap().html.as_deref(), Some(HTML));
     }
 }
 
@@ -85,9 +85,9 @@ fn sign_then_encrypt_to_self_and_recipient() {
     let to = [To { prepared: prep(&them, &them.user), gcm: false }, To { prepared: prep(&me, &me.user), gcm: false }];
     let m = seal::seal_message(&signed, &to, &TestOps::default()).unwrap();
     for pki in [&them, &me] {
-        let env = envelope::envelope(&m).unwrap();
+        let env = postman_worker::smime::envelope(&m).unwrap();
         let cek = soft::unwrap(&[soft_key(pki)], &env).unwrap();
-        let o = envelope::open(&m, &cek, &me.trust(), NOW).unwrap();
+        let o = postman_worker::smime::open(&m, &cek, &me.trust(), NOW).unwrap();
         assert_eq!((o.inner.kind, &o.inner.status), (Kind::Detached, &Status::Valid), "{:?}", o.inner);
         assert_eq!(o.html.as_deref(), Some(HTML));
     }

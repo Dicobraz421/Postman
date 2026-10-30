@@ -328,8 +328,9 @@ mod tests {
         let trust = Trust { roots: vec![Anchor { der: p.root.der.clone(), corporate: false }], ..Default::default() };
         let ctx = Context { crl: Some(Arc::new(e)), ..Context::fixed(trust.clone()) };
         let head = Head { from: "user2@itt.test", to: "me@itt.test", subject: "s", date: "Wed, 21 Oct 2026 10:00:00 +0300" };
-        let report =
-            |c: &Issued| postman_smime::verify(&testkit::signed_letter(&head, "<p>x</p>", c, &p.user_key, &[&p.root], &Sign::default()), &trust, NOW);
+        let report = |c: &Issued| {
+            postman_worker::smime::verify(&testkit::signed_letter(&head, "<p>x</p>", c, &p.user_key, &[&p.root], &Sign::default()), &trust, NOW)
+        };
         let cache = Cache::open_in_memory().unwrap();
         let v = finish(&cache, "revoked", report(&p.revoked), &ctx, now);
         assert_eq!((v.gost, v.revocation), (Some(GostEngine::Postman), Revocation::Revoked));

@@ -448,19 +448,19 @@ mod tests {
         let cek = [0x42u8; 32];
         for alg in [KeyAlg::RsaPkcs1, KeyAlg::RsaOaep(Hash::Sha1), KeyAlg::RsaOaep(Hash::Sha256)] {
             let m = letter(&[To { cert: &pki.user, key: &pki.user_key, alg, ski: false }], Cipher::AesCbc(256), &cek);
-            let env = envelope::envelope(&m).unwrap();
+            let env = postman_worker::smime::envelope(&m).unwrap();
             let r = &env.recipients[0];
             let got = decrypt_with(key.0, &r.wrap, &r.encrypted_key, true, 32).unwrap_or_else(|e| panic!("{alg:?}: {e:?}"));
             assert_eq!(got.as_slice(), &cek, "{alg:?}");
         }
         let m = letter(&[To { cert: &pki.user, key: &pki.user_key, alg: KeyAlg::RsaPkcs1, ski: false }], Cipher::AesCbc(256), &cek);
-        let mut env = envelope::envelope(&m).unwrap();
+        let mut env = postman_worker::smime::envelope(&m).unwrap();
         env.recipients[0].encrypted_key[7] ^= 0x10;
         let r = &env.recipients[0];
         let got = decrypt_with(key.0, &r.wrap, &r.encrypted_key, true, 32).unwrap();
         assert_eq!(got.len(), 32);
         assert_ne!(got.as_slice(), &cek);
-        assert_eq!(envelope::open(&m, &got, &Default::default(), testkit::NOW), Err(envelope::OpenError::Damaged));
+        assert_eq!(postman_worker::smime::open(&m, &got, &Default::default(), testkit::NOW), Err(envelope::OpenError::Damaged));
     }
 
     /// ECDH P-256: временный ключ ECDH из `BCRYPT_ECCPRIVATE_BLOB`, общий секрет CNG (разворот байтов) → тот же CEK.
@@ -481,7 +481,7 @@ mod tests {
         let cng = import(&ksp, BCRYPT_ECCPRIVATE_BLOB, &blob);
         let cek = [0x17u8; 32];
         let m = letter(&[To { cert: &user, key: &key, alg: KeyAlg::Ecdh(Hash::Sha256, 256), ski: false }], Cipher::AesGcm(256), &cek);
-        let env = envelope::envelope(&m).unwrap();
+        let env = postman_worker::smime::envelope(&m).unwrap();
         let r = &env.recipients[0];
         let got = decrypt_with(cng.0, &r.wrap, &r.encrypted_key, true, 32).unwrap();
         assert_eq!(got.as_slice(), &cek);
@@ -492,7 +492,7 @@ mod tests {
     fn not_in_my_store() {
         let pki = Pki::rsa("Postman Test Absent Root", "Никто", "nobody@itt.test");
         let m = letter(&[To { cert: &pki.user, key: &pki.user_key, alg: KeyAlg::RsaPkcs1, ski: false }], Cipher::AesCbc(256), &[1; 32]);
-        let env = envelope::envelope(&m).unwrap();
+        let env = postman_worker::smime::envelope(&m).unwrap();
         match unwrap_cek(&env, Prompt::Silent) {
             Err(KeyError::NotForYou(l)) => assert!(l[0].contains("Postman Test Absent Root"), "{l:?}"),
             other => panic!("{other:?}"),
@@ -563,7 +563,7 @@ mod tests {
         // SAFETY: свойство — структура с указателями на живые строки.
         unsafe { CertSetCertificateContextProperty(ctx, CERT_KEY_PROV_INFO_PROP_ID, 0, ptr::from_ref(&info).cast()) };
         let m = letter(&[To { cert: &pki.user, key: &pki.user_key, alg: KeyAlg::RsaOaep(Hash::Sha256), ski: false }], Cipher::AesGcm(256), &[5; 32]);
-        let got = unwrap_cek(&envelope::envelope(&m).unwrap(), Prompt::Silent);
+        let got = unwrap_cek(&postman_worker::smime::envelope(&m).unwrap(), Prompt::Silent);
         // Уборка — до проверок.
         // SAFETY: контекст и ключ созданы выше.
         unsafe {
