@@ -135,8 +135,10 @@ jobs:
           shared-key: windows-release
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # Признак `viewer` воркера — только для `postman-viewer.exe` (S8-24, ADR 0007): в postman-worker.exe и
+      # postman.exe интерпретатора WASM нет (на него ссылается только main хоста модулей).
       - name: Release-сборка
-        run: cargo build --release --workspace --locked
+        run: cargo build --release --workspace --locked --features postman-worker/viewer
 
       # Подпись (S4-01, решение владельца 1): только если заданы секреты с сертификатом, иначе — уведомление.
       # WINDOWS_CERT_PFX_BASE64 — .pfx в base64, WINDOWS_CERT_PASSWORD — пароль; сервер меток времени —
@@ -156,7 +158,6 @@ jobs:
             Sort-Object { [version]$_.Directory.Parent.Name } -Descending | Select-Object -First 1
           if (-not $signtool) { throw "signtool.exe not found" }
           $ts = if ($env:TIMESTAMP_URL) { $env:TIMESTAMP_URL } else { "http://timestamp.digicert.com" }
-          # postman-viewer.exe — после S8-24; пока его нет, подписываем два exe.
           $exes = "postman.exe", "postman-worker.exe", "postman-viewer.exe" |
             ForEach-Object { Join-Path "$env:CARGO_TARGET_DIR/release" $_ } | Where-Object { Test-Path -LiteralPath $_ }
           $pfx = Join-Path $env:RUNNER_TEMP "postman-sign.pfx"
@@ -176,8 +177,8 @@ jobs:
         shell: pwsh
         run: ./scripts/windows/package.ps1 -TargetDir "$env:CARGO_TARGET_DIR" -Out dist
 
-      # Артефакт скачивается как Postman-<версия>-windows-x64.zip: exe приложения, воркера и (после S8-24)
-      # хоста модулей просмотра, README.txt, install.ps1.
+      # Артефакт скачивается как Postman-<версия>-windows-x64.zip: exe приложения, воркера и хоста модулей
+      # просмотра, README.txt, install.ps1.
       - name: Артефакт Windows
         uses: actions/upload-artifact@v4
         with:
