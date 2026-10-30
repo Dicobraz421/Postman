@@ -10,6 +10,7 @@
 //! Модули просмотра WASM (S8-24, [`wasm`]) — в отдельном процессе `postman-viewer` с той же песочницей и тем же
 //! обменом ([`Client::viewer`]).
 
+pub mod mapi;
 pub mod mime;
 pub mod preview;
 mod sandbox;
@@ -41,7 +42,7 @@ pub const SPLIT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Больше этого не принимаем ни в одну сторону (кроме бинарной части `MimeSplit`).
 const MAX_FRAME: usize = 64 * 1024 * 1024;
-/// Бинарная часть запроса и ответа `MimeSplit`: письмо целиком и его раскодированные части (не длиннее письма).
+/// Бинарная часть запроса и ответа `MimeSplit` и `Mapi`: письмо целиком и его раскодированные части.
 const MAX_SPLIT_FRAME: usize = mime::MAX_SPLIT;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -108,6 +109,11 @@ pub enum Request {
     /// скачанный ядром (`postman_smime::wire::encode_crl`). Ответ — «не отозван / отозван» или почему не проверен.
     SmimeCrl {
         now: u64,
+    },
+    /// Письмо целиком (S8-29) в бинарной части → свойства MAPI для MSG и PST ([`mapi::mapi`]); `seen` — прочитано.
+    /// Ответ — письмо MAPI байтами в бинарной части.
+    Mapi {
+        seen: bool,
     },
     /// Модуль просмотра (только `postman-viewer`, S8-24): в бинарной части — модуль (`wasm` байт), за ним вход.
     /// Ответ — [`wasm::ViewerOutput`] или [`wasm::Refusal`]; пиксели картинки — в бинарной части.
@@ -263,6 +269,8 @@ enum Response {
     Prepared(Vec<Result<postman_smime::prepare::Prepared, String>>),
     /// Итог проверки по CRL (12.1д).
     Crl(Result<postman_smime::crl::Checked, postman_smime::crl::CrlError>),
+    /// Письмо MAPI — в бинарной части.
+    Mapi,
     /// Ответ модуля просмотра; пиксели картинки — в бинарной части.
     View(Result<wasm::ViewerOutput, wasm::Refusal>),
     Err(String),
@@ -448,7 +456,7 @@ pub fn parse_contacts(bytes: &[u8]) -> Result<Vec<serde_json::Value>, String> {
 /// Предел бинарной части запроса `req` и ответа на него: письмо на разбор частей — больше общего [`MAX_FRAME`].
 fn max_bin(req: &Request) -> usize {
     match req {
-        Request::MimeSplit => MAX_SPLIT_FRAME,
+        Request::MimeSplit | Request::Mapi { .. } => MAX_SPLIT_FRAME,
         _ => MAX_FRAME,
     }
 }
@@ -537,6 +545,14 @@ fn handle(req: Result<Request, serde_json::Error>, bin: &[u8]) -> (Response, Vec
                 out_bin = bytes;
                 Response::Split(split)
             }
+            Err(e) => Response::Err(e),
+        },
+        Ok(Request::Mapi { seen }) => match mapi::mapi(bin, seen).map(|m| mapi::encode(&m)) {
+            Ok(bytes) if bytes.len() <= MAX_SPLIT_FRAME => {
+                out_bin = bytes;
+                Response::Mapi
+            }
+            Ok(_) => Response::Err("письмо слишком большое".into()),
             Err(e) => Response::Err(e),
         },
         Ok(Request::Html(h)) => Response::Ok(postman_ir::from_html(&h)),
@@ -721,6 +737,7 @@ impl Client {
             | Response::Split(_)
             | Response::Prepared(_)
             | Response::Crl(_)
+            | Response::Mapi
             | Response::View(_) => Err("неожиданный ответ".into()),
             Response::Err(e) => Err(e),
         }
@@ -956,6 +973,19 @@ impl Client {
                 Ok(wasm::checked(wasm::ViewerOutput::Image { width, height, rgba }))
             }
             (Response::View(r), _) => Ok(r),
+            (Response::Err(e), _) => Err(e),
+            _ => Err("неожиданный ответ".into()),
+        }
+    }
+
+    /// Письмо целиком → свойства MAPI для MSG и PST (S8-29) — в песочнице; `seen` — прочитано.
+    pub fn mapi(&mut self, raw: &[u8], seen: bool) -> Result<postman_export::mapi::MapiMessage, String> {
+        if raw.len() > mime::MAX_SPLIT {
+            return Err("письмо слишком большое".into());
+        }
+        let timeout = self.timeout.max(SPLIT_TIMEOUT);
+        match self.call_for(&Request::Mapi { seen }, raw, timeout)? {
+            (Response::Mapi, bytes) => mapi::decode(&bytes).ok_or_else(|| "неожиданный ответ".into()),
             (Response::Err(e), _) => Err(e),
             _ => Err("неожиданный ответ".into()),
         }

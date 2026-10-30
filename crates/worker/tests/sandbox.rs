@@ -225,3 +225,18 @@ fn mime_split_round_trip() {
     assert!(c.mime(raw.as_bytes()).is_err());
     assert!(c.render(&Request::Text("ok".into())).is_ok());
 }
+
+/// Свойства MAPI (S8-29) через песочницу: письмо с вложением приходит тем же письмом MAPI.
+#[test]
+fn mapi_round_trip() {
+    use postman_export::mapi::{PR_ATTACH_DATA_BIN, PR_SUBJECT_W, Value};
+    let mut c = client();
+    let raw = "From: a@example.test\r\nTo: b@example.test\r\nSubject: =?utf-8?B?0J7RgtGH0ZHRgg==?=\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n\
+               --b\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nТело\r\n--b\r\nContent-Type: application/pdf; name=\"a.pdf\"\r\n\
+               Content-Transfer-Encoding: base64\r\n\r\nJVBERg==\r\n--b--\r\n";
+    let m = c.mapi(raw.as_bytes(), true).unwrap();
+    assert_eq!(m, postman_worker::mapi::mapi(raw.as_bytes(), true).unwrap());
+    assert!(m.props.contains(&(PR_SUBJECT_W, Value::Unicode("Отчёт".into()))));
+    assert!(m.attachments[0].props.contains(&(PR_ATTACH_DATA_BIN, Value::Binary(b"%PDF".to_vec()))));
+    assert!(c.mapi(b"", true).is_err());
+}

@@ -6,6 +6,7 @@
 
 pub mod eml;
 pub mod maildir;
+pub mod mapi;
 pub mod mbox;
 pub mod tree;
 

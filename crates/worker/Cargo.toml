@@ -32,6 +32,8 @@ pulldown-cmark = { version = "0.13", default-features = false }
 wasmi = { version = "2", default-features = false, features = ["std", "stable", "validate", "auto-dispatch"], optional = true }
 # Ответ модуля просмотра (ABI v1, ADR 0007) — postcard, как у `cache`; разбирает только `postman-viewer.exe`.
 postcard = { version = "1", default-features = false, features = ["use-std"], optional = true }
+# Свойства MAPI для MSG и PST (S8-29): типы — у `export`, воркер их только заполняет из письма.
+postman-export.workspace = true
 
 [features]
 viewer = ["dep:wasmi", "dep:postcard"]
