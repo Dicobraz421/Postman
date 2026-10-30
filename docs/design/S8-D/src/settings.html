@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><title>S8-D настройки</title><link rel="stylesheet" href="s8.css">
+<style>
+.set { display: flex; gap: 8px; height: 560px; padding: 0 8px 8px 0; }
+.nav { width: 220px; padding: 8px 0 0 8px; }
+.nav .q { height: 28px; border: 1px solid var(--stroke); border-radius: 4px; background: var(--card); color: var(--t3); display: flex; align-items: center; gap: 6px; padding: 0 8px; margin-bottom: 8px; }
+.nav .it { height: 30px; display: flex; align-items: center; padding: 0 12px; border-radius: 4px; position: relative; }
+.nav .it.on { background: var(--sel); }
+.nav .it.on::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 2px; background: var(--acc); }
+.nav .it.new::after { content: "новое"; margin-left: auto; font-size: 11px; color: var(--t3); }
+.page { flex: 1; background: var(--card); border-radius: 8px; padding: 18px 24px; overflow: hidden; }
+.page h3 { margin: 0 0 4px; font-size: 18px; font-weight: 600; }
+.page .hint { color: var(--t2); margin-bottom: 14px; }
+.gt { font-weight: 600; margin: 16px 0 6px; }
+.srow { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--div); }
+.srow .lb { flex: 1; min-width: 0; }
+.srow .lb .h { color: var(--t2); font-size: 12px; line-height: 17px; }
+.srow .fm { color: var(--t2); }
+.srow .ic { width: 28px; color: var(--t2); font-family: var(--icon); font-size: 16px; text-align: center; }
+.fmt { display: grid; grid-template-columns: 130px 1fr; row-gap: 6px; column-gap: 12px; padding: 4px 0 4px; }
+.fmt div:nth-child(odd) { color: var(--t2); }
+</style></head>
+<body>
+<h1>S8-D · 6–7. Настройки → Просмотр вложений, Безопасность → BitLocker, обновление хранилища (светлая)</h1>
+
+<div class="win">
+  <div class="tabs"><div class="tab">Почта</div><div class="tab on">Настройки</div></div>
+  <div style="height:8px"></div>
+  <div class="set">
+    <div class="nav">
+      <div class="q"><span class="i">&#xE721;</span>Найти настройку</div>
+      <div class="it">Общие</div><div class="it">Аккаунты</div><div class="it">Категории</div><div class="it">Быстрые фильтры и сроки</div>
+      <div class="it">Чтение</div><div class="it on">Просмотр вложений</div><div class="it">Подписи и шаблоны</div><div class="it">Клавиатура</div>
+      <div class="it">Правила</div><div class="it">Автоответ</div><div class="it">Календарь</div><div class="it">Безопасность</div><div class="it">Внешний вид</div>
+    </div>
+    <div class="page">
+      <h3>Просмотр вложений</h3>
+      <div class="hint">Файлы открываются в песочнице, без внешних программ. Новые форматы — модулями.</div>
+      <div class="gt">Встроенные</div>
+      <div class="fmt">
+        <div>Документы</div><div>PDF, Word (docx), OpenDocument (odt), RTF, Markdown</div>
+        <div>Таблицы</div><div>Excel (xlsx), OpenDocument (ods), CSV, TSV</div>
+        <div>Презентации</div><div>PowerPoint (pptx), OpenDocument (odp)</div>
+        <div>Картинки</div><div>PNG, JPEG, GIF, BMP, ICO, TIFF</div>
+        <div>Письма</div><div>EML, MSG</div>
+        <div>Архивы</div><div>ZIP — оглавление, без распаковки</div>
+      </div>
+      <div class="gt">Модули</div>
+      <div class="srow"><span class="ic">&#xE74C;</span><div class="lb"><div>FB2 · 1.0 <span class="chip n">сторонний</span></div><div class="h">fb2, fb2.zip · %LOCALAPPDATA%\Postman\viewers</div></div><span class="sw on"></span></div>
+      <div class="srow"><span class="ic">&#xE74C;</span><div class="lb"><div>DjVu · 0.3 <span class="chip n">от администратора</span></div><div class="h">djvu · C:\Program Files\Postman\viewers</div></div><span class="sw on"></span></div>
+      <div class="srow"><span class="ic">&#xE7BA;</span><div class="lb"><div>old-viewer.wasm</div><div class="h">Не загружается: модуль просит доступ к системе — такие не запускаются</div></div><span class="sw" style="opacity:.4"></span></div>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:12px"><span class="btn-n"><span class="i">&#xE838;</span>Открыть папку модулей</span><span style="color:var(--t2);font-size:12px">Модуль — файл .wasm с описанием .json. Сторонние — без подписи; видят только открытый файл.</span></div>
+    </div>
+  </div>
+</div>
+<p class="note">Раздел — после «Чтение». Встроенные — справкой, без выключателей. Модули — по одному в строке: имя и версия,
+пометка «сторонний» (папка пользователя) или «от администратора» (Program Files), форматы и папка, выключатель; список
+перечитывается при открытии раздела. Модулей нет — строка «Модулей нет. Положите файл .wasm в папку модулей».
+Политика может закрепить выключатель — как в «Безопасности».</p>
+
+<h2>Безопасность — первая строка раздела: шифрование диска с базой (три состояния, видна одна)</h2>
+<div class="page" style="width:900px;border:1px solid var(--div);background:#fff;color:#242424">
+  <h3>Безопасность</h3><div class="hint">Картинки, ссылки, вложения, пароли и соединения.</div>
+  <div class="srow"><span class="ic">&#xE7BA;</span><div class="lb"><div>Диск C: с данными Postman не зашифрован BitLocker</div><div class="h">Письма «На этом компьютере» хранятся только здесь. Включите BitLocker или обратитесь к администратору.</div></div><span class="btn-n">Параметры BitLocker</span></div>
+  <div class="srow"><span class="ic">&#xE73E;</span><div class="lb"><div>Диск C: с данными Postman зашифрован BitLocker</div></div></div>
+  <div class="srow"><span class="ic">&#xE946;</span><div class="lb"><div>Шифрование диска C: неизвестно</div><div class="h">Windows не сообщила состояние BitLocker без прав администратора.</div></div></div>
+  <div class="srow" style="border:0"><span class="ic">&#xEB9F;</span><div class="lb"><div>Внешние картинки</div><div class="h">Загрузка картинок из Интернета в письмах</div></div><span class="dd">Никогда<span class="i">&#xE70D;</span></span></div>
+</div>
+<p class="note">Строка одна — по состоянию диска, где лежит база (обычно %LOCALAPPDATA%). Предупреждение нейтральное (значок, без красного),
+только в настройках: баннеров и тостов нет. «Параметры BitLocker» — панель управления Windows.</p>
+
+<h2>Обновление хранилища — первый запуск формата 6</h2>
+<div class="win" style="height:330px">
+  <div class="tabs"><div class="tab on">Почта</div><div class="tab">Календарь</div></div>
+  <div class="cmd"><div class="btn-acc"><span class="i">&#xE710;</span>Новое письмо</div><div class="search"><span class="i">&#xE721;</span>Поиск</div></div>
+  <div class="body" style="height:226px">
+    <div class="rail"><span class="i on">&#xE715;</span><span class="i">&#xE787;</span><span class="i">&#xE77B;</span><span class="i">&#xE9D5;</span></div>
+    <div class="folders"><div class="grp"><span class="i">&#xE70D;</span>Stalwart</div><div class="grp"><span class="i">&#xE70D;</span>Exchange</div></div>
+    <div class="list" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px">
+      <div style="font-weight:600">Обновление хранилища: 42 %</div>
+      <div class="prog" style="width:200px"><i style="width:42%"></i></div>
+      <div style="color:var(--t2);font-size:12px;text-align:center;max-width:300px">Один раз после обновления Postman. Письма на сервере не меняются.</div>
+    </div>
+    <div class="read"></div>
+  </div>
+  <div class="status"><span>Обновление хранилища: 42 %</span><span class="sp"></span></div>
+  <div class="toasts" style="width:390px;bottom:36px"><div class="toast"><span class="i">&#xE7BA;</span><div class="tx">Хранилище не обновилось — письма загружаются с сервера заново<div class="sec">Прежние файлы не тронуты. Причина — в журнале.</div></div><span class="i x">&#xE711;</span></div></div>
+</div>
+<p class="note">Пока идёт обновление — вместо списка строка хода; дерево — только заголовки учёток. Тост справа — только при сбое (ADR 0006 п. 6), предупреждение нейтральное: письма на сервере, потерь нет.</p>
+</body></html>
