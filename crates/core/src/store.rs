@@ -404,6 +404,10 @@ impl migrate::Store for CacheStore {
         Ok(self.cache.finish(cache_job(job), cache_id(letter))?)
     }
 
+    fn kept(&mut self, job: JobId, letter: LetterId) -> Result<()> {
+        Ok(self.cache.kept(cache_job(job), cache_id(letter))?)
+    }
+
     fn restore(&mut self, job: JobId, letters: &[LetterId]) -> Result<()> {
         let ids: Vec<postman_cache::LetterId> = letters.iter().map(|id| cache_id(*id)).collect();
         Ok(self.cache.restore(cache_job(job), &ids)?)

@@ -186,6 +186,17 @@ impl Cache {
         })
     }
 
+    /// Источник письмо так и не удалил (повторы кончились): строка задания убрана, письмо — `Synced`, если цель его
+    /// подтвердила, иначе — `Local`; `detached`-связи остаются — пометка «не удалено у источника» (синхронизация
+    /// источника снимет связь, когда письма там не станет).
+    pub fn kept(&self, job: JobId, letter: LetterId) -> Result<()> {
+        self.letter_step(job, letter, |l, _, row| {
+            l.take_step(job, letter)?;
+            let place = if l.refs(letter)?.iter().any(|r| !r.detached) { Place::Synced } else { Place::Local };
+            l.put(letter, Some(&row), &LetterRow { place, ..row.clone() })
+        })
+    }
+
     /// Отмена: письма — одной транзакцией обратно в папки до переноса, связи учётки источника снова действуют
     /// (`Synced`; без связей — `Local`), строки задания убраны. Папок источника больше нет — письмо остаётся где
     /// есть, `Local`.
@@ -422,6 +433,35 @@ mod tests {
         c.finish(job, y).unwrap();
         assert_eq!((place(&c, y), c.remotes(y).unwrap(), c.letter_of("a", "y").unwrap()), (Place::Local, vec![], None));
         assert!(c.outbound(job).unwrap().is_empty());
+        assert_consistent(&c);
+    }
+
+    /// Источник так и не удалил: письмо вышло из задания (у цели — `Synced`, архив — `Local`), `detached`-связь
+    /// источника — пометка; синхронизация источника письмо не возвращает, его удаление там связь снимает.
+    #[test]
+    fn source_kept_marks_the_letter() {
+        let c = Cache::open_in_memory().unwrap();
+        let (a_in, b_in) = (account_folder(&c, "a", "in"), account_folder(&c, "b", "in"));
+        let local = c.create_folder(None, "Архив").unwrap();
+        let x = c.upsert_remote("a", "x", &row(10, &[a_in], &[])).unwrap();
+        let y = c.upsert_remote("a", "y", &row(20, &[a_in], &[])).unwrap();
+        let job = c.move_letters(&[x], b_in).unwrap().job.unwrap();
+        c.put_content(x, &raw(1), &[]).unwrap();
+        c.confirm(job, x, link("b", "bx")).unwrap();
+        c.kept(job, x).unwrap();
+        assert!(c.outbound(job).unwrap().is_empty());
+        assert_eq!(place(&c, x), Place::Synced);
+        assert_eq!(c.remotes(x).unwrap().iter().map(|r| (r.account.as_str(), r.detached)).collect::<Vec<_>>(), [("a", true), ("b", false)]);
+        assert_eq!(c.upsert_remote("a", "x", &row(10, &[a_in], &[])).unwrap(), x);
+        assert_eq!((c.folder_count(a_in).unwrap(), c.folder_count(b_in).unwrap()), (1, 1));
+        assert_eq!(c.delete_remote("a", &["x".into()]).unwrap(), []);
+        assert_eq!(c.remotes(x).unwrap(), [link("b", "bx")]);
+
+        let ja = c.move_letters(&[y], local).unwrap().job.unwrap();
+        c.put_content(y, &raw(2), &[]).unwrap();
+        c.archive(ja, y).unwrap();
+        c.kept(ja, y).unwrap();
+        assert_eq!((place(&c, y), c.remotes(y).unwrap().iter().all(|r| r.detached)), (Place::Local, true));
         assert_consistent(&c);
     }
 }
