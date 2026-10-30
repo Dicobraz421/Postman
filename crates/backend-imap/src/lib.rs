@@ -713,6 +713,7 @@ impl Imap {
                 let newest = &uids[uids.len().saturating_sub(INITIAL)..];
                 if !newest.is_empty() {
                     let headers = session.headers(&uid_set(newest)).await?;
+                    let headers = self.threads(headers).await;
                     upsert.extend(headers.iter().map(|h| row(scope.as_deref(), f, validity, h)));
                 }
                 gone.retain(|g| !upsert.iter().any(|r| &r.id == g));
@@ -728,8 +729,10 @@ impl Imap {
                 }
                 if sel.state.uid_next > from {
                     let headers = session.headers(&format!("{from}:*")).await?;
-                    upsert.extend(headers.iter().filter(|h| h.uid >= from).map(|h| row(scope.as_deref(), f, validity, h)));
+                    let headers = self.threads(headers.into_iter().filter(|h| h.uid >= from).collect()).await;
+                    upsert.extend(headers.iter().map(|h| row(scope.as_deref(), f, validity, h)));
                 }
+                let session = self.session().await?;
                 let changes = match modseq {
                     Some(m) => session.changed_since(m).await?,
                     None => session.all_flags().await?,
@@ -814,6 +817,22 @@ impl Imap {
         .map_err(|e| postman_imap::Error::Protocol(format!("worker task: {e}")))?;
         self.worker = Some(worker);
         out.map_err(|e| postman_imap::Error::Protocol(format!("worker: {e}")))
+    }
+
+    /// Заголовки цепочки (In-Reply-To, References) из строк письма — разбором в воркере (S8-36): письмо в процессе
+    /// приложения не разбирается. Воркер не ответил — писем без цепочки (каждое своей), список всё равно обновляется.
+    async fn threads(&mut self, mut headers: Vec<Header>) -> Vec<Header> {
+        let heads: Vec<Vec<u8>> = headers.iter_mut().map(|h| std::mem::take(&mut h.head)).collect();
+        match self.in_worker(move |w| w.threads(&heads)).await {
+            Ok(threads) => {
+                for (h, t) in headers.iter_mut().zip(threads) {
+                    h.in_reply_to = t.in_reply_to;
+                    h.references = t.references;
+                }
+            }
+            Err(e) => tracing::warn!("imap threads: {e}"),
+        }
+        headers
     }
 
     async fn body(&mut self, key: &str) -> postman_imap::Result<()> {
@@ -1019,6 +1038,7 @@ impl Imap {
             let missing: Vec<u32> = uids.iter().zip(&keys).filter(|(_, k)| !known.contains(*k)).map(|(&u, _)| u).collect();
             if !missing.is_empty() {
                 let headers = self.session().await?.headers(&uid_set(&missing)).await?;
+                let headers = self.threads(headers).await;
                 let rows: Vec<EmailRow> = headers.iter().map(|h| row(scope.as_deref(), &f, sel.state.uid_validity, h)).collect();
                 self.cache.upsert_emails(&rows).map_err(db)?;
             }
@@ -1041,6 +1061,7 @@ impl Imap {
             return Ok(0);
         }
         let headers = session.headers(&uid_set(page)).await?;
+        let headers = self.threads(headers).await;
         let rows: Vec<EmailRow> = headers.iter().map(|h| row(scope.as_deref(), &f, sel.state.uid_validity, h)).collect();
         self.cache.upsert_emails(&rows).map_err(db)?;
         Ok(rows.len())

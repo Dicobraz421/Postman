@@ -226,6 +226,26 @@ fn mime_split_round_trip() {
     assert!(c.render(&Request::Text("ok".into())).is_ok());
 }
 
+/// Заголовки цепочки (S8-36) через песочницу: по письму на строки, по порядку; слишком длинные — без цепочки.
+#[test]
+fn threads_round_trip() {
+    use postman_worker::mime::{MAX_THREAD_HEAD, Thread};
+    let mut c = client();
+    let heads = vec![
+        b"In-Reply-To: <b@x.test>\r\nReferences: <a@x.test>\r\n <b@x.test>\r\n\r\n".to_vec(),
+        b"\r\n".to_vec(),
+        format!("References: <a@x.test>{}\r\n\r\n", " ".repeat(MAX_THREAD_HEAD)).into_bytes(),
+    ];
+    let t = c.threads(&heads).unwrap();
+    assert_eq!(t.len(), 3);
+    assert_eq!(
+        (t[0].in_reply_to.as_deref(), t[0].references.as_slice()),
+        (Some("<b@x.test>"), &["<a@x.test>".to_owned(), "<b@x.test>".to_owned()][..])
+    );
+    assert_eq!((&t[1], &t[2]), (&Thread::default(), &Thread::default()));
+    assert_eq!(c.threads(&[]), Ok(Vec::new()));
+}
+
 /// Свойства MAPI (S8-29) через песочницу: письмо с вложением приходит тем же письмом MAPI.
 #[test]
 fn mapi_round_trip() {

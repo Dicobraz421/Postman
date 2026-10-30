@@ -2,13 +2,14 @@
 //! только здесь, в песочнице (`docs/HANDOFF.md` §3a). Вложения — по номеру в списке; байты — отдельным запросом.
 //! Для хранилища (S8-07, ADR 0006 §2) — диапазоны крупных листовых частей и их раскодированные байты ([`split`]) и
 //! `Message-ID` письма: ядро ищет по нему письмо у цели при повторе выгрузки (решение владельца 2026-10-30 — заголовки
-//! чужого письма вне воркера не разбираются).
+//! чужого письма вне воркера не разбираются). Заголовки цепочки (`In-Reply-To`, `References`) для списка IMAP —
+//! тоже здесь ([`threads`], S8-36).
 
 use std::ops::Range;
 
 use mail_parser::decoders::base64::base64_decode;
 use mail_parser::decoders::quoted_printable::quoted_printable_decode;
-use mail_parser::{Address, MimeHeaders, PartType};
+use mail_parser::{Address, HeaderValue, MimeHeaders, PartType};
 use serde::{Deserialize, Serialize};
 
 /// Больше не разбираем (письмо IMAP целиком; S/MIME — свой предел).
@@ -218,6 +219,78 @@ pub fn split(raw: &[u8]) -> Result<(Split, Vec<u8>), String> {
     Ok((Split { parts, message_id }, out))
 }
 
+/// Заголовков цепочки за один запрос — не больше (страница писем IMAP — 500).
+pub const MAX_THREADS: usize = 10_000;
+/// Строки заголовков одного письма длиннее — не разбираются: цепочки у письма нет.
+pub const MAX_THREAD_HEAD: usize = 64 * 1024;
+/// Идентификаторов `References` — не больше (начало цепочки — первый).
+pub const MAX_REFERENCES: usize = 100;
+
+/// Заголовки цепочки письма: `In-Reply-To` и `References` с угловыми скобками (`<id@host>`), только годные
+/// ([`is_message_id`]).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Thread {
+    pub in_reply_to: Option<String>,
+    /// Первый — начало цепочки.
+    pub references: Vec<String>,
+}
+
+impl Thread {
+    /// Ответ воркера годится: идентификаторы годные, их не больше предела.
+    pub(crate) fn fits(&self) -> bool {
+        self.references.len() <= MAX_REFERENCES && self.in_reply_to.iter().chain(&self.references).all(|id| is_message_id(id))
+    }
+}
+
+/// Идентификаторы писем из значения заголовка: со скобками, без пробелов (перенос строки внутри `<…>`), только годные.
+fn ids(v: &HeaderValue<'_>) -> Vec<String> {
+    let texts: Vec<&str> = match v {
+        HeaderValue::Text(t) => vec![t.as_ref()],
+        HeaderValue::TextList(l) => l.iter().map(|t| t.as_ref()).collect(),
+        _ => Vec::new(),
+    };
+    texts.into_iter().map(|t| format!("<{}>", t.chars().filter(|c| !c.is_whitespace()).collect::<String>())).filter(|id| is_message_id(id)).collect()
+}
+
+/// Строки заголовков письма (IMAP `HEADER.FIELDS (IN-REPLY-TO REFERENCES)`) → заголовки цепочки. Не разобралось —
+/// цепочки нет.
+pub fn thread(head: &[u8]) -> Thread {
+    if head.len() > MAX_THREAD_HEAD {
+        return Thread::default();
+    }
+    let Some(msg) = mail_parser::MessageParser::new().parse_headers(head) else { return Thread::default() };
+    let mut references = ids(msg.references());
+    references.truncate(MAX_REFERENCES);
+    Thread { in_reply_to: ids(msg.in_reply_to()).into_iter().next(), references }
+}
+
+/// Строки заголовков писем подряд — у каждого `u32 LE` длина и байты.
+pub fn encode_heads(heads: &[Vec<u8>]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(heads.iter().map(|h| h.len() + 4).sum());
+    for h in heads {
+        out.extend_from_slice(&u32::try_from(h.len()).unwrap_or(u32::MAX).to_le_bytes());
+        out.extend_from_slice(h);
+    }
+    out
+}
+
+/// Строки заголовков писем подряд ([`encode_heads`]) → заголовки цепочки каждого, по порядку.
+pub fn threads(bin: &[u8]) -> Result<Vec<Thread>, String> {
+    let mut out = Vec::new();
+    let mut rest = bin;
+    while !rest.is_empty() {
+        if out.len() >= MAX_THREADS {
+            return Err(format!("больше {MAX_THREADS} писем"));
+        }
+        let (len, tail) = rest.split_first_chunk::<4>().ok_or("запрос цепочек повреждён")?;
+        let len = u32::from_le_bytes(*len) as usize;
+        let head = tail.get(..len).ok_or("запрос цепочек повреждён")?;
+        out.push(thread(head));
+        rest = &tail[len..];
+    }
+    Ok(out)
+}
+
 /// Листовые части `msg` (и вложенных писем без кодировки: их смещения — в том же письме) по порядку.
 fn collect_leaves(msg: &mail_parser::Message<'_>, out: &mut Vec<(Range<usize>, Encoding)>, count: &mut usize) -> Result<(), String> {
     for part in &msg.parts {
@@ -253,7 +326,9 @@ fn collect_leaves(msg: &mail_parser::Message<'_>, out: &mut Vec<(Range<usize>, E
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
-    use super::{Encoding, MAX_MESSAGE_ID, MAX_SPLIT_PARTS, parse, part, split};
+    use super::{
+        Encoding, MAX_MESSAGE_ID, MAX_REFERENCES, MAX_SPLIT_PARTS, MAX_THREAD_HEAD, Thread, encode_heads, parse, part, split, thread, threads,
+    };
 
     const SAMPLE: &str = "From: Анна <anna@example.test>\r\nTo: Пётр <petr@example.test>, ivan@example.test\r\nCc: team@example.test\r\nSubject: =?utf-8?B?0J7RgtGH0ZHRgg==?=\r\nMessage-ID: <m1@example.test>\r\nReferences: <a@example.test> <b@example.test>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b1\"\r\n\r\n--b1\r\nContent-Type: multipart/alternative; boundary=\"b2\"\r\n\r\n--b2\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nПривет\r\n--b2\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>Привет</p>\r\n--b2--\r\n--b1\r\nContent-Type: application/pdf; name=\"report.pdf\"\r\nContent-Disposition: attachment; filename=\"report.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\nSGVsbG8=\r\n--b1--\r\n";
 
@@ -436,5 +511,30 @@ mod tests {
         assert!(split(parts(MAX_SPLIT_PARTS - 1).as_bytes()).is_ok());
         let e = split(parts(MAX_SPLIT_PARTS).as_bytes()).unwrap_err();
         assert!(e.contains("частей"), "{e}");
+    }
+
+    /// Заголовки цепочки (S8-36): переносы строк, регистр, скобки; негодные идентификаторы — мимо; несколько писем за
+    /// запрос — по порядку; повреждённый запрос — ошибка.
+    #[test]
+    fn thread_headers() {
+        let t = thread(b"References: <a@x.test>\r\n <b@x.test>  <c@\r\n x.test>\r\nIN-REPLY-TO: <c@x.test>\r\n\r\n");
+        assert_eq!(t.references, ["<a@x.test>", "<b@x.test>", "<c@x.test>"]);
+        assert_eq!(t.in_reply_to.as_deref(), Some("<c@x.test>"));
+        assert!(t.fits());
+        assert_eq!(thread(b"\r\n"), Thread::default());
+        assert_eq!(thread(b"References: <>\r\n\r\n"), Thread::default());
+        let long = format!("References: {}\r\n\r\n", "<a@x> ".repeat(MAX_REFERENCES + 5));
+        assert_eq!(thread(long.as_bytes()).references.len(), MAX_REFERENCES);
+        let huge = format!("References: <a@x>{}\r\n\r\n", " ".repeat(MAX_THREAD_HEAD));
+        assert_eq!(thread(huge.as_bytes()), Thread::default(), "длиннее предела — не разбирается");
+
+        let heads = vec![b"In-Reply-To: <p@x>\r\n\r\n".to_vec(), Vec::new(), b"References: <r@x> <p@x>\r\n\r\n".to_vec()];
+        let got = threads(&encode_heads(&heads)).unwrap();
+        assert_eq!(got.len(), 3);
+        assert_eq!((got[0].in_reply_to.as_deref(), got[1].clone(), got[2].references[0].as_str()), (Some("<p@x>"), Thread::default(), "<r@x>"));
+        assert!(threads(&[5, 0, 0, 0, b'x']).is_err());
+        assert!(threads(&[1, 0]).is_err());
+        assert_eq!(threads(&[]), Ok(Vec::new()));
+        assert!(!Thread { in_reply_to: Some("a b".into()), references: Vec::new() }.fits());
     }
 }
