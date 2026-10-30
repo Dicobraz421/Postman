@@ -105,6 +105,37 @@ pub fn put_raw(cache: &Cache, split: &mut Splitter, id: LetterId, raw: &[u8]) ->
     cache.put_content(cache_id(id), raw, &parts)
 }
 
+/// `Message-ID` письма целиком (с угловыми скобками): повтор выгрузки без дублей (`Command::Import` с `retry`) у путей,
+/// чей сервер не отвечает `alreadyExists`. Только это поле заголовка в первых 64 КиБ, без разбора MIME (как
+/// `postman_imap::references` у ответа сервера); нет — `None`.
+pub fn message_id(raw: &[u8]) -> Option<String> {
+    const NAME: &str = "message-id:";
+    let text = String::from_utf8_lossy(&raw[..raw.len().min(64 * 1024)]);
+    let mut value: Option<String> = None;
+    for line in text.split('\n').map(|l| l.trim_end_matches('\r')) {
+        if line.is_empty() {
+            break;
+        }
+        if line.starts_with([' ', '\t']) {
+            if let Some(v) = value.as_mut() {
+                v.push_str(line);
+            }
+            continue;
+        }
+        if value.is_some() {
+            break;
+        }
+        if line.get(..NAME.len()).is_some_and(|n| n.eq_ignore_ascii_case(NAME)) {
+            value = Some(line[NAME.len()..].to_owned());
+        }
+    }
+    let value = value?;
+    let start = value.find('<')?;
+    let len = value[start..].find('>')?;
+    let id: String = value[start..=start + len].chars().filter(|c| !c.is_whitespace()).collect();
+    (id.len() > 2).then_some(id)
+}
+
 /// Открыть хранилище; файл формата 5 — перенести в формат 6 (ADR 0006 п. 6): ход — `Event::StoreUpgrade` в `notify`,
 /// письма целиком — на части `split` (`None` — целиком). Перенос долгий — звать не из потока интерфейса: первый кадр
 /// его не ждёт. `Migrated::Fresh` — база пустая: синхронизация с нуля, как прежде при смене формата. После переноса
@@ -437,6 +468,16 @@ Content-Disposition: attachment; filename=r.pdf\r\n\r\n{}\r\n--b--\r\n",
     }
 
     #[test]
+    fn message_id_of_a_letter() {
+        assert_eq!(message_id(&raw(7)).as_deref(), Some("<m7@x.ru>"));
+        let folded = b"Subject: s\r\nMESSAGE-ID:\r\n <a.b@x.ru>\r\nTo: i@x.ru\r\n\r\nMessage-ID: <body@x.ru>\r\n";
+        assert_eq!(message_id(folded).as_deref(), Some("<a.b@x.ru>"), "перенос строки, регистр");
+        assert_eq!(message_id(b"Subject: s\r\n\r\nMessage-ID: <body@x.ru>\r\n"), None, "только заголовок");
+        assert_eq!(message_id(b"Message-ID: <>\r\n\r\n"), None);
+        assert_eq!(message_id("Тема: ё\nMessage-ID: <ё@x>\n\n".as_bytes()).as_deref(), Some("<ё@x>"));
+    }
+
+    #[test]
     fn refs_and_split() {
         assert_eq!(parse_ref(&letter_ref(LetterId(42))), Some(LetterId(42)));
         assert_eq!((parse_ref("42"), parse_ref("#x"), parse_ref("@2/e")), (None, None, None));
@@ -475,7 +516,7 @@ Content-Disposition: attachment; filename=r.pdf\r\n\r\n{}\r\n--b--\r\n",
     }
 
     /// Перенос в «На этом компьютере» движком поверх хранилища: содержимое есть — архив, нет — у источника; удаление
-    /// у источника — по ключу; потом письмо только в базе, команды над ним — в ядро, письмо целиком — из базы.
+    /// у источника — по `detached`-связи, письмо кончается по ответу; потом письмо только в базе, команды над ним — в ядро, письмо целиком — из базы.
     #[test]
     fn local_archive_through_the_engine() {
         let (_dir, cache) = demo();
@@ -495,7 +536,15 @@ Content-Disposition: attachment; filename=r.pdf\r\n\r\n{}\r\n--b--\r\n",
             for (r, c) in engine.poll(now).unwrap().commands {
                 match c {
                     Command::FetchRaw { letter } => fetch.push((r, letter)),
-                    Command::Destroy(key) => destroy.push((r, key)),
+                    Command::DestroyLetters { job, account, letters } => {
+                        // Путь источника удаляет по `detached`-связи: она ещё есть, пока сервер не ответил.
+                        for l in &letters {
+                            let refs = cache.remotes(cache_id(*l)).unwrap();
+                            assert!(refs.iter().any(|x| x.detached && x.account == account));
+                            destroy.push((r.clone(), refs[0].id.clone()));
+                            engine.event(&Event::Destroyed { job, letter: *l }, now).unwrap();
+                        }
+                    }
                     _ => panic!("неожиданная команда"),
                 }
             }
