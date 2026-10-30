@@ -132,6 +132,8 @@ pub(crate) enum FolderEvent {
     Local(crate::local::FolderEdit),
     /// Письма брошены на папку (S8-15).
     Letters(crate::local::DraggedLetters, String),
+    /// «Экспорт…» папки или группы «На этом компьютере» (S8-32).
+    Export(String),
 }
 
 /// Что правится полем в дереве.
@@ -158,14 +160,18 @@ enum MenuItem {
     Rename,
     /// Удалить пустую папку «На этом компьютере» (S8-15).
     Delete,
+    /// «Экспорт…» (S8-32).
+    Export,
 }
 
 /// Пункты меню папки: у локальной — ещё «Удалить».
 fn menu_items(id: &str) -> &'static [MenuItem] {
-    if crate::local::is_local(id) || id == crate::local::LOCAL {
-        &[MenuItem::New, MenuItem::Rename, MenuItem::Delete]
+    if id == crate::local::LOCAL {
+        &[MenuItem::New, MenuItem::Export]
+    } else if crate::local::is_local(id) {
+        &[MenuItem::New, MenuItem::Rename, MenuItem::Delete, MenuItem::Export]
     } else {
-        &[MenuItem::New, MenuItem::Rename]
+        &[MenuItem::New, MenuItem::Rename, MenuItem::Export]
     }
 }
 
@@ -369,6 +375,7 @@ impl Folders {
                     cx.emit(FolderEvent::Local(crate::local::FolderEdit::Delete(id)));
                 }
             }
+            MenuItem::Export => cx.emit(FolderEvent::Export(m.id)),
         }
         cx.notify();
     }
@@ -486,6 +493,7 @@ impl Folders {
                 MenuItem::New => (crate::chrome::glyph::FOLDER, "folder-menu-new"),
                 MenuItem::Rename => (crate::chrome::glyph::EDIT, "folder-menu-rename"),
                 MenuItem::Delete => (crate::chrome::glyph::DELETE, "local-delete"),
+                MenuItem::Export => (crate::export::EXPORT, "export-menu"),
             };
             crate::bulk::menu_line(("folder-menu-item", k), l)
                 .when(m.cursor == k && !off, |d| d.bg(l.hover()))

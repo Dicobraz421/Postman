@@ -122,6 +122,8 @@ pub(crate) struct Mailer {
     pub(crate) recent: Vec<String>,
     /// Перенос между учётками (S8-16): поток ядра, задания, полосы.
     pub(crate) migration: crate::migration::Migrations,
+    /// «Экспорт…» (S8-32): выбор, ход.
+    pub(crate) export: crate::export::Exports,
     pub(crate) _subscriptions: Vec<Subscription>,
 }
 
@@ -227,6 +229,11 @@ impl Mailer {
                 FolderEvent::Toast(text) => this.toast(pets_ui::Level::Info, text.clone(), cx),
                 FolderEvent::Local(e) => this.local_folder_edit(e.clone(), cx),
                 FolderEvent::Letters(d, to) => this.letters_dropped(d, to.clone(), cx),
+                FolderEvent::Export(id) => {
+                    let what =
+                        if id == crate::local::LOCAL { crate::export::What::Account(id.clone()) } else { crate::export::What::Folder(id.clone()) };
+                    this.export_ask(what, cx)
+                }
             }),
             cx.subscribe(&reading, |this, _, ev: &ReadingEvent, cx| match ev {
                 ReadingEvent::Sandbox(level) => {
@@ -355,6 +362,7 @@ impl Mailer {
             palette: None,
             recent: Vec::new(),
             migration: Default::default(),
+            export: Default::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -612,6 +620,8 @@ impl Render for Mailer {
             })
             // Перенос между учётками (S8-16): вопрос, ход, «нет места», остановка — на месте полосы автоответа.
             .children(self.migration_bar(&l, cx).filter(|_| bars))
+            // «Экспорт…» (S8-32): выбор формата и охвата, ход.
+            .children(self.export_bar(&l, cx).filter(|_| bars))
             .map(|d| match (letter, meeting) {
                 (Some(view), _) => d.child(div().flex().flex_1().min_h_0().px(px(8.)).child(view.cached(StyleRefinement::default().size_full()))),
                 (None, Some(view)) => d.child(
@@ -630,6 +640,7 @@ impl Render for Mailer {
             .children(self.reminder_cards(cx))
             // Контекстное меню письма (S5-08) и папки (S5-05б) — над всем, кроме тостов.
             .children(menu)
+            .children(self.export_menu(&l, cx))
             // Образцы кнопок — только снимок `buttons` (S5-19).
             .children(self.screens.as_ref().filter(|d| d.gallery()).map(|_| crate::buttons::gallery(&l)))
             // Тосты — поверх всего, последним ребёнком.

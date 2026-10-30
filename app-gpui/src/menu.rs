@@ -75,6 +75,8 @@ enum Item {
     Delete,
     Phishing,
     View,
+    /// «Экспорт…» писем (S8-32).
+    Export,
 }
 
 /// Пункты группами (разделитель между группами), порядок — S5-08.
@@ -83,6 +85,7 @@ const GROUPS: &[&[Item]] = &[
     &[Item::Seen, Item::Flag, Item::Category],
     &[Item::Due, Item::Remind, Item::Wait, Item::Expire],
     &[Item::Move, Item::Archive, Item::Delete],
+    &[Item::Export],
     &[Item::View],
     &[Item::Phishing],
 ];
@@ -136,6 +139,7 @@ impl Item {
             Item::Delete => glyph::DELETE,
             Item::Phishing => ' ',
             Item::View => glyph::CONVERSATION,
+            Item::Export => crate::export::EXPORT,
         }
     }
 
@@ -157,6 +161,7 @@ impl Item {
             Item::Archive => "mail.archive",
             Item::Delete => "mail.delete",
             Item::Phishing => "mail.report_phishing",
+            Item::Export => "mail.export",
             Item::Category | Item::View => return None,
         })
     }
@@ -335,6 +340,7 @@ impl Mailer {
             Item::Archive => self.ask(ids, Ask::Archive, cx),
             Item::Delete => self.ask(ids, Ask::Trash, cx),
             Item::Phishing => self.ask(ids, Ask::Phishing, cx),
+            Item::Export => self.export_ask(crate::export::What::Letters(ids), cx),
             Item::Category | Item::Move | Item::View => {}
         }
     }
@@ -483,6 +489,7 @@ impl Mailer {
                     Item::Delete => tr!("menu-delete"),
                     Item::Phishing => tr!("menu-phishing"),
                     Item::View => tr!("folder-menu-view"),
+                    Item::Export => tr!("export-menu"),
                 };
                 let key = it.command(m.unread).map(|c| key_hint(c, cx)).unwrap_or_default();
                 let glyph_el = if it == Item::Phishing {
