@@ -4,9 +4,12 @@
 //! (макросы в OLE и OOXML, оглавление архива, страницы PDF) смотрит только воркер (`postman_worker::preview`);
 //! здесь — итоговое решение по его ответу ([`risk_with`]).
 
+use std::collections::BTreeSet;
+
 use postman_worker::PreviewKind;
 
 use crate::files;
+use crate::viewers::{ModuleId, Registry};
 
 /// Насколько опасно открыть файл системным приложением.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -19,7 +22,7 @@ pub enum Risk {
     Blocked,
 }
 
-/// Встроенный просмотр (разбор — в воркере).
+/// Встроенный просмотр (разбор — в воркере) или модуль просмотра ([`Viewer::Module`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Viewer {
     /// PNG, JPEG, GIF, WebP, BMP, ICO, TIFF (страницами, как PDF) — форматы декодера воркера.
@@ -43,13 +46,18 @@ pub enum Viewer {
     Slides,
     /// Письмо во вложении `.eml`, `message/rfc822`, `.msg` Outlook (S8-20): шапка, тело IR, список вложений.
     Letter,
+    /// Модуль просмотра WASM (S8-26): показывает хост `postman-viewer` ([`crate::viewer::Viewer`]); описание и
+    /// «сторонний» — [`Registry::get`].
+    Module {
+        id: ModuleId,
+    },
     /// Встроенного просмотра нет: карточка с размером и действиями.
     None,
 }
 
 impl Viewer {
     /// Запрос к воркеру (`Client::preview`); `None` — воркер не нужен (`Office` — проверка отдельно, по
-    /// [`needs_scan`]). Ответ разделами или письмом — в модель ядра [`crate::render::viewed`].
+    /// [`needs_scan`]; модуль — у хоста модулей). Ответ разделами или письмом — в модель ядра [`crate::render::viewed`].
     pub fn kind(self) -> Option<PreviewKind> {
         match self {
             Viewer::Image => Some(PreviewKind::Image),
@@ -61,7 +69,7 @@ impl Viewer {
             Viewer::Table => Some(PreviewKind::Table),
             Viewer::Slides => Some(PreviewKind::Slides),
             Viewer::Letter => Some(PreviewKind::Letter),
-            Viewer::Office | Viewer::None => None,
+            Viewer::Office | Viewer::Module { .. } | Viewer::None => None,
         }
     }
 }
@@ -169,6 +177,19 @@ pub fn viewer(name: &str, mime: &str) -> Viewer {
     } else {
         let mime = mime.split(';').next().unwrap_or_default().trim().to_ascii_lowercase();
         BY_MIME.iter().find(|(m, _)| *m == mime).map_or(Viewer::None, |&(_, v)| v)
+    }
+}
+
+/// Чем показать файл: встроенный просмотр ([`viewer`]) главнее; нет его — модуль просмотра по расширению, MIME или
+/// первым байтам файла `head` (пусто — ещё не загружен; сверяется с началом, не разбирается), выключенные в
+/// настройках (`off`, [`crate::prefs::Viewers`]) — как нет их. Исполняемые — без просмотра и модулем.
+pub fn viewer_with(name: &str, mime: &str, head: &[u8], modules: &Registry, off: &BTreeSet<String>) -> Viewer {
+    match viewer(name, mime) {
+        Viewer::None if risk(name) != Risk::Blocked => {
+            let mime = mime.split(';').next().unwrap_or_default().trim().to_ascii_lowercase();
+            modules.find(&extension(name), &mime, head, off).map_or(Viewer::None, |id| Viewer::Module { id })
+        }
+        v => v,
     }
 }
 
@@ -301,6 +322,28 @@ mod tests {
         for (mime, v) in by_mime {
             assert_eq!(viewer("attachment", mime), v, "{mime}");
         }
+    }
+
+    /// Модуль — только когда встроенного просмотра нет: `.docx` с модулем `.docx` — встроенный.
+    #[test]
+    fn builtin_viewer_wins_over_module() {
+        let root = tempfile::tempdir().unwrap();
+        let json = r#"{"name": "Всё", "version": "1", "abi": 1, "extensions": ["docx", "fb2", "exe"], "mime": ["application/x-fictionbook+xml"],
+            "signatures": [{"prefix": "<?xml", "contains": "<FictionBook"}]}"#;
+        std::fs::write(root.path().join("all.json"), json).unwrap();
+        std::fs::write(root.path().join("all.wasm"), b"\0asm\x01\0\0\0").unwrap();
+        let modules = Registry::load(&[crate::viewers::Dir { path: root.path().into(), third_party: true }]);
+        let (id, _) = modules.modules().next().unwrap();
+        let none = BTreeSet::new();
+        assert_eq!(viewer_with("Отчёт.docx", "", b"", &modules, &none), Viewer::Document);
+        assert_eq!(viewer_with("Отчёт.docm", "", b"", &modules, &none), Viewer::Office);
+        assert_eq!(viewer_with("книга.FB2", "", b"", &modules, &none), Viewer::Module { id });
+        assert_eq!(viewer_with("книга", "application/x-fictionbook+xml; charset=utf-8", b"", &modules, &none), Viewer::Module { id });
+        assert_eq!(viewer_with("книга.bin", "", b"<?xml version=\"1.0\"?><FictionBook>", &modules, &none), Viewer::Module { id });
+        assert_eq!(viewer_with("книга.xml", "", b"<?xml version=\"1.0\"?><FictionBook>", &modules, &none), Viewer::Text, "XML — встроенный");
+        assert_eq!(viewer_with("setup.exe", "", b"", &modules, &none), Viewer::None, "исполняемые — без модуля");
+        assert_eq!(viewer_with("книга.fb2", "", b"", &modules, &BTreeSet::from(["all".to_string()])), Viewer::None, "выключен");
+        assert_eq!(Viewer::Module { id }.kind(), None);
     }
 
     #[test]

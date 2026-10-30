@@ -11,7 +11,7 @@
 //! Жизненный цикл писем (S5-04) берёт сроки отсюда: [`Lifecycle::wait_reply`], [`Lifecycle::archive_newsletters`],
 //! [`Lifecycle::expire_codes`]; порядок и видимость быстрых фильтров — [`QuickFilters::shown`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -65,6 +65,8 @@ pub struct Prefs {
     pub keys_single: BTreeMap<String, Vec<String>>,
     /// Ширины панелей главного окна (T1-05а): их тянут разделители.
     pub layout: Layout,
+    /// «Просмотр вложений» (S8-26): модули просмотра.
+    pub viewers: Viewers,
 }
 
 /// Схема клавиш.
@@ -95,6 +97,7 @@ impl Default for Prefs {
             keytips: true,
             keys_single: BTreeMap::new(),
             layout: Layout::default(),
+            viewers: Viewers::default(),
         }
     }
 }
@@ -362,6 +365,8 @@ impl Prefs {
         if !KEYTIPS_DELAYS.contains(&self.look.keytips_delay) {
             self.look.keytips_delay = Look::default().keytips_delay;
         }
+        self.viewers.disabled =
+            std::mem::take(&mut self.viewers.disabled).into_iter().map(|id| id.trim().to_lowercase()).filter(|id| !id.is_empty()).collect();
         self
     }
 }
@@ -553,6 +558,16 @@ impl Lifecycle {
     pub fn expire_codes(&self) -> Option<Duration> {
         self.expire_codes.then(|| Duration::from_secs(u64::from(self.expire_codes_hours) * 60 * 60))
     }
+}
+
+// --- просмотр вложений (S8-26) ---
+
+/// «Просмотр вложений» (S8-26): модули просмотра WASM; встроенные форматы не выключаются.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Viewers {
+    /// Выключенные модули (`postman_core::viewers::Module::id` — имя файла строчными): выбор просмотра их не видит.
+    pub disabled: BTreeSet<String>,
 }
 
 // --- главное окно (T1-05а) ---
@@ -1200,6 +1215,18 @@ mod tests {
         let p = Prefs { layout: Layout { folders: Some(200), list: None }, ..Prefs::default() };
         p.save(&path).unwrap();
         assert_eq!(Prefs::load(&path).unwrap().layout, p.layout);
+    }
+
+    #[test]
+    fn disabled_viewers_round_trip() {
+        let old: Prefs = serde_json::from_str(r#"{"version":1}"#).unwrap();
+        assert!(old.viewers.disabled.is_empty(), "старый файл — все модули включены");
+        let d = dir();
+        let path = d.path().join(FILE);
+        let mut p = Prefs::default();
+        p.viewers.disabled = BTreeSet::from(["FB2 ".into(), "".into(), "djvu".into()]);
+        p.save(&path).unwrap();
+        assert_eq!(Prefs::load(&path).unwrap().viewers.disabled, BTreeSet::from(["fb2".into(), "djvu".into()]));
     }
 
     /// Адрес «Сообщить о фишинге» (S5-08): обрезается; не адрес — нет пересылки.
