@@ -12,7 +12,7 @@ use postman_ir::{Align, Block, Document, Inline};
 use std::sync::Arc;
 
 use postman_worker::mime::Mime;
-use postman_worker::{Client, Level, Request, Rgba};
+use postman_worker::{Client, Level, Preview, Request, Rgba, SectionTitle};
 
 use crate::model::LetterId;
 use crate::store;
@@ -209,6 +209,72 @@ pub fn body_of(m: Mime, key: &str) -> BodyRow {
     }
 }
 
+/// Вложение, показанное разделами или письмом (S8-22): ответ воркера ([`Preview::Document`], [`Preview::Letter`]) в
+/// модели ядра — раздел и тело письма документами IR, адреса — как у тела письма, дата — `Timestamp`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Viewed {
+    /// Документ, книга, таблица, презентация: разделы по порядку; `truncated` — показано начало.
+    Sections {
+        sections: Vec<Section>,
+        truncated: bool,
+    },
+    Letter(Box<Attached>),
+}
+
+/// Раздел: лист книги, слайд, у документа и таблицы — один без заголовка. Подпись («Лист …», «Слайд N») — у
+/// интерфейса.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Section {
+    pub title: SectionTitle,
+    pub doc: Document,
+}
+
+/// Письмо во вложении (`.eml`, `message/rfc822`, `.msg`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Attached {
+    pub from: Vec<Addr>,
+    pub to: Vec<Addr>,
+    pub cc: Vec<Addr>,
+    pub date: Option<jiff::Timestamp>,
+    pub subject: String,
+    pub doc: Document,
+    /// Вложения письма — только список (открыть вложенное — не в S8).
+    pub attachments: Vec<Enclosed>,
+    /// Показано начало тела или списка вложений.
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Enclosed {
+    pub name: String,
+    pub mime: String,
+    pub size: u64,
+}
+
+/// Ответ воркера разделами или письмом → [`Viewed`]; другие ответы (картинка, PDF, текст…) — `None`.
+pub fn viewed(p: Preview) -> Option<Viewed> {
+    let doc = |blocks| Document { blocks, ..Default::default() };
+    match p {
+        Preview::Document { sections, truncated } => {
+            Some(Viewed::Sections { sections: sections.into_iter().map(|s| Section { title: s.title, doc: doc(s.blocks) }).collect(), truncated })
+        }
+        Preview::Letter { from, to, cc, date, subject, blocks, attachments, truncated } => {
+            let addrs = |v: Vec<postman_worker::mime::Addr>| v.into_iter().map(|a| Addr { name: a.name, email: a.email }).collect();
+            Some(Viewed::Letter(Box::new(Attached {
+                from: addrs(from),
+                to: addrs(to),
+                cc: addrs(cc),
+                date: date.and_then(|d| jiff::Timestamp::from_second(d).ok()),
+                subject,
+                doc: doc(blocks),
+                attachments: attachments.into_iter().map(|(name, mime, size)| Enclosed { name, mime, size }).collect(),
+                truncated,
+            })))
+        }
+        _ => None,
+    }
+}
+
 fn notice(text: &str) -> Block {
     Block::Paragraph { align: Align::Start, content: vec![Inline::text(format!("⚠ {text}"))] }
 }
@@ -231,5 +297,45 @@ hi\r\n--b\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; f
         assert_eq!(body.blob_id.as_deref(), Some("L7"));
         let a = &body.attachments[0];
         assert_eq!((a.blob_id.as_str(), a.name.as_str(), a.mime.as_str(), a.inline), ("L7#0", "a.pdf", "application/pdf", false));
+    }
+
+    /// Разделы и письмо во вложении (S8-22) — в модель ядра; другие ответы — мимо.
+    #[test]
+    fn viewed_from_worker() {
+        let para = |t: &str| Block::Paragraph { align: Align::Start, content: vec![Inline::text(t)] };
+        let book = Preview::Document {
+            sections: vec![
+                postman_worker::Section { title: SectionTitle::Sheet("Итоги".into()), blocks: vec![para("a")] },
+                postman_worker::Section { title: SectionTitle::Sheet("Март".into()), blocks: vec![] },
+            ],
+            truncated: true,
+        };
+        let Some(Viewed::Sections { sections, truncated }) = viewed(book) else { panic!("разделы") };
+        assert!(truncated);
+        assert_eq!(
+            sections.iter().map(|s| s.title.clone()).collect::<Vec<_>>(),
+            [SectionTitle::Sheet("Итоги".into()), SectionTitle::Sheet("Март".into())]
+        );
+        assert_eq!(sections[0].doc.blocks, [para("a")]);
+
+        let addr = |e: &str| postman_worker::mime::Addr { name: String::new(), email: e.into() };
+        let letter = Preview::Letter {
+            from: vec![addr("a@x.ru")],
+            to: vec![addr("b@x.ru"), addr("c@x.ru")],
+            cc: vec![],
+            date: Some(1_700_000_000),
+            subject: "Отчёт".into(),
+            blocks: vec![para("тело")],
+            attachments: vec![("a.pdf".into(), "application/pdf".into(), 1024)],
+            truncated: false,
+        };
+        let Some(Viewed::Letter(l)) = viewed(letter) else { panic!("письмо") };
+        assert_eq!(l.from, [Addr { name: String::new(), email: "a@x.ru".into() }]);
+        assert_eq!((l.to.len(), l.cc.len(), l.subject.as_str()), (2, 0, "Отчёт"));
+        assert_eq!(l.date.map(|d| d.as_second()), Some(1_700_000_000));
+        assert_eq!(l.doc.blocks, [para("тело")]);
+        assert_eq!(l.attachments, [Enclosed { name: "a.pdf".into(), mime: "application/pdf".into(), size: 1024 }]);
+
+        assert_eq!(viewed(Preview::Text { text: "x".into(), truncated: false }), None);
     }
 }

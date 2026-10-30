@@ -110,6 +110,8 @@ impl Pv {
             Viewer::Text => Some(PreviewKind::Text),
             // Документ Word — текстом IR (T1-13в); с макросами воркер отвечает проверкой Office.
             Viewer::Document => Some(PreviewKind::Document),
+            // Новые виды S8-22 — запросом ядра; листы, слайды и письмо во вложении покажет S8-23.
+            v @ (Viewer::Sheet | Viewer::Table | Viewer::Slides | Viewer::Letter) => v.kind(),
             Viewer::Office | Viewer::None => None,
         }
     }
@@ -294,7 +296,10 @@ impl ReadingPane {
                     Ok(_) => Err(tr!("att-pv-failed", error = "?")),
                     Err(e) => Err(e),
                 };
-                let waiting = r.preview.as_mut().filter(|p| p.row.blob_id == blob && matches!(p.viewer, Viewer::Office | Viewer::Document));
+                let waiting = r
+                    .preview
+                    .as_mut()
+                    .filter(|p| p.row.blob_id == blob && matches!(p.viewer, Viewer::Office | Viewer::Document | Viewer::Sheet | Viewer::Slides));
                 match scan {
                     Ok(s) => {
                         if let Some(p) = waiting {

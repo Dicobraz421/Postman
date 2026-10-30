@@ -4,6 +4,8 @@
 //! (макросы в OLE и OOXML, оглавление архива, страницы PDF) смотрит только воркер (`postman_worker::preview`);
 //! здесь — итоговое решение по его ответу ([`risk_with`]).
 
+use postman_worker::PreviewKind;
+
 use crate::files;
 
 /// Насколько опасно открыть файл системным приложением.
@@ -20,20 +22,48 @@ pub enum Risk {
 /// Встроенный просмотр (разбор — в воркере).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Viewer {
-    /// PNG, JPEG, GIF, WebP — форматы декодера воркера.
+    /// PNG, JPEG, GIF, WebP, BMP, ICO, TIFF (страницами, как PDF) — форматы декодера воркера.
     Image,
     Pdf,
     /// Оглавление ZIP без распаковки.
     Archive,
-    /// Текст, CSV, письмо `.eml` — как текст, с ограничением размера.
+    /// Текст, JSON, XML — как текст, с ограничением размера.
     Text,
     /// Документ Office: карточка проверки (макросы), содержимое не показывается.
     Office,
-    /// Документ Word `.docx` (T1-13б): текст документа — блоками IR из воркера; на макросы проверяется, как Office
-    /// ([`needs_scan`]). С макросами по имени (`.docm`, `.dotm`) и старый `.doc` — [`Viewer::Office`].
+    /// Документ — блоками IR из воркера: Word `.docx` (T1-13б), `.odt`, `.rtf`, `.md` (S8-19); `.docx` на макросы
+    /// проверяется, как Office ([`needs_scan`]). С макросами по имени (`.docm`, `.dotm`) и старый `.doc` —
+    /// [`Viewer::Office`].
     Document,
+    /// Книга `.xlsx`, `.xltx`, `.ods` — раздел на лист (S8-17); с макросами по имени и старый `.xls` — `Office`.
+    Sheet,
+    /// Таблица `.csv`, `.tsv` — один раздел (S8-17).
+    Table,
+    /// Презентация `.pptx`, `.ppsx`, `.potx`, `.odp` — раздел на слайд (S8-18); с макросами и `.ppt` — `Office`.
+    Slides,
+    /// Письмо во вложении `.eml`, `message/rfc822`, `.msg` Outlook (S8-20): шапка, тело IR, список вложений.
+    Letter,
     /// Встроенного просмотра нет: карточка с размером и действиями.
     None,
+}
+
+impl Viewer {
+    /// Запрос к воркеру (`Client::preview`); `None` — воркер не нужен (`Office` — проверка отдельно, по
+    /// [`needs_scan`]). Ответ разделами или письмом — в модель ядра [`crate::render::viewed`].
+    pub fn kind(self) -> Option<PreviewKind> {
+        match self {
+            Viewer::Image => Some(PreviewKind::Image),
+            Viewer::Pdf => Some(PreviewKind::Pdf),
+            Viewer::Archive => Some(PreviewKind::Archive),
+            Viewer::Text => Some(PreviewKind::Text),
+            Viewer::Document => Some(PreviewKind::Document),
+            Viewer::Sheet => Some(PreviewKind::Sheet),
+            Viewer::Table => Some(PreviewKind::Table),
+            Viewer::Slides => Some(PreviewKind::Slides),
+            Viewer::Letter => Some(PreviewKind::Letter),
+            Viewer::Office | Viewer::None => None,
+        }
+    }
 }
 
 /// Расширения Office, которые объявляют макросы сами (Word, Excel, PowerPoint с поддержкой макросов, надстройки).
@@ -43,8 +73,49 @@ const MACRO_EXT: &[&str] = &["docm", "dotm", "xlsm", "xltm", "xlam", "xla", "ppt
 /// (`vbaProject.bin` в архиве, в том числе в файле, переименованном из `.xlsm` в `.xlsx`).
 const OFFICE_EXT: &[&str] = &["doc", "dot", "xls", "xlt", "ppt", "pot", "pps", "docx", "dotx", "xlsx", "xltx", "xlsb", "pptx", "potx", "ppsx"];
 
-const IMAGE_EXT: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
-const TEXT_EXT: &[&str] = &["txt", "log", "md", "csv", "tsv", "eml", "json", "xml", "ini", "cfg", "conf", "yaml", "yml"];
+/// Встроенные форматы по расширению (ADR 0007, «Встроенный набор S8»). Книги и презентации OOXML — ещё и в
+/// [`OFFICE_EXT`]: на макросы их проверяет воркер.
+const BY_EXT: &[(&[&str], Viewer)] = &[
+    (&["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tif", "tiff"], Viewer::Image),
+    (&["pdf"], Viewer::Pdf),
+    (&["zip"], Viewer::Archive),
+    (&["txt", "log", "json", "xml", "ini", "cfg", "conf", "yaml", "yml"], Viewer::Text),
+    (&["docx", "odt", "rtf", "md"], Viewer::Document),
+    (&["xlsx", "xltx", "ods"], Viewer::Sheet),
+    (&["csv", "tsv"], Viewer::Table),
+    (&["pptx", "ppsx", "potx", "odp"], Viewer::Slides),
+    (&["eml", "msg"], Viewer::Letter),
+];
+
+/// Файл без расширения — по MIME (без параметров, `; charset=…`).
+const BY_MIME: &[(&str, Viewer)] = &[
+    ("image/png", Viewer::Image),
+    ("image/jpeg", Viewer::Image),
+    ("image/gif", Viewer::Image),
+    ("image/webp", Viewer::Image),
+    ("image/bmp", Viewer::Image),
+    ("image/x-icon", Viewer::Image),
+    ("image/vnd.microsoft.icon", Viewer::Image),
+    ("image/tiff", Viewer::Image),
+    ("application/pdf", Viewer::Pdf),
+    ("application/zip", Viewer::Archive),
+    ("application/x-zip-compressed", Viewer::Archive),
+    ("text/plain", Viewer::Text),
+    (DOCX_MIME, Viewer::Document),
+    ("application/vnd.oasis.opendocument.text", Viewer::Document),
+    ("application/rtf", Viewer::Document),
+    ("text/rtf", Viewer::Document),
+    ("text/markdown", Viewer::Document),
+    ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", Viewer::Sheet),
+    ("application/vnd.oasis.opendocument.spreadsheet", Viewer::Sheet),
+    ("text/csv", Viewer::Table),
+    ("text/tab-separated-values", Viewer::Table),
+    ("application/vnd.openxmlformats-officedocument.presentationml.presentation", Viewer::Slides),
+    ("application/vnd.oasis.opendocument.presentation", Viewer::Slides),
+    ("message/rfc822", Viewer::Letter),
+    ("application/vnd.ms-outlook", Viewer::Letter),
+];
+
 /// MIME документа Word `.docx`.
 const DOCX_MIME: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
@@ -81,40 +152,23 @@ pub fn needs_scan(name: &str) -> bool {
     OFFICE_EXT.contains(&ext.as_str()) || MACRO_EXT.contains(&ext.as_str())
 }
 
-/// Чем показать файл во встроенном просмотре.
+/// Чем показать файл во встроенном просмотре: по расширению, без расширения — по MIME. С макросами по имени
+/// (`.xlsm`, `.pptm`, `.docm`…) и старые `.doc`, `.xls`, `.ppt` — [`Viewer::Office`].
 pub fn viewer(name: &str, mime: &str) -> Viewer {
     let ext = extension(name);
-    let mime = mime.to_ascii_lowercase();
-    let e = ext.as_str();
     if risk(name) == Risk::Blocked {
         return Viewer::None;
     }
-    if IMAGE_EXT.contains(&e) {
-        Viewer::Image
-    } else if e == "pdf" {
-        Viewer::Pdf
-    } else if e == "zip" {
-        Viewer::Archive
-    } else if TEXT_EXT.contains(&e) {
-        Viewer::Text
-    } else if e == "docx" {
-        Viewer::Document
-    } else if needs_scan(name) {
+    if let Some(&(_, v)) = BY_EXT.iter().find(|(exts, _)| exts.contains(&ext.as_str())) {
+        return v;
+    }
+    if needs_scan(name) {
         Viewer::Office
-    } else if !e.is_empty() {
+    } else if !ext.is_empty() {
         Viewer::None
-    } else if mime == DOCX_MIME {
-        Viewer::Document
-    } else if matches!(mime.as_str(), "image/png" | "image/jpeg" | "image/gif" | "image/webp") {
-        Viewer::Image
-    } else if mime == "application/pdf" {
-        Viewer::Pdf
-    } else if mime == "application/zip" || mime == "application/x-zip-compressed" {
-        Viewer::Archive
-    } else if mime.starts_with("text/plain") || mime == "message/rfc822" || mime == "text/csv" {
-        Viewer::Text
     } else {
-        Viewer::None
+        let mime = mime.split(';').next().unwrap_or_default().trim().to_ascii_lowercase();
+        BY_MIME.iter().find(|(m, _)| *m == mime).map_or(Viewer::None, |&(_, v)| v)
     }
 }
 
@@ -174,8 +228,7 @@ mod tests {
         assert_eq!(viewer("logo.PNG", ""), Viewer::Image);
         assert_eq!(viewer("Отчёт.pdf", "application/octet-stream"), Viewer::Pdf);
         assert_eq!(viewer("Скриншоты.zip", ""), Viewer::Archive);
-        assert_eq!(viewer("data.csv", "text/csv"), Viewer::Text);
-        assert_eq!(viewer("letter.eml", "message/rfc822"), Viewer::Text);
+        assert_eq!(viewer("notes.txt", "text/plain"), Viewer::Text);
         assert_eq!(viewer("Расчёт.xlsm", ""), Viewer::Office);
         assert_eq!(viewer("old.doc", ""), Viewer::Office);
         // Word (T1-13б): .docx — просмотр документа, с макросами по имени и старый .doc — карточка проверки.
@@ -194,6 +247,70 @@ mod tests {
         assert_eq!(viewer("photo", "image/jpeg"), Viewer::Image);
         assert_eq!(viewer("scan", "application/pdf"), Viewer::Pdf);
         assert_eq!(viewer("blob", "application/octet-stream"), Viewer::None);
+    }
+
+    /// Встроенный набор S8 (ADR 0007): каждое расширение таблицы и MIME без имени.
+    #[test]
+    fn viewers_s8() {
+        let by_ext: &[(&[&str], Viewer)] = &[
+            (&["Отчёт.odt", "Письмо.RTF", "README.md", "Отчёт.docx"], Viewer::Document),
+            (&["Итоги.xlsx", "Шаблон.xltx", "Бюджет.ods"], Viewer::Sheet),
+            (&["data.csv", "data.TSV"], Viewer::Table),
+            (&["deck.pptx", "show.ppsx", "Шаблон.potx", "deck.odp"], Viewer::Slides),
+            (&["letter.eml", "Outlook.msg"], Viewer::Letter),
+            (&["scan.bmp", "favicon.ico", "fax.tif", "fax.TIFF", "logo.png", "photo.jpeg", "anim.gif", "pic.webp"], Viewer::Image),
+        ];
+        for (names, v) in by_ext {
+            for name in *names {
+                assert_eq!(viewer(name, "application/octet-stream"), *v, "{name}");
+            }
+        }
+        // С макросами по имени и старые двоичные — карточка проверки, как раньше.
+        for name in ["Расчёт.xlsm", "Шаблон.xltm", "deck.pptm", "show.ppsm", "Отчёт.docm", "old.xls", "old.ppt", "old.doc", "book.xlsb"]
+        {
+            assert_eq!(viewer(name, ""), Viewer::Office, "{name}");
+        }
+        assert!(needs_scan("Итоги.xlsx") && needs_scan("deck.pptx") && !needs_scan("Бюджет.ods") && !needs_scan("data.csv"));
+        // Имя главнее MIME: у `.xlsm` с MIME книги — всё равно проверка.
+        assert_eq!(viewer("Расчёт.xlsm", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"), Viewer::Office);
+        assert_eq!(viewer("letter.eml", "text/plain"), Viewer::Letter);
+
+        let by_mime = [
+            ("application/vnd.oasis.opendocument.text", Viewer::Document),
+            ("application/vnd.oasis.opendocument.spreadsheet", Viewer::Sheet),
+            ("application/vnd.oasis.opendocument.presentation", Viewer::Slides),
+            ("application/rtf", Viewer::Document),
+            ("text/rtf", Viewer::Document),
+            ("text/markdown; charset=utf-8", Viewer::Document),
+            ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", Viewer::Sheet),
+            ("application/vnd.openxmlformats-officedocument.presentationml.presentation", Viewer::Slides),
+            ("text/csv", Viewer::Table),
+            ("text/csv; charset=windows-1251", Viewer::Table),
+            ("text/tab-separated-values", Viewer::Table),
+            ("application/vnd.ms-outlook", Viewer::Letter),
+            ("message/rfc822", Viewer::Letter),
+            ("Message/RFC822", Viewer::Letter),
+            ("image/bmp", Viewer::Image),
+            ("image/x-icon", Viewer::Image),
+            ("image/vnd.microsoft.icon", Viewer::Image),
+            ("image/tiff", Viewer::Image),
+            ("text/plain; charset=utf-8", Viewer::Text),
+            ("application/vnd.ms-excel", Viewer::None),
+            ("text/html", Viewer::None),
+        ];
+        for (mime, v) in by_mime {
+            assert_eq!(viewer("attachment", mime), v, "{mime}");
+        }
+    }
+
+    #[test]
+    fn worker_kinds() {
+        assert_eq!(Viewer::Sheet.kind(), Some(PreviewKind::Sheet));
+        assert_eq!(Viewer::Table.kind(), Some(PreviewKind::Table));
+        assert_eq!(Viewer::Slides.kind(), Some(PreviewKind::Slides));
+        assert_eq!(Viewer::Letter.kind(), Some(PreviewKind::Letter));
+        assert_eq!(Viewer::Document.kind(), Some(PreviewKind::Document));
+        assert_eq!((Viewer::Office.kind(), Viewer::None.kind()), (None, None));
     }
 
     #[test]
