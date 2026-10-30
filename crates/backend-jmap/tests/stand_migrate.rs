@@ -188,7 +188,7 @@ fn twenty_letters_to_another_account_and_back() {
     let letters: Vec<LetterId> = ids.iter().map(|k| postman_core::store::letter_of_key(&cache, k).unwrap().unwrap()).collect();
     assert_eq!(letters.len(), LETTERS as usize);
 
-    let mut engine = Engine::open(CacheStore::new(cache.clone(), Box::new(|_| Ok(Vec::new())))).unwrap();
+    let mut engine = Engine::open(CacheStore::new(cache.clone(), Box::new(|_| Ok(Default::default())))).unwrap();
     engine.features(None, Features::NONE.with_import(true));
     engine.features(Some("@2"), Features::NONE.with_import(true));
     migrate(&mut engine, &letters, inbox(&cache, "@2"), &first, &second);

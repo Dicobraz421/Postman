@@ -896,8 +896,12 @@ fn exchange_migration_round_trip() {
         live.cache.put_content(*id, raw.as_bytes(), &[]).unwrap();
     }
     let letters: Vec<LetterId> = ids.iter().map(|l| LetterId(l.0)).collect();
-    let mut engine =
-        postman_core::migrate::Engine::open(postman_core::store::CacheStore::new(live.cache.clone(), Box::new(|_| Ok(Vec::new())))).unwrap();
+    // Части и `Message-ID` — кодом воркера в процессе теста.
+    let store = postman_core::store::CacheStore::new(
+        live.cache.clone(),
+        Box::new(|raw: &[u8]| postman_worker::mime::split(raw).and_then(|(s, d)| postman_core::store::split_of(s, &d))),
+    );
+    let mut engine = postman_core::migrate::Engine::open(store).unwrap();
     engine.features(None, live.features);
 
     let inbox = live.cache.folder_of("", &live.inbox()).unwrap().unwrap();

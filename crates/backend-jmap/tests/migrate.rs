@@ -47,6 +47,11 @@ struct Server {
 
 type Shared = Arc<Mutex<Server>>;
 
+/// `Message-ID` письма теста — как его видит сервер (строка заголовка).
+fn message_id(raw: &[u8]) -> String {
+    String::from_utf8_lossy(raw).lines().find_map(|l| l.strip_prefix("Message-ID: ").map(str::to_owned)).unwrap()
+}
+
 impl Server {
     fn id(&mut self, prefix: &str) -> String {
         self.next += 1;
@@ -57,7 +62,7 @@ impl Server {
     fn put(&mut self, account: &str, raw: &[u8]) -> String {
         let (id, blob) = (self.id("E"), self.id("B"));
         self.blobs.insert(blob.clone(), raw.to_vec());
-        let message_id = postman_core::store::message_id(raw).unwrap();
+        let message_id = message_id(raw);
         let mail = Mail { id: id.clone(), blob, mailbox: format!("{account}-inbox"), keywords: Vec::new(), message_id };
         self.mail.entry(account.to_owned()).or_default().push(mail);
         id
@@ -103,7 +108,7 @@ impl Server {
                     for (k, e) in args["emails"].as_object().unwrap() {
                         self.imports += 1;
                         let blob = e["blobId"].as_str().unwrap().to_owned();
-                        let message_id = postman_core::store::message_id(&self.blobs[&blob]).unwrap();
+                        let message_id = message_id(&self.blobs[&blob]);
                         if self.imports == self.quota_at {
                             failed.insert(k.clone(), json!({ "type": "overQuota" }));
                             continue;
@@ -336,7 +341,7 @@ fn drive(engine: &mut Engine<CacheStore>, live: &Live, other: &mut dyn FnMut(Com
 }
 
 fn engine_on(cache: &Cache, features: Features) -> Engine<CacheStore> {
-    let mut e = Engine::open(CacheStore::new(cache.clone(), Box::new(|_| Ok(Vec::new())))).unwrap();
+    let mut e = Engine::open(CacheStore::new(cache.clone(), Box::new(|_| Ok(Default::default())))).unwrap();
     e.features(None, features);
     e
 }

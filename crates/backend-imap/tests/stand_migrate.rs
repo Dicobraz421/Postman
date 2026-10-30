@@ -166,7 +166,12 @@ fn twenty_letters_jmap_to_imap_and_back() {
     let (tx, rx) = std::sync::mpsc::channel();
     let imap = Live::ready(imap::spawn(account, Some("@2".into()), cache.clone(), None, tx, || {}, Vec::new()), rx);
 
-    let mut engine = Engine::open(CacheStore::new(cache.clone(), Box::new(|_| Ok(Vec::new())))).unwrap();
+    // Части и `Message-ID` — кодом воркера в процессе теста.
+    let mut engine = Engine::open(CacheStore::new(
+        cache.clone(),
+        Box::new(|raw: &[u8]| postman_worker::mime::split(raw).and_then(|(s, d)| postman_core::store::split_of(s, &d))),
+    ))
+    .unwrap();
     engine.features(None, Features::NONE.with_import(true));
     engine.features(Some("@2"), Features::NONE.with_import(true));
     let letters = seed(&cache, stamp);
