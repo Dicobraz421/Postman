@@ -483,7 +483,7 @@ fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
     .on_action(cx.listener(|this, _: &search::PrevMatch, _, cx| this.reading.update(cx, |r, cx| r.step_hit(-1, cx))))
     .on_action(cx.listener(|this, _: &search::Clear, window, cx| {
         // Esc сначала закрывает контекстное меню письма (S5-08)…
-        if this.close_menu(cx) || this.folders.update(cx, |f, cx| f.escape(cx)) || this.migration_escape(cx) {
+        if this.close_menu(cx) || this.folders.update(cx, |f, cx| f.escape(cx)) || this.migration_escape(cx) || this.export_escape(cx) {
             return;
         }
         // …затем историю уведомлений.

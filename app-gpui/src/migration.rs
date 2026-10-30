@@ -19,6 +19,7 @@ use gpui_kit::*;
 use pets_i18n::tr;
 use pets_ui::theme::{Metric, Role};
 use postman_cache::Cache;
+use postman_core::export::Exporter;
 use postman_core::migrate::Engine;
 use postman_core::model::{JobId, MigrationMode, MigrationRequest, MigrationState};
 use postman_core::store::{CacheStore, move_letters, worker_splitter};
@@ -100,6 +101,8 @@ fn wanted(e: &Event) -> Option<Event> {
 }
 
 fn run(cache: Cache, rx: mpsc::Receiver<In>, out: impl Fn(Out)) {
+    // Экспорт (S8-32) — в том же потоке: письма без содержимого — `FetchRaw` у их учёток.
+    let mut exporter = Exporter::new(jiff::tz::TimeZone::system());
     let client = postman_worker::Client::new(postman_worker::Client::default_exe(), WORKER_TIMEOUT);
     let mut engine = match Engine::open(CacheStore::new(cache, worker_splitter(client))) {
         Ok(e) => e,
@@ -109,24 +112,33 @@ fn run(cache: Cache, rx: mpsc::Receiver<In>, out: impl Fn(Out)) {
         }
     };
     loop {
-        let wait = engine.wake_at().map_or(IDLE, |t| t.saturating_duration_since(Instant::now()));
+        let wake = [engine.wake_at(), exporter.wake_at()].into_iter().flatten().min();
+        let wait = wake.map_or(IDLE, |t| t.saturating_duration_since(Instant::now()));
         let mut moved = false;
         match rx.recv_timeout(wait) {
-            Ok(msg) => moved |= handle(&mut engine, msg),
+            Ok(msg) => moved |= handle(&mut engine, &mut exporter, msg),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
         while let Ok(msg) = rx.try_recv() {
-            moved |= handle(&mut engine, msg);
+            moved |= handle(&mut engine, &mut exporter, msg);
         }
-        pump(&mut engine, moved, &out);
+        pump(&mut engine, &mut exporter, moved, &out);
     }
 }
 
 /// Весть потоку ядра; `true` — перенос в базе прошёл.
-fn handle(engine: &mut Engine<CacheStore>, msg: In) -> bool {
+fn handle(engine: &mut Engine<CacheStore>, exporter: &mut Exporter, msg: In) -> bool {
     let now = Instant::now();
     let r = match msg {
+        In::Command(Command::Export { scope, format, dir }) => {
+            exporter.start(scope, format, dir);
+            Ok(())
+        }
+        In::Command(Command::StopExport { job }) => {
+            exporter.stop(job);
+            Ok(())
+        }
         In::Command(Command::MoveLetters { ids, to }) => match move_letters(engine, &ids, to) {
             Ok(t) => {
                 tracing::info!(moved = t.moved, outbound = t.outbound, "letters moved");
@@ -144,7 +156,10 @@ fn handle(engine: &mut Engine<CacheStore>, msg: In) -> bool {
             Ok(())
         }
         In::Event(profile, Event::Settings(postman_core::settings::Reply::Quota(u))) => engine.quota(profile.as_deref(), u),
-        In::Event(_, e) => engine.event(&e, now),
+        In::Event(_, e) => {
+            exporter.event(&e);
+            engine.event(&e, now)
+        }
     };
     if let Err(e) = r {
         tracing::warn!("migration: {e}");
@@ -153,24 +168,28 @@ fn handle(engine: &mut Engine<CacheStore>, msg: In) -> bool {
 }
 
 /// Шаги движка: письмо «На этом компьютере» целиком — здесь же (без сети), прочие команды и события — экрану.
-fn pump(engine: &mut Engine<CacheStore>, moved: bool, out: &impl Fn(Out)) {
+fn pump(engine: &mut Engine<CacheStore>, exporter: &mut Exporter, moved: bool, out: &impl Fn(Out)) {
     let mut events = Vec::new();
     let mut commands = Vec::new();
     // Ответы, которые даёт сама база, — сразу движку; кругов не больше, чем писем в пачке.
     for _ in 0..64 {
-        let o = match engine.poll(Instant::now()) {
+        let mut o = match engine.poll(Instant::now()) {
             Ok(o) => o,
             Err(e) => {
                 tracing::warn!("migration poll: {e}");
                 break;
             }
         };
+        let x = exporter.poll(engine.store().cache(), Instant::now());
+        o.events.extend(x.events);
+        o.commands.extend(x.commands);
         events.extend(o.events);
         let mut local = false;
         for (route, c) in o.commands {
             match (route, c) {
                 (Route::Core, Command::FetchRaw { letter }) => {
                     let e = postman_core::store::local_raw(engine.store().cache(), letter);
+                    exporter.event(&e);
                     if let Err(e) = engine.event(&e, Instant::now()) {
                         tracing::warn!("migration: {e}");
                     }
@@ -478,6 +497,7 @@ impl Mailer {
                                 self.job_ended(&end, cx);
                             }
                         }
+                        Event::Export { job, done, total, state, .. } => self.on_export(job, done, total, state, cx),
                         Event::SourceKept { letters, .. } => {
                             self.toast(pets_ui::Level::Warning, tr!("migration-source-kept", n = letters as i64), cx);
                         }
@@ -773,7 +793,7 @@ impl Mailer {
 }
 
 /// Полоса над списком: нейтральная, значок слева, ссылки-кнопки справа (макет S8-D).
-fn strip(id: &'static str, glyph_: char, l: &Look) -> Stateful<Div> {
+pub(crate) fn strip(id: &'static str, glyph_: char, l: &Look) -> Stateful<Div> {
     div()
         .id(id)
         .mx(px(8.))
@@ -793,7 +813,7 @@ fn strip(id: &'static str, glyph_: char, l: &Look) -> Stateful<Div> {
 }
 
 /// Кнопка-ссылка полосы.
-fn link(
+pub(crate) fn link(
     id: &'static str,
     text: String,
     l: &Look,
@@ -814,7 +834,7 @@ fn link(
 }
 
 /// Полоса хода: доля готового.
-fn meter(done: u64, total: u64, w: f32, strong: bool, l: &Look) -> Div {
+pub(crate) fn meter(done: u64, total: u64, w: f32, strong: bool, l: &Look) -> Div {
     let fill = if total == 0 { 0. } else { (done.min(total) as f32) / total as f32 };
     div()
         .flex_none()

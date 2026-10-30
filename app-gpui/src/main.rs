@@ -25,6 +25,7 @@ mod compose;
 mod composer;
 mod contacts;
 mod diagnostics;
+mod export;
 mod features;
 mod filters;
 mod folders;

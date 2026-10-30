@@ -530,6 +530,7 @@ pub(crate) fn command_icon(id: &str) -> Option<char> {
         "mail.forward_attached" => ATTACH,
         "folder.new" => FOLDER,
         "folder.rename" => EDIT,
+        "mail.export" | "account.export" | "export.all" => crate::export::EXPORT,
         "mail.delete" | "compose.discard" | "meeting.discard" | "contacts.delete" => DELETE,
         "mail.due" => CLOCK,
         "mail.remind" | "view.notifications" => RINGER,
