@@ -19,6 +19,10 @@
 //! - **Поиск и фильтры** — `FindItem` с AQS по папкам.
 //! - **Папки** — создать, переименовать, перенести (T1-04в): `CreateFolder`, `UpdateFolder`, `MoveFolder`, затем дерево
 //!   заново. Ключ папки — хэш `Id`, при переименовании и переносе тот же: состояние `SyncFolderItems` и письма остаются.
+//! - **Перенос из другой учётки** (S8-13, ADR 0006 п. 4) — шаги задания ядра: письмо целиком (`FetchRaw`, `GetItem`
+//!   `MimeContent`), выгрузка (`Import` — `CreateItem` `SaveOnly` в папку: полученным, с датой получения, «прочитано» и
+//!   флагом; метки Postman Exchange не хранит), повтор — сначала поиск по `Message-ID` в папке; удаление у источника
+//!   (`DestroyLetters` — `DeleteItem` `HardDelete`, ответ по письму). Копии на сервере между ящиками нет.
 //! - **Изменения** — по событиям сервера (T1-21б, [`watch`]): подписка на все папки ящика, streaming (запасной —
 //!   pull); изменились письма папки — сверка только её, дерево — одно чтение дерева (`SyncFolderHierarchy` с прошлого
 //!   состояния), обрыв подписки — переподписка и одна полная сверка. Без подписки — опрос ([`POLL`]): письма всех
@@ -34,14 +38,16 @@ use postman_cache::{
 };
 use postman_compose::{Address, Draft};
 use postman_core::backend::{AreaCtx, Spawn};
+use postman_core::model::{ImportError, JobId, Remote};
 use postman_core::sync::{Command, ErrorKind, Event, Sender, Stage, Status, SyncError};
 use postman_ews::{
-    Change, Client, DeleteMode, FolderId, FolderRef, ItemId, MailFolder, MailHeader, MailRole, Mode, Subscription, SyncState, WellKnown,
+    Change, Client, DeleteMode, FolderId, FolderRef, ItemId, MailFolder, MailHeader, MailRole, Mode, Subscription, SyncState, Upload, UploadError,
+    WellKnown,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::areas::EwsAreas;
-use crate::{auth, sign_in_error, sync_error};
+use crate::{auth, kind, sign_in_error, sync_error};
 
 /// Писем папки при первом входе — не больше (дальше — «Загрузить ещё»).
 pub const INITIAL: u32 = 500;
@@ -241,6 +247,29 @@ fn no_folder() -> postman_ews::Error {
 
 fn db(e: postman_cache::Error) -> postman_ews::Error {
     postman_ews::Error::Xml(format!("cache: {e}"))
+}
+
+/// Ошибка EWS при выгрузке → отказ задания переноса: больше предела, ящик полон; сервер занят — пауза
+/// `BackOffMilliseconds`, сеть — пауза повтора задания; прочее — отказ с кодом EWS.
+fn import_error(e: &postman_ews::Error) -> ImportError {
+    match e {
+        postman_ews::Error::ServerBusy { back_off_ms } => ImportError::Throttled { retry_after: back_off_ms.div_ceil(1000).max(1) },
+        _ if kind(e) == ErrorKind::Network => ImportError::Throttled { retry_after: postman_core::migrate::RETRY.as_secs() },
+        _ => match e.code() {
+            Some("ErrorMessageSizeExceeded") => ImportError::TooLarge,
+            Some("ErrorQuotaExceeded") => ImportError::Quota,
+            Some(code) => ImportError::Rejected(code.to_owned()),
+            None => ImportError::Rejected(e.to_string()),
+        },
+    }
+}
+
+fn upload_error(e: &UploadError) -> ImportError {
+    match e {
+        UploadError::TooBig => ImportError::TooLarge,
+        UploadError::OverQuota => ImportError::Quota,
+        UploadError::Ews(e) => import_error(e),
+    }
 }
 
 /// Тело под новым ключом письма: вложения — `<ключ>#<номер>`, письмо целиком — ключ.
@@ -444,7 +473,9 @@ async fn run(
     let address = Address::new("", &me.email);
     if me.profile.is_none() {
         // Основная учётная запись: почта и области EWS (S7-03а «Нет у сервера — нет на экране»).
-        notify(Event::Features(me.areas.as_ref().map_or(postman_core::model::Features::NONE, EwsAreas::features)));
+        // Выгрузка писем из других учёток (S8-13) — `CreateItem` в любую папку ящика.
+        let areas = me.areas.as_ref().map_or(postman_core::model::Features::NONE, EwsAreas::features);
+        notify(Event::Features(areas.with_import(true)));
         notify(Event::Me { address: address.clone(), signature: String::new() });
     }
     notify(Event::Senders(vec![Sender { account: me.scope.clone(), address, signature: String::new() }]));
@@ -1496,6 +1527,23 @@ impl Ews {
                 }
                 None => notify(Event::UnsendFailed { ticket, too_late: true, error: String::new() }),
             },
+            Command::FetchRaw { letter } => notify(self.fetch_raw(letter).await),
+            Command::Import { job, letter, folder, keywords, received_at, retry } => {
+                notify(match self.import(letter, folder, &keywords, received_at, retry).await {
+                    Ok(id) => Event::Imported { job, letter, remote: Remote { account: self.account().to_owned(), id, data: Vec::new() } },
+                    Err(error) => {
+                        tracing::info!(job = job.0, letter = letter.0, "ews import refused: {error}");
+                        Event::ImportFailed { job, letter, error }
+                    }
+                });
+            }
+            Command::DestroyLetters { job, account, letters } => {
+                for e in self.destroy_letters(job, &account, &letters).await {
+                    notify(e);
+                }
+            }
+            // Копии на сервере между ящиками у EWS нет (`Features::server_copy`): ядро выгружает письмо.
+            cmd @ Command::ServerCopy { .. } => cmd.unsupported().into_iter().for_each(notify),
             // Соединение EWS поднимается само при следующем запросе; «снова на связи» — сверить сейчас, не ждать опроса.
             cmd @ (Command::CreateFolder { .. } | Command::RenameFolder { .. } | Command::MoveFolder { .. }) => {
                 self.folder_command(cmd, notify).await
@@ -1523,6 +1571,103 @@ impl Ews {
             other => self.area_command(other, notify).await,
         }
         Ok(())
+    }
+
+    /// Связь письма с сервером этой учётки — и `detached` (письмо задания переноса у источника); `None` — связи нет.
+    fn remote_of(&self, letter: postman_core::model::LetterId) -> postman_cache::Result<Option<String>> {
+        Ok(self.cache.remotes(LetterId(letter.0))?.into_iter().find(|r| r.account == self.account()).map(|r| r.id))
+    }
+
+    /// `Command::FetchRaw`: письмо целиком с сервера (`MimeContent`).
+    async fn fetch_raw(&mut self, letter: postman_core::model::LetterId) -> Event {
+        let data = match self.remote_of(letter) {
+            Ok(Some(id)) => match parse_key(&id) {
+                Some(item) => match self.client.get_mail(&item).await {
+                    Ok(Some(mail)) => Ok(Arc::new(mail.mime)),
+                    Ok(None) => Err("the letter is gone from the server".to_owned()),
+                    Err(e) => Err(e.to_string()),
+                },
+                None => Err(format!("not an ews key: {id}")),
+            },
+            Ok(None) => Err("the letter has no link with this account".to_owned()),
+            Err(e) => Err(e.to_string()),
+        };
+        Event::Raw { letter, data }
+    }
+
+    /// Папка этой учётки по папке хранилища (цель выгрузки).
+    fn folder_at(&self, folder: postman_core::model::FolderId) -> Option<&Folder> {
+        let row = self.cache.folder(postman_cache::FolderId(folder.0)).ok()??;
+        let postman_cache::Owner::Account(a) = &row.owner else { return None };
+        let remote = row.remote.as_deref().filter(|_| a == self.account())?;
+        self.folders.iter().find(|f| f.hash == remote)
+    }
+
+    /// `Command::Import`: письмо из хранилища — в папку (`CreateItem` `SaveOnly`); `retry` — сначала поиск по
+    /// `Message-ID` в папке (выгрузка могла дойти, ответ — нет). Ответ — связь нового письма с сервером.
+    async fn import(
+        &mut self,
+        letter: postman_core::model::LetterId,
+        folder: postman_core::model::FolderId,
+        keywords: &[String],
+        received_at: i64,
+        retry: bool,
+    ) -> Result<String, ImportError> {
+        let to = self.folder_at(folder).map(Folder::at).ok_or_else(|| ImportError::Rejected("no such folder".into()))?;
+        let raw = match self.cache.letter_content(LetterId(letter.0)) {
+            Ok(Some(raw)) => raw,
+            Ok(None) => return Err(ImportError::Rejected("letter content is not stored".into())),
+            Err(e) => return Err(ImportError::Rejected(e.to_string())),
+        };
+        if retry && let Some(mid) = postman_core::store::message_id(&raw) {
+            match self.client.find_message_id(&to, &mid).await {
+                Ok(found) => {
+                    if let Some(id) = found.first() {
+                        return Ok(encode_id(&id.id));
+                    }
+                }
+                Err(e) => return Err(import_error(&e)),
+            }
+        }
+        let has = |k: &str| keywords.iter().any(|x| x.eq_ignore_ascii_case(k));
+        let up = Upload { mime: &raw, received_at, is_read: has("$seen"), flagged: has("$flagged") };
+        match self.client.upload_mail(&to, &[up]).await {
+            Ok(mut answers) => match answers.pop() {
+                Some(Ok(id)) => Ok(encode_id(&id.id)),
+                Some(Err(e)) => Err(upload_error(&e)),
+                None => Err(ImportError::Rejected("no answer to CreateItem".into())),
+            },
+            Err(e) => Err(import_error(&e)),
+        }
+    }
+
+    /// `Command::DestroyLetters`: письма задания — насовсем (`DeleteItem` `HardDelete`) по `detached`-связям; ответ по
+    /// письму. Уже удалённое (и связи больше нет) — удалено.
+    async fn destroy_letters(&mut self, job: JobId, account: &str, letters: &[postman_core::model::LetterId]) -> Vec<Event> {
+        let mut out = Vec::new();
+        let mut found: Vec<(postman_core::model::LetterId, ItemId)> = Vec::new();
+        for &letter in letters {
+            match self.cache.remotes(LetterId(letter.0)) {
+                Ok(refs) => match refs.into_iter().find(|r| r.account == account).map(|r| parse_key(&r.id)) {
+                    Some(Some(id)) => found.push((letter, id)),
+                    Some(None) => out.push(Event::DestroyFailed { job, letter, error: "not an ews key".into() }),
+                    None => out.push(Event::Destroyed { job, letter }),
+                },
+                Err(e) => out.push(Event::DestroyFailed { job, letter, error: e.to_string() }),
+            }
+        }
+        if found.is_empty() {
+            return out;
+        }
+        let ids: Vec<ItemId> = found.iter().map(|(_, id)| id.clone()).collect();
+        let done = self.client.delete_mail(&ids, DeleteMode::HardDelete).await;
+        for (letter, _) in found {
+            out.push(match &done {
+                Ok(()) => Event::Destroyed { job, letter },
+                Err(e) => Event::DestroyFailed { job, letter, error: e.code().map_or_else(|| e.to_string(), str::to_owned) },
+            });
+        }
+        out
     }
 
     /// Ответ на приглашение: по встрече в календаре Exchange (ответ шлёт сервер), иначе — письмом организатору.
