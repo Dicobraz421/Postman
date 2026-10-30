@@ -11,6 +11,7 @@ pub mod bulk;
 pub mod categories;
 pub mod checks;
 pub mod contacts;
+pub mod export;
 pub mod extract;
 pub mod files;
 pub mod filters;

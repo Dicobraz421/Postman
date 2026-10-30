@@ -14,6 +14,7 @@ use postman_compose::{Address, Draft};
 
 use crate::backend::BoxFuture;
 use crate::categories;
+use crate::export;
 use crate::invite::Delivery;
 use crate::lifecycle;
 use crate::link::{Connection, Link};
@@ -317,6 +318,17 @@ pub enum Command {
     },
     /// Ответ, пауза, продолжение, отмена задания переноса — в поток ядра → `Event::Migration`.
     Migration(MigrationRequest),
+    /// Экспорт писем в файлы в каталог `dir` (S8-31) — в поток ядра: новое задание ([`export::Exporter::start`]) →
+    /// `Event::Export`; письма без содержимого — `FetchRaw` у их учёток.
+    Export {
+        scope: export::Scope,
+        format: export::Format,
+        dir: std::path::PathBuf,
+    },
+    /// «Остановить» экспорт — в поток ядра: готовые файлы остаются, недописанный mbox удаляется → `Event::Export`.
+    StopExport {
+        job: export::ExportId,
+    },
 }
 
 impl Command {
@@ -398,7 +410,8 @@ pub enum Route {
 impl Command {
     /// Маршрут с письмами и папками формата 6: команда над [`LetterId`] — по учётке письма (`FetchRaw`), выгрузка —
     /// по учётке папки цели (`Import`, `ServerCopy`), удаление у источника — по учётке источника (`DestroyLetters`);
-    /// «На этом компьютере», перенос (`MoveLetters`) и задания (`Migration`) — в ядро. Прочие команды — по ключам
+    /// «На этом компьютере», перенос (`MoveLetters`), задания (`Migration`) и экспорт (`Export`, `StopExport`) — в
+    /// ядро. Прочие команды — по ключам
     /// кэша, как [`Command::routes`].
     pub fn routes_by(self, homes: &dyn Homes) -> Vec<(Route, Command)> {
         let route = match &self {
@@ -406,7 +419,7 @@ impl Command {
             Command::Import { folder, .. } => homes.folder(*folder).route(),
             Command::ServerCopy { to, .. } => homes.folder(*to).route(),
             Command::DestroyLetters { account, .. } => Home::Account(account.clone()).route(),
-            Command::MoveLetters { .. } | Command::Migration(_) => Route::Core,
+            Command::MoveLetters { .. } | Command::Migration(_) | Command::Export { .. } | Command::StopExport { .. } => Route::Core,
             _ => return self.routes().into_iter().map(|(t, c)| (Route::Sync(t), c)).collect(),
         };
         vec![(route, self)]
@@ -830,6 +843,15 @@ pub enum Event {
         bytes: u64,
         state: MigrationState,
     },
+    /// Ход экспорта (`Command::Export`) — не чаще 4 раз в секунду, смена состояния — сразу: писем записано из
+    /// `total`, байт записано, состояние (конец — последнее событие задания).
+    Export {
+        job: export::ExportId,
+        done: u64,
+        total: u64,
+        bytes: u64,
+        state: export::State,
+    },
     /// Папку не создать, не переименовать или не перенести (T1-04б). `mailbox` — папка команды, у `CreateFolder` —
     /// родитель (`None` — верхний уровень); `error` — ответ сервера или отказ ядра ([`FOLDER_UNSUPPORTED`],
     /// [`FOLDER_INTO_ITSELF`], [`FOLDER_OTHER_ACCOUNT`]: текст у интерфейса).
@@ -1241,6 +1263,10 @@ mod tests {
         assert_eq!(route(Command::MoveLetters { ids: vec![LetterId(2)], to: FolderId(11) }), [Route::Core]);
         assert_eq!(route(Command::MoveLetters { ids: vec![LetterId(1)], to: FolderId(10) }), [Route::Core]);
         assert_eq!(route(Command::Migration(MigrationRequest::Pause { job: JobId(1) })), [Route::Core]);
+        let export =
+            Command::Export { scope: export::Scope::Folder { id: FolderId(11), subfolders: true }, format: export::Format::Mbox, dir: "x".into() };
+        assert_eq!(route(export), [Route::Core], "экспорт — в поток ядра, и папки учётки тоже");
+        assert_eq!(route(Command::StopExport { job: export::ExportId(1) }), [Route::Core]);
         let destroy = |account: &str| Command::DestroyLetters { job: JobId(1), account: account.into(), letters: vec![LetterId(1)] };
         assert_eq!(route(destroy("@2.shared")), [sync(Some("@2"))], "удаление — у источника, письмо уже в другой учётке");
         assert_eq!(route(destroy("")), [sync(None)]);
