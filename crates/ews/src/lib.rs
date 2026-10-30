@@ -14,7 +14,8 @@
 //! типы `postman-calendar` (`Event`, `Participant`, `Busy`); перевод в кэш и интерфейс — в `postman_core` (S7-06б).
 //!
 //! Запросы — последовательно (`&mut self`), не чаще [`MIN_INTERVAL`]; `ErrorServerBusy` — пауза
-//! `BackOffMilliseconds`, не больше [`BUSY_RETRIES`] повторов (S7 «Проверка на боевом Exchange»).
+//! `BackOffMilliseconds`, не больше [`BUSY_RETRIES`] повторов (S7 «Проверка на боевом Exchange»). Операции из
+//! [`NOT_REPEATED`] (`CreateItem`) клиент сам не повторяет (решение владельца 2026-10-30).
 
 mod auth;
 pub mod autodiscover;
@@ -49,6 +50,11 @@ pub const TIMEOUT: Duration = Duration::from_secs(60);
 pub const MIN_INTERVAL: Duration = Duration::from_millis(200);
 /// Повторов после `ErrorServerBusy`, затем — [`Error::ServerBusy`].
 pub const BUSY_RETRIES: u32 = 2;
+/// Операции, которые создают объект при каждом запросе (`CreateItem` — письмо, встреча, контакт, ответ на
+/// приглашение): клиент их не повторяет — ни после `ErrorServerBusy`, ни на новом соединении после обрыва (запрос мог
+/// дойти, а ответ — потеряться). Повтор — у вызывающего, с проверкой (выгрузка переноса — шаг ядра `Confirm`: поиск
+/// по `Message-ID`), чтобы не плодить дубли.
+pub const NOT_REPEATED: &[&str] = &["CreateItem"];
 /// Пачка объектов в одном запросе (`GetItem`, `DeleteItem`).
 pub const BATCH: usize = 20;
 
@@ -215,13 +221,15 @@ impl Client {
     }
 
     /// Один вызов SOAP: тело операции → первый элемент `Body` ответа (`<m:{Op}Response>`). Сбой SOAP — ошибка;
-    /// `ErrorServerBusy` — пауза и повтор.
+    /// `ErrorServerBusy` — пауза и повтор (кроме [`NOT_REPEATED`]).
     pub(crate) async fn call(&mut self, op: &'static str, body: &str) -> Result<xml::El> {
         let envelope = soap::envelope(body);
+        let repeat = !NOT_REPEATED.contains(&op);
         let mut retries = 0;
         loop {
             let started = std::time::Instant::now();
-            let reply = self.http.post(&self.url, envelope.clone().into_bytes()).await?;
+            let bytes = envelope.clone().into_bytes();
+            let reply = if repeat { self.http.post(&self.url, bytes).await? } else { self.http.post_no_resend(&self.url, bytes).await? };
             tracing::debug!(op, status = reply.status, ms = started.elapsed().as_millis() as u64, "ews call");
             if reply.status != 200 && reply.status != 500 {
                 return Err(Error::Status(reply.status));
@@ -231,7 +239,7 @@ impl Client {
                 self.version = Some(v);
             }
             match soap::response(doc) {
-                Err(Error::ServerBusy { back_off_ms }) if retries < BUSY_RETRIES => {
+                Err(Error::ServerBusy { back_off_ms }) if repeat && retries < BUSY_RETRIES => {
                     retries += 1;
                     tracing::warn!(op, back_off_ms, retries, "ews server busy");
                     tokio::time::sleep(Duration::from_millis(back_off_ms.min(soap::MAX_BACK_OFF_MS))).await;
