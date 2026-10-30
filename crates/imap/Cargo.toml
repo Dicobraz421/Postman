@@ -14,8 +14,8 @@ tokio = { version = "1", features = ["net", "time", "io-util"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "tls12"] }
 rustls-platform-verifier = "0.7"
 futures = "0.3"
-# Тема и имя отправителя (RFC 2047) — одной строкой заголовка; тот же крейт, что у компоновщика и S/MIME.
-mail-parser = { version = "0.11", default-features = false }
+# Кодировки encoded words (RFC 2047) в полях ENVELOPE — таблица WHATWG; тот же крейт уже в сборке (интерфейс).
+encoding_rs = "0.8"
 thiserror.workspace = true
 tracing = "0.1"
 

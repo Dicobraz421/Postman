@@ -195,14 +195,129 @@ fn decode_b64_utf16(chunk: &str) -> Option<String> {
     String::from_utf16(&units).ok()
 }
 
-/// Значение заголовка с encoded words (RFC 2047) → текст: разбор — `mail-parser` (тот же, что у компоновщика и
-/// S/MIME), только одной строки заголовка, не письма.
+/// Значение поля ENVELOPE длиннее — хвост отрезается (по границе символа) до раскодирования.
+pub const MAX_HEADER: usize = 4096;
+
+/// Поле ENVELOPE (тема, имя отправителя) с encoded words (RFC 2047) → текст.
+///
+/// ENVELOPE (RFC 3501 §7.4.2) — структура, которую из письма разобрал сервер: сюда приходят готовые поля строками
+/// протокола, а не байты письма (письмо разбирает только воркер, S8-36). Остаётся раскодировать encoded words одной
+/// строки: не длиннее [`MAX_HEADER`], кодировки — только из таблицы WHATWG (`encoding_rs`); неизвестная кодировка или
+/// повреждённое слово — как есть; управляющие символы — пробелом.
 pub fn decode_header(value: &str) -> String {
-    if !value.contains("=?") {
-        return value.to_owned();
+    let value = truncate(value, MAX_HEADER);
+    let text = if value.contains("=?") { decode_words(value) } else { value.to_owned() };
+    text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
+}
+
+fn truncate(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
     }
-    let raw = format!("Subject: {value}\r\n\r\n");
-    mail_parser::MessageParser::new().parse_headers(raw.as_bytes()).and_then(|m| m.subject().map(str::to_owned)).unwrap_or_else(|| value.to_owned())
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// Encoded words в тексте: пробелы между соседними словами не в счёт (RFC 2047 §6.2), байты соседних слов одной
+/// кодировки раскодируются вместе (символ может быть разрезан между словами).
+fn decode_words(value: &str) -> String {
+    fn flush(out: &mut String, pending: &mut Option<(&'static encoding_rs::Encoding, Vec<u8>)>) {
+        if let Some((enc, bytes)) = pending.take() {
+            out.push_str(&enc.decode_without_bom_handling(&bytes).0);
+        }
+    }
+    let mut out = String::with_capacity(value.len());
+    let mut pending = None;
+    let mut rest = value;
+    while let Some(i) = rest.find("=?") {
+        let Some((enc, bytes, len)) = encoded_word(&rest[i..]) else {
+            flush(&mut out, &mut pending);
+            out.push_str(&rest[..i + 2]);
+            rest = &rest[i + 2..];
+            continue;
+        };
+        let gap = &rest[..i];
+        if pending.is_none() || !gap.trim().is_empty() {
+            flush(&mut out, &mut pending);
+            out.push_str(gap);
+        }
+        match &mut pending {
+            Some((e, b)) if *e == enc => b.extend(bytes),
+            _ => {
+                flush(&mut out, &mut pending);
+                pending = Some((enc, bytes));
+            }
+        }
+        rest = &rest[i + len..];
+    }
+    flush(&mut out, &mut pending);
+    out.push_str(rest);
+    out
+}
+
+/// `=?кодировка?B|Q?текст?=` в начале `s` → кодировка, байты и длина слова. Кодировка вне таблицы WHATWG (и
+/// «replacement») — не слово.
+fn encoded_word(s: &str) -> Option<(&'static encoding_rs::Encoding, Vec<u8>, usize)> {
+    let body = s.strip_prefix("=?")?;
+    let (charset, body) = body.split_once('?')?;
+    let (kind, body) = body.split_once('?')?;
+    let end = body.find("?=")?;
+    let text = &body[..end];
+    if text.contains(|c: char| c.is_whitespace() || c == '?') || charset.contains(char::is_whitespace) {
+        return None;
+    }
+    // RFC 2231: `кодировка*язык`.
+    let charset = charset.split('*').next().unwrap_or_default();
+    let enc = encoding_rs::Encoding::for_label(charset.as_bytes()).filter(|e| *e != encoding_rs::REPLACEMENT)?;
+    let bytes = match kind {
+        "B" | "b" => base64(text)?,
+        "Q" | "q" => quoted(text)?,
+        _ => return None,
+    };
+    Some((enc, bytes, s.len() - body.len() + end + 2))
+}
+
+fn base64(text: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(text.len() / 4 * 3);
+    let (mut bits, mut n) = (0u32, 0);
+    for c in text.trim_end_matches('=').bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        };
+        bits = (bits << 6) | u32::from(v);
+        n += 6;
+        if n >= 8 {
+            n -= 8;
+            out.push((bits >> n) as u8);
+            bits &= (1 << n) - 1;
+        }
+    }
+    Some(out)
+}
+
+/// «Q» (RFC 2047 §4.2): `_` — пробел, `=XX` — байт.
+fn quoted(text: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(text.len());
+    let mut it = text.bytes();
+    while let Some(b) = it.next() {
+        match b {
+            b'_' => out.push(b' '),
+            b'=' => {
+                let hex = [it.next()?, it.next()?];
+                out.push(u8::from_str_radix(std::str::from_utf8(&hex).ok()?, 16).ok()?);
+            }
+            _ => out.push(b),
+        }
+    }
+    Some(out)
 }
 
 /// Есть ли у письма вложение: часть с `Content-Disposition: attachment` или не текст и не multipart/alternative
@@ -280,5 +395,31 @@ mod tests {
         assert_eq!(decode_header("Plain subject"), "Plain subject");
         assert_eq!(decode_header("=?utf-8?B?0J7RgtGH0ZHRgg==?="), "Отчёт");
         assert_eq!(decode_header("=?koi8-r?B?8NLJ18XU?="), "Привет");
+        assert_eq!(decode_header("=?windows-1251?Q?=CF=F0=E8=E2=E5=F2_=EC=E8=F0?="), "Привет мир");
+        assert_eq!(decode_header("Re: =?UTF-8?q?caf=C3=A9?= ok"), "Re: café ok");
+        // Пробелы между словами не в счёт; символ, разрезанный между словами, — целый.
+        assert_eq!(decode_header("=?utf-8?B?0J7R?=  =?utf-8?B?gtGH0ZHRgg==?="), "Отчёт");
+        assert_eq!(decode_header("=?utf-8?Q?a?= b =?utf-8?Q?c?="), "a b c");
+        assert_eq!(decode_header("=?utf-8*ru?B?0JA=?="), "А", "язык RFC 2231");
+    }
+
+    /// Неизвестная кодировка, повреждённое слово — как есть; управляющие — пробелом; длиннее предела — отрезано.
+    #[test]
+    fn encoded_words_are_bounded() {
+        use super::MAX_HEADER;
+        assert_eq!(decode_header("=?x-unknown?B?QQ==?="), "=?x-unknown?B?QQ==?=");
+        assert_eq!(decode_header("=?utf-7?B?QQ==?="), "=?utf-7?B?QQ==?=");
+        assert_eq!(decode_header("=?hz-gb-2312?B?QQ==?="), "=?hz-gb-2312?B?QQ==?=", "кодировка «replacement»");
+        assert_eq!(decode_header("=?utf-8?B?!!!?="), "=?utf-8?B?!!!?=");
+        assert_eq!(decode_header("=?utf-8?Q?=Z?="), "=?utf-8?Q?=Z?=");
+        assert_eq!(decode_header("=?utf-8?X?a?="), "=?utf-8?X?a?=");
+        assert_eq!(decode_header("a =?utf-8?B?QQ"), "a =?utf-8?B?QQ");
+        assert_eq!(decode_header("=?utf-8?B?QQ=?utf-8?Q?x?="), "=?utf-8?B?QQx", "слово внутри обрезанного");
+        assert_eq!(decode_header("a\r\nb=?utf-8?Q?=00?="), "a  b ");
+        let long = "я".repeat(MAX_HEADER);
+        let cut = decode_header(&long);
+        assert!(cut.len() <= MAX_HEADER && cut.chars().all(|c| c == 'я'), "{}", cut.len());
+        let words = "=?utf-8?B?0K8=?=".repeat(MAX_HEADER);
+        assert!(decode_header(&words).chars().count() <= MAX_HEADER / 16 + 1);
     }
 }
