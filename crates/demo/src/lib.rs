@@ -63,6 +63,9 @@ pub fn bench_copy(dir: &Path, n: usize) -> postman_cache::Result<PathBuf> {
     ensure(&template, n)?;
     let path = dir.join("bench.redb");
     std::fs::copy(&template, &path)?;
+    // Копия — 67 МБ грязных страниц в кэше ОС: без сброса здесь их пишет на диск первая фиксация при открытии, и
+    // первый кадр бенча зависит от диска (0,9–5 с вместо десятков мс, S8-37). Сброс — часть подготовки.
+    std::fs::File::options().write(true).open(&path)?.sync_all()?;
     Ok(path)
 }
 
@@ -133,7 +136,9 @@ fn main_boxes() -> Vec<MailboxRow> {
 
 pub fn ensure(path: &Path, n: usize) -> postman_cache::Result<()> {
     let cache = Cache::open(path)?;
-    if cache.count("inbox").unwrap_or(0) + cache.count("archive").unwrap_or(0) >= n {
+    // Шаблон собран, если в нём есть последнее письмо: по папкам письма делятся 70/20/10 %, и сумма «Входящих» с
+    // «Архивом» не доходила до `n` — шаблон собирался заново на каждом запуске бенча (S8-37).
+    if n == 0 || !cache.rows_by_ids(&[format!("demo{}", n - 1)])?.is_empty() {
         // Шаблон старше беседы демо (S5-05) — дописать её.
         if cache.rows_by_ids(&[CHAIN[0].id.to_string()])?.is_empty() {
             chain(&cache, jiff::Timestamp::now().as_second())?;
