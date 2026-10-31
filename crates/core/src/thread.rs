@@ -2,6 +2,7 @@
 //! разделители по дням. Тела и разбор — отдельно: здесь только порядок и разметка ленты. Вид «в списке, как
 //! Outlook» (S5-05б) — [`Outline`]: строка на беседу, под ней — её письма, когда беседа развёрнута.
 
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 
 use jiff::Timestamp;
@@ -136,9 +137,10 @@ impl Outline {
         let mut at: HashMap<(String, usize), usize> = HashMap::new();
         for (id, thread, group, time) in items {
             let key = if thread.is_empty() { id.clone() } else { thread };
-            let slot = (key.clone(), if split { group } else { 0 });
-            match at.get(&slot) {
-                Some(&h) => {
+            // Ключ копируется только для новой беседы: на большой папке копий меньше в разы (S8-37).
+            match at.entry((key, if split { group } else { 0 })) {
+                Entry::Occupied(e) => {
+                    let h = *e.get();
                     if let (Some(head), Some(t)) = (heads.get_mut(h), times.get_mut(h))
                         && !head.ids.contains(&id)
                     {
@@ -146,10 +148,10 @@ impl Outline {
                         t.push(time);
                     }
                 }
-                None => {
-                    at.insert(slot, heads.len());
-                    heads.push(Head { key, ids: vec![id], group });
+                Entry::Vacant(e) => {
+                    heads.push(Head { key: e.key().0.clone(), ids: vec![id], group });
                     times.push(vec![time]);
+                    e.insert(heads.len() - 1);
                 }
             }
         }

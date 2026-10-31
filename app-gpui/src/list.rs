@@ -243,7 +243,7 @@ impl Job {
             let outline = list
                 .as_ref()
                 .filter(|_| self.outlook)
-                .map(|(ids, groups)| crate::outline::outline_of(ids, groups, &threads, folders, self.open.clone()));
+                .map(|(ids, groups)| crate::outline::outline_of(ids, groups, threads, folders, self.open.clone()));
             return Computed { counts, list, outline };
         }
     }
@@ -257,7 +257,7 @@ impl Job {
         let mut tops = 0;
         let mut threads = HashMap::new();
         let mut seen = 0;
-        let scanned = cache.scan(&self.scan, |row, to| {
+        let scanned = cache.scan(&self.scan, |mut row, to| {
             seen += 1;
             let f = Facts::of(&self.me, &row, &to);
             let mut pass = counts.add(&self.query.criteria, &f, &row.keywords);
@@ -270,9 +270,15 @@ impl Job {
             if own && pass {
                 let folder = if folders { row.mailbox_ids.iter().filter_map(|m| index.get(m.as_str())).min().copied() } else { Some(0) };
                 if let Some(folder) = folder {
-                    hits.push(Hit { top, ..Hit::of(&row, folder) });
+                    let mut hit = Hit { top, ..Hit::of(&row, folder) };
+                    // Отправитель нужен только для сортировки по нему — без неё строка на каждое письмо лишняя (S8-37).
+                    if self.query.sort != Sort::Sender {
+                        hit.sender = String::new();
+                    }
+                    hits.push(hit);
                     if self.outlook {
-                        threads.insert(row.id.clone(), row.thread_id.clone());
+                        // Строки письма дальше не нужны — переносим, а не копируем (35 тыс. писем, S8-37).
+                        threads.insert(std::mem::take(&mut row.id), std::mem::take(&mut row.thread_id));
                     }
                 }
             }

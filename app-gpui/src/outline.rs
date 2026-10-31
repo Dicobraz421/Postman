@@ -176,7 +176,7 @@ pub(crate) fn empty_child(i: usize, l: &Look) -> AnyElement {
 pub(crate) fn outline_of(
     ids: &[String],
     groups: &[(Group, usize)],
-    threads: &HashMap<String, String>,
+    mut threads: HashMap<String, String>,
     split: bool,
     open: HashSet<String>,
 ) -> Outline {
@@ -188,7 +188,7 @@ pub(crate) fn outline_of(
             left = groups[g].1;
         }
         left = left.saturating_sub(1);
-        (id.clone(), threads.get(id).cloned().unwrap_or_default(), g)
+        (id.clone(), threads.remove(id).unwrap_or_default(), g)
     });
     let items: Vec<(String, String, usize)> = items.collect();
     Outline::build(items, split, open)
@@ -366,13 +366,13 @@ mod tests {
         let ids: Vec<String> = ["a2", "b", "a1"].iter().map(|s| s.to_string()).collect();
         let groups = vec![(Group::Top, 1), (Group::Folder("x".into()), 0), (Group::Folder("y".into()), 2)];
         let threads: HashMap<String, String> = [("a2", "t"), ("a1", "t")].iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
-        let o = outline_of(&ids, &groups, &threads, false, HashSet::new());
+        let o = outline_of(&ids, &groups, threads.clone(), false, HashSet::new());
         assert_eq!(o.ids(), ["a2", "b"]);
         assert_eq!(o.heads().iter().map(|h| h.group).collect::<Vec<_>>(), [0, 2]);
         let names: Vec<Group> = groups.iter().map(|(g, _)| g.clone()).collect();
         assert_eq!(o.groups(&names), [(Group::Top, 1), (Group::Folder("y".into()), 1)]);
         // Без групп — всё в нулевой.
-        assert_eq!(outline_of(&ids, &[], &threads, true, HashSet::new()).heads()[1].group, 0);
+        assert_eq!(outline_of(&ids, &[], threads, true, HashSet::new()).heads()[1].group, 0);
     }
 
     /// Три вида на одном наборе (T1-15): «Лента» и «Стопка» — строка на беседу, самое новое письмо, без раскрытия
@@ -381,7 +381,7 @@ mod tests {
     fn views_shape_the_list() {
         let ids: Vec<String> = ["a3", "b", "a1"].iter().map(|s| s.to_string()).collect();
         let threads: HashMap<String, String> = [("a3", "t"), ("a1", "t")].iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
-        let rows = |open: HashSet<String>| outline_of(&ids, &[], &threads, false, open).ids().to_vec();
+        let rows = |open: HashSet<String>| outline_of(&ids, &[], threads.clone(), false, open).ids().to_vec();
         assert_eq!(rows(HashSet::new()), ["a3", "b"], "лента и стопка");
         let outlook = rows(["t".to_string()].into());
         assert!(outlook.len() > 2 && outlook.contains(&"a1".to_string()) && outlook.ends_with(&["b".to_string()]), "как Outlook: {outlook:?}");
