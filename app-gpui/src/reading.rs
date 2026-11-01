@@ -33,7 +33,8 @@ const MAX_IMAGE_SIDE: u32 = 1600;
 const WORKER_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Воркера нет рядом с exe (повреждённая установка): письма разбирать нечем — запросов к нему нет, вместо тела —
-/// пояснение, пользователь предупреждён один раз (`Mailer::new`). Без этого каждое письмо — запуск, ошибка и тост.
+/// пояснение; в строке состояния — постоянная отметка со ссылкой на загрузку (`Mailer::worker_status`). Без этого
+/// каждое письмо — запуск, ошибка и тост. Положили файл — следующее письмо или щелчок по отметке найдут его.
 static WORKER_MISSING: AtomicBool = AtomicBool::new(false);
 
 /// Проверить, есть ли воркер, — в `main` до первого окна.
@@ -53,6 +54,11 @@ pub(crate) fn worker_missing() -> bool {
 /// Имя воркера для текстов.
 pub(crate) fn worker_file() -> String {
     Worker::default_exe().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// Папка, куда положить воркер, — папка программы.
+pub(crate) fn worker_dir() -> String {
+    Worker::default_exe().parent().map(|d| d.display().to_string()).unwrap_or_default()
 }
 
 pub(crate) struct Reading {
@@ -174,6 +180,8 @@ pub(crate) enum ReadingEvent {
     },
     /// Ответ на приглашение ушёл, «Удалять письмо-приглашение после ответа» включено (S5-20): письмо — в «Удалённые».
     TrashAnswered(EmailRow),
+    /// Воркер, которого не было при запуске, появился: убрать отметку в строке состояния.
+    WorkerFound,
 }
 
 /// Запрос области чтения к серверу: клонируемая форма `Command` (событие gpui отдаётся по ссылке).
@@ -342,7 +350,9 @@ impl ReadingPane {
         let body = Some(postman_demo::body(&row.id));
         self.replace(Some(Reading::new(row, body)));
         self.render_body(cx);
-        if !worker_missing() {
+        if worker_missing() {
+            self.recheck_worker(cx);
+        } else {
             self.ensure_invite(cx);
             self.ensure_scans(cx);
             self.ensure_smime(cx);
@@ -367,7 +377,9 @@ impl ReadingPane {
         r.body = Some(body);
         r.doc = None;
         self.render_body(cx);
-        if !worker_missing() {
+        if worker_missing() {
+            self.recheck_worker(cx);
+        } else {
             self.ensure_invite(cx);
             self.ensure_scans(cx);
             self.ensure_smime(cx);
@@ -456,6 +468,35 @@ impl ReadingPane {
 
     fn card_for(&mut self, uid: &str) -> Option<&mut Card> {
         self.reading.as_mut().and_then(|r| r.invite.as_mut()).filter(|c| c.uid() == Some(uid))
+    }
+
+    /// Воркера не было: проверить снова в фоне — его могли положить в папку программы.
+    fn recheck_worker(&mut self, cx: &mut Context<Self>) {
+        let task = cx.background_spawn(async { Worker::default_exe().exists() });
+        cx.spawn(async move |this, cx| {
+            if task.await {
+                this.update(cx, |this, cx| this.worker_found(cx)).ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Воркер нашёлся: разобрать открытое письмо заново, отметку в строке состояния — убрать.
+    pub(crate) fn worker_found(&mut self, cx: &mut Context<Self>) {
+        if !worker_missing() {
+            return;
+        }
+        WORKER_MISSING.store(false, Ordering::Relaxed);
+        tracing::info!("worker found");
+        cx.emit(ReadingEvent::WorkerFound);
+        if let Some(r) = self.reading.as_mut() {
+            r.doc = None;
+        }
+        self.render_body(cx);
+        self.ensure_invite(cx);
+        self.ensure_scans(cx);
+        self.ensure_smime(cx);
+        cx.notify();
     }
 
     /// HTML → IR в воркере-песочнице, в фоновом исполнителе gpui; затем — картинки `cid:`.

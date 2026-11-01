@@ -253,6 +253,7 @@ impl Mailer {
                 ReadingEvent::Error(text) => this.toasts.update(cx, |t, cx| t.push(Toast::Error, text.clone(), cx)),
                 ReadingEvent::Toast(level, text) => this.toasts.update(cx, |t, cx| t.push(*level, text.clone(), cx)),
                 ReadingEvent::NeedsServer => this.needs_server(cx),
+                ReadingEvent::WorkerFound => cx.notify(),
                 ReadingEvent::Open(row) => this.open_letter(row.clone(), cx),
                 ReadingEvent::Unsend(s) => this.unsend_scheduled(s.clone(), cx),
                 ReadingEvent::Respond(row, mode) => this.respond_to(row.clone(), *mode, cx),

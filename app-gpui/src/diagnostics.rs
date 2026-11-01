@@ -12,6 +12,9 @@ use postman_core::prefs::Prefs;
 const KEEP: Duration = Duration::from_secs(7 * 86_400);
 /// Обновления — по явному действию: страница сборок (в фоне сети нет).
 pub(crate) const RELEASES: &str = "https://github.com/Dicobraz/Postman/actions";
+/// Где скачать недостающий `postman-worker.exe` (S8-38) — открывается по щелчку пользователя; пока — страница сборок
+/// (воркер — в архиве версии).
+pub(crate) const WORKER_DOWNLOAD: &str = RELEASES;
 
 pub(crate) fn log_dir(data: &Path) -> PathBuf {
     data.join("logs")
