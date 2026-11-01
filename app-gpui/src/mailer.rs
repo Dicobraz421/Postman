@@ -174,7 +174,7 @@ impl Mailer {
         let toasts = cx.new(|cx| {
             let mut n = Notices::new();
             if crate::reading::worker_missing() {
-                n.push(pets_ui::Level::Error, tr!("worker-missing", file = crate::reading::worker_file()), cx);
+                crate::chrome::worker_notice(&mut n, cx);
             }
             n
         });
