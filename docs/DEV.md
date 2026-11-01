@@ -9,8 +9,8 @@
 - Вопросы владельцу — пакетом «Решения для владельца» (№, вопрос, рекомендация).
 - Ручная проверка задачи — файлом `docs/manual-tests/<задача>.md` (не правкой `docs/MANUAL-TESTS.md`).
 - Локально — `cargo check`/`clippy` во время работы и один прогон тестов затронутых крейтов перед PR; весь набор
-  гоняет CI (`.github/workflows/ci.yml`, только Windows). Архив `Postman-<версия>-windows-x64.zip` собирает job
-  `release` на main и бете (`scripts/windows/package.ps1`; подпись — если задан секрет).
+  гоняет CI (`.github/workflows/ci.yml`, только Windows). Архив `postman-<версия>-windows-x64.zip` собирает job
+  `release` на main и тегах `v*` (`scripts/windows/package.ps1`; подпись — если задан секрет); выпуск — ниже.
 - Спека сессии — `docs/specs/Sx.md`; соответствие сессий фазам плана — в `docs/specs/S0-decisions.md`.
 
 ## Запуск
@@ -45,6 +45,26 @@ cargo run -p postman-gpui -- --screens <каталог>
 (картинка та же), release — только для замеров.
 `--screens <каталог> --live` — живой ящик из `POSTMAN_URL`… (стенд), сцены с `.live()`;
 без учётной записи в окружении — `firstrun` (первый запуск).
+
+## Выпуск
+
+Пользователь скачивает только со страницы [Releases](https://github.com/Dicobraz421/Postman/releases); артефакты
+Actions — для разработки. Схема общая для Pets (скилл pets-dev, `references/releases.md`):
+
+| Файл выпуска | Что это |
+|---|---|
+| `postman-<версия>-<os>-<arch>.zip` | Комплект целиком: `windows-x64` сейчас; Linux — `linux-x64.tar.gz` |
+| `postman-worker.exe`, `postman-viewer.exe` | Компоненты под своими именами — скачать один файл вместо всего («Нет компонента», S8-38) |
+| `SHA256SUMS.txt` | Контрольные суммы всех файлов |
+
+- Тег `v<версия>` — ровно `version` из `Cargo.toml` (CI сверяет). `v0.2.0` — стабильный выпуск, `v0.2.0-beta.1` —
+  предварительный (канал «Предварительный» в настройках).
+- Как выпустить: PR с новой `version` в `Cargo.toml` (класс B) → merge → `git tag v<версия> origin/main` и
+  `git push origin v<версия>`. CI собирает, подписывает, проверяет тесты и публикует (job `publish`); описание — что
+  скачать (`.github/release-notes.md`) и список PR.
+- Ссылки приложения: «Проверить обновления» — `releases/latest` (стабильный) или `releases` (предварительный);
+  «Скачать» у «Нет компонента» — `releases/download/v<своя версия>/<файл>`: компонент той же версии.
+- Linux: строка в matrix job `release` и `scripts/linux/package.sh` с теми же выходами; `publish` не меняется.
 
 ## Диск
 

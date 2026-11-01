@@ -1,6 +1,7 @@
 # CI Postman по шаблону скилла pets-dev (R-01).
 # PR и merge queue: метки конфликта, полосы, clippy, тесты (nextest) — цель ≤7 мин при тёплом кэше.
-# Docs-PR: сборка пропускается (job `changes`). Release, подпись, архив — только main, `beta-*` и ручной запуск.
+# Docs-PR: сборка пропускается (job `changes`). Release, подпись, архив — только main, теги `v*` и ручной запуск;
+# тег `v*` — ещё и выпуск на GitHub (job `publish`, схема — docs/DEV.md «Выпуск»).
 # Required check в защите main — один: `gate`.
 name: CI
 
@@ -9,7 +10,7 @@ on:
   merge_group:
   push:
     branches: [main]
-    tags: ['beta-*']
+    tags: ['v*']
   workflow_dispatch:
 
 concurrency:
@@ -121,12 +122,18 @@ jobs:
         continue-on-error: true
         run: cargo test -p postman-worker --test windows_probe --locked -- --ignored --nocapture
 
-  # Только main, бета и ручной запуск: release, подпись, архив. Идёт параллельно с тестами —
-  # красные тесты не лишают архива.
+  # Только main, теги `v*` и ручной запуск: release, подпись, архив. Идёт параллельно с тестами — красные тесты не
+  # лишают архива, но не дают выпуска (`publish` ждёт `test`). Платформа — строка matrix; Linux — ещё одна строка
+  # и свой scripts/<os>/package с теми же выходами (name, dir, assets, version).
   release:
     needs: changes
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - platform: windows-x64
+            runner: windows-latest
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
@@ -177,14 +184,65 @@ jobs:
         shell: pwsh
         run: ./scripts/windows/package.ps1 -TargetDir "$env:CARGO_TARGET_DIR" -Out dist
 
-      # Артефакт скачивается как Postman-<версия>-windows-x64.zip: exe приложения, воркера и хоста модулей
-      # просмотра, README.txt, install.ps1.
-      - name: Артефакт Windows
+      # Тег выпуска — ровно версия из Cargo.toml: v0.2.0, v0.2.0-beta.1.
+      - name: Тег = версия
+        if: github.ref_type == 'tag'
+        shell: bash
+        env:
+          VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          if [ "v$VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Тег $GITHUB_REF_NAME не совпадает с версией v$VERSION из Cargo.toml"; exit 1
+          fi
+
+      # Для разработки (Actions → запуск → Artifacts): postman-<версия>-windows-x64 — exe приложения, воркера и
+      # хоста модулей просмотра, README.txt, install.ps1.
+      - name: Артефакт сборки
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.package.outputs.name }}
           path: ${{ steps.package.outputs.dir }}
           if-no-files-found: error
+
+      # Файлы выпуска платформы для `publish`: архив и отдельные компоненты.
+      - name: Файлы выпуска
+        if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: ${{ steps.package.outputs.assets }}
+          if-no-files-found: error
+
+  # Выпуск на GitHub по тегу `v*`, если тесты и сборки всех платформ зелёные. Файлы — плоско:
+  # postman-<версия>-<os>-<arch>.zip, компоненты под своими именами, SHA256SUMS.txt. Версия с дефисом
+  # (0.2.0-beta.1) — предварительный выпуск: его видит канал «Предварительный» в настройках.
+  publish:
+    needs: [test, release]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/release-notes.md
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: assets
+          merge-multiple: true
+      - name: Выпуск
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd assets && sha256sum * > SHA256SUMS.txt)
+          version="${GITHUB_REF_NAME#v}"
+          sed "s/{version}/$version/g" .github/release-notes.md > notes.md
+          pre=(); case "$version" in *-*) pre=(--prerelease);; esac
+          gh release create "$GITHUB_REF_NAME" assets/* -R "$GITHUB_REPOSITORY" --verify-tag \
+            --title "Postman $version" --notes-file notes.md --generate-notes "${pre[@]}"
 
   # Единственный required check: зелёный, если всё нужное прошло или было пропущено.
   gate:

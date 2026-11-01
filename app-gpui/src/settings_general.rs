@@ -261,8 +261,8 @@ impl SettingsView {
             .child(row(
                 tr!("settings-version", version = env!("CARGO_PKG_VERSION")),
                 Some(tr!("settings-version-hint")),
-                button("settings-check", tr!("settings-check"), false, l).on_click(cx.listener(|_, _, _, _| {
-                    if let Err(e) = crate::sys::shell::open(crate::diagnostics::RELEASES) {
+                button("settings-check", tr!("settings-check"), false, l).on_click(cx.listener(move |_, _, _, _| {
+                    if let Err(e) = crate::sys::shell::open(&crate::diagnostics::releases(g.channel)) {
                         tracing::warn!("updates: {e}");
                     }
                 })),

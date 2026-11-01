@@ -30,9 +30,10 @@ cargo test --workspace
 
 ## Поставка
 
-Архив `Postman-<версия>-windows-x64.zip` — артефакт CI (Actions → запуск → Artifacts): `postman.exe`,
-`postman-worker.exe`, `README.txt`, `install.ps1`. Локально — `scripts/windows/package.ps1` после
-`cargo build --release --workspace` (в `dist/`). Установка — `install.ps1` без прав администратора, инструкция
+Выпуски — [Releases](https://github.com/Dicobraz421/Postman/releases): `postman-<версия>-windows-x64.zip`
+(`postman.exe`, `postman-worker.exe`, `postman-viewer.exe`, `README.txt`, `install.ps1`), отдельные компоненты и
+`SHA256SUMS.txt`; как выпустить — `docs/DEV.md` «Выпуск». Сборка каждого `main` — артефакт CI (Actions → запуск →
+Artifacts). Локально — `scripts/windows/package.ps1` после `cargo build --release --workspace` (в `dist/`). Установка — `install.ps1` без прав администратора, инструкция
 пользователя — `scripts/windows/README.txt`. Версия exe — из `version` в `Cargo.toml`; значок —
 `app-gpui/res/postman.ico` (`scripts/windows/make-icon.ps1`), манифест — `app-gpui/res/postman.manifest`.
 

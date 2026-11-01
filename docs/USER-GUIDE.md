@@ -6,7 +6,8 @@ CardDAV, Exchange on-prem (EWS) — раздел «Учётные записи»
 
 ## Установка
 
-1. Распакуйте архив `Postman-<версия>-windows-x64.zip` в любую папку.
+1. Скачайте `postman-<версия>-windows-x64.zip` со страницы выпусков
+   (<https://github.com/Dicobraz421/Postman/releases>) и распакуйте в любую папку.
 2. В этой папке откройте PowerShell и выполните:
    `powershell -ExecutionPolicy Bypass -File .\install.ps1`
 3. Postman появится в меню «Пуск». Права администратора не нужны.
