@@ -378,14 +378,12 @@ impl Mailer {
         )
     }
 
-    /// Нет воркера (S8-38): красная отметка, пока его нет; подсказка — куда положить; щелчок — проверить снова и, если
-    /// его всё ещё нет, открыть страницу загрузки.
+    /// Нет воркера (S8-38): короткая красная отметка, пока его нет; щелчок — проверить снова, нет — что случилось,
+    /// почему и как исправить, с кнопкой «Скачать» ([`worker_notice`]).
     fn worker_status(&self, l: &Look, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
         if !crate::reading::worker_missing() {
             return None;
         }
-        let file = crate::reading::worker_file();
-        let tip = tr!("status-worker-tip", file = file.clone(), dir = crate::reading::worker_dir());
         Some(
             div()
                 .id("worker")
@@ -399,13 +397,13 @@ impl Mailer {
                 .hover(|d| d.bg(l.hover()))
                 .text_color(l.error())
                 .child(icon(glyph::ERROR, 12.))
-                .child(tr!("status-worker-missing", file = file))
-                .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx))
+                .child(tr!("status-worker-missing"))
+                .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(tr!("status-worker-tip")).build(window, cx))
                 .on_click(cx.listener(|this, _, _, cx| this.worker_help(cx))),
         )
     }
 
-    /// Щелчок по отметке «нет воркера»: файл уже положили — убрать отметку и разобрать письмо, нет — страница загрузки.
+    /// Щелчок по отметке «нет компонента»: файл уже положили — убрать отметку и разобрать письмо, нет — описание.
     fn worker_help(&mut self, cx: &mut Context<Self>) {
         let task = cx.background_spawn(async { postman_worker::Client::default_exe().exists() });
         cx.spawn(async move |this, cx| {
@@ -413,10 +411,8 @@ impl Mailer {
             this.update(cx, |this, cx| {
                 if found {
                     this.reading.update(cx, |r, cx| r.worker_found(cx));
-                } else if let Err(e) = crate::sys::shell::open(crate::diagnostics::WORKER_DOWNLOAD) {
-                    tracing::warn!("worker download page: {e}");
-                    let text = tr!("worker-download-failed", url = crate::diagnostics::WORKER_DOWNLOAD);
-                    this.toasts.update(cx, |t, cx| t.push(pets_ui::Level::Error, text, cx));
+                } else {
+                    this.toasts.update(cx, |t, cx| worker_notice(t, cx));
                 }
                 cx.notify();
             })
@@ -877,4 +873,15 @@ mod tests {
         m.toggle();
         assert!(m.open);
     }
+}
+
+/// Нет воркера: что случилось, почему и как исправить — тостом с кнопкой «Скачать» (страница загрузки в браузере).
+pub(crate) fn worker_notice(t: &mut crate::notices::Notices, cx: &mut Context<crate::notices::Notices>) {
+    let (file, dir) = (crate::reading::worker_file(), crate::reading::worker_dir());
+    let download = pets_ui::ToastAction::new(tr!("worker-download"), |_, _| {
+        if let Err(e) = crate::sys::shell::open(crate::diagnostics::WORKER_DOWNLOAD) {
+            tracing::warn!("worker download page: {e}");
+        }
+    });
+    t.push_action(pets_ui::Level::Error, tr!("worker-missing", file = file, dir = dir), download, cx);
 }

@@ -506,7 +506,7 @@ impl ReadingPane {
         let id = r.row.id.clone();
         if worker_missing() {
             if let Some(r) = self.reading.as_mut() {
-                r.doc = Some(postman_ir::from_plain(&tr!("worker-missing-letter", file = worker_file())));
+                r.doc = Some(postman_ir::from_plain(&tr!("worker-missing-letter")));
             }
             cx.notify();
             return;
