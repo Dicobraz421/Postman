@@ -857,11 +857,12 @@ pub(crate) mod scenes {
     }
 }
 
-/// Нет воркера: что случилось, почему и как исправить — тостом с кнопкой «Скачать» (страница загрузки в браузере).
+/// Нет воркера: что случилось, почему и как исправить — тостом с кнопкой «Скачать» (файл выпуска в браузере).
 pub(crate) fn worker_notice(t: &mut crate::notices::Notices, cx: &mut Context<crate::notices::Notices>) {
     let (file, dir) = (crate::reading::worker_file(), crate::reading::worker_dir());
-    let download = pets_ui::ToastAction::new(tr!("worker-download"), |_, _| {
-        if let Err(e) = crate::sys::shell::open(crate::diagnostics::WORKER_DOWNLOAD) {
+    let url = crate::diagnostics::component_download(&file);
+    let download = pets_ui::ToastAction::new(tr!("worker-download"), move |_, _| {
+        if let Err(e) = crate::sys::shell::open(&url) {
             tracing::warn!("worker download page: {e}");
         }
     });

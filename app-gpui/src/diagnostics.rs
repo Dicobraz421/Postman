@@ -6,15 +6,26 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use postman_core::prefs::Prefs;
+use postman_core::prefs::{Channel, Prefs};
 
 /// Сколько хранить журнал.
 const KEEP: Duration = Duration::from_secs(7 * 86_400);
-/// Обновления — по явному действию: страница сборок (в фоне сети нет).
-pub(crate) const RELEASES: &str = "https://github.com/Dicobraz/Postman/actions";
-/// Где скачать недостающий `postman-worker.exe` (S8-38) — открывается по щелчку пользователя; пока — страница сборок
-/// (воркер — в архиве версии).
-pub(crate) const WORKER_DOWNLOAD: &str = RELEASES;
+/// Выпуски — страница Releases репозитория (схема — docs/DEV.md «Выпуск»).
+const REPO: &str = "https://github.com/Dicobraz421/Postman";
+
+/// Обновления — по явному действию, в браузере (в фоне сети нет): последний стабильный выпуск или все выпуски,
+/// с предварительными.
+pub(crate) fn releases(channel: Channel) -> String {
+    match channel {
+        Channel::Stable => format!("{REPO}/releases/latest"),
+        Channel::Preview => format!("{REPO}/releases"),
+    }
+}
+
+/// Прямая ссылка на недостающий компонент (S8-38, S8-39): файл выпуска той же версии, что и приложение.
+pub(crate) fn component_download(file: &str) -> String {
+    format!("{REPO}/releases/download/v{}/{file}", env!("CARGO_PKG_VERSION"))
+}
 
 pub(crate) fn log_dir(data: &Path) -> PathBuf {
     data.join("logs")
@@ -104,6 +115,17 @@ pub(crate) fn icacls_command() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn release_links() {
+        let v = env!("CARGO_PKG_VERSION");
+        assert_eq!(
+            super::component_download("postman-worker.exe"),
+            format!("https://github.com/Dicobraz421/Postman/releases/download/v{v}/postman-worker.exe")
+        );
+        assert!(super::releases(super::Channel::Stable).ends_with("/releases/latest"));
+        assert!(super::releases(super::Channel::Preview).ends_with("/releases"));
+    }
+
     use super::*;
 
     /// Отчёт: версия, настройки без адреса ИБ, журнал; старые файлы журнала удаляются.

@@ -183,7 +183,7 @@ PR не конфликтуют по номерам. Проходим в диал
 
 ## 12. Установка из архива, exe без консоли (S4-01)
 
-Архив — артефакт CI `Postman-<версия>-windows-x64` (Actions, последний прогон `main`).
+Архив — `postman-<версия>-windows-x64.zip` со страницы Releases или артефакт CI последнего прогона `main`.
 
 1. Распаковать: 4 файла, `README.txt` читается (кириллица).
 2. `powershell -ExecutionPolicy Bypass -File .\install.ps1`. Ожидание: установлено в `%LOCALAPPDATA%\Programs\Postman`,
