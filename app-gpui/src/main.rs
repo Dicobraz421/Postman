@@ -208,6 +208,7 @@ fn main() {
         diagnostics::start_log_file(&dir);
     }
     pets_shell::init_logging("Postman", "POSTMAN_LOG");
+    reading::check_worker();
     let lang = prefs::language_at_start(value("--lang"), &user_prefs);
     let theme = prefs::theme_at_start(value("--theme"), &user_prefs);
     let density = prefs::density_at_start(value("--density"), &user_prefs);
