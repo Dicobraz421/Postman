@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -30,6 +31,29 @@ use crate::*;
 const MAX_IMAGE_SIDE: u32 = 1600;
 /// Ответ воркера дольше — сбой (воркер перезапускается).
 const WORKER_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Воркера нет рядом с exe (повреждённая установка): письма разбирать нечем — запросов к нему нет, вместо тела —
+/// пояснение, пользователь предупреждён один раз (`Mailer::new`). Без этого каждое письмо — запуск, ошибка и тост.
+static WORKER_MISSING: AtomicBool = AtomicBool::new(false);
+
+/// Проверить, есть ли воркер, — в `main` до первого окна.
+pub(crate) fn check_worker() {
+    let exe = Worker::default_exe();
+    let missing = !exe.exists();
+    if missing {
+        tracing::error!("worker not found: {}", exe.display());
+    }
+    WORKER_MISSING.store(missing, Ordering::Relaxed);
+}
+
+pub(crate) fn worker_missing() -> bool {
+    WORKER_MISSING.load(Ordering::Relaxed)
+}
+
+/// Имя воркера для текстов.
+pub(crate) fn worker_file() -> String {
+    Worker::default_exe().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
 
 pub(crate) struct Reading {
     pub(crate) row: EmailRow,
@@ -318,9 +342,11 @@ impl ReadingPane {
         let body = Some(postman_demo::body(&row.id));
         self.replace(Some(Reading::new(row, body)));
         self.render_body(cx);
-        self.ensure_invite(cx);
-        self.ensure_scans(cx);
-        self.ensure_smime(cx);
+        if !worker_missing() {
+            self.ensure_invite(cx);
+            self.ensure_scans(cx);
+            self.ensure_smime(cx);
+        }
         self.sync_thread(cx);
         cx.notify();
     }
@@ -341,9 +367,11 @@ impl ReadingPane {
         r.body = Some(body);
         r.doc = None;
         self.render_body(cx);
-        self.ensure_invite(cx);
-        self.ensure_scans(cx);
-        self.ensure_smime(cx);
+        if !worker_missing() {
+            self.ensure_invite(cx);
+            self.ensure_scans(cx);
+            self.ensure_smime(cx);
+        }
         cx.notify();
     }
 
@@ -435,6 +463,13 @@ impl ReadingPane {
         let Some(r) = &self.reading else { return };
         let Some(body) = r.body.clone() else { return };
         let id = r.row.id.clone();
+        if worker_missing() {
+            if let Some(r) = self.reading.as_mut() {
+                r.doc = Some(postman_ir::from_plain(&tr!("worker-missing-letter", file = worker_file())));
+            }
+            cx.notify();
+            return;
+        }
         let worker = self.worker.clone();
         let task = cx.background_spawn(async move {
             // Отравленный мьютекс (паника в прошлом разборе) не мешает: клиент воркера сам перезапускает процесс.

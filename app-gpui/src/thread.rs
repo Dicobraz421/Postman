@@ -210,6 +210,9 @@ impl ReadingPane {
             f.again = true;
             return;
         }
+        if crate::reading::worker_missing() {
+            return;
+        }
         let ids: Vec<String> = f.conv.messages.iter().map(|m| m.row.id.clone()).filter(|id| !f.docs.contains_key(id)).collect();
         if ids.is_empty() {
             return;

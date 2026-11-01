@@ -171,7 +171,13 @@ impl Mailer {
             r
         });
         let bar = cx.new(|_| CommandBar::new(search.clone()));
-        let toasts = cx.new(|_| Notices::new());
+        let toasts = cx.new(|cx| {
+            let mut n = Notices::new();
+            if crate::reading::worker_missing() {
+                n.push(pets_ui::Level::Error, tr!("worker-missing", file = crate::reading::worker_file()), cx);
+            }
+            n
+        });
         let summary = cx.new(|_| crate::bulk::SummaryView::new());
         let cal = cx.new(|cx| calendar::CalendarView::new(window, cx));
         let contacts = cx.new(|cx| crate::contacts::ContactsView::new(window, cx));
