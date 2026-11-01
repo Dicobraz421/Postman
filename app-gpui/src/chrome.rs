@@ -412,7 +412,7 @@ impl Mailer {
                 if found {
                     this.reading.update(cx, |r, cx| r.worker_found(cx));
                 } else {
-                    this.toasts.update(cx, |t, cx| worker_notice(t, cx));
+                    this.toasts.update(cx, worker_notice);
                 }
                 cx.notify();
             })
@@ -857,6 +857,17 @@ pub(crate) mod scenes {
     }
 }
 
+/// Нет воркера: что случилось, почему и как исправить — тостом с кнопкой «Скачать» (страница загрузки в браузере).
+pub(crate) fn worker_notice(t: &mut crate::notices::Notices, cx: &mut Context<crate::notices::Notices>) {
+    let (file, dir) = (crate::reading::worker_file(), crate::reading::worker_dir());
+    let download = pets_ui::ToastAction::new(tr!("worker-download"), |_, _| {
+        if let Err(e) = crate::sys::shell::open(crate::diagnostics::WORKER_DOWNLOAD) {
+            tracing::warn!("worker download page: {e}");
+        }
+    });
+    t.push_action(pets_ui::Level::Error, tr!("worker-missing", file = file, dir = dir), download, cx);
+}
+
 #[cfg(test)]
 mod tests {
     use super::MoreMenu;
@@ -873,15 +884,4 @@ mod tests {
         m.toggle();
         assert!(m.open);
     }
-}
-
-/// Нет воркера: что случилось, почему и как исправить — тостом с кнопкой «Скачать» (страница загрузки в браузере).
-pub(crate) fn worker_notice(t: &mut crate::notices::Notices, cx: &mut Context<crate::notices::Notices>) {
-    let (file, dir) = (crate::reading::worker_file(), crate::reading::worker_dir());
-    let download = pets_ui::ToastAction::new(tr!("worker-download"), |_, _| {
-        if let Err(e) = crate::sys::shell::open(crate::diagnostics::WORKER_DOWNLOAD) {
-            tracing::warn!("worker download page: {e}");
-        }
-    });
-    t.push_action(pets_ui::Level::Error, tr!("worker-missing", file = file, dir = dir), download, cx);
 }
