@@ -5,8 +5,11 @@
 //! (`Cache::letter_content_reader`); нет — `Command::FetchRaw` у учётки письма (не больше [`FETCHES`] сразу), ответ
 //! (`Event::Raw`) — в [`Exporter::event`]. Ошибка сервера или нет ответа за [`FETCH_WAIT`] (нет связи: без связи путь
 //! команду не ждёт) — письмо в итог «не загрузилось» по учётке, экспорт идёт дальше; учётка без ответа больше не
-//! спрашивается. MSG и PST — после свойств MAPI воркера и их писателей (S8-29, S8-30, S8-33): пока [`Format::available`]
-//! — нет, задание кончается отказом.
+//! спрашивается. MSG — после его выгрузки письмами (S8-30): пока [`Format::available`] — нет, задание кончается отказом.
+//!
+//! PST (S8-33б) — один файл на задание (`Имя.pst`, больше 50 ГиБ — `Имя (2).pst`…) в каталоге выгрузки: письмо
+//! разбирает в свойства MAPI воркер ([`Mapi`], песочница), файл пишет `postman_export::pst::Writer` потоком; не
+//! разобралось — письмо с темой из базы и исходником вложением `message.eml`. Папки — деревом охвата.
 //!
 //! Отмена (`Command::StopExport` → [`Exporter::stop`]): готовые файлы остаются, недописанный mbox удаляется (EML и
 //! Maildir пишутся письмом целиком за раз, Maildir — через `tmp`). Ход — `Event::Export`, не чаще
@@ -22,7 +25,8 @@ use std::time::{Duration, Instant};
 
 use jiff::tz::TimeZone;
 use postman_cache::{Cache, FolderRow, LetterRow, Owner};
-use postman_export::{Flags, Layout, Tree, eml, maildir, mbox};
+use postman_export::mapi::{self, MapiMessage, Value};
+use postman_export::{Flags, Layout, Tree, eml, maildir, mbox, pst};
 
 use crate::migrate::Output;
 pub use crate::migrate::PROGRESS_EVERY;
@@ -73,9 +77,9 @@ pub enum Format {
 }
 
 impl Format {
-    /// Писатель формата есть: MSG и PST — ещё нет, интерфейс их не предлагает.
+    /// Писатель формата есть: MSG — ещё нет, интерфейс его не предлагает.
     pub fn available(self) -> bool {
-        !matches!(self, Format::Msg | Format::Pst)
+        !matches!(self, Format::Msg)
     }
 
     fn layout(self) -> Option<Layout> {
@@ -88,6 +92,18 @@ impl Format {
         }
     }
 }
+
+/// Письмо целиком → свойства MAPI (MSG, PST): разбор чужого письма — только в воркере ([`worker_mapi`]); `bool` —
+/// прочитано.
+pub type Mapi = Box<dyn FnMut(&[u8], bool) -> Result<MapiMessage, String> + Send>;
+
+/// Свойства MAPI — воркером в песочнице (S8-29).
+pub fn worker_mapi(mut client: postman_worker::Client) -> Mapi {
+    Box::new(move |raw, seen| client.mapi(raw, seen))
+}
+
+/// Ответа воркера на разбор письма для PST ждём не дольше (большие письма — `SPLIT_TIMEOUT` воркера).
+const MAPI_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Номер задания экспорта (не хранится: задание живёт до выхода).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -131,6 +147,26 @@ struct Current {
     mbox: Option<BufWriter<File>>,
 }
 
+/// Каталог выгрузки для писателя PST: тома — новые файлы (прежний не заменяется), рабочие — заново.
+struct DirFiles(PathBuf);
+
+impl pst::Files for DirFiles {
+    fn create(&mut self, name: &str) -> io::Result<Box<dyn pst::Storage>> {
+        let mut o = OpenOptions::new();
+        o.read(true).write(true);
+        if name.ends_with(".tmp") {
+            o.create(true).truncate(true);
+        } else {
+            o.create_new(true);
+        }
+        Ok(Box::new(o.open(self.0.join(name))?))
+    }
+
+    fn remove(&mut self, name: &str) -> io::Result<()> {
+        fs::remove_file(self.0.join(name))
+    }
+}
+
 impl Current {
     fn idle(&self) -> bool {
         self.stored.is_empty() && self.missing.is_empty() && self.asked.is_empty() && self.arrived.is_empty()
@@ -159,12 +195,15 @@ struct Job {
     shown: Option<Instant>,
     /// Есть что записать без ответов путей (предел за вызов кончился).
     more: bool,
+    /// Файл PST задания (с первой папки до конца).
+    pst: Option<pst::Writer<DirFiles>>,
 }
 
 /// Задания экспорта потока ядра.
 pub struct Exporter {
     tz: TimeZone,
     maildir: maildir::Maildir,
+    mapi: Mapi,
     jobs: BTreeMap<ExportId, Job>,
     next: u64,
     out: Output,
@@ -177,7 +216,14 @@ impl Exporter {
         // Имя письма Maildir: узел — имя компьютера; `;` вместо `:` — NTFS не пускает двоеточие в имя (как mbsync).
         let host = std::env::var("COMPUTERNAME").unwrap_or_default();
         let maildir = maildir::Maildir::new(std::process::id(), &host, maildir::SEMICOLON);
-        Self { tz, maildir, jobs: BTreeMap::new(), next: 0, out: Output::default(), polled: None }
+        let worker = postman_worker::Client::new(postman_worker::Client::default_exe(), MAPI_TIMEOUT);
+        Self { tz, maildir, mapi: worker_mapi(worker), jobs: BTreeMap::new(), next: 0, out: Output::default(), polled: None }
+    }
+
+    /// Свои свойства MAPI вместо воркера (тесты: тот же разбор в процессе).
+    pub fn with_mapi(mut self, mapi: Mapi) -> Self {
+        self.mapi = mapi;
+        self
     }
 
     /// Новое задание (`Command::Export`): разбор охвата и запись — в [`Exporter::poll`].
@@ -202,6 +248,7 @@ impl Exporter {
             forced: true,
             shown: None,
             more: true,
+            pst: None,
         };
         self.jobs.insert(id, job);
         id
@@ -238,7 +285,7 @@ impl Exporter {
         for id in ids {
             let Some(j) = self.jobs.get_mut(&id) else { continue };
             if j.end.is_none()
-                && let Err(e) = j.pump(cache, &self.tz, &mut self.maildir, &mut self.out, now)
+                && let Err(e) = j.pump(cache, &self.tz, &mut self.maildir, &mut self.mapi, &mut self.out, now)
             {
                 tracing::warn!(job = id.0, "export failed: {e}");
                 j.discard();
@@ -302,8 +349,12 @@ impl Job {
         self.parts.clear();
     }
 
-    /// Недописанный mbox текущей папки — удалить (EML и Maildir недописанных файлов между вызовами не оставляют).
+    /// Недописанный mbox текущей папки и недописанный том PST — удалить (EML и Maildir недописанных файлов между
+    /// вызовами не оставляют, готовые тома PST остаются).
     fn discard(&mut self) {
+        if let Some(w) = self.pst.take() {
+            w.abort();
+        }
         let Some(c) = self.current.take() else { return };
         if let Some(w) = c.mbox {
             drop(w);
@@ -323,9 +374,21 @@ impl Job {
         self.dirty = true;
     }
 
-    fn pump(&mut self, cache: &Cache, tz: &TimeZone, md: &mut maildir::Maildir, out: &mut Output, now: Instant) -> Result<(), Failure> {
+    fn pump(
+        &mut self,
+        cache: &Cache,
+        tz: &TimeZone,
+        md: &mut maildir::Maildir,
+        mapi: &mut Mapi,
+        out: &mut Output,
+        now: Instant,
+    ) -> Result<(), Failure> {
         if let Some(scope) = self.scope.take() {
             fs::create_dir_all(&self.root)?;
+            if self.format == Format::Pst {
+                let (base, store) = pst_name(cache, &scope, &self.root)?;
+                self.pst = Some(pst::Writer::new(DirFiles(self.root.clone()), &base, &store, pst::VOLUME_LIMIT)?);
+            }
             self.parts = plan(cache, &scope)?.into();
             self.total = self.parts.iter().map(|p| p.letters.len() as u64).sum();
             self.fetching = self.parts.iter().flat_map(|p| &p.letters).filter(|(_, stored)| !stored).count() as u64;
@@ -336,6 +399,9 @@ impl Job {
         loop {
             if self.current.is_none() {
                 let Some(part) = self.parts.pop_front() else {
+                    if let Some(w) = self.pst.take() {
+                        w.finish()?;
+                    }
                     let unfetched = std::mem::take(&mut self.unfetched);
                     self.finish(State::Done { unfetched });
                     return Ok(());
@@ -353,7 +419,7 @@ impl Job {
             if let Some(id) = c.stored.pop_front() {
                 match cache.letter_content_reader(store::cache_id(id))? {
                     Some(mut reader) => {
-                        if let Some(n) = self.write(cache, tz, md, id, &mut reader)? {
+                        if let Some(n) = self.write(cache, tz, md, mapi, id, &mut reader)? {
                             bytes += n;
                         }
                         letters += 1;
@@ -366,7 +432,7 @@ impl Job {
                 }
             } else if let Some((id, raw)) = c.arrived.pop_front() {
                 self.fetching = self.fetching.saturating_sub(1);
-                if let Some(n) = self.write(cache, tz, md, id, &mut raw.as_slice())? {
+                if let Some(n) = self.write(cache, tz, md, mapi, id, &mut raw.as_slice())? {
                     bytes += n;
                 }
                 letters += 1;
@@ -379,12 +445,17 @@ impl Job {
         }
     }
 
-    /// Начать папку: каталог (с `cur`, `new`, `tmp` у Maildir) или файл mbox.
+    /// Начать папку: каталог (с `cur`, `new`, `tmp` у Maildir), файл mbox или папка PST.
     fn open(&mut self, part: Part) -> Result<(), Failure> {
         let rel = self.tree.folder(&part.path);
         let full = self.root.join(&rel);
         let mut mbox_file = None;
         match self.format {
+            Format::Pst => {
+                if let Some(w) = self.pst.as_mut() {
+                    w.folder(&part.path)?;
+                }
+            }
             Format::Mbox | Format::AppleMbox => {
                 if let Some(parent) = full.parent() {
                     fs::create_dir_all(parent)?;
@@ -461,7 +532,15 @@ impl Job {
     }
 
     /// Письмо в файл формата; письма уже нет в базе — `None` (из итога убирается).
-    fn write(&mut self, cache: &Cache, tz: &TimeZone, md: &mut maildir::Maildir, id: LetterId, src: &mut dyn Read) -> Result<Option<u64>, Failure> {
+    fn write(
+        &mut self,
+        cache: &Cache,
+        tz: &TimeZone,
+        md: &mut maildir::Maildir,
+        mapi: &mut Mapi,
+        id: LetterId,
+        src: &mut dyn Read,
+    ) -> Result<Option<u64>, Failure> {
         let Some(row) = cache.letter(store::cache_id(id))? else {
             self.total = self.total.saturating_sub(1);
             self.dirty = true;
@@ -479,6 +558,17 @@ impl Job {
             folder: &c.path,
         };
         let n = match self.format {
+            Format::Pst => {
+                let mut raw = Vec::new();
+                src.read_to_end(&mut raw)?;
+                let m = mapi(&raw, row.seen).unwrap_or_else(|e| {
+                    tracing::warn!(letter = id.0, "export: letter not parsed for PST, stored as attachment: {e}");
+                    unparsed(&row, &raw)
+                });
+                let Some(w) = self.pst.as_mut() else { return Ok(None) };
+                w.message(&m)?;
+                raw.len() as u64
+            }
             Format::Mbox | Format::AppleMbox => {
                 let mut raw = Vec::new();
                 src.read_to_end(&mut raw)?;
@@ -532,6 +622,52 @@ fn copy(src: &mut dyn Read, file: &mut File) -> io::Result<u64> {
     let n = io::copy(src, &mut w)?;
     w.flush()?;
     Ok(n)
+}
+
+/// Имя файла PST и хранилища: папка — её имя, учётка — её ключ, иначе «Postman»; файл с таким именем уже есть —
+/// «Имя (2)»…
+fn pst_name(cache: &Cache, scope: &Scope, dir: &std::path::Path) -> Result<(String, String), Failure> {
+    let store = match scope {
+        Scope::Folder { id, .. } => cache.folders()?.into_iter().find(|(f, _)| f.0 == id.0).map(|(_, r)| r.name),
+        Scope::Account(Home::Account(a)) if !a.is_empty() => Some(a.clone()),
+        _ => None,
+    }
+    .filter(|n| !n.trim().is_empty())
+    .unwrap_or_else(|| "Postman".into());
+    let safe = postman_export::safe_name(&store);
+    let mut base = safe.clone();
+    let mut n = 2;
+    while dir.join(pst::volume_name(&base, 1)).exists() {
+        base = format!("{safe} ({n})");
+        n += 1;
+    }
+    Ok((base, store))
+}
+
+/// Письмо, которое воркер не разобрал, — для PST: тема, отправитель и время из базы, письмо целиком — вложением.
+fn unparsed(row: &LetterRow, raw: &[u8]) -> MapiMessage {
+    let time = mapi::FILETIME_UNIX_EPOCH.saturating_add_signed(row.received_at.saturating_mul(10_000_000));
+    let text = |tag, s: &str| (tag, Value::Unicode(s.to_owned()));
+    MapiMessage {
+        class: mapi::IPM_NOTE.into(),
+        props: vec![
+            text(mapi::PR_SUBJECT_W, &row.subject),
+            text(mapi::PR_SENT_REPRESENTING_NAME_W, if row.from_name.is_empty() { &row.from_addr } else { &row.from_name }),
+            text(mapi::PR_SENDER_EMAIL_ADDRESS_W, &row.from_addr),
+            (mapi::PR_MESSAGE_DELIVERY_TIME, Value::SysTime(time)),
+            (mapi::PR_MESSAGE_FLAGS, Value::Long(if row.seen { mapi::MSGFLAG_READ } else { 0 })),
+        ],
+        recipients: Vec::new(),
+        attachments: vec![mapi::Attachment {
+            props: vec![
+                (mapi::PR_ATTACH_METHOD, Value::Long(mapi::ATTACH_BY_VALUE)),
+                text(mapi::PR_ATTACH_LONG_FILENAME_W, "message.eml"),
+                text(mapi::PR_ATTACH_MIME_TAG_W, "message/rfc822"),
+                (mapi::PR_ATTACH_DATA_BIN, Value::Binary(raw.to_vec())),
+            ],
+            embedded: None,
+        }],
+    }
 }
 
 fn flags(row: &LetterRow) -> Flags {
@@ -896,7 +1032,56 @@ mod tests {
         assert_eq!(got.len(), 4, "Входящие, Клиенты, Рассылки, Северный филиал");
     }
 
-    /// Выделение — в каталог своей папки; всё — каталог на учётку с именем от интерфейса; MSG и PST — пока отказ.
+    /// PST (S8-33б): папка с подпапками — один файл «Входящие.pst» (свойства MAPI — тем же разбором, что в воркере,
+    /// в процессе); вторая выгрузка — «Входящие (2).pst», прежний файл цел; письмо, что не разобралось, — исходником
+    /// вложением; остановка — недописанный файл и рабочие файлы удалены.
+    #[test]
+    fn pst_one_file_per_job() {
+        let (dir, cache) = demo();
+        // Письмо без содержимого — ждём сервер; «Остановить» — недописанный том и рабочие файлы удалены.
+        let (inbox, all) = inbox(&cache, &[2]);
+        let scope = Scope::Folder { id: inbox, subfolders: true };
+        let stop = dir.path().join("stop");
+        let mut e = Exporter::new(TimeZone::UTC).with_mapi(Box::new(postman_worker::mapi::mapi));
+        let job = e.start(scope.clone(), Format::Pst, stop.clone());
+        let now = Instant::now();
+        for i in 0..20 {
+            e.poll(&cache, now + Duration::from_millis(300 * i));
+        }
+        assert!(stop.join("Входящие.pst").exists());
+        e.stop(job);
+        let out = e.poll(&cache, now + Duration::from_secs(10));
+        assert!(matches!(&out.events[..], [Event::Export { state: State::Stopped, .. }]));
+        assert_eq!(fs::read_dir(&stop).unwrap().count(), 0, "недописанный PST удалён");
+
+        cache.put_content(store::cache_id(all[2]), &raw(all[2]), &[]).unwrap();
+        let root = dir.path().join("pst");
+        let none = |_: LetterId| -> Option<Event> { panic!("всё в базе") };
+        let parsed: Mapi = Box::new(postman_worker::mapi::mapi);
+        let broken: Mapi = Box::new(|_, _| Err("не письмо".into()));
+        let mut sizes = Vec::new();
+        for (name, mapi) in [("Входящие.pst", parsed), ("Входящие (2).pst", broken)] {
+            let mut e = Exporter::new(TimeZone::UTC).with_mapi(mapi);
+            e.start(scope.clone(), Format::Pst, root.clone());
+            let (events, asked) = run(&mut e, &cache, &none, Duration::from_millis(10));
+            assert!(asked.is_empty());
+            let (done, total, bytes, state) = last(&events);
+            assert_eq!((done, total, state), (all.len() as u64, all.len() as u64, State::Done { unfetched: vec![] }), "{name}");
+            assert_eq!(bytes, all.iter().map(|id| raw(*id).len() as u64).sum::<u64>());
+            let file = fs::read(root.join(name)).unwrap();
+            assert_eq!(&file[..4], b"!BDN");
+            sizes.push(file.len());
+        }
+        let mut names: Vec<String> = fs::read_dir(&root).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        assert_eq!(names, ["Входящие (2).pst", "Входящие.pst"], "прежний файл цел, рабочие файлы удалены");
+        // Не разобралось — письмо целиком вложением.
+        assert!(sizes[1] >= sizes[0] / 2);
+        let m = unparsed(&cache.letter(store::cache_id(all[0])).unwrap().unwrap(), b"raw");
+        assert_eq!(m.attachments[0].props.last(), Some(&(mapi::PR_ATTACH_DATA_BIN, Value::Binary(b"raw".to_vec()))));
+    }
+
+    /// Выделение — в каталог своей папки; всё — каталог на учётку с именем от интерфейса; MSG — пока отказ.
     #[test]
     fn letters_all_and_unavailable_formats() {
         let (dir, cache) = demo();
@@ -943,12 +1128,11 @@ mod tests {
             assert!(root.join(d).is_dir(), "{d}");
         }
 
-        for format in [Format::Msg, Format::Pst] {
-            assert!(!format.available());
-            let job = e.start(Scope::Account(Home::Local), format, dir.path().join("msg"));
-            let out = e.poll(&cache, Instant::now());
-            assert!(matches!(&out.events[..], [Event::Export { job: j, state: State::Failed(_), .. }] if *j == job));
-            assert!(!dir.path().join("msg").exists());
-        }
+        assert!(Format::Pst.available());
+        assert!(!Format::Msg.available());
+        let job = e.start(Scope::Account(Home::Local), Format::Msg, dir.path().join("msg"));
+        let out = e.poll(&cache, Instant::now());
+        assert!(matches!(&out.events[..], [Event::Export { job: j, state: State::Failed(_), .. }] if *j == job));
+        assert!(!dir.path().join("msg").exists());
     }
 }
