@@ -145,6 +145,7 @@ fn trial_file_reads_back() {
     let messages = [letter(attachment.clone(), false)];
     let bytes = write("Postman", &[Folder { name: "Входящие", messages: &messages }]);
     sample("S8-33а пробный.pst", &bytes);
+    check_blocks(&bytes);
     let store = open(bytes);
 
     let props = store.properties();
@@ -467,6 +468,7 @@ fn large_values_and_many_letters() {
     }
     let bytes = write("Большой", &[Folder { name: "Архив", messages: &messages }, Folder { name: "Пустая", messages: &[] }]);
     assert!(bytes.len() > 0x4400 + 0x3E000);
+    check_blocks(&bytes);
     let store = open(bytes);
 
     let ipm = store.open_folder(&store.properties().ipm_sub_tree_entry_id().unwrap()).unwrap();
@@ -699,7 +701,9 @@ fn ten_thousand_letters_in_three_folders() {
         }
     }
     assert_eq!(total, N);
-    check_maps(&std::fs::read(&file).unwrap());
+    let bytes = std::fs::read(&file).unwrap();
+    check_maps(&bytes);
+    check_blocks(&bytes);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -718,6 +722,7 @@ fn large_attachments_byte_for_byte() {
         embedded: None,
     });
     let bytes = write("Вложения", &[Folder { name: "Входящие", messages: &[m] }]);
+    check_blocks(&bytes);
     let store = open(bytes);
     let ipm = store.open_folder(&store.properties().ipm_sub_tree_entry_id().unwrap()).unwrap();
     let inbox = subfolder(&store, &ipm, "Входящие");
@@ -759,6 +764,7 @@ fn embedded_letter_reads() {
     });
     let bytes = write("Вложенные", &[Folder { name: "Входящие", messages: &[m] }]);
     sample("S8-33б вложенное.pst", &bytes);
+    check_blocks(&bytes);
     let raw = Raw(bytes.clone());
     let pst = Rc::new(UnicodePstFile::read_from(Box::new(Cursor::new(bytes))).unwrap());
     let store = UnicodeStore::read(pst.clone()).unwrap();
@@ -878,6 +884,98 @@ fn check_maps(bytes: &[u8]) {
     assert_eq!(free, zeros * 64);
 }
 
+/// Деревья данных и ссылки — как их проверяет scanpst (2026-11-02: «XBLOCK has invalid cbTotal», «Middle page not
+/// full», «Couldn't find BBT entry in the RBT»): от каждого узла NBT — его данные (блок, XBLOCK, XXBLOCK) и поддерево
+/// (SLBLOCK, SIBLOCK) со своими данными и поддеревьями. В дереве данных все блоки, кроме последнего, — по 8176 байт,
+/// `lcbTotal` — сумма, у XXBLOCK — над XBLOCK; каждый блок BBT достижим ровно одной ссылкой (cRef = 2: BBT и она),
+/// ссылок на блоки вне BBT нет.
+fn check_blocks(bytes: &[u8]) {
+    let raw = Raw(bytes.to_vec());
+    let mut bbt: BTreeMap<u64, (usize, usize, u16)> = BTreeMap::new();
+    let mut nodes = Vec::new();
+    let mut stack = vec![(raw.u64(224), false), (raw.u64(240), true)];
+    while let Some((page, is_bbt)) = stack.pop() {
+        let p = page as usize;
+        let (n, size, level) = (usize::from(bytes[p + 488]), usize::from(bytes[p + 490]), bytes[p + 491]);
+        for i in 0..n {
+            let e = p + i * size;
+            if level > 0 {
+                stack.push((raw.u64(e + 16), is_bbt));
+            } else if is_bbt {
+                bbt.insert(raw.u64(e), (raw.u64(e + 8) as usize, usize::from(raw.u16(e + 16)), raw.u16(e + 18)));
+            } else {
+                nodes.push((raw.u64(e) as u32, raw.u64(e + 8), raw.u64(e + 16)));
+            }
+        }
+    }
+    let mut refs: BTreeMap<u64, u32> = BTreeMap::new();
+    let block = |bid: u64| -> Vec<u8> {
+        let (ib, cb, _) = *bbt.get(&bid).unwrap_or_else(|| panic!("BID {bid:X} нет в BBT"));
+        bytes[ib..ib + cb].to_vec()
+    };
+    // Данные: (байт всего, полный ли блок верхнего уровня — для родителя).
+    fn data(bid: u64, block: &dyn Fn(u64) -> Vec<u8>, refs: &mut BTreeMap<u64, u32>, owner: u32) -> u64 {
+        *refs.entry(bid).or_default() += 1;
+        let b = block(bid);
+        if bid & 2 == 0 {
+            return b.len() as u64;
+        }
+        assert_eq!(b[0], 1, "{owner:X}: в данных не XBLOCK");
+        let (level, n) = (b[1], usize::from(u16::from_le_bytes([b[2], b[3]])));
+        let total = u64::from(u32::from_le_bytes(b[4..8].try_into().unwrap()));
+        let children: Vec<u64> = (0..n).map(|i| u64::from_le_bytes(b[8 + 8 * i..16 + 8 * i].try_into().unwrap())).collect();
+        assert!(n > 1 || level == 2, "{owner:X}: XBLOCK из одного блока");
+        let full = if level == 1 { 8176 } else { 8176 * 1021 };
+        let mut sum = 0;
+        for (i, c) in children.iter().enumerate() {
+            assert_eq!(c & 2 != 0, level == 2, "{owner:X}: уровень потомка XBLOCK {bid:X}");
+            let got = data(*c, block, refs, owner);
+            if i + 1 < n {
+                assert_eq!(got, full, "{owner:X}: блок {i} из {n} в XBLOCK {bid:X} неполный (Middle page not full)");
+            }
+            sum += got;
+        }
+        assert_eq!(sum, total, "{owner:X}: lcbTotal XBLOCK {bid:X}");
+        total
+    }
+    fn subtree(bid: u64, block: &dyn Fn(u64) -> Vec<u8>, refs: &mut BTreeMap<u64, u32>, owner: u32) {
+        *refs.entry(bid).or_default() += 1;
+        let b = block(bid);
+        assert_eq!(b[0], 2, "{owner:X}: в поддереве не SLBLOCK/SIBLOCK");
+        let n = usize::from(u16::from_le_bytes([b[2], b[3]]));
+        let le = |at: usize| u64::from_le_bytes(b[at..at + 8].try_into().unwrap());
+        let mut last = None;
+        for i in 0..n {
+            if b[1] == 0 {
+                let (nid, d, s) = (le(8 + 24 * i), le(16 + 24 * i), le(24 + 24 * i));
+                assert!(last.is_none_or(|l| nid > l), "{owner:X}: подузлы не по возрастанию");
+                last = Some(nid);
+                if d != 0 {
+                    data(d, block, refs, nid as u32);
+                }
+                if s != 0 {
+                    subtree(s, block, refs, nid as u32);
+                }
+            } else {
+                subtree(le(16 + 16 * i), block, refs, owner);
+            }
+        }
+    }
+    for &(nid, d, s) in &nodes {
+        if d != 0 {
+            data(d, &block, &mut refs, nid);
+        }
+        if s != 0 {
+            subtree(s, &block, &mut refs, nid);
+        }
+    }
+    for (bid, (_, _, cref)) in &bbt {
+        assert_eq!(*cref, 2, "BID {bid:X}: cRef");
+        assert_eq!(refs.get(bid), Some(&1), "BID {bid:X}: ссылок из деревьев (Couldn't find BBT entry in the RBT)");
+    }
+    assert_eq!(refs.len(), bbt.len());
+}
+
 /// Предел тома мал: письма идут в `Тома.pst`, `Тома (2).pst`…; каждый том открывается, письма не теряются и не
 /// повторяются, папки — в каждом томе, где есть их письма.
 #[test]
@@ -907,6 +1005,7 @@ fn volumes_split_by_limit() {
         let bytes = files.take(name).unwrap();
         assert!(bytes.len() as u64 <= LIMIT, "{name}: {} байт", bytes.len());
         check_maps(&bytes);
+        check_blocks(&bytes);
         let store = open(bytes);
         let display = store.properties().display_name().unwrap();
         assert_eq!(display, if k == 0 { "Тома".to_string() } else { format!("Тома ({})", k + 1) });

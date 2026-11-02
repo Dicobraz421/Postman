@@ -1,6 +1,10 @@
 //! LTP (MS-PST 2.3): куча на узле (HN), B-дерево на куче (BTH), контексты свойств (PC) и таблиц (TC). Значения
 //! больше 3580 байт — в подузлах (`NID_TYPE_LTP`), строки таблицы не помещаются в кучу — тоже.
 //!
+//! Данные узла больше блока — дерево XBLOCK, и каждый его блок, кроме последнего, — полный (8176 байт): так у Outlook,
+//! scanpst иначе пишет «Middle page not full» и выбрасывает таблицу. Страница кучи после HNPAGEMAP и блок строк
+//! таблицы после последней целой строки добиваются нулями («мёртвое место», читатели его не смотрят).
+//!
 //! Контексты письма, вложения и малых таблиц собираются в памяти ([`pc`], [`tc`]). Таблица содержимого папки —
 //! потоком ([`TcStream`]): строки по возрастанию `LtpRowId` (NID писем), блоки кучи и строк уходят в файл по мере
 //! заполнения; в памяти — первый блок кучи (в нём заголовки, они известны в конце), блок карты заполнения (до 128
@@ -74,8 +78,8 @@ fn fits(block: usize, allocs: &[Vec<u8>], len: usize) -> bool {
 }
 
 /// Блок кучи `i`: заголовок (HNHDR, HNPAGEHDR или HNBITMAPHDR с уровнями заполнения `fills`), размещения, карта
-/// страницы (HNPAGEMAP).
-fn render(i: usize, allocs: &[Vec<u8>], fills: &[u8], client: u8, root: u32) -> Vec<u8> {
+/// страницы (HNPAGEMAP); не последний блок (`full`) — нулями до 8176 байт.
+fn render(i: usize, allocs: &[Vec<u8>], fills: &[u8], client: u8, root: u32, full: bool) -> Vec<u8> {
     let packed = |from: usize, n: usize| -> Vec<u8> {
         (0..n / 2).map(|j| fills.get(from + 2 * j).copied().unwrap_or(0) | fills.get(from + 2 * j + 1).copied().unwrap_or(0) << 4).collect()
     };
@@ -104,7 +108,21 @@ fn render(i: usize, allocs: &[Vec<u8>], fills: &[u8], client: u8, root: u32) -> 
     for o in offsets {
         b.extend(o.to_le_bytes());
     }
+    if full {
+        b.resize(BLOCK_MAX, 0);
+    }
     b
+}
+
+/// Строки таблицы в блоки подузла: целыми строками, все блоки, кроме последнего, — по 8176 байт (MS-PST 2.3.4.4).
+fn row_blocks(matrix: &[u8], size: usize) -> Vec<Vec<u8>> {
+    let per = (BLOCK_MAX / size).max(1) * size;
+    let mut blocks: Vec<Vec<u8>> = matrix.chunks(per).map(<[u8]>::to_vec).collect();
+    let n = blocks.len();
+    for b in blocks.iter_mut().take(n.saturating_sub(1)) {
+        b.resize(BLOCK_MAX, 0);
+    }
+    blocks
 }
 
 /// Куча на узле в памяти: блоки размещений; HID — (номер блока, номер размещения с 1).
@@ -144,7 +162,8 @@ impl Heap {
 
     fn into_blocks(self) -> Vec<Vec<u8>> {
         let fills: Vec<u8> = self.blocks.iter().enumerate().map(|(i, a)| fill_level(BLOCK_MAX - block_len(i, a))).collect();
-        self.blocks.iter().enumerate().map(|(i, a)| render(i, a, &fills, self.client, self.root)).collect()
+        let last = self.blocks.len() - 1;
+        self.blocks.iter().enumerate().map(|(i, a)| render(i, a, &fills, self.client, self.root, i < last)).collect()
     }
 }
 
@@ -155,8 +174,9 @@ struct HeapStream {
     index: usize,
     cur: Vec<Vec<u8>>,
     fills: Vec<u8>,
-    block0: Option<(u64, Vec<Vec<u8>>)>,
-    bitmap: Option<(usize, u64, Vec<Vec<u8>>)>,
+    /// Отложенные блоки (номер, BID, размещения, полный ли).
+    block0: Option<(u64, Vec<Vec<u8>>, bool)>,
+    bitmap: Option<(usize, u64, Vec<Vec<u8>>, bool)>,
     tree: DataTree,
 }
 
@@ -170,7 +190,7 @@ impl HeapStream {
             return Err(io::Error::other("размещение кучи PST больше 3580 байт"));
         }
         if !fits(self.index, &self.cur, data.len()) {
-            self.close(ndb)?;
+            self.close(ndb, false)?;
         }
         if self.index > 0xFFFF {
             return Err(io::Error::other("куча PST больше 65536 блоков (слишком много писем в папке)"));
@@ -183,25 +203,27 @@ impl HeapStream {
     fn set(&mut self, hid: u32, data: Vec<u8>) {
         let i = ((hid >> 5) & 0x7FF) as usize - 1;
         let allocs = match (&mut self.block0, hid >> 16) {
-            (Some((_, a)), 0) => a,
+            (Some((_, a, _)), 0) => a,
             _ => &mut self.cur,
         };
         debug_assert_eq!(allocs[i].len(), data.len());
         allocs[i] = data;
     }
 
-    fn close(&mut self, ndb: &mut Ndb) -> io::Result<()> {
+    /// Закрыть текущий блок; не последний — полный (8176 байт).
+    fn close(&mut self, ndb: &mut Ndb, last: bool) -> io::Result<()> {
         let i = self.index;
         let allocs = std::mem::take(&mut self.cur);
-        let len = block_len(i, &allocs);
-        self.fills.push(fill_level(BLOCK_MAX - len));
+        let used = block_len(i, &allocs);
+        self.fills.push(fill_level(BLOCK_MAX - used));
+        let len = if last { used } else { BLOCK_MAX };
         let bid = ndb.reserve(false);
         if i == 0 {
-            self.block0 = Some((bid, allocs));
+            self.block0 = Some((bid, allocs, !last));
         } else if i % 128 == 8 {
-            self.bitmap = Some((i, bid, allocs));
+            self.bitmap = Some((i, bid, allocs, !last));
         } else {
-            ndb.write_block(bid, &render(i, &allocs, &self.fills, self.client, 0))?;
+            ndb.write_block(bid, &render(i, &allocs, &self.fills, self.client, 0, !last))?;
         }
         if let Some((b, ..)) = self.bitmap
             && i == b + 127
@@ -214,8 +236,8 @@ impl HeapStream {
     }
 
     fn write_bitmap(&mut self, ndb: &mut Ndb) -> io::Result<()> {
-        if let Some((b, bid, allocs)) = self.bitmap.take() {
-            ndb.write_block(bid, &render(b, &allocs, &self.fills, self.client, 0))?;
+        if let Some((b, bid, allocs, full)) = self.bitmap.take() {
+            ndb.write_block(bid, &render(b, &allocs, &self.fills, self.client, 0, full))?;
         }
         Ok(())
     }
@@ -223,11 +245,11 @@ impl HeapStream {
     /// Куча готова: корень `root` → BID данных узла.
     fn finish(mut self, ndb: &mut Ndb, root: u32) -> io::Result<u64> {
         if !self.cur.is_empty() || self.index == 0 {
-            self.close(ndb)?;
+            self.close(ndb, true)?;
         }
         self.write_bitmap(ndb)?;
-        if let Some((bid, allocs)) = self.block0.take() {
-            ndb.write_block(bid, &render(0, &allocs, &self.fills, self.client, root))?;
+        if let Some((bid, allocs, full)) = self.block0.take() {
+            ndb.write_block(bid, &render(0, &allocs, &self.fills, self.client, root, full))?;
         }
         self.tree.finish(ndb)
     }
@@ -524,10 +546,9 @@ pub(super) fn tc(ndb: &mut Ndb, subs: &mut Subs, tags: &[Tag], rows: &[Row]) -> 
     } else {
         *subs.next += 1;
         let nid = *subs.next << 5 | NID_TYPE_LTP;
-        let per = (BLOCK_MAX / size).max(1) * size;
-        let chunks: Vec<Vec<u8>> = matrix.chunks(per).map(<[u8]>::to_vec).collect();
+        let chunks = row_blocks(&matrix, size);
         let data = ndb.chunks(&chunks)?;
-        subs.bytes += matrix.len() as u64;
+        subs.bytes += chunks.iter().map(|c| c.len() as u64).sum::<u64>();
         subs.list.push(Sub { nid, data, sub: 0 });
         nid
     };
@@ -593,9 +614,12 @@ impl TcStream {
         let size = usize::from(self.rgib[3]);
         let per = (BLOCK_MAX / size).max(1) * size;
         if let Some(tree) = self.rows.as_mut() {
+            // Блок строк — полный: после целых строк нули до 8176 байт (последний блок — в `finish`, без них).
             while self.matrix.len() >= per {
-                let bid = ndb.block(&self.matrix[..per], false)?;
-                tree.push(ndb, bid, per as u64)?;
+                let mut block = self.matrix[..per].to_vec();
+                block.resize(BLOCK_MAX, 0);
+                let bid = ndb.block(&block, false)?;
+                tree.push(ndb, bid, BLOCK_MAX as u64)?;
                 self.matrix.drain(..per);
             }
         }

@@ -210,7 +210,8 @@ impl Ndb {
         tree.finish(self)
     }
 
-    /// Данные узла кусками заданного размера (блоки кучи, строки таблицы): один — блок, больше — XBLOCK.
+    /// Данные узла кусками (блоки кучи, строки таблицы): один — блок, больше — XBLOCK. Все куски, кроме последнего, —
+    /// полные (8176 байт): так требует дерево данных (scanpst: «Middle page not full»).
     pub(super) fn chunks(&mut self, chunks: &[Vec<u8>]) -> io::Result<u64> {
         if let [one] = chunks {
             return self.block(one, false);
@@ -548,10 +549,17 @@ pub(super) struct DataTree {
     xlen: u64,
     xx: Vec<u64>,
     total: u64,
+    /// Последний блок неполный: после него блоков быть не может.
+    short: bool,
 }
 
 impl DataTree {
+    /// Следующий блок данных; все, кроме последнего, — по 8176 байт.
     pub(super) fn push(&mut self, ndb: &mut Ndb, bid: u64, len: u64) -> io::Result<()> {
+        if self.short {
+            return Err(io::Error::other("PST: неполный блок в середине дерева данных"));
+        }
+        self.short = len != BLOCK_MAX as u64;
         self.x.push(bid);
         self.xlen += len;
         self.total += len;
