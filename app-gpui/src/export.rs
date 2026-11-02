@@ -4,7 +4,7 @@
 //! конец — тост с «Открыть папку».
 //!
 //! Задание ведёт поток ядра (`export::Exporter`, `migration::Core`): `Command::Export` → `Event::Export`. Форматы —
-//! те, у которых есть писатель (`Format::available`): MSG и PST появятся в списке сами.
+//! те, у которых есть писатель (`Format::available`): PST — с S8-33б, MSG появится в списке сам.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -35,7 +35,7 @@ pub(crate) const FORMATS: [(Format, &str, &str); 5] = [
     (Format::Pst, "PST", "export-pst"),
 ];
 
-/// Форматы, которые можно выбрать: есть писатель (PST — после S8-33б).
+/// Форматы, которые можно выбрать: есть писатель (MSG — ещё нет).
 pub(crate) fn formats() -> impl Iterator<Item = (Format, &'static str, &'static str)> {
     FORMATS.into_iter().filter(|(f, ..)| f.available())
 }
@@ -546,13 +546,13 @@ mod tests {
         assert!(descendants(&all, "d").is_empty());
     }
 
-    /// Форматы списка — только с писателем: PST не виден до S8-33б; подписи — у каждого.
+    /// Форматы списка — только с писателем: PST виден (S8-33б), MSG — нет; подписи — у каждого.
     #[test]
     fn formats_listed() {
         let _ = pets_i18n::init(&crate::parts::texts(), "ru");
         let listed: Vec<Format> = formats().map(|(f, ..)| f).collect();
         assert!(listed.contains(&Format::Eml) && listed.contains(&Format::Mbox) && listed.contains(&Format::Maildir));
-        assert!(!listed.contains(&Format::Pst));
+        assert_eq!(listed, [Format::Eml, Format::Mbox, Format::Maildir, Format::Pst]);
         assert_eq!(format_name(Format::Mbox), "mbox");
         for (_, _, hint) in FORMATS {
             assert!(!pets_i18n::tr!(hint).starts_with("export-"), "{hint}");

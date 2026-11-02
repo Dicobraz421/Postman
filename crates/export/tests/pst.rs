@@ -6,24 +6,33 @@
 //!
 //! Требования scanpst (S8-40): узлы нового файла Outlook (папки приёма, очередь исходящих, шаблоны, HMP, SAL), столбцы
 //! шаблонов, ключи BTH, `PR_ATTACH_SIZE`, строки таблиц — те же свойства, что у объектов.
+//!
+//! Полный писатель (S8-33б): 10 000 писем в трёх папках (две — в одной ветке) читаются все, память писателя — не
+//! больше 64 МиБ (счётчик аллокатора по потоку теста); вложения больше 8 КиБ и больше 1 МиБ — байт в байт; вложенное
+//! письмо (подузел вложения, MS-PST 2.3.3.5) — разбором узлов: `outlook-pst` 1.2 ищет его в поддереве письма, а не
+//! вложения; тома — с малым пределом. `POSTMAN_EXPORT_SAMPLES` — ещё `S8-33б 10000.pst`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // тест: «не падать» — для кода приложения (S2-03)
 
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::io::Cursor;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::Instant;
 
 use outlook_pst::ltp::prop_context::PropertyValue;
 use outlook_pst::ltp::table_context::{TableContext, TableRowId, UnicodeTableContext};
 use outlook_pst::messaging::attachment::{Attachment as _, AttachmentData, UnicodeAttachment};
 use outlook_pst::messaging::message::{Message as _, UnicodeMessage};
 use outlook_pst::messaging::store::{Store as _, UnicodeStore};
+use outlook_pst::ndb::block_id::UnicodeBlockId;
 use outlook_pst::ndb::node_id::NodeId;
-use outlook_pst::ndb::page::NodeBTreeEntry as _;
+use outlook_pst::ndb::page::{NodeBTreeEntry as _, UnicodeNodeBTreeEntry};
 use outlook_pst::{PstFile as _, UnicodePstFile};
 use postman_export::mapi::*;
-use postman_export::pst::{self, Folder};
+use postman_export::pst::{self, Files, Folder, Memory, Storage, Writer};
 
 fn text(tag: Tag, s: &str) -> (Tag, Value) {
     (tag, Value::Unicode(s.into()))
@@ -483,15 +492,6 @@ fn large_values_and_many_letters() {
     assert_eq!(unicode(last.properties().get(0x0037)), "Письмо 299");
 }
 
-/// Вложенное письмо — не для пробного файла.
-#[test]
-fn embedded_letter_is_refused() {
-    let mut m = letter(b"x".to_vec(), true);
-    m.attachments.push(Attachment { props: vec![(PR_ATTACH_METHOD, Value::Long(ATTACH_EMBEDDED_MSG))], embedded: Some(Box::default()) });
-    let err = pst::write(&mut Vec::new(), "x", &[Folder { name: "x", messages: &[m] }]).unwrap_err();
-    assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
-}
-
 fn props_entry(store: &UnicodeStore, nid: u32) -> outlook_pst::messaging::store::EntryId {
     store.properties().make_entry_id(NodeId::from(nid)).unwrap()
 }
@@ -502,4 +502,545 @@ fn sample(name: &str, bytes: &[u8]) {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(Path::new(&dir).join(name), bytes).unwrap();
     }
+}
+
+// --- Полный писатель (S8-33б) ---
+
+/// Счётчик аллокатора по потоку: тесты идут параллельно, писатель — в одном потоке.
+struct Counting;
+
+thread_local! {
+    static HELD: Cell<i64> = const { Cell::new(0) };
+    static PEAK: Cell<i64> = const { Cell::new(0) };
+}
+
+fn track(delta: i64) {
+    let _ = HELD.try_with(|h| {
+        let v = h.get() + delta;
+        h.set(v);
+        let _ = PEAK.try_with(|p| p.set(p.get().max(v)));
+    });
+}
+
+// SAFETY: всё выделение — у `System`; сверху только счёт байт.
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: тот же договор, что у вызывающего.
+        let p = unsafe { System.alloc(layout) };
+        if !p.is_null() {
+            track(layout.size() as i64);
+        }
+        p
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: `ptr` выделен `System` с этим `layout`.
+        unsafe { System.dealloc(ptr, layout) };
+        track(-(layout.size() as i64));
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new: usize) -> *mut u8 {
+        // SAFETY: `ptr` выделен `System` с этим `layout`.
+        let p = unsafe { System.realloc(ptr, layout, new) };
+        if !p.is_null() {
+            track(new as i64 - layout.size() as i64);
+        }
+        p
+    }
+}
+
+#[global_allocator]
+static ALLOC: Counting = Counting;
+
+/// Начать замер: пик — от того, что поток держит сейчас.
+fn measure() -> i64 {
+    let now = HELD.with(Cell::get);
+    PEAK.with(|p| p.set(now));
+    now
+}
+
+fn peak_since(base: i64) -> i64 {
+    PEAK.with(Cell::get) - base
+}
+
+/// Тома на диске: каталог теста во временном каталоге.
+struct Dir(PathBuf);
+
+impl Files for Dir {
+    fn create(&mut self, name: &str) -> std::io::Result<Box<dyn Storage>> {
+        let f = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(self.0.join(name))?;
+        Ok(Box::new(f))
+    }
+
+    fn remove(&mut self, name: &str) -> std::io::Result<()> {
+        std::fs::remove_file(self.0.join(name))
+    }
+}
+
+fn scratch(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("postman-pst-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn path(names: &[&str]) -> Vec<String> {
+    names.iter().map(|n| n.to_string()).collect()
+}
+
+/// Вложение письма `i`: «вложение i», у каждого сотого — 64 КиБ (файл больше 32 МиБ: есть FMap).
+fn numbered_data(i: usize) -> Vec<u8> {
+    let mut data = format!("вложение {i}").into_bytes();
+    if i.is_multiple_of(100) {
+        data.extend((0..64 * 1024u32).map(|k| (k.wrapping_mul(2_654_435_761).wrapping_add(i as u32) >> 9) as u8));
+    }
+    data
+}
+
+/// Письмо `i`: тема «Письмо i», вложение [`numbered_data`]; чётные — прочитаны.
+fn numbered(i: usize) -> MapiMessage {
+    let mut m = letter(numbered_data(i), i.is_multiple_of(2));
+    m.props.retain(|(t, _)| *t != PR_SUBJECT_W);
+    m.props.insert(0, text(PR_SUBJECT_W, &format!("Письмо {i}")));
+    m
+}
+
+type PstFolder = Rc<dyn outlook_pst::messaging::folder::Folder>;
+
+fn subfolder(store: &Rc<UnicodeStore>, parent: &PstFolder, name: &str) -> PstFolder {
+    let id = names(parent.hierarchy_table().unwrap().as_ref()).into_iter().find(|(_, n)| n == name).unwrap().0;
+    store.open_folder(&props_entry(store, id)).unwrap()
+}
+
+fn attachment_bytes(message: &Rc<UnicodeMessage>, row: u32) -> Vec<u8> {
+    let att = UnicodeAttachment::read(message.clone(), NodeId::from(row), None).unwrap();
+    match att.data() {
+        Some(AttachmentData::Binary(b)) => b.buffer().to_vec(),
+        _ => panic!("нет данных вложения"),
+    }
+}
+
+/// 10 000 писем в трёх папках («Проекты» — внутри «Входящих»): все папки, письма и вложения читаются, таблицы
+/// содержимого сходятся с письмами (многоуровневый BTH, куча в много блоков), память писателя — до 64 МиБ.
+#[test]
+fn ten_thousand_letters_in_three_folders() {
+    const N: usize = 10_000;
+    let dir = scratch("10000");
+    let folders = [path(&["Входящие"]), path(&["Входящие", "Проекты"]), path(&["Архив"])];
+    let started = Instant::now();
+    let base = measure();
+    let mut w = Writer::new(Dir(dir.clone()), "S8-33б 10000", "Postman", pst::VOLUME_LIMIT).unwrap();
+    for (k, f) in folders.iter().enumerate() {
+        w.folder(f).unwrap();
+        for i in (k..N).step_by(3) {
+            w.message(&numbered(i)).unwrap();
+        }
+    }
+    let volumes = w.finish().unwrap();
+    let peak = peak_since(base);
+    let took = started.elapsed();
+    let file = dir.join("S8-33б 10000.pst");
+    let size = std::fs::metadata(&file).unwrap().len();
+    eprintln!(
+        "PST 10 000 писем: пик памяти писателя {:.1} МиБ, {:.1} с, файл {:.1} МиБ",
+        peak as f64 / 1_048_576.0,
+        took.as_secs_f64(),
+        size as f64 / 1_048_576.0
+    );
+    assert!(peak <= 64 * 1024 * 1024, "пик памяти писателя {peak} байт");
+    assert_eq!(volumes, ["S8-33б 10000.pst"]);
+    // Рабочие файлы удалены.
+    let left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!(left, ["S8-33б 10000.pst"]);
+    if let Some(samples) = std::env::var_os("POSTMAN_EXPORT_SAMPLES") {
+        std::fs::create_dir_all(&samples).unwrap();
+        std::fs::copy(&file, Path::new(&samples).join("S8-33б 10000.pst")).unwrap();
+    }
+
+    let pst = Rc::new(UnicodePstFile::open(&file).unwrap());
+    let store = UnicodeStore::read(pst.clone()).unwrap();
+    let props = store.properties();
+    // Версия сборки хранилища — как у Outlook (scanpst: «Store created by build»).
+    assert_eq!(int(props.get(0x66FC)), 1_618_611);
+    assert_eq!(int(props.get(0x66FA)), 0x000E_0011);
+    let ipm = store.open_folder(&props.ipm_sub_tree_entry_id().unwrap()).unwrap();
+    let top: Vec<String> = names(ipm.hierarchy_table().unwrap().as_ref()).into_iter().map(|(_, n)| n).collect();
+    assert_eq!(top, ["Deleted Items", "Входящие", "Архив"]);
+    let inbox = subfolder(&store, &ipm, "Входящие");
+    assert!(inbox.properties().has_sub_folders().unwrap());
+    let projects = subfolder(&store, &inbox, "Проекты");
+    let archive = subfolder(&store, &ipm, "Архив");
+
+    let mut total = 0;
+    for (k, folder) in [inbox, projects, archive].iter().enumerate() {
+        let expect: Vec<usize> = (k..N).step_by(3).collect();
+        let fp = folder.properties();
+        assert_eq!(fp.content_count().unwrap() as usize, expect.len());
+        assert_eq!(fp.unread_count().unwrap() as usize, expect.iter().filter(|i| *i % 2 == 1).count());
+        let contents = folder.contents_table().unwrap();
+        let subjects = column(contents.as_ref(), PR_SUBJECT_W);
+        assert_eq!(subjects.len(), expect.len());
+        for ((id, subject), i) in subjects.iter().zip(&expect) {
+            assert_eq!(unicode(subject.as_ref()), format!("Письмо {i}"));
+            // Индекс строк (BTH) находит каждую строку.
+            assert_eq!(u32::from(contents.find_row(TableRowId::new(*id)).unwrap().id()), *id);
+        }
+        for (n, ((id, _), i)) in subjects.iter().zip(&expect).enumerate() {
+            let message = UnicodeMessage::read(store.clone(), &props_entry(&store, *id), None).unwrap();
+            assert_eq!(unicode(message.properties().get(0x0037)), format!("Письмо {i}"));
+            let rows = column(message.attachment_table().unwrap().as_ref(), 0x3704_001F);
+            assert_eq!(rows.len(), 1);
+            assert!(attachment_bytes(&message, rows[0].0) == numbered_data(*i));
+            if n % 499 == 0 {
+                let object: BTreeMap<u16, String> = message.properties().iter().map(|(id, v)| (*id, format!("{v:?}"))).collect();
+                same(contents.as_ref(), *id, &object);
+            }
+            total += 1;
+        }
+    }
+    assert_eq!(total, N);
+    check_maps(&std::fs::read(&file).unwrap());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Вложения больше 8 КиБ (дерево XBLOCK) и больше 1 МиБ — байт в байт.
+#[test]
+fn large_attachments_byte_for_byte() {
+    let mid: Vec<u8> = (0..20 * 1024u32).map(|i| (i * 31 % 253) as u8).collect();
+    let big: Vec<u8> = (0..3 * 512 * 1024u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8).collect();
+    let mut m = letter(mid.clone(), true);
+    m.attachments.push(Attachment {
+        props: vec![
+            (PR_ATTACH_METHOD, Value::Long(ATTACH_BY_VALUE)),
+            text(PR_ATTACH_LONG_FILENAME_W, "большое.bin"),
+            (PR_ATTACH_DATA_BIN, Value::Binary(big.clone())),
+        ],
+        embedded: None,
+    });
+    let bytes = write("Вложения", &[Folder { name: "Входящие", messages: &[m] }]);
+    let store = open(bytes);
+    let ipm = store.open_folder(&store.properties().ipm_sub_tree_entry_id().unwrap()).unwrap();
+    let inbox = subfolder(&store, &ipm, "Входящие");
+    let id = column(inbox.contents_table().unwrap().as_ref(), PR_SUBJECT_W)[0].0;
+    let message = UnicodeMessage::read(store.clone(), &props_entry(&store, id), None).unwrap();
+    let rows = column(message.attachment_table().unwrap().as_ref(), 0x3704_001F);
+    let got: Vec<(String, Vec<u8>)> = rows.iter().map(|(r, n)| (unicode(n.as_ref()), attachment_bytes(&message, *r))).collect();
+    assert_eq!(got[0].0, "отчёт.txt");
+    assert!(got[0].1 == mid);
+    assert_eq!(got[1].0, "большое.bin");
+    assert!(got[1].1 == big);
+    // Размер письма — больше его вложений.
+    assert!(message.properties().message_size().unwrap() as usize > mid.len() + big.len());
+}
+
+/// Вложенное письмо (attach method 5): `PR_ATTACH_DATA_OBJ` — NID подузла вложения, в нём письмо со своими
+/// получателями и вложениями (и ещё одно вложенное письмо).
+#[test]
+fn embedded_letter_reads() {
+    let inner_data: Vec<u8> = (0..12 * 1024u32).map(|i| (i % 241) as u8).collect();
+    let mut deepest = letter("самое внутреннее".as_bytes().to_vec(), true);
+    deepest.props.retain(|(t, _)| *t != PR_SUBJECT_W);
+    deepest.props.push(text(PR_SUBJECT_W, "Третий уровень"));
+    let mut inner = letter(inner_data.clone(), true);
+    inner.props.retain(|(t, _)| *t != PR_SUBJECT_W);
+    inner.props.push(text(PR_SUBJECT_W, "Пересланное письмо"));
+    inner.attachments.push(Attachment {
+        props: vec![(PR_ATTACH_METHOD, Value::Long(ATTACH_EMBEDDED_MSG)), text(PR_ATTACH_MIME_TAG_W, "message/rfc822")],
+        embedded: Some(Box::new(deepest)),
+    });
+    let mut m = letter(b"x".to_vec(), false);
+    m.attachments.push(Attachment {
+        props: vec![
+            (PR_ATTACH_METHOD, Value::Long(ATTACH_EMBEDDED_MSG)),
+            text(PR_ATTACH_MIME_TAG_W, "message/rfc822"),
+            text(PR_ATTACH_LONG_FILENAME_W, "Пересланное.eml"),
+        ],
+        embedded: Some(Box::new(inner)),
+    });
+    let bytes = write("Вложенные", &[Folder { name: "Входящие", messages: &[m] }]);
+    sample("S8-33б вложенное.pst", &bytes);
+    let raw = Raw(bytes.clone());
+    let pst = Rc::new(UnicodePstFile::read_from(Box::new(Cursor::new(bytes))).unwrap());
+    let store = UnicodeStore::read(pst.clone()).unwrap();
+    let ipm = store.open_folder(&store.properties().ipm_sub_tree_entry_id().unwrap()).unwrap();
+    let inbox = subfolder(&store, &ipm, "Входящие");
+    let id = column(inbox.contents_table().unwrap().as_ref(), PR_SUBJECT_W)[0].0;
+    let message = UnicodeMessage::read(store.clone(), &props_entry(&store, id), None).unwrap();
+    assert_eq!(message.properties().message_flags().unwrap() & MSGFLAG_HASATTACH, MSGFLAG_HASATTACH);
+
+    // Строка таблицы вложений: метод 5, имя; объект вложения — разбором узлов.
+    let table = message.attachment_table().unwrap();
+    let methods = column(table.as_ref(), 0x3705_0003);
+    assert_eq!(methods.iter().map(|(_, m)| int(m.as_ref())).collect::<Vec<_>>(), [ATTACH_BY_VALUE, ATTACH_EMBEDDED_MSG]);
+    let names_col = column(table.as_ref(), 0x3704_001F);
+    assert_eq!(unicode(names_col[1].1.as_ref()), "Пересланное.eml");
+    let node = pst.read_node(NodeId::from(id)).unwrap();
+    let message_subs = raw.subnodes(u64::from(node.sub_node().unwrap()));
+    let (adata, asub) = message_subs[&methods[1].0];
+    let att = raw.pc(adata, asub);
+    let size = int_of(&att[&0x0E20]);
+    let (enid, esize) = object(&att[&0x3701]);
+    assert!(esize > 12 * 1024 && size as u32 > esize);
+    let (edata, esub) = raw.subnodes(asub)[&enid];
+    let embedded = raw.pc(edata, esub);
+    assert_eq!(text_of(&embedded[&0x0037]), "Пересланное письмо");
+    assert_eq!(text_of(&embedded[&0x001A]), IPM_NOTE);
+    assert_eq!(int_of(&embedded[&0x0E08]) as u32, esize);
+    assert_eq!(text_of(&embedded[&0x1000]), "Привет!\r\nОтчёт во вложении.\r\n");
+
+    // Получатели и вложения вложенного письма — таблицы в его поддереве; данные вложения (12 КиБ, подузел) — те же.
+    let inner_subs = raw.subnodes(esub);
+    let tc = |nid: u32| {
+        let (d, s) = inner_subs[&nid];
+        let node = UnicodeNodeBTreeEntry::new(NodeId::from(nid), UnicodeBlockId::from(d), (s != 0).then(|| UnicodeBlockId::from(s)), None);
+        UnicodeTableContext::read(store.clone(), node).unwrap()
+    };
+    let recipients = tc(0x692);
+    assert_eq!(names(recipients.as_ref()).into_iter().map(|(_, n)| n).collect::<Vec<_>>(), ["Пётр", "team@example.test"]);
+    let attachments = tc(0x671);
+    let rows = column(attachments.as_ref(), 0x3705_0003);
+    assert_eq!(rows.iter().map(|(_, m)| int(m.as_ref())).collect::<Vec<_>>(), [ATTACH_BY_VALUE, ATTACH_EMBEDDED_MSG]);
+    let (d, s) = inner_subs[&rows[0].0];
+    let first = raw.pc(d, s);
+    assert!(first[&0x3701].1 == inner_data);
+    // Третий уровень; имя вложения без имени файла — тема письма.
+    let (d, s) = inner_subs[&rows[1].0];
+    let second = raw.pc(d, s);
+    let (nid3, _) = object(&second[&0x3701]);
+    let (d3, s3) = raw.subnodes(s)[&nid3];
+    assert_eq!(text_of(&raw.pc(d3, s3)[&0x0037]), "Третий уровень");
+    assert_eq!(text_of(&second[&0x3704]), "Третий уровень");
+}
+
+/// Карты размещения сходятся с тем, на что ссылаются деревья (scanpst перестраивает AMap по ним): каждая
+/// страница карт, страница NBT/BBT и блок из BBT заняты в AMap ровно один раз, лишнего занятого нет; `cbAMapFree` —
+/// свободное по картам; FMap — самый длинный свободный участок каждой области.
+fn check_maps(bytes: &[u8]) {
+    const RANGE: u64 = 496 * 8 * 64;
+    let raw = Raw(bytes.to_vec());
+    let (eof, last, free) = (raw.u64(184), raw.u64(192), raw.u64(200));
+    assert_eq!(eof as usize, bytes.len());
+    let regions = ((eof - 0x4400) / RANGE) as usize;
+    assert_eq!(last, 0x4400 + (regions as u64 - 1) * RANGE);
+    let fmap = |k: usize| k >= 128 && (k - 128).is_multiple_of(496);
+    let fpmap = |k: usize| k >= 8192 && (k - 8192).is_multiple_of(31744);
+    let mut expect = vec![[0u8; 496]; regions];
+    let mut mark = |ib: u64, size: u64| {
+        let k = ((ib - 0x4400) / RANGE) as usize;
+        let off = ib - 0x4400 - k as u64 * RANGE;
+        assert!(off + size <= RANGE, "{ib:X}: через границу области");
+        for slot in off / 64..(off + size) / 64 {
+            let (byte, bit) = ((slot / 8) as usize, 0x80u8 >> (slot % 8));
+            assert_eq!(expect[k][byte] & bit, 0, "{ib:X}: занято дважды");
+            expect[k][byte] |= bit;
+        }
+    };
+    for k in 0..regions {
+        let pages = 1 + u64::from(k % 8 == 0) + u64::from(fmap(k)) + 2 * u64::from(fpmap(k));
+        mark(0x4400 + k as u64 * RANGE, pages * 512);
+    }
+    let mut stack = vec![(raw.u64(224), false), (raw.u64(240), true)];
+    while let Some((page, bbt)) = stack.pop() {
+        mark(page, 512);
+        let p = page as usize;
+        let (n, size, level) = (usize::from(bytes[p + 488]), usize::from(bytes[p + 490]), bytes[p + 491]);
+        for i in 0..n {
+            let e = p + i * size;
+            if level > 0 {
+                stack.push((raw.u64(e + 16), bbt));
+            } else if bbt {
+                mark(raw.u64(e + 8), (u64::from(raw.u16(e + 16)) + 16).next_multiple_of(64));
+            }
+        }
+    }
+    let mut zeros = 0;
+    for (k, bits) in expect.iter().enumerate() {
+        let at = 0x4400 + k * RANGE as usize;
+        assert_eq!(bytes[at + 496], 0x84);
+        assert!(bytes[at..at + 496] == bits[..], "AMap {k}: не сходится");
+        zeros += bits.iter().map(|b| u64::from(b.count_zeros())).sum::<u64>();
+        if fmap(k) {
+            let f = at + 1024;
+            assert_eq!(bytes[f + 496], 0x82);
+            for j in 0..496 {
+                let longest = expect.get(k + j).map_or(0, |m| {
+                    let (mut best, mut run) = (0u32, 0u32);
+                    for slot in 0..496 * 8 {
+                        run = if m[slot / 8] & (0x80 >> (slot % 8)) == 0 { run + 1 } else { 0 };
+                        best = best.max(run);
+                    }
+                    best.min(255) as u8
+                });
+                assert_eq!(bytes[f + j], longest, "FMap {k}, область {}", k + j);
+            }
+        }
+    }
+    assert_eq!(free, zeros * 64);
+}
+
+/// Предел тома мал: письма идут в `Тома.pst`, `Тома (2).pst`…; каждый том открывается, письма не теряются и не
+/// повторяются, папки — в каждом томе, где есть их письма.
+#[test]
+fn volumes_split_by_limit() {
+    const LIMIT: u64 = 2 * 1024 * 1024;
+    let files = Memory::default();
+    let mut w = Writer::new(files.clone(), "Тома", "Тома", LIMIT).unwrap();
+    let mut n = 0u32;
+    for f in ["Входящие", "Архив"] {
+        w.folder(&path(&[f])).unwrap();
+        for _ in 0..60 {
+            let data: Vec<u8> = (0..30 * 1024u32).map(|i| (i.wrapping_mul(2_654_435_761).wrapping_add(n) >> 11) as u8).collect();
+            let mut m = letter(data, true);
+            m.props.retain(|(t, _)| *t != PR_SUBJECT_W);
+            m.props.insert(0, text(PR_SUBJECT_W, &format!("Письмо {n}")));
+            w.message(&m).unwrap();
+            n += 1;
+        }
+    }
+    let volumes = w.finish().unwrap();
+    assert!(volumes.len() >= 3, "{volumes:?}");
+    assert_eq!(volumes[0], "Тома.pst");
+    assert_eq!(volumes[1], "Тома (2).pst");
+    assert_eq!(files.names().iter().filter(|n| n.ends_with(".tmp")).count(), 0);
+    let mut seen = Vec::new();
+    for (k, name) in volumes.iter().enumerate() {
+        let bytes = files.take(name).unwrap();
+        assert!(bytes.len() as u64 <= LIMIT, "{name}: {} байт", bytes.len());
+        check_maps(&bytes);
+        let store = open(bytes);
+        let display = store.properties().display_name().unwrap();
+        assert_eq!(display, if k == 0 { "Тома".to_string() } else { format!("Тома ({})", k + 1) });
+        let ipm = store.open_folder(&store.properties().ipm_sub_tree_entry_id().unwrap()).unwrap();
+        for (id, folder) in names(ipm.hierarchy_table().unwrap().as_ref()) {
+            let f = store.open_folder(&props_entry(&store, id)).unwrap();
+            let subjects = column(f.contents_table().unwrap().as_ref(), PR_SUBJECT_W);
+            assert_eq!(f.properties().content_count().unwrap() as usize, subjects.len());
+            if folder != "Deleted Items" {
+                assert!(!subjects.is_empty(), "{name}: пустая папка «{folder}»");
+            }
+            seen.extend(subjects.into_iter().map(|(_, s)| unicode(s.as_ref())));
+        }
+    }
+    let expect: Vec<String> = (0..n).map(|i| format!("Письмо {i}")).collect();
+    assert_eq!(seen, expect);
+}
+
+/// К папке, что уже была текущей, вернуться нельзя (таблица её содержимого записана).
+#[test]
+fn folder_order_is_checked() {
+    let mut w = Writer::new(Memory::default(), "x", "x", pst::VOLUME_LIMIT).unwrap();
+    w.folder(&path(&["А"])).unwrap();
+    w.folder(&path(&["Б"])).unwrap();
+    assert_eq!(w.folder(&path(&["А"])).unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+    // Родитель, созданный ради подпапки, ещё не был текущим — можно.
+    w.folder(&path(&["В", "Г"])).unwrap();
+    w.folder(&path(&["В"])).unwrap();
+    w.abort();
+}
+
+/// Файл разбором узлов (для того, что `outlook-pst` не читает): BBT, блоки, поддеревья, контексты свойств.
+struct Raw(Vec<u8>);
+
+impl Raw {
+    fn u16(&self, at: usize) -> u16 {
+        u16::from_le_bytes(self.0[at..at + 2].try_into().unwrap())
+    }
+
+    fn u64(&self, at: usize) -> u64 {
+        u64::from_le_bytes(self.0[at..at + 8].try_into().unwrap())
+    }
+
+    /// Байты блока по BID (поиск по BBT от корня в заголовке).
+    fn block(&self, bid: u64) -> &[u8] {
+        let mut page = self.u64(240) as usize;
+        loop {
+            let (n, size, level) = (usize::from(self.0[page + 488]), usize::from(self.0[page + 490]), self.0[page + 491]);
+            let entries: Vec<usize> = (0..n).map(|i| page + i * size).collect();
+            if level == 0 {
+                let e = entries.into_iter().find(|&e| self.u64(e) == bid).unwrap();
+                let (ib, cb) = (self.u64(e + 8) as usize, usize::from(self.u16(e + 16)));
+                return &self.0[ib..ib + cb];
+            }
+            let e = entries.into_iter().take_while(|&e| self.u64(e) <= bid).last().unwrap();
+            page = self.u64(e + 16) as usize;
+        }
+    }
+
+    /// Блоки данных узла (лист или дерево XBLOCK) по порядку.
+    fn blocks(&self, bid: u64) -> Vec<Vec<u8>> {
+        let b = self.block(bid);
+        if bid & 2 != 0 && b[0] == 1 {
+            let n = usize::from(u16::from_le_bytes([b[2], b[3]]));
+            (0..n).flat_map(|i| self.blocks(u64::from_le_bytes(b[8 + 8 * i..16 + 8 * i].try_into().unwrap()))).collect()
+        } else {
+            vec![b.to_vec()]
+        }
+    }
+
+    /// Поддерево (SLBLOCK, SIBLOCK): NID → (данные, поддерево).
+    fn subnodes(&self, bid: u64) -> BTreeMap<u32, (u64, u64)> {
+        let b = self.block(bid).to_vec();
+        let n = usize::from(u16::from_le_bytes([b[2], b[3]]));
+        let le = |at: usize| u64::from_le_bytes(b[at..at + 8].try_into().unwrap());
+        if b[1] == 0 {
+            (0..n).map(|i| (le(8 + 24 * i) as u32, (le(16 + 24 * i), le(24 + 24 * i)))).collect()
+        } else {
+            (0..n).flat_map(|i| self.subnodes(le(16 + 16 * i))).collect()
+        }
+    }
+
+    /// Контекст свойств: ID → (тип, байты значения; числа — 4 байта).
+    fn pc(&self, data: u64, sub: u64) -> BTreeMap<u16, (u16, Vec<u8>)> {
+        let blocks = self.blocks(data);
+        let subs = if sub == 0 { BTreeMap::new() } else { self.subnodes(sub) };
+        let alloc = |hid: u32| -> Vec<u8> {
+            let page = &blocks[(hid >> 16) as usize];
+            let map = usize::from(u16::from_le_bytes([page[0], page[1]]));
+            let i = ((hid >> 5) & 0x7FF) as usize;
+            let at = |k: usize| usize::from(u16::from_le_bytes([page[map + 4 + 2 * k], page[map + 5 + 2 * k]]));
+            page[at(i - 1)..at(i)].to_vec()
+        };
+        let root = u32::from_le_bytes(blocks[0][4..8].try_into().unwrap());
+        let header = alloc(root);
+        assert_eq!(header[..3], [0xB5, 2, 6]);
+        let mut level = vec![(header[3], u32::from_le_bytes(header[4..8].try_into().unwrap()))];
+        let mut records = Vec::new();
+        while let Some((depth, hid)) = level.pop() {
+            let node = alloc(hid);
+            if depth == 0 {
+                records.extend(node.chunks(8).map(<[u8]>::to_vec));
+            } else {
+                level.extend(node.chunks(6).map(|r| (depth - 1, u32::from_le_bytes(r[2..6].try_into().unwrap()))));
+            }
+        }
+        records
+            .into_iter()
+            .map(|r| {
+                let (id, kind) = (u16::from_le_bytes([r[0], r[1]]), u16::from_le_bytes([r[2], r[3]]));
+                let v = u32::from_le_bytes(r[4..8].try_into().unwrap());
+                let bytes = match kind {
+                    0x0003 | 0x000B => v.to_le_bytes().to_vec(),
+                    _ if v == 0 => Vec::new(),
+                    _ if v & 0x1F == 0 => alloc(v),
+                    _ => self.blocks(subs[&v].0).concat(),
+                };
+                (id, (kind, bytes))
+            })
+            .collect()
+    }
+}
+
+fn int_of(v: &(u16, Vec<u8>)) -> i32 {
+    i32::from_le_bytes(v.1[..4].try_into().unwrap())
+}
+
+fn text_of(v: &(u16, Vec<u8>)) -> String {
+    assert_eq!(v.0, 0x001F);
+    String::from_utf16(&v.1.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect::<Vec<_>>()).unwrap()
+}
+
+/// `PtypObject`: NID подузла и размер.
+fn object(v: &(u16, Vec<u8>)) -> (u32, u32) {
+    assert_eq!(v.0, 0x000D);
+    (u32::from_le_bytes(v.1[0..4].try_into().unwrap()), u32::from_le_bytes(v.1[4..8].try_into().unwrap()))
 }
