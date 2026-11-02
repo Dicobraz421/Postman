@@ -12,6 +12,8 @@ const ALLOC_MAX: usize = 3580;
 const ALLOCS_MAX: usize = 2047;
 const CLIENT_TC: u8 = 0x7C;
 const CLIENT_PC: u8 = 0xBC;
+/// Клиент кучи HMP (`NID_HST_HMP`); в MS-PST — `bTypeReserved3`.
+const CLIENT_HMP: u8 = 0x9C;
 const TYPE_BTH: u8 = 0xB5;
 const NID_TYPE_LTP: u32 = 0x1F;
 
@@ -19,18 +21,25 @@ pub(super) const PR_LTP_ROW_ID: Tag = 0x67F2_0003;
 pub(super) const PR_LTP_ROW_VER: Tag = 0x67F3_0003;
 const PT_I8: u16 = 0x0014;
 
-/// Подузлы, которые набирает узел (значения, строки таблиц), и счётчик их NID.
+/// Подузлы, которые набирает узел (значения, строки таблиц), счётчик их NID и объём их данных.
 pub(super) struct Subs<'a> {
     pub list: Vec<Sub>,
     pub next: &'a mut u32,
+    /// Байт данных в подузлах — для `PR_MESSAGE_SIZE`.
+    pub bytes: u64,
 }
 
-impl Subs<'_> {
+impl<'a> Subs<'a> {
+    pub fn new(next: &'a mut u32) -> Self {
+        Self { list: Vec::new(), next, bytes: 0 }
+    }
+
     /// Данные в подузел `NID_TYPE_LTP` → его NID (HNID значения).
     fn put(&mut self, ndb: &mut Ndb, chunks: &[Vec<u8>]) -> io::Result<u32> {
         *self.next += 1;
         let nid = *self.next << 5 | NID_TYPE_LTP;
         let data = ndb.chunks(chunks)?;
+        self.bytes += chunks.iter().map(|c| c.len() as u64).sum::<u64>();
         self.list.push(Sub { nid, data, sub: 0 });
         Ok(nid)
     }
@@ -193,6 +202,18 @@ pub(super) fn pc(ndb: &mut Ndb, subs: &mut Subs, props: &[(Tag, Value)]) -> io::
     }
     let root = heap.root;
     bth(&mut heap, root, 2, 6, &records)?;
+    Ok(heap.into_blocks())
+}
+
+/// HMP (`NID_HST_HMP`, не описан в MS-PST) — как в новом файле Outlook: корень кучи — HID пустого BTH с ключами по
+/// 16 байт и значениями по 4. Без него scanpst пишет «HMP not found - creating».
+pub(super) fn hmp() -> io::Result<Vec<Vec<u8>>> {
+    let mut heap = Heap::new(CLIENT_HMP);
+    let root = heap.alloc(vec![0; 4])?;
+    let header = heap.alloc(vec![0; 8])?;
+    bth(&mut heap, header, 16, 4, &[])?;
+    heap.set(root, header.to_le_bytes().to_vec());
+    heap.root = root;
     Ok(heap.into_blocks())
 }
 
