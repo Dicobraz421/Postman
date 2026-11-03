@@ -10,7 +10,7 @@
 
 use std::rc::Rc;
 
-use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
+use gpui_kit::component::scroll::ScrollbarMode;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use pets_i18n::tr;
@@ -181,7 +181,7 @@ impl SettingsView {
                             .p(px(4.))
                             .children(rows),
                     )
-                    .child(Scrollbar::vertical(&scroll).mode(ScrollbarMode::Hover))
+                    .child(crate::chrome::vbar(&scroll, ScrollbarMode::Hover))
                     .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                         this.cal_menu = None;
                         cx.notify();

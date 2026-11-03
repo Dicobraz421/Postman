@@ -16,7 +16,7 @@
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState, TextDecoration, TextDecorationCollection};
-use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
+use gpui_kit::component::scroll::ScrollbarMode;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use jiff::civil::Date;
@@ -1592,7 +1592,7 @@ impl TasksView {
                     .border_color(l.border())
                     .children(empty)
                     .child(body)
-                    .child(Scrollbar::vertical(&self.list).mode(ScrollbarMode::Hover)),
+                    .child(crate::chrome::vbar(&self.list, ScrollbarMode::Hover)),
             )
             .children(deleg_hint)
     }
