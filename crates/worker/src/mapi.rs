@@ -166,6 +166,8 @@ fn message(msg: &Message<'_>, seen: bool, depth: usize, count: &mut usize) -> Re
                         if let Some(n) = name {
                             props.push(text(PR_ATTACH_LONG_FILENAME_W, n));
                         }
+                        // И исходные байты: MSG пишет вложенное письмо файлом `.eml`, PST — письмом MAPI.
+                        props.push((PR_ATTACH_DATA_BIN, Value::Binary(part.contents().to_vec())));
                         let embedded = message(inner, true, depth + 1, count)?;
                         out.push(Attachment { props, embedded: Some(Box::new(embedded)) });
                     }
@@ -471,6 +473,7 @@ mod tests {
         let a = &m.attachments[0];
         assert_eq!(long(&a.props, PR_ATTACH_METHOD), ATTACH_EMBEDDED_MSG);
         assert_eq!(text(&a.props, PR_ATTACH_LONG_FILENAME_W), "x.eml");
+        assert_eq!(binary(&a.props, PR_ATTACH_DATA_BIN), SIMPLE.as_bytes());
         let e = a.embedded.as_deref().unwrap();
         assert_eq!((e.class.as_str(), text(&e.props, PR_SUBJECT_W)), (IPM_NOTE, "Re: Отчёт"));
         assert_eq!(long(&e.props, PR_MESSAGE_FLAGS), MSGFLAG_READ);
