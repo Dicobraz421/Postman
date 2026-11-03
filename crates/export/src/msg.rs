@@ -12,8 +12,9 @@ use std::io::{self, Cursor, Read, Seek, Write};
 use cfb::CompoundFile;
 
 use crate::mapi::{
-    ATTACH_EMBEDDED_MSG, MapiMessage, PR_ATTACH_CONTENT_ID_W, PR_ATTACH_DATA_OBJ, PR_ATTACH_LONG_FILENAME_W, PR_ATTACH_METHOD, PR_ATTACH_NUM,
-    PR_DISPLAY_NAME_W, PR_HTML, PR_MESSAGE_CLASS_W, PR_MESSAGE_FLAGS, PR_ROWID, PR_STORE_SUPPORT_MASK, PR_SUBJECT_W, STORE_UNICODE_OK, Tag, Value,
+    ATTACH_EMBEDDED_MSG, MSGFLAG_READ, MapiMessage, PR_ATTACH_CONTENT_ID_W, PR_ATTACH_DATA_OBJ, PR_ATTACH_LONG_FILENAME_W, PR_ATTACH_METHOD,
+    PR_ATTACH_NUM, PR_DISPLAY_NAME_W, PR_HTML, PR_MESSAGE_CLASS_W, PR_MESSAGE_FLAGS, PR_ROWID, PR_STORE_SUPPORT_MASK, PR_SUBJECT_W, STORE_UNICODE_OK,
+    Tag, Value,
 };
 
 /// CLSID хранилища письма (корень и вложенное письмо), как у файлов Outlook.
@@ -62,12 +63,15 @@ fn message<F: Read + Write + Seek>(cf: &mut CompoundFile<F>, path: &str, msg: &M
     let mut props = Props::default();
     props.add(cf, path, PR_MESSAGE_CLASS_W, &Value::Unicode(msg.class.clone()))?;
     props.add(cf, path, PR_STORE_SUPPORT_MASK, &Value::Long(STORE_UNICODE_OK))?;
+    // Флаги — всегда: без них Outlook открывает письмо (и вложенное) черновиком. Нет в письме — прочитано, как у
+    // вложенных писем Outlook.
+    let flags = msg.props.iter().find_map(|(t, v)| match v {
+        Value::Long(n) if *t == PR_MESSAGE_FLAGS => Some(*n),
+        _ => None,
+    });
+    let hasattach = if msg.attachments.is_empty() { 0 } else { MSGFLAG_HASATTACH };
+    props.add(cf, path, PR_MESSAGE_FLAGS, &Value::Long(flags.unwrap_or(MSGFLAG_READ) | hasattach))?;
     if !msg.attachments.is_empty() {
-        let flags = msg.props.iter().find_map(|(t, v)| match v {
-            Value::Long(n) if *t == PR_MESSAGE_FLAGS => Some(*n),
-            _ => None,
-        });
-        props.add(cf, path, PR_MESSAGE_FLAGS, &Value::Long(flags.unwrap_or(0) | MSGFLAG_HASATTACH))?;
         props.add(cf, path, PR_HASATTACH, &Value::Boolean(true))?;
     }
     let html = msg.props.iter().find_map(|(t, v)| match v {
@@ -227,7 +231,7 @@ fn too_big() -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mapi::{ATTACH_BY_VALUE, Attachment, IPM_NOTE, MSGFLAG_READ, PR_ATTACH_DATA_BIN, PR_SUBJECT_PREFIX_W};
+    use crate::mapi::{ATTACH_BY_VALUE, Attachment, IPM_NOTE, PR_ATTACH_DATA_BIN, PR_SUBJECT_PREFIX_W};
 
     fn read(file: &[u8], path: &str) -> Vec<u8> {
         let mut cf = CompoundFile::open(Cursor::new(file)).unwrap();
@@ -282,7 +286,7 @@ mod tests {
         assert_eq!(&mask[8..12], &STORE_UNICODE_OK.to_le_bytes());
 
         // Есть вложения: флаг письма и PR_HASATTACH; вложения — не в тексте (позиция −1), видимые, MAPI_ATTACH.
-        assert_eq!(long(&top, 32, PR_MESSAGE_FLAGS), Some(MSGFLAG_HASATTACH));
+        assert_eq!(long(&top, 32, PR_MESSAGE_FLAGS), Some(MSGFLAG_READ | MSGFLAG_HASATTACH));
         assert_eq!(value(&top, 32, PR_HASATTACH).map(|v| v[0]), Some(1));
         let first = read(&file, "/__attach_version1.0_#00000000/__properties_version1.0");
         assert_eq!(long(&first, 8, PR_RENDERING_POSITION), Some(-1));
@@ -297,6 +301,8 @@ mod tests {
         assert_eq!(long(&att, 8, PR_RENDERING_POSITION), Some(-1));
         let embedded = read(&file, "/__attach_version1.0_#00000001/__substg1.0_3701000D/__properties_version1.0");
         assert_eq!((embedded.len() - 24) % 16, 0);
+        // Флаги у вложенного письма есть — иначе Outlook открывает его черновиком.
+        assert_eq!(long(&embedded, 24, PR_MESSAGE_FLAGS), Some(MSGFLAG_READ));
         assert_eq!(read(&file, "/__attach_version1.0_#00000000/__substg1.0_37010102"), [1, 2, 3]);
 
         let cf = CompoundFile::open(Cursor::new(&file)).unwrap();
