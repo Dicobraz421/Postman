@@ -36,6 +36,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("postman-backend-imap", L2B),
     ("postman-backend-dav", L2B),
     ("postman-backend-ews", L2B),
+    ("postman-backend-ldap", L2B),
     ("postman-gpui", L3),
 ];
 const UI_LAYER: u8 = L3;
@@ -44,7 +45,8 @@ const UI_LAYER: u8 = L3;
 const UI_CRATES: &[&str] = &["gpui", "egui", "eframe", "winit", "rfd"];
 
 /// Протокольные клиенты серверов (L1, ADR 0003): каждый знает только свой плагин. Новый протокол — сюда.
-const PROTOCOL_CRATES: &[&str] = &["postman-jmap", "postman-imap", "postman-dav", "postman-ews"];
+/// `ldap3` — клиент каталога (S5-12 Ф5): чужой крейт, но протокол — только для своего плагина.
+const PROTOCOL_CRATES: &[&str] = &["postman-jmap", "postman-imap", "postman-dav", "postman-ews", "ldap3"];
 
 /// Плагины путей (L2b, ADR 0004) и их протоколы. Новый плагин — сюда (EWS — `postman-backend-ews`, S7-06б).
 const PLUGINS: &[(&str, &str)] = &[
@@ -52,6 +54,7 @@ const PLUGINS: &[(&str, &str)] = &[
     ("postman-backend-imap", "postman-imap"),
     ("postman-backend-dav", "postman-dav"),
     ("postman-backend-ews", "postman-ews"),
+    ("postman-backend-ldap", "ldap3"),
 ];
 
 const CORE: &str = "postman-core";

@@ -100,7 +100,7 @@ impl Mailer {
         let book = certs.clone();
         let task = cx.background_spawn(async move {
             let now = jiff::Timestamp::now().as_second();
-            let mut candidates = postman_core::smime::recipient_candidates(&cache, &addrs, &from);
+            let mut candidates = postman_core::smime::recipient_candidates(&cache, &addrs, &from, now);
             // Демо: свой сертификат владельца демо-ящика (ключ — тестовый, `postman_demo::smime::my_key`).
             if !live {
                 candidates.push(postman_demo::smime::my_key().0.to_vec());

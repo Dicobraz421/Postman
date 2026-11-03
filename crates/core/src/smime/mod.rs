@@ -18,6 +18,7 @@
 #[cfg(windows)]
 mod cng;
 pub mod crl;
+pub mod directory;
 pub mod keys;
 #[cfg(windows)]
 mod seal_win;
@@ -142,7 +143,7 @@ pub struct KnownCert {
     /// OID шифров `SMIMECapabilities` последнего подписанного письма.
     pub capabilities: Vec<String>,
     pub seen_at: i64,
-    /// Откуда: «signed» — подпись входящего письма (Ф1); AddressBook, контакты, LDAP — Ф4–Ф5.
+    /// Откуда: «signed» — подпись входящего письма (Ф1); «ldap» — каталог ([`directory::SOURCE`], Ф5).
     pub source: String,
 }
 
@@ -417,12 +418,13 @@ pub fn split_for_encryption(draft: &postman_compose::Draft) -> Result<Vec<postma
     Ok(out)
 }
 
-/// Кандидаты в сертификаты адресатов (DER): из подписанных писем (кэш) и «Других пользователей» Windows; проверяет и
-/// разбирает их воркер (`SmimePrepare`). `own` — свой адрес: ещё свои сертификаты из `My` (себе — всегда).
-pub fn recipient_candidates(cache: &Cache, addresses: &[String], own: &str) -> Vec<Vec<u8>> {
+/// Кандидаты в сертификаты адресатов (DER): из подписанных писем и каталога (кэш; из каталога — пока свежие,
+/// [`directory::FRESH_FOR`]) и «Других пользователей» Windows; проверяет и разбирает их воркер (`SmimePrepare`).
+/// `own` — свой адрес: ещё свои сертификаты из `My` (себе — всегда).
+pub fn recipient_candidates(cache: &Cache, addresses: &[String], own: &str, now: i64) -> Vec<Vec<u8>> {
     let mut out: Vec<Vec<u8>> = Vec::new();
     for a in addresses {
-        for c in known_certs(cache, a) {
+        for c in known_certs(cache, a).into_iter().filter(|c| !directory::stale(c, now)) {
             if !out.contains(&c.der) {
                 out.push(c.der);
             }

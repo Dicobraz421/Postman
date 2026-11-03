@@ -1,7 +1,7 @@
 # T1-D: запрос в сессию дизайна — выделение, поверхности тёмной темы, тема «Серая»
 
 lane: docs
-status: todo                # ждёт сессии дизайна; реализация — новыми карточками после неё
+status: done                # токены в DESIGN и roles.rs (f43b76a, ff1fcde, 28d988c)
 deps: []
 class: A
 files: [docs/DESIGN.md]

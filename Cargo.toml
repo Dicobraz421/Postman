@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/ir", "crates/smime", "crates/jmap", "crates/imap", "crates/dav", "crates/ews", "crates/cache", "crates/compose", "crates/worker", "crates/search", "crates/export", "crates/demo", "crates/calendar", "crates/core", "crates/backend-jmap", "crates/backend-imap", "crates/backend-dav", "crates/backend-ews", "app-gpui"]
+members = ["crates/ir", "crates/smime", "crates/jmap", "crates/imap", "crates/dav", "crates/ews", "crates/cache", "crates/compose", "crates/worker", "crates/search", "crates/export", "crates/demo", "crates/calendar", "crates/core", "crates/backend-jmap", "crates/backend-imap", "crates/backend-dav", "crates/backend-ews", "crates/backend-ldap", "app-gpui"]
 
 [workspace.package]
 edition = "2024"
@@ -23,6 +23,7 @@ postman-backend-jmap = { path = "crates/backend-jmap" }
 postman-backend-imap = { path = "crates/backend-imap" }
 postman-backend-dav = { path = "crates/backend-dav" }
 postman-backend-ews = { path = "crates/backend-ews" }
+postman-backend-ldap = { path = "crates/backend-ldap" }
 postman-worker = { path = "crates/worker" }
 postman-smime = { path = "crates/smime" }
 postman-export = { path = "crates/export" }
