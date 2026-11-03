@@ -1,0 +1,26 @@
+[package]
+name = "postman-backend-ldap"
+description = "Каталог Active Directory — плагин ядра (ADR 0004): сертификаты адресатов S/MIME по LDAP (S5-12 Ф5)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+postman-core.workspace = true
+# LDAP (MIT/Apache-2.0): вход учётной записью Windows — SASL GSSAPI (cross-krb5, на Windows — SSPI Kerberos);
+# TLS — rustls с проверкой сертификата Windows, как у IMAP.
+ldap3 = { version = "0.12", default-features = false, features = ["gssapi", "tls-rustls-aws-lc-rs"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "tls12"] }
+rustls-platform-verifier = "0.7"
+tokio = { version = "1", features = ["rt", "time"] }
+zeroize = "1"
+thiserror.workspace = true
+tracing = "0.1"
+
+# Контроллер домена — службой Windows (`DsGetDcNameW`, решение №12): `sys.rs`, единственное место `unsafe`.
+[target.'cfg(windows)'.dependencies.windows-sys]
+version = "0.61"
+features = ["Win32_Foundation", "Win32_Networking_ActiveDirectory", "Win32_NetworkManagement_NetManagement"]
+
+[lints]
+workspace = true
