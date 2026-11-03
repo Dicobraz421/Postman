@@ -128,7 +128,7 @@ fn server(answer: impl Fn(&str) -> (Vec<Vec<u8>>, u8) + Send + 'static) -> (Stri
 }
 
 fn anonymous(server: &str, base_dn: Option<&str>) -> LdapDirectory {
-    LdapDirectory::new(Settings { server: Some(server.into()), base_dn: base_dn.map(Into::into), login: Login::Anonymous })
+    LdapDirectory::new(Settings { server: Some(server.into()), base_dn: base_dn.map(Into::into), login: Login::Anonymous, ..Settings::default() })
 }
 
 /// Как AD: база — из rootDSE, сертификаты из нескольких записей и обоих имён атрибута; ссылки на другие разделы и
@@ -192,9 +192,36 @@ fn refused_is_unavailable() {
 #[test]
 fn simple_login_needs_tls() {
     let login = Login::Simple { user: "CN=A".into(), password: Zeroizing::new("secret".into()) };
-    let dir = LdapDirectory::new(Settings { server: Some(closed_port()), base_dn: Some(BASE.into()), login });
+    let dir = LdapDirectory::new(Settings { server: Some(closed_port()), base_dn: Some(BASE.into()), login, ..Settings::default() });
     let got = dir.certificates(&["a@corp.example".into()]);
     assert!(matches!(got, Err(DirectoryError::Unavailable(ref e)) if e.contains("ldaps")), "{got:?}");
+}
+
+/// OpenLDAP: в rootDSE только `namingContexts` — база — первый раздел данных, `cn=config` пропускается; сертификат —
+/// `userCertificate;binary` (RFC 4523).
+#[test]
+fn openldap_base_from_naming_contexts() {
+    let (addr, seen) = server(|base| match base {
+        "" => (vec![entry("", &[("namingContexts", &[b"cn=config", b"dc=example,dc=org"])])], 0),
+        _ => (vec![entry("uid=anna,ou=people,dc=example,dc=org", &[("userCertificate;binary", &[b"\x30\x82O"])])], 0),
+    });
+    let got = anonymous(&addr, None).certificates(&["anna@example.org".into()]).unwrap();
+    assert_eq!(got, [b"\x30\x82O".to_vec()]);
+    assert_eq!(seen.lock().unwrap().bases, ["", "dc=example,dc=org"]);
+}
+
+/// Выбор базы из rootDSE: `defaultNamingContext` (AD, 389 DS — ALD Pro, FreeIPA) важнее списка; служебные разделы
+/// 389 DS пропускаются; нет подходящего — нет базы.
+#[test]
+fn base_choice() {
+    let root = |attrs: &[(&str, &[&[u8]])]| ldap3::asn1::parse_tag(&entry("", attrs)).map(|(_, t)| t).unwrap();
+    let r389 =
+        root(&[("namingContexts", &[b"o=netscaperoot", b"cn=changelog", b"dc=ald,dc=example"]), ("defaultnamingcontext", &[b"dc=ald,dc=example"])]);
+    assert_eq!(choose_base(r389).as_deref(), Some("dc=ald,dc=example"));
+    let r389_list = root(&[("namingContexts", &[b"o=NetscapeRoot", b"cn=changelog", b"dc=ald,dc=example"])]);
+    assert_eq!(choose_base(r389_list).as_deref(), Some("dc=ald,dc=example"));
+    assert_eq!(choose_base(root(&[("namingContexts", &[b"cn=config"])])), None);
+    assert_eq!(choose_base(root(&[])), None);
 }
 
 #[test]

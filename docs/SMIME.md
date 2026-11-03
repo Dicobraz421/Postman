@@ -437,6 +437,16 @@ Provider с уникальным именем + `CERT_KEY_PROV_INFO_PROP_ID`; у
 | 12.5б | настройки: сервер, base DN, вход; «Найти в каталоге» в строке «Перед отправкой» | снимки настроек и строки |
 | стенд | нужен LDAP с сертификатами: выход LDAP у IdP или тестовый OpenLDAP — решение №12; до решения — тесты на записанных ответах | |
 
+Каталоги (плагин `postman-backend-ldap`, 2026-11-03):
+
+| Каталог | Сервер и база | Вход | Сертификат |
+|---|---|---|---|
+| Active Directory | сам: `DsGetDcNameW`, `defaultNamingContext` | Windows (Kerberos) | `userCertificate` |
+| ALD Pro, FreeIPA (389 DS) | сервер — в настройках; база — `defaultNamingContext` | простой по TLS или без входа; Kerberos — если компьютер в их домене [проверить на стенде] | `userCertificate;binary` |
+| OpenLDAP | сервер — в настройках; база — первый раздел `namingContexts` (без `cn=config`) | без входа, простой по TLS (`ldaps://` или StartTLS) | `userCertificate;binary`; `userSMIMECertificate` — S5-12.5в |
+| authentik (LDAP-шлюз) | сервер шлюза; база — в настройках | простой по TLS (служебная учётная запись) | свой атрибут пользователя; передаёт ли шлюз двоичное значение как есть — [проверить на стенде] |
+| Keycloak | — | — | нет: Keycloak не отдаёт LDAP, а сам берёт пользователей из LDAP/AD — спрашивать этот каталог |
+
 ## 9. Stalwart: шифрование хранения
 
 У Stalwart есть «шифрование хранения» (encryption at rest): пользователь регистрирует сертификат S/MIME или ключ
