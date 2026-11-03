@@ -10,7 +10,7 @@ use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
+use gpui_kit::component::scroll::ScrollbarMode;
 use gpui_kit::component::{VirtualListScrollHandle, v_virtual_list};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -1377,7 +1377,7 @@ impl Render for MailList {
                 ),
             )
         } else {
-            body.child(list).child(Scrollbar::vertical(&self.scroll).mode(ScrollbarMode::Always))
+            body.child(list).child(crate::chrome::vbar(&self.scroll, ScrollbarMode::Always))
         };
         let sort_menu = self.sort_open.then(|| {
             let menu = crate::filters::sort_menu(self.query.sort, &l, |s| match s {

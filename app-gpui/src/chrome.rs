@@ -9,6 +9,7 @@
 
 use std::time::{Duration, Instant};
 
+use gpui_kit::component::scroll::{Scrollbar, ScrollbarHandle, ScrollbarMode};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use pets_i18n::tr;
@@ -121,6 +122,12 @@ const REOPEN_GUARD: Duration = Duration::from_millis(400);
 /// Значок шрифтом ОС.
 pub(crate) fn icon(g: char, size: f32) -> Div {
     div().flex_none().font_family(ICON_FONT).text_size(px(size)).line_height(px(size)).child(String::from(g))
+}
+
+/// Вертикальная полоса прокрутки: бегунок в 2 px от края области (у gpui-kit — 4 px, полоса уходила на строки).
+/// Область полосы — до края панели или карточки; место под бегунок — правый отступ строк.
+pub(crate) fn vbar<H: ScrollbarHandle + Clone>(handle: &H, mode: ScrollbarMode) -> Scrollbar {
+    Scrollbar::vertical(handle).mode(mode).styles(|s| s.thumb(|t| t.inset(px(2.))))
 }
 
 /// Тихая кнопка командной строки: без заливки, наведение — слабая заливка.

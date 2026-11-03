@@ -8,7 +8,7 @@
 use std::collections::HashSet;
 
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
+use gpui_kit::component::scroll::ScrollbarMode;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use pets_i18n::tr;
@@ -643,7 +643,7 @@ impl Folders {
         // Шеврон подпапок (T1-04г): место под него — у каждой папки, чтобы значки уровня стояли ровно.
         let open = !self.folded.contains(&m.id);
         let chevron = div().id(SharedString::from(format!("mb-fold-{}", m.id))).w(px(12.)).flex_none().text_color(l.text3()).when(node.parent, |d| {
-            d.child(if open { "▾" } else { "▸" }).cursor_pointer().on_click(cx.listener(move |this, _, _, cx| {
+            d.child(chevron_glyph(open)).cursor_pointer().on_click(cx.listener(move |this, _, _, cx| {
                 cx.stop_propagation();
                 this.fold(&fold, cx);
             }))
@@ -656,8 +656,9 @@ impl Folders {
             .pl(px(if indent { 22. } else { 4. } + 16. * node.depth as f32))
             .pr(px(8.))
             .rounded(l.px(Metric::RadiusControl))
-            // Как строка списка (T1-D): выбранная — тон акцента в фокусе, нейтральная без; наведение — тон акцента.
-            .when(selected, |d| d.bg(l.row_fill(self.focused)).font_weight(FontWeight::SEMIBOLD))
+            // Как строка списка (T1-D): выбранная — тон акцента в фокусе, нейтральная без, полоса слева, начертание
+            // обычное (макеты T1-D, S8-D); наведение — тон акцента.
+            .when(selected, |d| d.relative().bg(l.row_fill(self.focused)).child(strip(l.row_strip(self.focused))))
             .when(!selected, |d| d.hover(|d| d.bg(l.row_hover())))
             .cursor_pointer()
             .flex()
@@ -833,7 +834,18 @@ impl Folders {
 
 /// Шеврон группы: развёрнута — вниз, свёрнута — вправо.
 fn chevron(open: bool) -> Div {
-    div().w(px(12.)).flex_none().child(if open { "▾" } else { "▸" })
+    div().w(px(12.)).flex_none().child(chevron_glyph(open))
+}
+
+/// Значок шеврона (макет S8-D): Segoe Fluent Icons, а не символ шрифта текста.
+fn chevron_glyph(open: bool) -> Div {
+    use crate::chrome::glyph;
+    crate::chrome::icon(if open { glyph::CHEVRON_DOWN } else { glyph::CHEVRON_RIGHT }, 10.)
+}
+
+/// Полоса выделенной папки (T1-D): 3 × 16 px по центру строки у левого края.
+fn strip(color: Hsla) -> Div {
+    div().absolute().left_0().top(px(8.)).bottom(px(8.)).w(px(3.)).rounded_full().bg(color)
 }
 
 /// Ветки дерева (S7-03б): общие ящики основной учётной записи, затем каждая дополнительная — сама и её общие ящики;
@@ -887,11 +899,13 @@ impl Render for Folders {
                 &l,
             ));
         }
-        let mut col = div().flex().flex_col().size_full().pt(px(4.)).pr(px(8.)).pl(px(4.)).text_color(l.text());
+        // Справа без отступа: полоса прокрутки — у края панели, место под неё — отступ строк.
+        let mut col = div().flex().flex_col().size_full().pt(px(4.)).pl(px(4.)).text_color(l.text());
         if let Some(n) = self.results {
             col = col.child(
                 div()
-                    .mx(px(4.))
+                    .ml(px(4.))
+                    .mr(px(12.))
                     .mb(px(4.))
                     .px(px(8.))
                     .py(px(6.))
@@ -921,8 +935,9 @@ impl Render for Folders {
         if matches!(&edit, Some(EditKind::New { parent: None, .. })) {
             rows.extend(self.edit_row(0, false, &l));
         }
-        let list = div().id("folders").flex().flex_col().gap(px(2.)).size_full().overflow_y_scroll().track_scroll(&self.scroll).children(rows);
-        let list = div().relative().flex_1().min_h_0().child(list).child(Scrollbar::vertical(&self.scroll).mode(ScrollbarMode::Hover));
+        let list =
+            div().id("folders").flex().flex_col().gap(px(2.)).size_full().pr(px(10.)).overflow_y_scroll().track_scroll(&self.scroll).children(rows);
+        let list = div().relative().flex_1().min_h_0().child(list).child(crate::chrome::vbar(&self.scroll, ScrollbarMode::Hover));
         col.child(list).children(menu)
     }
 }

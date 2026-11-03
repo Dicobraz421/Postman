@@ -8,7 +8,7 @@
 //! сервера — событиями [`SettingsEvent`] экрану почты.
 
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
+use gpui_kit::component::scroll::ScrollbarMode;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use pets_i18n::tr;
@@ -878,7 +878,7 @@ impl Render for SettingsView {
                     .flex_1()
                     .min_h_0()
                     .child(div().id("settings-content").size_full().overflow_y_scroll().track_scroll(&self.scroll).px_6().pb_6().child(body))
-                    .child(Scrollbar::vertical(&self.scroll).mode(ScrollbarMode::Always))
+                    .child(crate::chrome::vbar(&self.scroll, ScrollbarMode::Always))
             });
         div()
             .size_full()

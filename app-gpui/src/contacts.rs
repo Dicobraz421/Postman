@@ -13,7 +13,7 @@
 //! Своя кэшируемая view: перерисовывается только по своему `notify`. С экраном говорит событиями [`ContactsAction`].
 
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
+use gpui_kit::component::scroll::ScrollbarMode;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use jiff::tz::TimeZone;
@@ -1491,7 +1491,7 @@ impl ContactsView {
                     .flex_1()
                     .min_h_0()
                     .flex()
-                    .child(div().relative().flex_1().min_w_0().h_full().child(list).child(Scrollbar::vertical(&self.list).mode(ScrollbarMode::Hover)))
+                    .child(div().relative().flex_1().min_w_0().h_full().child(list).child(crate::chrome::vbar(&self.list, ScrollbarMode::Hover)))
                     .children(index),
             )
     }
