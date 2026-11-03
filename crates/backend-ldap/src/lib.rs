@@ -2,9 +2,11 @@
 //! `docs/decisions/2026-11-02-ldap-active-directory.md`): сертификаты адресатов для «Конфиденциально».
 //!
 //! Где каталог: контроллер домена компьютера — службой Windows (`DsGetDcNameW`, `sys.rs`), база поиска —
-//! `defaultNamingContext` из rootDSE; компьютер вне домена — сервер и база из настроек. Вход — учётной записью
-//! Windows (SASL GSSAPI, Kerberos через SSPI): по `ldap://` — с шифрованием Kerberos, по `ldaps://` — TLS с проверкой
-//! сертификата Windows и привязкой к каналу. Простой вход (имя и пароль) — только по `ldaps://`.
+//! `defaultNamingContext` из rootDSE (AD, 389 DS — ALD Pro, FreeIPA), иначе первый раздел данных из `namingContexts`
+//! (OpenLDAP); компьютер вне домена — сервер и база из настроек. Вход — учётной записью Windows (SASL GSSAPI,
+//! Kerberos через SSPI): по `ldap://` — с шифрованием Kerberos, по TLS — с привязкой к каналу. Простой вход (имя и
+//! пароль, в том числе служебная учётная запись LDAP-шлюза authentik) — только по TLS: `ldaps://` или StartTLS.
+//! Без входа — каталог, открытый на чтение (частая настройка OpenLDAP). TLS — с проверкой сертификата Windows.
 //!
 //! Поиск — по `mail` и `proxyAddresses` (`smtp:`), атрибут `userCertificate` (у каталогов по RFC 4523 — с
 //! `;binary`). Ответ — DER как есть: это чужие данные, их проверяет и разбирает воркер, а ждёт ответа и ограничивает
@@ -34,8 +36,10 @@ const SIZE_LIMIT_EXCEEDED: u32 = 4;
 pub struct Settings {
     /// Сервер: `host`, `host:port`, `ldap://…` или `ldaps://…`; `None` — контроллер домена компьютера.
     pub server: Option<String>,
-    /// База поиска; `None` — `defaultNamingContext` из rootDSE.
+    /// База поиска; `None` — из rootDSE: `defaultNamingContext`, иначе первый раздел данных `namingContexts`.
     pub base_dn: Option<String>,
+    /// StartTLS по `ldap://` (порт 389): TLS после подключения — как `ldaps://`.
+    pub starttls: bool,
     pub login: Login,
 }
 
@@ -45,10 +49,10 @@ pub enum Login {
     /// Учётная запись Windows (Kerberos), без пароля.
     #[default]
     Windows,
-    /// Имя (DN или `user@domain`) и пароль — только по `ldaps://`: по открытому каналу пароль ушёл бы как есть.
+    /// Имя (DN или `user@domain`) и пароль — только по TLS: по открытому каналу пароль ушёл бы как есть.
     Simple { user: String, password: Zeroizing<String> },
-    /// Без входа: записанные ответы в тестах.
-    #[cfg(test)]
+    /// Без входа: каталог открыт на чтение. Подмену ответа в пути ловит воркер — сертификат без доверенной цепочки
+    /// не примется.
     Anonymous,
 }
 
@@ -119,12 +123,13 @@ fn unavailable(e: LdapError) -> DirectoryError {
 
 /// Подключиться, войти, найти сертификаты адресов `addresses` и выйти.
 async fn search(settings: &Settings, target: &Target, addresses: &[String]) -> Result<Vec<Vec<u8>>, DirectoryError> {
-    if matches!(settings.login, Login::Simple { .. }) && !target.tls {
-        return Err(DirectoryError::Unavailable("simple bind needs ldaps://".into()));
+    let tls = target.tls || settings.starttls;
+    if matches!(settings.login, Login::Simple { .. }) && !tls {
+        return Err(DirectoryError::Unavailable("simple bind needs ldaps:// or StartTLS".into()));
     }
     let mut conn = LdapConnSettings::new().set_conn_timeout(TIMEOUT);
-    if target.tls {
-        conn = conn.set_config(tls_config()?);
+    if tls {
+        conn = conn.set_config(tls_config()?).set_starttls(settings.starttls && !target.tls);
     }
     let (conn, mut ldap) = LdapConnAsync::with_settings(conn, &target.url).await.map_err(unavailable)?;
     ldap3::drive!(conn);
@@ -142,7 +147,6 @@ async fn bound_search(ldap: &mut Ldap, settings: &Settings, target: &Target, add
         Login::Simple { user, password } => {
             ldap.simple_bind(user, password).await.and_then(|r| r.success()).map_err(unavailable)?;
         }
-        #[cfg(test)]
         Login::Anonymous => {}
     }
     let base = match settings.base_dn.as_deref().map(str::trim).filter(|b| !b.is_empty()) {
@@ -160,15 +164,28 @@ async fn bound_search(ldap: &mut Ldap, settings: &Settings, target: &Target, add
     Ok(found.0.into_iter().flat_map(|e| values(e.0, &CERT_ATTRS)).collect())
 }
 
-/// База поиска по умолчанию — `defaultNamingContext` из rootDSE.
+/// База поиска по умолчанию — из rootDSE.
 async fn naming_context(ldap: &mut Ldap) -> Result<String, DirectoryError> {
-    const ATTR: &str = "defaultNamingContext";
-    let root = ldap.search("", Scope::Base, "(objectClass=*)", vec![ATTR]).await.and_then(|r| r.success()).map_err(unavailable)?;
-    root.0
-        .into_iter()
-        .flat_map(|e| values(e.0, &[ATTR]))
-        .find_map(|v| String::from_utf8(v).ok().filter(|s| !s.is_empty()))
-        .ok_or_else(|| DirectoryError::Unavailable("no defaultNamingContext in rootDSE".into()))
+    let root =
+        ldap.search("", Scope::Base, "(objectClass=*)", vec![DEFAULT_CONTEXT, CONTEXTS]).await.and_then(|r| r.success()).map_err(unavailable)?;
+    let entry = root.0.into_iter().next().map(|e| e.0);
+    entry.and_then(choose_base).ok_or_else(|| DirectoryError::Unavailable("no naming context in rootDSE".into()))
+}
+
+const DEFAULT_CONTEXT: &str = "defaultNamingContext";
+const CONTEXTS: &str = "namingContexts";
+
+/// База из записи rootDSE: `defaultNamingContext` (AD, 389 DS), иначе первый раздел данных из `namingContexts` —
+/// служебные (`cn=config`, `cn=changelog`, `o=NetscapeRoot` у 389 DS) пропускаются.
+fn choose_base(root: StructureTag) -> Option<String> {
+    let text = |v: Vec<u8>| String::from_utf8(v).ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+    let default = values(root.clone(), &[DEFAULT_CONTEXT]).into_iter().find_map(text);
+    default.or_else(|| {
+        values(root, &[CONTEXTS]).into_iter().filter_map(text).find(|c| {
+            let c = c.to_ascii_lowercase();
+            !c.starts_with("cn=") && c != "o=netscaperoot"
+        })
+    })
 }
 
 /// Фильтр поиска: адрес — в `mail` или в `proxyAddresses` как `smtp:<адрес>` (сравнение в AD — без регистра).
