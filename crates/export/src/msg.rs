@@ -2,8 +2,8 @@
 //!
 //! Хранилище письма: поток свойств `__properties_version1.0` (заголовок 32 байта у верхнего письма, 24 — у вложенного,
 //! 8 — у получателя и вложения; дальше записи по 16 байт), строки и двоичные — потоками `__substg1.0_<тег>`, получатели —
-//! `__recip_version1.0_#XXXXXXXX`, вложения — `__attach_version1.0_#XXXXXXXX`, вложенное письмо — хранилище
-//! `__substg1.0_3701000D` во вложении. У верхнего письма — пустое `__nameid_version1.0` (Outlook без него не открывает).
+//! `__recip_version1.0_#XXXXXXXX`, вложения — `__attach_version1.0_#XXXXXXXX`, вложенное письмо — файлом `.eml`
+//! из исходных байтов, без них — хранилище `__substg1.0_3701000D` во вложении. У верхнего письма — пустое `__nameid_version1.0` (Outlook без него не открывает).
 //! Строки — UTF-16LE (`PT_UNICODE`), пустые не пишутся (MS-OXMSG 2.4.2.2: хотя бы один символ).
 
 use std::collections::HashSet;
@@ -12,9 +12,9 @@ use std::io::{self, Cursor, Read, Seek, Write};
 use cfb::CompoundFile;
 
 use crate::mapi::{
-    ATTACH_EMBEDDED_MSG, MSGFLAG_READ, MapiMessage, PR_ATTACH_CONTENT_ID_W, PR_ATTACH_DATA_OBJ, PR_ATTACH_LONG_FILENAME_W, PR_ATTACH_METHOD,
-    PR_ATTACH_NUM, PR_DISPLAY_NAME_W, PR_HTML, PR_MESSAGE_CLASS_W, PR_MESSAGE_FLAGS, PR_ROWID, PR_STORE_SUPPORT_MASK, PR_SUBJECT_W, STORE_UNICODE_OK,
-    Tag, Value,
+    ATTACH_BY_VALUE, ATTACH_EMBEDDED_MSG, MSGFLAG_READ, MapiMessage, PR_ATTACH_CONTENT_ID_W, PR_ATTACH_DATA_BIN, PR_ATTACH_DATA_OBJ,
+    PR_ATTACH_LONG_FILENAME_W, PR_ATTACH_METHOD, PR_ATTACH_NUM, PR_DISPLAY_NAME_W, PR_HTML, PR_MESSAGE_CLASS_W, PR_MESSAGE_FLAGS, PR_ROWID,
+    PR_STORE_SUPPORT_MASK, PR_SUBJECT_W, STORE_UNICODE_OK, Tag, Value,
 };
 
 /// CLSID хранилища письма (корень и вложенное письмо), как у файлов Outlook.
@@ -98,12 +98,22 @@ fn message<F: Read + Write + Seek>(cf: &mut CompoundFile<F>, path: &str, msg: &M
         cf.create_storage(&sub)?;
         let mut ap = Props::default();
         ap.add(cf, &sub, PR_ATTACH_NUM, &Value::Long(i as i32))?;
+        // Вложенное письмо с исходными байтами — файлом `.eml` (владелец, 2026-11-03): Outlook открывает его полученным
+        // письмом, а не «Элементом Outlook»; без байтов — вложенным письмом MAPI. Первый тег побеждает — метод и имя
+        // до свойств вложения.
+        let raw = a.props.iter().any(|(t, v)| *t == PR_ATTACH_DATA_BIN && matches!(v, Value::Binary(_)));
+        let embedded = a.embedded.as_deref().filter(|_| !raw);
+        let eml = a.embedded.as_deref().filter(|_| raw).map(|e| eml_name(text(&a.props, PR_ATTACH_LONG_FILENAME_W), text(&e.props, PR_SUBJECT_W)));
+        if let Some(eml) = &eml {
+            ap.add(cf, &sub, PR_ATTACH_METHOD, &Value::Long(ATTACH_BY_VALUE))?;
+            ap.add(cf, &sub, PR_ATTACH_LONG_FILENAME_W, &Value::Unicode(eml.clone()))?;
+        }
         for (tag, v) in &a.props {
             ap.add(cf, &sub, *tag, v)?;
         }
         ap.add(cf, &sub, PR_OBJECT_TYPE, &Value::Long(MAPI_ATTACH))?;
         ap.add(cf, &sub, PR_RENDERING_POSITION, &Value::Long(-1))?;
-        if a.embedded.is_some() {
+        if embedded.is_some() {
             ap.add(cf, &sub, PR_ATTACH_METHOD, &Value::Long(ATTACH_EMBEDDED_MSG))?;
         }
         let inline = text(&a.props, PR_ATTACH_CONTENT_ID_W).is_some_and(|cid| html.is_some_and(|h| contains(h, format!("cid:{cid}").as_bytes())));
@@ -112,18 +122,18 @@ fn message<F: Read + Write + Seek>(cf: &mut CompoundFile<F>, path: &str, msg: &M
         }
         ap.add(cf, &sub, PR_ATTACHMENT_HIDDEN, &Value::Boolean(inline))?;
         // Имя в списке вложений: имя файла, у вложенного письма без имени — его тема.
-        let file = text(&a.props, PR_ATTACH_LONG_FILENAME_W);
+        let file = eml.as_deref().or_else(|| text(&a.props, PR_ATTACH_LONG_FILENAME_W));
         if let Some(file) = file {
             ap.add(cf, &sub, PR_ATTACH_FILENAME_W, &Value::Unicode(file.to_owned()))?;
             if let Some(dot) = file.rfind('.') {
                 ap.add(cf, &sub, PR_ATTACH_EXTENSION_W, &Value::Unicode(file[dot..].to_owned()))?;
             }
         }
-        let name = file.or_else(|| a.embedded.as_deref().and_then(|e| text(&e.props, PR_SUBJECT_W)));
+        let name = file.or_else(|| embedded.and_then(|e| text(&e.props, PR_SUBJECT_W)));
         if let Some(name) = name {
             ap.add(cf, &sub, PR_DISPLAY_NAME_W, &Value::Unicode(name.to_owned()))?;
         }
-        if let Some(embedded) = &a.embedded {
+        if let Some(embedded) = embedded {
             // MS-OXMSG 2.4.2.2: у PtypObject размер 0xFFFFFFFF, Reserved — 1 для вложенного письма.
             ap.entry(PR_ATTACH_DATA_OBJ, 0xFFFF_FFFF, 1);
             message(cf, &format!("{sub}/__substg1.0_3701000D"), embedded, false)?;
@@ -140,6 +150,18 @@ fn message<F: Read + Write + Seek>(cf: &mut CompoundFile<F>, path: &str, msg: &M
         header.extend([0; 8]);
     }
     props.finish(cf, path, &header)
+}
+
+/// Имя файла `.eml` вложенного письма: его имя файла или тема (пустые — «message»), без запрещённых в имени файла
+/// символов; расширение `.eml` — если его нет.
+fn eml_name(file: Option<&str>, subject: Option<&str>) -> String {
+    let base = [file, subject].into_iter().flatten().map(str::trim).find(|s| !s.is_empty()).unwrap_or("message");
+    let mut name: String = base.chars().take(100).map(|c| if c.is_control() || r#"\/:*?"<>|"#.contains(c) { '_' } else { c }).collect();
+    name.truncate(name.trim_end_matches(['.', ' ']).len());
+    if !name.to_lowercase().ends_with(".eml") {
+        name.push_str(".eml");
+    }
+    name
 }
 
 /// Записи потока свойств и уже записанные теги (повтор тега — пропуск, первый побеждает).
@@ -231,7 +253,7 @@ fn too_big() -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mapi::{ATTACH_BY_VALUE, Attachment, IPM_NOTE, PR_ATTACH_DATA_BIN, PR_SUBJECT_PREFIX_W};
+    use crate::mapi::{Attachment, IPM_NOTE, PR_SUBJECT_PREFIX_W};
 
     fn read(file: &[u8], path: &str) -> Vec<u8> {
         let mut cf = CompoundFile::open(Cursor::new(file)).unwrap();
@@ -344,5 +366,42 @@ mod tests {
         let utf16 = |s: &str| s.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>();
         assert_eq!(read(&file, "/__attach_version1.0_#00000001/__substg1.0_3704001F"), utf16("photo.jpg"));
         assert_eq!(read(&file, "/__attach_version1.0_#00000001/__substg1.0_3703001F"), utf16(".jpg"));
+    }
+
+    /// Вложенное письмо с исходными байтами — файлом `.eml`: метод «байтами», имя — тема, байты как есть, без
+    /// хранилища письма; без байтов — вложенным письмом.
+    #[test]
+    fn embedded_letter_with_bytes_is_eml() {
+        let inner =
+            MapiMessage { class: IPM_NOTE.into(), props: vec![(PR_SUBJECT_W, Value::Unicode("Re: Отчёт".into()))], ..Default::default() };
+        let msg = MapiMessage {
+            class: IPM_NOTE.into(),
+            attachments: vec![Attachment {
+                props: vec![
+                    (PR_ATTACH_METHOD, Value::Long(ATTACH_EMBEDDED_MSG)),
+                    (PR_ATTACH_DATA_BIN, Value::Binary(b"From: a@example.test".to_vec())),
+                ],
+                embedded: Some(Box::new(inner)),
+            }],
+            ..Default::default()
+        };
+        let mut file = Vec::new();
+        write(&mut file, &msg).unwrap();
+        let att = read(&file, "/__attach_version1.0_#00000000/__properties_version1.0");
+        assert_eq!(long(&att, 8, PR_ATTACH_METHOD), Some(ATTACH_BY_VALUE));
+        let utf16 = |s: &str| s.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>();
+        assert_eq!(read(&file, "/__attach_version1.0_#00000000/__substg1.0_3707001F"), utf16("Re_ Отчёт.eml"));
+        assert_eq!(read(&file, "/__attach_version1.0_#00000000/__substg1.0_3001001F"), utf16("Re_ Отчёт.eml"));
+        assert_eq!(read(&file, "/__attach_version1.0_#00000000/__substg1.0_37010102"), b"From: a@example.test");
+        let cf = CompoundFile::open(Cursor::new(&file)).unwrap();
+        assert!(!cf.exists("/__attach_version1.0_#00000000/__substg1.0_3701000D"));
+    }
+
+    #[test]
+    fn eml_names() {
+        assert_eq!(eml_name(Some("x.EML"), Some("тема")), "x.EML");
+        assert_eq!(eml_name(Some(" "), Some("Fwd: a/b?")), "Fwd_ a_b_.eml");
+        assert_eq!(eml_name(None, Some("отчёт. ")), "отчёт.eml");
+        assert_eq!(eml_name(None, None), "message.eml");
     }
 }

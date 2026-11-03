@@ -135,8 +135,22 @@ fn letter_reads_back() {
     assert_eq!(png.payload_bytes, PNG);
 }
 
-/// Вложенное письмо: у вложения метод 5 и хранилище письма. `msg_parser` вложенное письмо как хранилище не читает
-/// (и сливает его получателей с получателями верхнего), поэтому хранилище выносится в отдельный файл — как это делает
+/// Исходные байты вложенного письма — воркер кладёт их рядом с разобранным письмом (S8-41).
+const INNER_EML: &str = "\
+    From: =?UTF-8?B?0J/RkdGC0YA=?= <petr@example.test>\r\n\
+    To: =?UTF-8?B?0JDQvdC90LAg0JjQstCw0L3QvtCy0LA=?= <anna@example.test>\r\n\
+    Subject: =?UTF-8?B?0JjRgdGF0L7QtNC90L7QtSDQv9C40YHRjNC80L4=?=\r\n\
+    Date: Fri, 30 Oct 2026 10:15:00 +0300\r\n\
+    Message-ID: <m0@example.test>\r\n\
+    MIME-Version: 1.0\r\n\
+    Content-Type: text/plain; charset=utf-8\r\n\
+    Content-Transfer-Encoding: 8bit\r\n\
+    \r\n\
+    Вложенный текст\r\n";
+
+/// Вложенное письмо с исходными байтами — файлом `.eml`; без байтов — вложением с методом 5 и хранилищем письма.
+/// `msg_parser` вложенное письмо как хранилище не читает (и сливает его получателей с получателями верхнего), поэтому
+/// хранилище выносится в отдельный файл — как это делает
 /// Outlook при «Сохранить как»: заголовок потока свойств 24 байта → 32.
 #[test]
 fn embedded_letter() {
@@ -158,7 +172,11 @@ fn embedded_letter() {
     };
     let mut outer = letter();
     outer.attachments.push(Attachment {
-        props: vec![(PR_ATTACH_METHOD, Value::Long(ATTACH_EMBEDDED_MSG)), text(PR_ATTACH_MIME_TAG_W, "message/rfc822")],
+        props: vec![
+            (PR_ATTACH_METHOD, Value::Long(ATTACH_EMBEDDED_MSG)),
+            text(PR_ATTACH_MIME_TAG_W, "message/rfc822"),
+            (PR_ATTACH_DATA_BIN, Value::Binary(INNER_EML.as_bytes().to_vec())),
+        ],
         embedded: Some(Box::new(inner)),
     });
     let bytes = file(&outer);
@@ -167,10 +185,19 @@ fn embedded_letter() {
     let o = Outlook::from_slice(&bytes).unwrap();
     assert_eq!(o.subject, "Re: Отчёт за октябрь");
     assert_eq!(o.attachments.len(), 3);
+    // Файлом `.eml` с исходными байтами, имя — тема; Outlook открывает его полученным письмом.
     let att = &o.attachments[2];
+    assert!(!att.is_embedded_message());
+    assert_eq!((att.display_name.as_str(), att.file_name.as_str(), att.extension.as_str()), ("Исходное письмо.eml", "Исходное письмо.eml", ".eml"));
+    assert_eq!(att.mime_tag, "message/rfc822");
+    assert_eq!(att.payload_bytes, INNER_EML.as_bytes());
+
+    // Без исходных байтов — вложенным письмом MAPI (хранилище `__substg1.0_3701000D`).
+    outer.attachments[2].props.retain(|(t, _)| *t != PR_ATTACH_DATA_BIN);
+    let bytes = file(&outer);
+    let att = &Outlook::from_slice(&bytes).unwrap().attachments[2];
     assert!(att.is_embedded_message());
     assert_eq!(att.display_name, "Исходное письмо");
-
     let nested = Outlook::from_slice(extract(&bytes, "/__attach_version1.0_#00000002/__substg1.0_3701000D")).unwrap();
     assert_eq!(nested.message_class, IPM_NOTE);
     assert_eq!(nested.subject, "Исходное письмо");
