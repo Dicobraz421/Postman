@@ -40,6 +40,12 @@ fn by_value(name: &str, mime: &str, cid: Option<&str>, data: &[u8]) -> Attachmen
     Attachment { props, embedded: None }
 }
 
+/// Настоящие PNG и PDF (Outlook показывает и открывает их); подписанное письмо — `openssl smime -sign` самоподписанным
+/// сертификатом `anna@example.test` (ключ не сохранён).
+const PNG: &[u8] = include_bytes!("data/logo.png");
+const PDF: &[u8] = include_bytes!("data/report.pdf");
+const SIGNED: &[u8] = include_bytes!("data/signed.eml");
+
 /// 2026-10-30 07:15:00 UTC в FILETIME.
 const SENT: u64 = FILETIME_UNIX_EPOCH + 1_793_344_500 * 10_000_000;
 
@@ -81,10 +87,7 @@ fn letter() -> MapiMessage {
             person(MAPI_CC, "team@example.test", "team@example.test"),
             person(MAPI_BCC, "boss@example.test", "boss@example.test"),
         ],
-        attachments: vec![
-            by_value("отчёт.pdf", "application/pdf", None, b"%PDF-1.4 not really a pdf\n\x00\x01\x02\xff"),
-            by_value("logo.png", "image/png", Some("logo@example.test"), b"\x89PNG\r\n\x1a\n...."),
-        ],
+        attachments: vec![by_value("отчёт.pdf", "application/pdf", None, PDF), by_value("logo.png", "image/png", Some("logo@example.test"), PNG)],
     }
 }
 
@@ -126,10 +129,10 @@ fn letter_reads_back() {
     assert_eq!(o.attachments.len(), 2);
     let (pdf, png) = (&o.attachments[0], &o.attachments[1]);
     assert_eq!((pdf.long_file_name.as_str(), pdf.display_name.as_str(), pdf.mime_tag.as_str()), ("отчёт.pdf", "отчёт.pdf", "application/pdf"));
-    assert_eq!(pdf.payload_bytes, b"%PDF-1.4 not really a pdf\n\x00\x01\x02\xff");
+    assert_eq!(pdf.payload_bytes, PDF);
     assert_eq!(pdf.attach_method, 1);
     assert_eq!((png.long_file_name.as_str(), png.content_id.as_str()), ("logo.png", "logo@example.test"));
-    assert_eq!(png.payload_bytes, b"\x89PNG\r\n\x1a\n....");
+    assert_eq!(png.payload_bytes, PNG);
 }
 
 /// Вложенное письмо: у вложения метод 5 и хранилище письма. `msg_parser` вложенное письмо как хранилище не читает
@@ -176,11 +179,10 @@ fn embedded_letter() {
 /// Подписанное `multipart/signed`: класс `IPM.Note.SMIME.MultipartSigned`, вложение — всё письмо исходными байтами.
 #[test]
 fn signed_letter() {
-    let raw =
-        b"Content-Type: multipart/signed; protocol=\"application/pkcs7-signature\"; boundary=b\r\nSubject: s\r\n\r\n--b\r\n\r\ntext\r\n--b--\r\n";
+    let raw = SIGNED;
     let m = MapiMessage {
         class: IPM_NOTE_SMIME_MULTIPART_SIGNED.into(),
-        props: vec![text(PR_SUBJECT_W, "Подписанное"), text(PR_BODY_W, "text")],
+        props: vec![text(PR_SUBJECT_W, "Подписанное"), text(PR_BODY_W, "Подписанное письмо для проверки S8-41.\r\n")],
         recipients: vec![person(MAPI_TO, "Пётр", "petr@example.test")],
         attachments: vec![by_value("SMIME.p7m", "multipart/signed", None, raw)],
     };
@@ -192,7 +194,7 @@ fn signed_letter() {
     assert_eq!(o.attachments[0].long_file_name, "SMIME.p7m");
     assert_eq!(o.attachments[0].mime_tag, "multipart/signed");
     assert_eq!(o.attachments[0].payload_bytes, raw);
-    assert_eq!(o.body, "text");
+    assert_eq!(o.body, "Подписанное письмо для проверки S8-41.\r\n");
 
     // Зашифрованное (`application/pkcs7-mime`): `IPM.Note.SMIME`, тела нет, вложение `smime.p7m` — CMS как есть.
     let cms = [0x30, 0x80, 0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x07, 0x03, 0xA0, 0x80];
