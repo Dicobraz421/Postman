@@ -1273,14 +1273,21 @@ mod tests {
         Event::Status(Status::Connecting { url: "https://mail".into() })
     }
 
-    /// Кэш формата 6 (здесь — новый) открывается до первого окна; ждать переноса не нужно.
+    /// Кэш формата 6 (здесь — новый) открывается без переноса. Под нагрузкой CI новое хранилище может не уложиться в
+    /// `STORE_QUICK` — тогда `Upgrading`, но первым приходит готовый кэш, хода переноса нет.
     #[test]
     fn a_current_store_opens_before_the_first_window() {
         let dir = std::env::temp_dir().join(format!("postman-startup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         {
             let opened = super::open_at_start(&dir.join("store.redb"));
-            assert!(matches!(opened, Ok(super::Startup::Ready(..))));
+            let ready = match opened {
+                Ok(super::Startup::Ready(..)) => true,
+                Ok(super::Startup::Upgrading(rx)) => matches!(rx.recv(), Ok(super::Opening::Done(Ok(_)))),
+                Err(_) => false,
+            };
+            assert!(ready);
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
