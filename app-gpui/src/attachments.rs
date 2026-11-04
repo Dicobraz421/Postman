@@ -629,8 +629,10 @@ pub(crate) mod scenes {
     }
 
     fn letter_ready(s: &Scene, m: &Mailer, cx: &App) -> bool {
-        let target = screens::demo_id(m.list.read(cx), wanted(s));
-        target.is_some() && screens::reading(m, cx).is_some_and(|r| Some(r.row.id.as_str()) == target && r.doc.is_some() && !r.images.is_empty())
+        // Открытое письмо — нужное и его картинки разобраны. Не «первое такое в списке»: пока демо-ящик догружается,
+        // первым становится другое письмо с той же картинкой, и сцена ждала бы не то письмо.
+        let wanted = wanted(s);
+        screens::reading(m, cx).is_some_and(|r| r.body.as_ref().is_some_and(wanted) && r.doc.is_some() && !r.images.is_empty())
     }
 
     /// Вложение демо-письма для сцены просмотра (`postman_demo::blob`).
