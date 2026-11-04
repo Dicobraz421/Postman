@@ -10,8 +10,8 @@
 //!
 //! Поиск — по `mail` и `proxyAddresses` (`smtp:`), атрибут `userCertificate` (у каталогов по RFC 4523 — с
 //! `;binary`). Ответ — DER как есть: это чужие данные, их проверяет и разбирает воркер, а ждёт ответа и ограничивает
-//! его ядро (`postman_core::smime::directory`). `userSMIMECertificate` (PKCS#7) пока не берём: сертификаты из него
-//! достал бы только воркер.
+//! его ядро (`postman_core::smime::directory`). `userSMIMECertificate` (PKCS#7) — тоже как есть: сертификаты из него
+//! достаёт воркер.
 
 mod sys;
 #[cfg(test)]
@@ -24,8 +24,9 @@ use ldap3::{Ldap, LdapConnAsync, LdapConnSettings, LdapError, Scope, SearchOptio
 use postman_core::smime::directory::{Directory, DirectoryError, TIMEOUT};
 pub use zeroize::Zeroizing;
 
-/// Атрибуты сертификата: у AD — `userCertificate`, у каталогов по RFC 4523 — с `;binary`.
-const CERT_ATTRS: [&str; 2] = ["userCertificate", "userCertificate;binary"];
+/// Атрибуты сертификата: у AD — `userCertificate`, у каталогов по RFC 4523 — с `;binary`; `userSMIMECertificate`
+/// (RFC 2798) — PKCS#7 с сертификатами, их достаёт воркер (S5-12.5в).
+const CERT_ATTRS: [&str; 4] = ["userCertificate", "userCertificate;binary", "userSMIMECertificate", "userSMIMECertificate;binary"];
 /// Записей в ответе — не больше: сертификаты нужны адресатам одного письма.
 const SIZE_LIMIT: i32 = 100;
 /// Код LDAP «превышен предел записей» (RFC 4511): берём то, что пришло.

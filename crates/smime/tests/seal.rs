@@ -93,6 +93,21 @@ fn sign_then_encrypt_to_self_and_recipient() {
     }
 }
 
+/// `userSMIMECertificate` (S5-12.5в): PKCS#7 с сертификатами — получатель тот же, что из самого сертификата; набор
+/// только с CA — не получатель; мусор — ошибка без паники.
+#[test]
+fn prepare_from_pkcs7() {
+    let pki = Pki::rsa("Postman Test Root", "Смирнова", "me@itt.test");
+    let p7 = postman_smime::testkit::signed_data(b"x", &pki.user, &pki.user_key, &[&pki.root], &Default::default());
+    let p = prepare::prepare(&p7, &[], &pki.trust(), NOW).unwrap();
+    assert_eq!(p, prep(&pki, &pki.user));
+    let only_ca = postman_smime::testkit::signed_data(b"x", &pki.root, &pki.root_key, &[], &Default::default());
+    assert!(prepare::prepare(&only_ca, &[], &pki.trust(), NOW).is_err());
+    let mut broken = p7.clone();
+    broken.truncate(p7.len() / 2);
+    assert!(prepare::prepare(&broken, &[], &pki.trust(), NOW).is_err());
+}
+
 /// Подготовка: просроченный, не доверенный и CA вместо пользователя — не берутся; выбор — предпочтение, затем срок.
 #[test]
 fn prepare_and_choose() {
