@@ -709,6 +709,8 @@ pub(crate) mod scenes {
         Scene::new("settings-calendar", section, section_ready),
         // Тот же раздел, прокручен вниз: цвет свободного времени с образцом, календари коллег, приглашения.
         Scene::new("settings-calendar-free", calendar_free, section_ready),
+        // «Безопасность», прокручена вниз: каталог сертификатов (S5-12.5б) со входом по имени и паролю.
+        Scene::new("settings-directory", directory, section_ready),
         // «Настройки → Подписи и шаблоны» с образцом подписи и шаблона (демо — без файла).
         Scene::new("settings-sign", sign, section_ready),
     ];
@@ -761,7 +763,7 @@ pub(crate) mod scenes {
     fn of(s: &Scene) -> S {
         match s.name {
             "settings-general" => S::General,
-            "settings-security" => S::Security,
+            "settings-security" | "settings-directory" => S::Security,
             "settings-look" => S::Look,
             "settings-categories" => S::Categories,
             "settings-keys" => S::Keys,
@@ -825,6 +827,18 @@ pub(crate) mod scenes {
 
     fn calendar_free(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
         m.open_settings(Some(S::Calendar), window, cx);
+        if let Some(v) = m.settings.view.clone() {
+            v.update(cx, |v, cx| {
+                v.scroll.scroll_to_bottom();
+                cx.notify();
+            });
+        }
+        Ok(())
+    }
+
+    fn directory(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        crate::prefs::update(cx, |p| p.security.directory.login = postman_core::prefs::DirectoryLogin::Password);
+        m.open_settings(Some(S::Security), window, cx);
         if let Some(v) = m.settings.view.clone() {
             v.update(cx, |v, cx| {
                 v.scroll.scroll_to_bottom();

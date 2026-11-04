@@ -213,6 +213,8 @@ pub(crate) struct SettingsView {
     pub(crate) wipe_confirm: bool,
     pub(crate) wiped: bool,
     pub(crate) sandbox_help: bool,
+    /// «Безопасность → Каталог сертификатов» (S5-12.5б).
+    pub(crate) dir: crate::settings_directory::DirState,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -252,6 +254,7 @@ impl SettingsView {
                 cx.notify();
             }
         }));
+        let dir = crate::settings_directory::DirState::new(window, cx, &mut subscriptions);
         let mut v = Self {
             section,
             search,
@@ -280,6 +283,7 @@ impl SettingsView {
             wipe_confirm: false,
             wiped: false,
             sandbox_help: false,
+            dir,
             _subscriptions: subscriptions,
         };
         v.read_os(cx);

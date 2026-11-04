@@ -64,3 +64,7 @@ checks-no-cert-unmark = Remove "Confidential"
 checks-no-cert-unmark-confirm = The message goes unencrypted · Yes, remove
 checks-split = Two messages will be sent: separately — { $names } (GOST)
 checks-split-detail = These recipients have GOST certificates, the others RSA or EC. Both messages go to Sent, both encrypted to you as well.
+checks-no-cert-find = Find in directory
+checks-no-cert-searching = Looking for certificates in the directory…
+checks-no-cert-not-in-directory = No certificate in the directory either. Without it the recipient cannot read the message — remove them or turn off Confidential.
+checks-no-cert-directory-failed = { $reason } Remove the recipients or turn off Confidential.

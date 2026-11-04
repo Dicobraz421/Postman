@@ -266,12 +266,42 @@ pub struct Security {
     pub store_password: bool,
     /// Подписывать все письма S/MIME (решение владельца №7; S5-12 Ф3): «Подписать» в новом письме включено.
     pub sign_all: bool,
+    /// Каталог сертификатов адресатов (S5-12 Ф5).
+    pub directory: Directory,
 }
 
 impl Default for Security {
     fn default() -> Self {
-        Self { macro_save: true, images: Images::Never, tls13: false, store_password: true, sign_all: true }
+        Self { macro_save: true, images: Images::Never, tls13: false, store_password: true, sign_all: true, directory: Directory::default() }
     }
+}
+
+/// Каталог сертификатов адресатов (S5-12 Ф5, решение владельца №12): пустой сервер — контроллер домена компьютера,
+/// пустая база — из rootDSE. Пароль простого входа — в Диспетчере учётных данных, не здесь.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Directory {
+    /// `host`, `host:port`, `ldap://…` или `ldaps://…`.
+    pub server: String,
+    pub base_dn: String,
+    /// StartTLS по `ldap://`.
+    pub starttls: bool,
+    pub login: DirectoryLogin,
+    /// Имя для входа по паролю (DN или `user@domain`).
+    pub user: String,
+}
+
+/// Вход в каталог.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectoryLogin {
+    /// Учётная запись Windows (Kerberos).
+    #[default]
+    Windows,
+    /// Имя и пароль — только по TLS.
+    Password,
+    /// Без входа: каталог открыт на чтение.
+    Anonymous,
 }
 
 /// Внешние картинки в письмах.
@@ -1103,6 +1133,15 @@ impl Writer {
 
 #[cfg(test)]
 mod tests {
+    /// Настройки до каталога (S5-12.5б) читаются: каталог — по умолчанию (контроллер домена, вход Windows).
+    #[test]
+    fn security_without_directory() {
+        let s: super::Security = serde_json::from_str(r#"{"sign_all":false}"#).unwrap_or_default();
+        assert!(!s.sign_all);
+        assert_eq!(s.directory, super::Directory::default());
+        assert_eq!(s.directory.login, super::DirectoryLogin::Windows);
+    }
+
     use super::*;
 
     fn dir() -> tempfile::TempDir {

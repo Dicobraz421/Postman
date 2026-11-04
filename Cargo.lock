@@ -6464,6 +6464,7 @@ dependencies = [
  "postman-backend-ews",
  "postman-backend-imap",
  "postman-backend-jmap",
+ "postman-backend-ldap",
  "postman-cache",
  "postman-calendar",
  "postman-compose",

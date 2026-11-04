@@ -22,7 +22,7 @@ use std::sync::Arc;
 use ldap3::asn1::StructureTag;
 use ldap3::{Ldap, LdapConnAsync, LdapConnSettings, LdapError, Scope, SearchOptions, ldap_escape};
 use postman_core::smime::directory::{Directory, DirectoryError, TIMEOUT};
-use zeroize::Zeroizing;
+pub use zeroize::Zeroizing;
 
 /// Атрибуты сертификата: у AD — `userCertificate`, у каталогов по RFC 4523 — с `;binary`.
 const CERT_ATTRS: [&str; 2] = ["userCertificate", "userCertificate;binary"];
@@ -82,6 +82,11 @@ impl Directory for LdapDirectory {
             }
         })
     }
+}
+
+/// Контроллер домена компьютера (`DsGetDcNameW`) — для подсказки в настройках; блокирует поток.
+pub fn domain_controller() -> Option<String> {
+    sys::domain_controller()
 }
 
 /// Куда подключаться: адрес для `ldap3` и имя узла (SPN Kerberos — `ldap/<узел>`).

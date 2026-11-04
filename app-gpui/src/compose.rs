@@ -1366,6 +1366,9 @@ pub(crate) mod scenes {
         // «Конфиденциально» (S5-12 Ф4): адресат с сертификатом (Петров из подписанного образца демо) — замок у чипа,
         // замечаний по сертификатам нет; письмо зашифруется ему и себе.
         Scene::new("compose-confidential", confidential, confidential_ready),
+        // «Конфиденциально» адресату без сертификата (S5-12.5б): «Нет сертификата» с «Найти в каталоге» между «Убрать
+        // их» и «Снять „Конфиденциально“».
+        Scene::new("compose-no-cert", no_cert, no_cert_ready),
         // Ответ в области чтения над письмом с цитатой (S3-02, S5-06б).
         Scene::new("reply-inline", reply, reply_ready).live(),
     ];
@@ -1435,6 +1438,22 @@ pub(crate) mod scenes {
         let certs = m.compose.certs.clone();
         let known = crate::smime_seal::lock(&certs).families("i.petrov@corp.example").is_some_and(|f| !f.is_empty());
         screens::compose_tab(m).is_some_and(|c| Some(c.read(cx).id) != before && c.read(cx).drawn()) && known
+    }
+
+    fn no_cert(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        screens::remember_composer(m, cx);
+        let mut d = samples::confidential_draft();
+        d.to = vec![postman_compose::Address::new("Сидорова Анна", "a.sidorova@partner.example")]; // i18n-ok: образец письма
+        m.open_compose(d, cx);
+        Ok(())
+    }
+
+    fn no_cert_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let before = screens::composer_before(m);
+        screens::compose_tab(m).is_some_and(|c| {
+            let c = c.read(cx);
+            Some(c.id) != before && c.drawn() && c.model.checks().any(|k| matches!(k, postman_core::checks::Check::NoCertificate { .. }))
+        })
     }
 
     fn reply(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
