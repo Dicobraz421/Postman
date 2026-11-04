@@ -371,6 +371,52 @@ mod tests {
         assert_eq!(pets_i18n::check(&texts), vec![]);
     }
 
+    /// Ручная проверка 3 (S2-06): у каждого ключа `tr!("…")` в коде есть перевод — сырой ключ вида `nav-mail` на
+    /// экране не появится ни по-русски, ни по-английски. Ключи из переменных сюда не попадают.
+    #[test]
+    fn every_literal_key_is_translated() {
+        let mut texts = crate::parts::texts();
+        texts.push(pets_ui::FTL);
+        let mut keys = std::collections::BTreeSet::new();
+        let mut dirs = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let source = std::fs::read_to_string(&path).unwrap();
+                    for part in source.split("tr!(\"").skip(1) {
+                        let key: String = part.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+                        if !key.is_empty() && part[key.len()..].starts_with('"') {
+                            keys.insert(key);
+                        }
+                    }
+                }
+            }
+        }
+        assert!(keys.len() > 1000, "ключей найдено мало: {}", keys.len());
+        for lang in ["ru", "en"] {
+            let (i18n, _) = pets_i18n::I18n::new(&texts, lang);
+            let raw: Vec<&String> = keys.iter().filter(|k| i18n.get(k) == **k).collect();
+            assert!(raw.is_empty(), "{lang}: ключи без перевода: {raw:?}");
+        }
+    }
+
+    /// Ручная проверка 3: без `--lang` и без настройки язык — как у Windows (если такого перевода нет — английский).
+    #[test]
+    fn language_follows_windows_by_default() {
+        let mut texts = crate::parts::texts();
+        texts.push(pets_ui::FTL);
+        let lang = crate::prefs::language_at_start(None, &postman_core::prefs::Prefs::default());
+        assert_eq!(lang, "auto");
+        let (i18n, _) = pets_i18n::I18n::new(&texts, &lang);
+        let os = pets_i18n::os_language();
+        let expected = if ["ru", "en"].contains(&os.as_str()) { os } else { "en".to_owned() };
+        assert_eq!(i18n.lang(), expected);
+        assert_eq!(crate::prefs::language_at_start(Some("en"), &postman_core::prefs::Prefs::default()), "en");
+    }
+
     /// Строки интерфейса — только через Fluent: в коде экранов нет литералов с кириллицей.
     #[test]
     fn no_raw_ui_strings() {
