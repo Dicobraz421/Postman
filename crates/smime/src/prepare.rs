@@ -1,6 +1,9 @@
 //! «Подготовленный получатель» (S5-12 Ф4, `docs/SMIME.md` §5, §6.4): сертификат адресата — чужие данные, поэтому
 //! его разбирает и проверяет **воркер** (цепочка к якорям, EKU, KeyUsage для шифрования, срок), а ядру уходят только
 //! значения: ключ (RSA `n`/`e`, точка EC и кривая, ключ ГОСТ), издатель и серийный номер, SKI — байтами как есть.
+//!
+//! Кандидат может быть и PKCS#7 SignedData с сертификатами — так каталоги хранят `userSMIMECertificate` (RFC 2798,
+//! S5-12.5в): получатель — первый сертификат из набора с адресом, который прошёл проверку; остальные — промежуточные.
 
 use der::{Decode, Encode};
 use serde::{Deserialize, Serialize};
@@ -42,9 +45,45 @@ pub struct Prepared {
     pub fingerprint: String,
 }
 
-/// Подготовить сертификат `der` (промежуточные — `others`) к шифрованию на момент `now`.
+/// Подготовить сертификат `der` (или PKCS#7 с сертификатами; промежуточные — `others`) к шифрованию на момент `now`.
 pub fn prepare(der: &[u8], others: &[Vec<u8>], trust: &Trust, now: u64) -> Result<Prepared, String> {
-    std::panic::catch_unwind(|| prepare_inner(der, others, trust, now)).unwrap_or_else(|_| Err("parser failure".into()))
+    std::panic::catch_unwind(|| match bundle(der) {
+        Some(certs) => prepare_bundle(&certs, others, trust, now),
+        None => prepare_inner(der, others, trust, now),
+    })
+    .unwrap_or_else(|_| Err("parser failure".into()))
+}
+
+/// Сертификатов в одном PKCS#7 — не больше: набор из каталога — чужие данные.
+const BUNDLE_MAX: usize = 16;
+
+/// Сертификаты из PKCS#7 SignedData (`ContentInfo`, `[0] certificates`); не PKCS#7 — `None`.
+fn bundle(der: &[u8]) -> Option<Vec<Vec<u8>>> {
+    let (ci, _) = crate::ber::read(der)?;
+    let ci = ci.children()?;
+    if ci.first().and_then(|t| const_oid::ObjectIdentifier::from_der(t.raw).ok()) != Some(oid::SIGNED_DATA) {
+        return None;
+    }
+    let sd = ci.get(1).filter(|t| t.tag == 0xA0)?.children()?.into_iter().next()?;
+    let parts = sd.children()?;
+    // version, digestAlgorithms, encapContentInfo, [0] certificates?, [1] crls?, signerInfos
+    let certs = parts.iter().skip(3).find(|p| p.tag == 0xA0).and_then(|p| p.children()).unwrap_or_default();
+    Some(certs.into_iter().filter(|c| c.tag == 0x30).take(BUNDLE_MAX).map(|c| c.raw.to_vec()).collect())
+}
+
+/// Получатель из набора: первый сертификат с адресом, прошедший проверку (CA — не получатель).
+fn prepare_bundle(certs: &[Vec<u8>], others: &[Vec<u8>], trust: &Trust, now: u64) -> Result<Prepared, String> {
+    let mut last = Err("PKCS#7: no certificate".to_owned());
+    for (i, c) in certs.iter().enumerate() {
+        let mut rest: Vec<Vec<u8>> = certs.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, d)| d.clone()).collect();
+        rest.extend_from_slice(others);
+        match prepare_inner(c, &rest, trust, now) {
+            Ok(p) if !p.emails.is_empty() => return Ok(p),
+            Ok(_) => last = Err("PKCS#7: certificate without address".into()),
+            Err(e) => last = Err(e),
+        }
+    }
+    last
 }
 
 fn prepare_inner(der: &[u8], others: &[Vec<u8>], trust: &Trust, now: u64) -> Result<Prepared, String> {
