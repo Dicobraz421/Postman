@@ -256,4 +256,19 @@ mod tests {
         assert!(!can_open("noext"));
         assert!(can_open("Отчёт.xlsx"));
     }
+
+    /// Ручная проверка 8, шаг 2: сохранённое вложение помечено «из Интернета» (Zone.Identifier, ZoneId=3) —
+    /// Office и SmartScreen открывают его с защитой.
+    #[cfg(windows)]
+    #[test]
+    fn saved_file_is_marked_from_the_internet() {
+        let dir = tempfile::Builder::new().prefix("postman-").tempdir().unwrap();
+        let path = dir.path().join("Итоги Q3.xlsx");
+        write(&path, b"data").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"data");
+        let mut ads = path.as_os_str().to_owned();
+        ads.push(":Zone.Identifier");
+        let zone = std::fs::read_to_string(ads).unwrap();
+        assert!(zone.contains("ZoneId=3"), "{zone}");
+    }
 }
