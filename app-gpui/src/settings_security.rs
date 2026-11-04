@@ -164,6 +164,7 @@ impl SettingsView {
             .when(!partial, |d| d.bg(l.fill()).text_color(l.text()))
             .when(partial, |d| d.bg(l.error_bg()).text_color(l.error()))
             .child(sandbox);
+        let directory = self.directory_rows(l, cx);
         let help = self.sandbox_help;
         let stored = self.stored == Some(true);
         let wipe = if self.wipe_confirm {
@@ -303,6 +304,7 @@ impl SettingsView {
             ))
             .child(row(tr!("settings-revocation"), Some(tr!("settings-revocation-hint")), revocation, l))
             .child(row(tr!("settings-wipe-title"), Some(wipe_hint), wipe, l))
+            .child(directory)
     }
 }
 

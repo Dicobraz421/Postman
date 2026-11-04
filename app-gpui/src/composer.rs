@@ -33,6 +33,7 @@ use crate::compose::{
     next_ticket, segments, size_text,
 };
 use crate::roles::{Look, Pm};
+use crate::smime_seal::DirectoryStatus;
 
 /// Подсказок адреса под полем.
 const SUGGESTIONS: usize = 6;
@@ -453,6 +454,10 @@ impl Composer {
         if self.model.busy() {
             return;
         }
+        // Нет сертификата адресата — при отправке спросить каталог (S5-12 Ф5), каждый адрес — раз за сеанс.
+        if matches!(purpose, Purpose::Send | Purpose::SendLater(_)) {
+            self.find_in_directory(false, cx);
+        }
         let Some(command) = self.model.begin(purpose, next_ticket(), Instant::now()) else {
             cx.notify();
             return;
@@ -724,6 +729,26 @@ impl Composer {
                 self.marks = Some(c);
             }
         }
+    }
+
+    /// Адреса без сертификата — в каталог (S5-12 Ф5): `explicit` — «Найти в каталоге», иначе — при отправке.
+    fn find_in_directory(&mut self, explicit: bool, cx: &mut Context<Self>) {
+        let addrs: Vec<String> = self
+            .model
+            .checks()
+            .filter_map(|c| match c {
+                Check::NoCertificate { addresses, .. } => Some(addresses.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        if addrs.is_empty() {
+            return;
+        }
+        let mailer = self.mailer.clone();
+        cx.defer(move |cx| {
+            mailer.update(cx, |m, cx| m.find_in_directory(addrs, explicit, cx)).ok();
+        });
     }
 
     /// Действие замечания «Перед отправкой»: первое (`primary`) или второе.
@@ -1659,7 +1684,12 @@ impl Composer {
             ),
             Check::NoCertificate { names, .. } => (
                 tr!("checks-no-cert", names = names.join(", ")),
-                tr!("checks-no-cert-detail"),
+                match crate::smime_seal::lock(&self.certs).directory.clone() {
+                    Some(DirectoryStatus::Searching) => tr!("checks-no-cert-searching"),
+                    Some(DirectoryStatus::Failed(e)) => tr!("checks-no-cert-directory-failed", reason = e),
+                    Some(DirectoryStatus::Done { .. }) => tr!("checks-no-cert-not-in-directory"),
+                    None => tr!("checks-no-cert-detail"),
+                },
                 tr!("checks-no-cert-remove"),
                 if self.confirm_unmark { tr!("checks-no-cert-unmark-confirm") } else { tr!("checks-no-cert-unmark") },
             ),
@@ -1697,13 +1727,27 @@ impl Composer {
                 .child(text)
                 .on_click(cx.listener(move |this, _, window, cx| this.check_action(c.clone(), primary, window, cx)))
         };
-        let actions = div().flex().gap(px(12.)).text_size(px(12.)).child(action(i as u64, a1, true, c.clone(), cx)).child(action(
-            i as u64,
-            a2,
-            false,
-            c.clone(),
-            cx,
-        ));
+        // «Нет сертификата»: между «Убрать их» и «Снять „Конфиденциально“» — «Найти в каталоге» (`docs/SMIME.md` §7);
+        // пока ищем — без неё.
+        let searching = crate::smime_seal::lock(&self.certs).directory == Some(DirectoryStatus::Searching);
+        let directory = (matches!(c, Check::NoCertificate { .. }) && !searching).then(|| {
+            div()
+                .id(ElementId::NamedInteger("check-directory".into(), i as u64))
+                .cursor_pointer()
+                .text_color(l.accent_text())
+                .hover(|d| d.underline())
+                .child(tr!("checks-no-cert-find"))
+                .on_click(cx.listener(|this, _, _, cx| this.find_in_directory(true, cx)))
+        });
+        let actions = div()
+            .flex()
+            .flex_wrap()
+            .gap_x(px(12.))
+            .gap_y(px(4.))
+            .text_size(px(12.))
+            .child(action(i as u64, a1, true, c.clone(), cx))
+            .children(directory)
+            .child(action(i as u64, a2, false, c.clone(), cx));
         let text = div()
             .flex_1()
             .min_w_0()

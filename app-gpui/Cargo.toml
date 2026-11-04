@@ -33,6 +33,8 @@ postman-backend-jmap.workspace = true
 postman-backend-imap.workspace = true
 postman-backend-dav.workspace = true
 postman-backend-ews.workspace = true
+# Каталог сертификатов адресатов (S5-12 Ф5): плагин ядра, LDAP знает только он.
+postman-backend-ldap.workspace = true
 postman-search.workspace = true
 serde.workspace = true
 serde_json.workspace = true

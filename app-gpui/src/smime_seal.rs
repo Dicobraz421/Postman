@@ -1,6 +1,7 @@
 //! «Конфиденциально» = шифрование S/MIME (S5-12 Ф4, `docs/SMIME.md` §6.4, §7): сертификаты адресатов и свои —
 //! кандидаты из кэша подписанных писем, «Других пользователей» и `My` (ядро), проверка и разбор — воркер
-//! (`SmimePrepare`); здесь — книга найденного на сеанс, замки у адресатов, получатели для отправки.
+//! (`SmimePrepare`); здесь — книга найденного на сеанс, замки у адресатов, получатели для отправки. Каталог (Ф5,
+//! `directory.rs`) — по «Найти в каталоге» и при отправке, каждый адрес — не чаще раза за сеанс без явного запроса.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -24,6 +25,18 @@ pub(crate) struct CertBook {
     gcm: HashSet<String>,
     /// Растёт при каждом итоге поиска — окна писем пересчитывают замечания.
     pub(crate) version: u64,
+    /// Адреса, о которых спрашивали каталог за сеанс.
+    asked_directory: HashSet<String>,
+    /// Итог последнего поиска в каталоге — для строки «Перед отправкой».
+    pub(crate) directory: Option<DirectoryStatus>,
+}
+
+/// Поиск в каталоге: идёт, нашёл (сколько адресов получили сертификат) или не смог (текст для строки).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DirectoryStatus {
+    Searching,
+    Done { found: usize },
+    Failed(String),
 }
 
 pub(crate) type Certs = Arc<Mutex<CertBook>>;
@@ -58,6 +71,23 @@ impl CertBook {
             .collect::<HashSet<_>>()
             .into_iter()
             .collect()
+    }
+
+    /// Адреса из `addrs`, о которых каталог ещё не спрашивали (для поиска при отправке).
+    pub(crate) fn not_asked(&self, addrs: &[String]) -> Vec<String> {
+        addrs.iter().map(|a| a.trim().to_lowercase()).filter(|a| !a.is_empty() && !self.asked_directory.contains(a)).collect()
+    }
+
+    /// Подготовленных получателей — в книгу (без повторов по отпечатку).
+    fn add(&mut self, list: impl IntoIterator<Item = Prepared>) {
+        for p in list {
+            for e in p.emails.clone() {
+                let slot = self.prepared.entry(e.to_lowercase()).or_default();
+                if !slot.iter().any(|x| x.fingerprint == p.fingerprint) {
+                    slot.push(p.clone());
+                }
+            }
+        }
     }
 
     fn best(&self, addr: &str, gost: bool) -> Option<&Prepared> {
@@ -115,16 +145,7 @@ impl Mailer {
             let gcm: Vec<String> = addrs.iter().filter(|a| postman_core::smime::declares_gcm(&cache, a)).cloned().collect();
             let mut b = lock(&book);
             match prepared {
-                Ok(list) => {
-                    for p in list.into_iter().flatten() {
-                        for e in p.emails.clone() {
-                            let slot = b.prepared.entry(e).or_default();
-                            if !slot.iter().any(|x| x.fingerprint == p.fingerprint) {
-                                slot.push(p.clone());
-                            }
-                        }
-                    }
-                }
+                Ok(list) => b.add(list.into_iter().flatten()),
                 Err(e) => tracing::warn!("S/MIME recipients are not prepared: {e:?}"),
             }
             for a in addrs {
@@ -134,6 +155,11 @@ impl Mailer {
             b.gcm.extend(gcm);
             b.version += 1;
         });
+        self.after_certs(task, cx);
+    }
+
+    /// Окна писем пересчитывают замечания, когда поиск закончен.
+    fn after_certs(&mut self, task: Task<()>, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             task.await;
             this.update(cx, |m, cx| {
@@ -144,6 +170,52 @@ impl Mailer {
             .ok();
         })
         .detach();
+    }
+
+    /// Найти сертификаты адресов `addrs` в каталоге (S5-12 Ф5): по «Найти в каталоге» — всегда, при отправке
+    /// (`explicit == false`) — только адреса, о которых за сеанс ещё не спрашивали. Демо — пустой каталог.
+    pub(crate) fn find_in_directory(&mut self, addrs: Vec<String>, explicit: bool, cx: &mut Context<Self>) {
+        let certs = self.compose.certs.clone();
+        let addrs = {
+            let mut b = lock(&certs);
+            let addrs =
+                if explicit { addrs.iter().map(|a| a.trim().to_lowercase()).filter(|a| !a.is_empty()).collect() } else { b.not_asked(&addrs) };
+            if addrs.is_empty() || b.directory == Some(DirectoryStatus::Searching) {
+                return;
+            }
+            b.asked_directory.extend(addrs.iter().cloned());
+            b.directory = Some(DirectoryStatus::Searching);
+            b.version += 1;
+            addrs
+        };
+        let live = self.backend.is_live();
+        let prefs = crate::prefs::get(cx).security.directory.clone();
+        let (cache, worker) = (self.cache.clone(), self.reading.read(cx).worker.clone());
+        let env = if live { postman_core::smime::Context::system() } else { crate::smime::demo_context() };
+        let book = certs.clone();
+        let task = cx.background_spawn(async move {
+            let now = jiff::Timestamp::now().as_second();
+            let dir: Arc<dyn postman_core::smime::directory::Directory> =
+                if live { crate::directory::from_prefs(&prefs) } else { Arc::new(crate::directory::Empty) };
+            let result = crate::directory::search(dir, &addrs, &cache, &worker, &env.anchors.trust(), now);
+            let mut b = lock(&book);
+            b.directory = Some(match result {
+                Ok(list) => {
+                    b.add(list);
+                    let found = addrs.iter().filter(|a| b.prepared.contains_key(a.as_str())).count();
+                    DirectoryStatus::Done { found }
+                }
+                Err(e) => {
+                    tracing::info!("directory: {e}");
+                    DirectoryStatus::Failed(crate::directory::error_text(&e))
+                }
+            });
+            for a in addrs {
+                b.resolved.insert(a);
+            }
+            b.version += 1;
+        });
+        self.after_certs(task, cx);
     }
 }
 
@@ -175,6 +247,17 @@ mod tests {
             not_after,
             fingerprint: fp.into(),
         }
+    }
+
+    /// Каталог: при отправке спрашиваются только адреса, о которых ещё не спрашивали; найденное — по адресу в
+    /// нижнем регистре.
+    #[test]
+    fn directory_asks_once() {
+        let mut b = CertBook::default();
+        b.asked_directory.insert("p@x".into());
+        assert_eq!(b.not_asked(&["P@x".into(), " Q@x".into(), "".into()]), vec!["q@x".to_string()]);
+        b.add([prepared("Q@X", false, "F", 5), prepared("q@x", false, "F", 5)]);
+        assert_eq!(b.prepared.get("q@x").map(Vec::len), Some(1));
     }
 
     /// Семейства, «ещё не искали», лучший по сроку; себе — тоже.
