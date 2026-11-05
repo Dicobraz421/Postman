@@ -962,7 +962,9 @@ impl MailList {
                 m.count = count;
                 m.groups = groups;
                 m.relayout();
-                m.selected = reselect(selected.as_deref(), offset, &rows, count);
+                // Пока читали, могли выбрать другое письмо: выбор важнее того, что было при запросе.
+                let current = m.selected.and_then(|i| m.row(i)).map(|r| r.id.clone());
+                m.selected = reselect(current.as_deref().or(selected.as_deref()), offset, &rows, count);
                 if m.selected.is_some() {
                     m.restore = None;
                 }

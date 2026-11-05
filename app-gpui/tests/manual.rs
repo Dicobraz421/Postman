@@ -1,4 +1,4 @@
-//! Автопроверка ручных разделов `docs/MANUAL-TESTS.md` (2–6, 12, 13, 15, 16) без нажатий в окне: запуск `postman.exe` с ключами,
+//! Автопроверка ручных разделов `docs/MANUAL-TESTS.md` (2–6, 12, 13, 15, 16, 18–21) без нажатий в окне: запуск `postman.exe` с ключами,
 //! файлы снимков, состояние окна и журнал «Приложение» — средствами Windows. Данные — во временном `LOCALAPPDATA`,
 //! настоящий ящик и настройки не трогаются.
 //!
@@ -335,5 +335,27 @@ fn s13_s15_s16_scenes() {
     assert!(out.status.success(), "код {:?}: {}", out.status.code(), String::from_utf8_lossy(&out.stderr));
     for name in ["contacts", "contacts-menu", "contact-edit", "vacation", "rules", "quota"] {
         assert!(dir.join(format!("{name}.png")).exists(), "нет снимка {name}");
+    }
+}
+
+/// Разделы 18–21 (S4-06, S5-05а, S5-02а, S5-06а): экраны без сервера — ветки общих ящиков, лента беседы и её виды,
+/// метки, «Отправить позже», запланированное письмо. Смотрит агент: снимки в `target/tmp/manual-screens/mail`.
+#[test]
+#[ignore = "окно и рабочий стол: cargo nextest run -p postman-gpui --test manual --run-ignored only"]
+fn s18_to_s21_scenes() {
+    need_worker();
+    // `labels` — отдельным запуском: сцена берёт строки открытых «Входящих», а не папки прошлой сцены.
+    const RUNS: [&[&str]; 2] =
+        [&["thread", "thread-view-menu", "thread-stack", "thread-list", "compose", "send-later", "sent", "sent-letter", "shared"], &["labels"]];
+    let dir = screens_dir("mail");
+    for names in RUNS {
+        let data = tempfile::tempdir().unwrap();
+        let mut c = postman(data.path(), &["--screens", dir.to_str().unwrap(), "--lang", "ru"]);
+        c.env("POSTMAN_SCREENS_ONLY", names.join(","));
+        let out = run(c, Duration::from_secs(300));
+        assert!(out.status.success(), "{names:?}: код {:?}: {}", out.status.code(), String::from_utf8_lossy(&out.stderr));
+        for name in names {
+            assert!(dir.join(format!("{name}.png")).exists(), "нет снимка {name}");
+        }
     }
 }
