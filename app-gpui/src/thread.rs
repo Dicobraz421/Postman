@@ -341,7 +341,14 @@ impl ReadingPane {
                                 .flex_col()
                                 .gap_1()
                                 .children(ir_view::blocks(blocks, &format!("feed{n}"), &images, self.column.get(), cx))
-                                .when(hidden, |d| d.child(div().text_color(l.text2()).child(tr!("thread-quotes-hidden"))))
+                                .when(hidden, |d| {
+                                    d.child(
+                                        div()
+                                            .text_color(l.text2())
+                                            .children(crate::screens::spot(("feed-hidden", n)))
+                                            .child(tr!("thread-quotes-hidden")),
+                                    )
+                                })
                                 .into_any_element()
                         }
                     };
@@ -479,6 +486,7 @@ impl ReadingPane {
                 .child(
                     div()
                         .id("stack-all")
+                        .children(crate::screens::spot("stack-all"))
                         .px(px(4.))
                         .py(px(2.))
                         .rounded(px(4.))
@@ -528,6 +536,7 @@ impl ReadingPane {
                 let click = id.clone();
                 div()
                     .id(("stack-row", n))
+                    .children(crate::screens::spot(("stack-row", n)))
                     .h(px(36.))
                     .flex()
                     .items_center()
@@ -573,6 +582,7 @@ impl ReadingPane {
         let action = |key: &'static str, g: char, mode: Mode, row: EmailRow, cx: &mut Context<Self>| {
             div()
                 .id((key, n))
+                .children(crate::screens::spot((key, n)))
                 .size(px(28.))
                 .flex_none()
                 .flex()
@@ -595,6 +605,7 @@ impl ReadingPane {
             .child(
                 div()
                     .id(("stack-head", n))
+                    .children(crate::screens::spot(("stack-head", n)))
                     .flex_1()
                     .min_w_0()
                     .flex()

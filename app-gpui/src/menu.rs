@@ -194,6 +194,21 @@ impl Menu {
         self.sub
     }
 
+    /// Над сколькими письмами меню (сценарии).
+    pub(crate) fn letters(&self) -> usize {
+        self.ids.len()
+    }
+
+    /// Номер пункта под курсором и пункта подменю (сценарии).
+    pub(crate) fn cursor(&self) -> (usize, usize) {
+        (self.cursor, self.sub_cursor)
+    }
+
+    /// Пункт под курсором можно выполнить (сценарии).
+    pub(crate) fn on_enabled(&self) -> bool {
+        self.item().is_some_and(|it| self.enabled(it))
+    }
+
     fn item(&self) -> Option<Item> {
         items(self.features).nth(self.cursor)
     }

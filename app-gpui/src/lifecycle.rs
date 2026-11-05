@@ -419,6 +419,12 @@ impl Mailer {
     /// Кэш изменён: список, письмо в области чтения, затем — планировщик (новый ближайший срок).
     fn patched(&mut self, rows: Vec<EmailRow>, cx: &mut Context<Self>) {
         self.list.update(cx, |l, cx| l.refresh(cx));
+        self.open_row_changed(&rows, cx);
+        self.lifecycle_pass(false, cx);
+    }
+
+    /// Письмо в области чтения среди изменённых: шапка — по новой строке (метки сроков).
+    fn open_row_changed(&mut self, rows: &[EmailRow], cx: &mut Context<Self>) {
         self.reading.update(cx, |r, cx| {
             if let Some(open) = r.reading.as_mut()
                 && let Some(row) = rows.iter().find(|x| x.id == open.row.id)
@@ -427,13 +433,12 @@ impl Mailer {
                 cx.notify();
             }
         });
-        self.lifecycle_pass(false, cx);
     }
 
     /// Проход планировщика (в фоне, по кэшу): что сделать сейчас и к какому сроку проснуться. Снимки и замер — без
     /// него (повторяемы).
     pub(crate) fn lifecycle_pass(&mut self, timer: bool, cx: &mut Context<Self>) {
-        if self.screens.is_some() || self.bench.is_some() {
+        if self.screens.as_ref().is_some_and(|d| !d.planner) || self.bench.is_some() {
             return;
         }
         if self.lifecycle.running {
@@ -450,8 +455,8 @@ impl Mailer {
             let input = lifecycle::gather(&cache, &roles, now.timestamp().as_second())?;
             let plan = lifecycle::plan(&input, &roles, &rules, &me, &now);
             let local: Vec<Patch> = plan.patches.iter().map(lifecycle::for_cache).collect();
-            cache.patch_emails(&local)?;
-            Ok::<Plan, postman_cache::Error>(plan)
+            let rows = cache.patch_emails(&local)?;
+            Ok::<(Plan, Vec<EmailRow>), postman_cache::Error>((plan, rows))
         });
         cx.spawn(async move |this, cx| {
             let plan = task.await;
@@ -460,12 +465,12 @@ impl Mailer {
         .detach();
     }
 
-    fn lifecycle_done(&mut self, plan: Result<Plan, postman_cache::Error>, timer: bool, cx: &mut Context<Self>) {
+    fn lifecycle_done(&mut self, plan: Result<(Plan, Vec<EmailRow>), postman_cache::Error>, timer: bool, cx: &mut Context<Self>) {
         self.lifecycle.running = false;
         let now = jiff::Timestamp::now().as_second();
         match plan {
             Err(e) => tracing::warn!("lifecycle: {e}"),
-            Ok(plan) => {
+            Ok((plan, rows)) => {
                 let changed = !plan.patches.is_empty();
                 if changed && self.backend.is_live() {
                     let archive_name = tr!("lifecycle-archive-folder");
@@ -477,6 +482,7 @@ impl Mailer {
                 if changed || timer {
                     self.list.update(cx, |l, cx| l.refresh(cx));
                     self.reading.update(cx, |_, cx| cx.notify());
+                    self.open_row_changed(&rows, cx);
                 }
                 for n in &plan.notices {
                     if let Notice::Reminded { id, subject } = n {
@@ -562,6 +568,9 @@ impl Mailer {
         let Some(row) = self.cache.rows_by_ids(std::slice::from_ref(&id)).ok().and_then(|mut r| r.pop()) else { return };
         self.set_section(crate::Section::Mail, cx);
         self.list.update(cx, |l, cx| l.open_row(row, cx));
+        // Прочитано — наверху больше не держать, не дожидаясь прохода планировщика: без событий синхронизации его нет.
+        let done = Patch { id, keywords: vec![(postman_core::marks::REMIND.to_owned(), false)], ..Patch::default() };
+        self.apply_patches(vec![done], cx);
     }
 
     /// Панель выбора поверх области чтения (у шапки письма с кнопками сроков).
@@ -687,6 +696,7 @@ impl Mailer {
                     .child(
                         div()
                             .id(("reminder-open", i))
+                            .children(crate::screens::spot(("reminder-open", i)))
                             .px_2()
                             .rounded_md()
                             .cursor_pointer()

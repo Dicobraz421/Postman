@@ -608,8 +608,10 @@ fn ids_of(source: &PageSource, cache: &postman_cache::Cache, start: usize, len: 
 
 /// Строка выпадающего списка и контекстного меню.
 pub(crate) fn menu_line(id: impl Into<ElementId>, l: &Look) -> Stateful<Div> {
+    let id = id.into();
     div()
-        .id(id)
+        .id(id.clone())
+        .children(crate::screens::spot(id))
         .h(px(28.))
         .flex_none()
         .flex()

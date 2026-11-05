@@ -674,7 +674,9 @@ impl Mailer {
     /// Открытое меню строки фокус у экрана не отнимает.
     fn sync_focus(&mut self, window: &Window, cx: &mut Context<Self>) {
         let menu = self.menu.is_some() || self.contacts.read(cx).menu_open() || self.folders.read(cx).menu_open();
-        let focused = window.is_window_active() && (self.focus.is_focused(window) || menu);
+        // Снимки: окно прогона может быть и не на переднем плане, тон выделения от этого не зависит.
+        let active = window.is_window_active() || self.screens.is_some();
+        let focused = active && (self.focus.is_focused(window) || menu);
         if self.list.read(cx).focused != focused {
             self.list.update(cx, |l, cx| {
                 l.focused = focused;

@@ -579,6 +579,11 @@ impl Folders {
         }
     }
 
+    /// Подпапки папки свёрнуты (сценарии).
+    pub(crate) fn is_folded(&self, id: &str) -> bool {
+        self.folded.contains(id)
+    }
+
     /// Подпись своей учётной записи есть: логин известен или нет связи (в демо без связи — нет).
     fn own_label(&self) -> bool {
         self.own.is_some() || self.offline
@@ -643,14 +648,18 @@ impl Folders {
         let letters_to = m.id.clone();
         // Шеврон подпапок (T1-04г): место под него — у каждой папки, чтобы значки уровня стояли ровно.
         let open = !self.folded.contains(&m.id);
-        let chevron = div().id(SharedString::from(format!("mb-fold-{}", m.id))).w(px(12.)).flex_none().text_color(l.text3()).when(node.parent, |d| {
-            d.child(chevron_glyph(open)).cursor_pointer().on_click(cx.listener(move |this, _, _, cx| {
-                cx.stop_propagation();
-                this.fold(&fold, cx);
-            }))
-        });
+        let fold_id = SharedString::from(format!("mb-fold-{}", m.id));
+        let chevron =
+            div().id(fold_id.clone()).children(crate::screens::spot(fold_id)).w(px(12.)).flex_none().text_color(l.text3()).when(node.parent, |d| {
+                d.child(chevron_glyph(open)).cursor_pointer().on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.fold(&fold, cx);
+                }))
+            });
+        let row_id = SharedString::from(format!("mb-{}", m.id));
         div()
-            .id(SharedString::from(format!("mb-{}", m.id)))
+            .id(row_id.clone())
+            .children(crate::screens::spot(row_id))
             .h(px(row_h(l)))
             .flex_none()
             // Отступ ветки и 16 px на уровень вложенности.

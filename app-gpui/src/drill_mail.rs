@@ -2,6 +2,7 @@
 //! Механика — `screens.rs`, запуск — тест `mail_drills` в `app-gpui/tests/manual.rs`. `ready` и `Until` проверяют обещанное шагом
 //! по модели; цвет и вид — по снимку.
 
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -9,18 +10,23 @@ use std::time::{Duration, Instant};
 use gpui_kit::*;
 use jiff::Zoned;
 use pets_i18n::tr;
-use postman_cache::BodyRow;
+use pets_ui::theme::Themes;
+use postman_cache::{BodyRow, EmailRow};
+use postman_core::filters::{Check, Group, Quick as Tab};
 use postman_core::lifecycle::Bad;
 use postman_core::marks::Kind;
-use postman_core::prefs::{Conversation, KeyScheme, ThreadOrder};
+use postman_core::prefs::{Accent, Conversation, KeyScheme, Layout, Pane, Quick as Listed, ThreadOrder};
+use postman_core::query::Refine;
 use postman_core::send_later::Reject;
 
-use crate::Mailer;
 use crate::compose::{Model, Purpose, Status, segments};
+use crate::mailer::{W_FOLDERS, W_LIST};
 use crate::menu::Sub;
-use crate::preview::PvState;
+use crate::preview::{PvState, Shown};
 use crate::screens::{self, Held, Input, Scene, demo_row, outlook_letter, rows_loaded};
+use crate::settings_tab::Section as SettingsPage;
 use crate::tabs::TabKind;
+use crate::{Mailer, Section};
 
 pub(crate) const PART: crate::part::Part = crate::part::Part { name: "drill-mail", scenes: SCENES, reset: Some(reset), ..crate::part::Part::NONE };
 
@@ -143,6 +149,59 @@ const SCENES: &[Scene] = &[
     scene("mail-t117-one", |_, m, cx| model(m, cx).is_some_and(|c| c.subject.starts_with("FW:") && c.attachments().count() == 1), FORWARD_ONE),
     // S5-19, шаги 3, 4: сводка трёх писем — кнопки тонированные (снимок).
     scene("mail-s519-summary", |_, m, cx| m.list.read(cx).selection.len() >= 3, SUMMARY),
+    // Раздел 10, шаг 7: полоса прокрутки тянется мышью; папка → другая → назад: позиция та же.
+    scene("mail-10-scroll", scroll_kept, SCROLL),
+    // Раздел 19, шаг 6: письмо без беседы — кнопки нет; пересылка (FW:) в ленте целиком, ответ — без цитаты.
+    from("mail-19-solo", solo, forward_whole, SOLO),
+    // Раздел 23, шаг 8: Esc в ответе с текстом, «Да» без сервера: текст на месте; «Развернуть» — тот же черновик во вкладке.
+    scene("mail-23-draft", same_draft, DRAFT),
+    // Раздел 25, шаг 7: две закладки — письма любой из них; плюс «Непрочитанные» — только подходящие под то и другое.
+    scene("mail-25-two", two_tabs, TWO_TABS),
+    // Раздел 25, шаг 8: «×» и «…» → Быстрые фильтры; в настройках скрыть «Мне», поднять «Истекают»; фильтр скрытой снят.
+    scene("mail-25-hide", tabs_moved, HIDE_TABS),
+    // Раздел 25, шаг 9: панель чтения снизу — закладки у края списка; скрыта и письмо открыто — закладок нет.
+    scene("mail-25-pane", tabs_gone, PANES),
+    // Раздел 27, шаг 5: оглавление архива, два опасных файла, на диск ничего не распаковано.
+    scene("mail-27-zip", zip_listed, ZIP),
+    // Раздел 27, шаг 8 (без диалога Windows): «Сохранить все» в каталог, повтор — копии «(2)», метка «из Интернета».
+    scene("mail-27-save", saved_twice, SAVE_ALL),
+    // Раздел 28, шаг 3: срок наступил — письмо во «Входящих», наверху, карточка; «Открыть» — прочитано, «Срочное» ушло.
+    from("mail-28-arrive", planner, reminder_done, ARRIVE),
+    // Раздел 29, шаг 7, мышь: меню над строкой вне выделения, подменю по наведению, пункт подменю, щелчок мимо.
+    scene("mail-29-menu", menu_done, MENU_MOUSE),
+    // Раздел 29, шаг 7, клавиатура: Shift+F10, «Меню», стрелки, подменю, Esc; j, k и цифры список не трогают.
+    from("mail-29-menu-keys", single, |_, m, cx| m.menu.is_none() && toast_starts(m, cx, "Категория"), MENU_KEYS), // i18n-ok: ввод сценария
+    // Раздел 29, шаг 7, выделение: «Выбрано N», ответы серые и пропускаются; вне выделения — меню над одной строкой.
+    scene("mail-29-menu-many", |_, m, cx| m.menu.is_none() && m.list.read(cx).selection.len() >= 2, MENU_MANY),
+    // Раздел 30, шаг 7: чипы «Уточнить» добавляют условие и снимают его; строка чипов идёт колесом.
+    scene("mail-30-refine", chips_scrolled, REFINE),
+    // Раздел 31, шаг 3: стопка: строка, шапка, Enter, «Развернуть все», Ctrl+→ / Ctrl+←, «Ответить» у письма.
+    from("mail-31-stack", stack, stack_replied, STACK),
+    // Раздел 31, шаг 8: общий вид и вид папки из настроек меняют открытую папку; «По умолчанию» в меню снимает свой вид.
+    scene("mail-31-settings", |_, m, cx| view_of(m, cx).is_none() && m.list.read(cx).flat_mode(cx), VIEW_SETTINGS),
+    // Раздел 32, шаг 5: «Следующее совпадение» — F3; переназначение работает.
+    scene("mail-32-keys", |_, m, cx| m.reading.read(cx).hit == 1, HIT_KEYS),
+    // Раздел 37, шаг 2: A — ответ всем, F — переслать, E — архив.
+    from("mail-37-afe", single, |_, m, cx| gone(m, cx), AFE),
+    // T1-04г, шаги 1–3: отступ 16 px на уровень, шеврон, переход из палитры разворачивает родителей, счётчик тот же.
+    scene("mail-t104-tree", tree_open, TREE),
+    // T1-05б, шаги 1, 2: разделители тянутся до минимума; двойной щелчок — ширина макета.
+    scene("mail-t105-split", |_, m, cx| m.panes == (W_FOLDERS, W_LIST) && crate::prefs::get(cx).layout == Layout::default(), SPLITS),
+    // T1-05б, шаг 3: узкое окно: сначала чтение, затем список, затем папки.
+    scene("mail-t105-narrow", |_, m, _| m.panes == (f32::from(Layout::MIN_FOLDERS), f32::from(Layout::MIN_LIST)), NARROW),
+    // T1-D, шаг 1 (шаг 3 — в тёмной теме): строка в фокусе и наведение. Цвета проверяет `mail_drills` по снимку.
+    scene("mail-t1d-focus", |_, m, cx| m.list.read(cx).focused, FOCUS),
+    // T1-D, шаг 1: щелчок в поиск: выделение нейтральное у писем, папок и контактов.
+    scene("mail-t1d-blur", no_focus, BLUR),
+    // T1-D, шаг 2: у каждого акцента свой тон выделения.
+    scene("mail-t1d-accents", |_, _, _| tones().len() == Accent::ALL.len(), ACCENTS),
+    // T1-D, шаг 4: тема «Серая» из настроек. Цвета проверяет `mail_drills` по снимку.
+    scene("mail-t1d-gray", |_, m, cx| crate::roles::look(cx).gray() && m.tabs.is_active(TabKind::Main), GRAY),
+    // Перезапуск (разделы 31.8, T1-04г.2, T1-05б.3, T1-D.4): первый прогон меняет, второй — со своим процессом — проверяет.
+    scene("mail-restart-set", |_, _, cx| crate::roles::look(cx).gray(), RESTART_SET),
+    scene("mail-restart-check", restarted, RESTART_CHECK),
+    // S5-19, шаг 1: событие-приглашение: «Принять» залита, остальные тонированные; наведение — темнее (цвета — по снимку).
+    from("mail-s519-invite", invitation, |_, m, _| m.section == Section::Calendar && screens::spotted("accept").is_some(), INVITE),
 ];
 
 const OPENED: Input = until!(|m, cx| screens::reading(m, cx).is_some_and(|r| r.doc.is_some()));
@@ -1046,6 +1105,956 @@ fn forwarded_many(_: &Scene, m: &Mailer, cx: &App) -> bool {
 const FORWARD_ONE: &[Input] = &[READY, Input::Right(row1), MENU, Input::Keys(&["down", "down", "down", "enter"]), COMPOSE];
 
 const SUMMARY: &[Input] = &[READY, LEFT, OPENED, CTRL_ROW1, TWO_PICKED, Input::Click(row2, Held::Ctrl)];
+
+// --- вторая партия: прокрутка, закладки, вложения, срок напоминания, меню, стопка, настройки, панели, цвета ---
+
+const SETTLE: Input = Input::Until(|_, _, _| pause(250));
+const FORGET: Input = Input::Run(forget);
+const CLOSE_TAB: Input = Input::Keys(&["ctrl-w"]);
+const MAIN: Input = until!(|m, _| m.tabs.is_active(TabKind::Main));
+
+fn forget(_: &Scene, _: &mut Mailer, _: &mut Window, _: &mut Context<Mailer>) -> Result<(), String> {
+    screens::forget_spots();
+    Ok(())
+}
+
+fn settings_quick(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+    m.open_settings(Some(SettingsPage::Quick), window, cx);
+    Ok(())
+}
+
+fn settings_reading(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+    m.open_settings(Some(SettingsPage::Reading), window, cx);
+    Ok(())
+}
+
+fn settings_look(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+    m.open_settings(Some(SettingsPage::Look), window, cx);
+    Ok(())
+}
+
+/// «Настройки → Клавиатура», курсор в поле поиска команд.
+fn settings_keys(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+    m.open_settings(Some(SettingsPage::Keys), window, cx);
+    let Some(view) = m.settings.view.clone() else { return Err("no settings view".into()) };
+    let search = view.read(cx).keys.search.clone();
+    search.update(cx, |s, cx| s.focus(window, cx));
+    Ok(())
+}
+
+// Раздел 10, шаг 7.
+
+/// Сдвиг списка вниз, px.
+fn list_y(m: &Mailer, cx: &App) -> usize {
+    f32::from(m.list.read(cx).scroll.offset().y).abs() as usize
+}
+
+/// Ползунок полосы прокрутки — вверху дорожки, у правого края списка.
+fn thumb(m: &Mailer, _: &Window, cx: &App) -> Option<Point<Pixels>> {
+    let b = m.list.read(cx).bounds.get();
+    (b.size.width > px(0.)).then(|| point(b.origin.x + b.size.width - px(8.), b.origin.y + px(20.)))
+}
+
+fn thumb_down(m: &Mailer, w: &Window, cx: &App) -> Option<Point<Pixels>> {
+    thumb(m, w, cx).map(|p| point(p.x, p.y + px(240.)))
+}
+
+const SCROLL: &[Input] = &[
+    READY,
+    Input::Move(thumb),
+    Input::Drag(thumb, thumb_down),
+    until!(|m, cx| list_y(m, cx) > 300 && keep(list_y(m, cx))),
+    until!(|_, _| screens::spotted("mb-sent").is_some()),
+    Input::Click(at!("mb-sent"), Held::No),
+    until!(|m, cx| m.list.read(cx).mailbox.as_deref() == Some("sent") && rows_loaded(m.list.read(cx)) && list_y(m, cx) == 0),
+    Input::Click(at!("mb-inbox"), Held::No),
+];
+
+fn scroll_kept(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    m.list.read(cx).mailbox.as_deref() == Some("inbox") && list_y(m, cx) == kept() && rows_loaded(m.list.read(cx))
+}
+
+// Раздел 19, шаг 6.
+
+/// Письмо без беседы и пересылка в беседе: таких строк в демо нет, сцена делает их из имеющихся.
+fn solo(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+    let rows = m.cache.page("inbox", 0, 8).map_err(|e| e.to_string())?;
+    let Some(mut letter) = rows.into_iter().find(|r| !r.id.starts_with("chain")) else { return Err("no letter".into()) };
+    letter.thread_id = "solo".into();
+    let reply = m.cache.rows_by_ids(&[FORWARDED.into()]).map_err(|e| e.to_string())?.pop();
+    let Some(mut forward) = reply else { return Err("no demo conversation in the cache".into()) };
+    forward.subject = "FW: Пилот SIEM: сроки".into(); // i18n-ok: тема письма сцены
+    letter.id.clone_into(&mut OPEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+    m.cache.upsert_emails(&[letter, forward]).map_err(|e| e.to_string())?;
+    m.list.update(cx, |l, cx| l.refresh(cx));
+    Ok(())
+}
+
+/// Письмо беседы, ставшее пересылкой, и его номер в ленте (ответ с цитатой).
+const FORWARDED: &str = "chain2";
+const FORWARDED_N: &str = "feed-hidden-1";
+const REPLY_N: &str = "feed-hidden-2";
+
+/// Строка запомненного письма.
+fn kept_row(m: &Mailer, _: &Window, cx: &App) -> Option<Point<Pixels>> {
+    let open = OPEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let list = m.list.read(cx);
+    let i = list.rows.1.iter().position(|r| r.id == *open)?;
+    row(m, cx, i + list.rows.0)
+}
+
+const SOLO: &[Input] = &[
+    READY,
+    Input::Click(kept_row, Held::No),
+    OPENED,
+    until!(|m, cx| screens::reading(m, cx).is_some_and(|r| r.row.thread_id == "solo")),
+    FORGET,
+    SETTLE,
+    until!(|m, cx| m.reading.read(cx).feed.is_none() && screens::spotted("thread-toggle").is_none() && screens::spotted("mb-inbox").is_some()),
+    Input::Run(chain_feed),
+    until!(|m, cx| feed_ready(m, cx)),
+    FORGET,
+    SETTLE,
+];
+
+fn forward_whole(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    feed_ready(m, cx)
+        && screens::spotted("thread-toggle").is_some()
+        && screens::spotted(FORWARDED_N).is_none()
+        && screens::spotted(REPLY_N).is_some()
+        && m.reading.read(cx).feed.as_ref().is_some_and(|f| f.conv.messages.iter().any(|x| postman_core::thread::is_forward(&x.row.subject)))
+}
+
+// Раздел 23, шаг 8.
+
+const DRAFT: &[Input] = &[
+    READY,
+    LEFT,
+    OPENED,
+    Input::Keys(&["ctrl-r"]),
+    INLINE,
+    Input::Text("ответ"),                                                                             // i18n-ok: ввод сценария
+    until!(|m, cx| m.compose.inline_view().is_some_and(|c| c.read(cx).model.body.contains("ответ"))), // i18n-ok: ввод сценария
+    until!(|m, _| m.compose.inline.as_ref().is_some_and(|i| keep(i.id as usize))),
+    Input::Keys(&["escape"]),
+    until!(|m, cx| m.compose.inline_view().is_some_and(|c| c.read(cx).model.confirm_close)),
+    Input::Click(at!("close-save"), Held::No),
+    until!(|m, cx| m.compose.inline_view().is_some_and(|c| {
+        let c = &c.read(cx).model;
+        !c.confirm_close && matches!(c.status, Status::NoServer(Purpose::Save)) && c.body.contains("ответ") // i18n-ok: ввод сценария
+    }) && m.toasts.read(cx).latest().is_some_and(|t| t == tr!("needs-server"))),
+    // Тост лежит поверх кнопки «Развернуть».
+    Input::Click(at!("notice"), Held::No),
+    until!(|m, cx| m.toasts.read(cx).on_screen() == 0),
+    Input::Click(at!("expand"), Held::No),
+    COMPOSE,
+];
+
+fn same_draft(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    let tab = matches!(m.tabs.active().kind, TabKind::Compose(id) if id as usize == kept());
+    tab && m.compose.inline.is_none() && letters(m) == 1 && body_has(m, cx, "ответ") // i18n-ok: ввод сценария
+}
+
+// Раздел 25, шаги 7–9.
+
+/// Закладки включены и список пересчитан.
+fn tabs_on(m: &Mailer, cx: &App, n: usize) -> bool {
+    let list = m.list.read(cx);
+    list.query.criteria.quick.len() == n && !list.computing && rows_loaded(list)
+}
+
+fn threat(r: &EmailRow) -> bool {
+    r.has_keyword("$phishing")
+}
+
+fn due(r: &EmailRow) -> bool {
+    postman_core::marks::has(&r.keywords, Kind::Due)
+}
+
+const TWO_TABS: &[Input] = &[
+    READY,
+    until!(|_, _| screens::spotted("quick-tab-Threats").is_some()),
+    Input::Click(at!("quick-tab-Threats"), Held::No),
+    until!(|m, cx| tabs_on(m, cx, 1) && m.list.read(cx).rows.1.iter().all(threat) && keep(m.list.read(cx).count)),
+    Input::Click(at!("quick-tab-Due"), Held::No),
+    until!(|m, cx| {
+        let list = m.list.read(cx);
+        tabs_on(m, cx, 2) && list.count > kept() && list.rows.1.iter().all(|r| threat(r) || due(r)) && list.rows.1.iter().any(due)
+    }),
+    until!(|m, cx| keep(m.list.read(cx).count)),
+    Input::Click(at!("funnel"), Held::No),
+    until!(|m, cx| m.filters.read(cx).panel),
+    until!(|_, _| screens::spotted("flt-Unread").is_some()),
+    Input::Click(at!("flt-Unread"), Held::No),
+];
+
+fn two_tabs(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    let list = m.list.read(cx);
+    list.query.criteria.checks.contains(&Check::Unread)
+        && !list.computing
+        && list.count < kept()
+        && list.rows.1.iter().all(|r| !r.seen && (threat(r) || due(r)))
+}
+
+fn quick_row(cx: &App, q: Listed) -> Option<usize> {
+    crate::prefs::get(cx).quick.items.iter().position(|i| i.filter == q)
+}
+
+fn mine_toggle(_: &Mailer, _: &Window, cx: &App) -> Option<Point<Pixels>> {
+    screens::spotted(&format!("settings-quick-toggle-{}", quick_row(cx, Listed::Mine)?))
+}
+
+fn expiring_up(_: &Mailer, _: &Window, cx: &App) -> Option<Point<Pixels>> {
+    screens::spotted(&format!("settings-quick-up-{}", quick_row(cx, Listed::Expiring)?))
+}
+
+const HIDE_TABS: &[Input] = &[
+    READY,
+    until!(|_, _| screens::spotted("quick-hide").is_some()),
+    Input::Click(at!("quick-tab-ToMe"), Held::No),
+    until!(|m, cx| m.list.read(cx).query.criteria.quick.contains(&Tab::ToMe)),
+    Input::Click(at!("quick-hide"), Held::No),
+    until!(|m, cx| {
+        crate::prefs::get(cx).quick.hidden
+            && Mailer::quick_tabs(cx).is_empty()
+            && m.toasts.read(cx).latest().is_some_and(|t| t == tr!("filters-quick-hidden"))
+            && m.filters.read(cx).query.criteria.quick.is_empty()
+    }),
+    Input::Click(at!("bar-more"), Held::No),
+    until!(|m, cx| m.bar.read(cx).more_open),
+    until!(|_, _| screens::spotted("more-quick").is_some()),
+    Input::Click(at!("more-quick"), Held::No),
+    until!(|_, cx| !crate::prefs::get(cx).quick.hidden && Mailer::quick_tabs(cx).len() == Listed::ALL.len()),
+    SETTLE,
+    Input::Click(at!("quick-tab-ToMe"), Held::No),
+    until!(|m, cx| m.list.read(cx).query.criteria.quick.contains(&Tab::ToMe)),
+    Input::Run(settings_quick),
+    until!(|m, cx| screens::settings_on(m, SettingsPage::Quick, cx)),
+    until!(|_, _| screens::spotted("settings-quick-toggle-3").is_some()),
+    Input::Click(mine_toggle, Held::No),
+    until!(|_, cx| !Mailer::quick_tabs(cx).contains(&Tab::ToMe)),
+    until!(|m, cx| !m.filters.read(cx).query.criteria.quick.contains(&Tab::ToMe)),
+    Input::Click(expiring_up, Held::No),
+    until!(|_, cx| quick_row(cx, Listed::Expiring) == Some(3)),
+    SETTLE,
+    Input::Click(expiring_up, Held::No),
+    until!(|_, cx| quick_row(cx, Listed::Expiring) == Some(2)),
+    CLOSE_TAB,
+    MAIN,
+    FORGET,
+    SETTLE,
+];
+
+fn tabs_moved(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    let order = Mailer::quick_tabs(cx) == [Tab::Threats, Tab::Due, Tab::Expiring, Tab::Waiting];
+    let on_screen = match (screens::spotted("quick-tab-Expiring"), screens::spotted("quick-tab-Waiting")) {
+        (Some(a), Some(b)) => a.x < b.x,
+        _ => false,
+    };
+    order && on_screen && screens::spotted("quick-tab-ToMe").is_none() && m.filters.read(cx).query.criteria.quick.is_empty()
+}
+
+/// Закладка «Угрозы» у нижнего края карточки списка.
+fn tabs_at_list_bottom(m: &Mailer, cx: &App) -> bool {
+    let b = m.list.read(cx).bounds.get();
+    screens::spotted("quick-tab-Threats").is_some_and(|p| {
+        let gap = f32::from(b.origin.y + b.size.height - p.y);
+        (-12. ..48.).contains(&gap)
+    })
+}
+
+/// Середина страницы настроек: колесо до строк ниже края окна.
+fn settings_middle(_: &Mailer, _: &Window, _: &App) -> Option<Point<Pixels>> {
+    Some(point(px(640.), px(400.)))
+}
+
+const SETTINGS_DOWN: Input = Input::Wheel(settings_middle, 500.);
+
+const PANES: &[Input] = &[
+    READY,
+    Input::Run(settings_reading),
+    until!(|m, cx| screens::settings_on(m, SettingsPage::Reading, cx)),
+    until!(|_, _| screens::spotted("settings-pane-1").is_some()),
+    SETTINGS_DOWN,
+    SETTLE,
+    Input::Click(at!("settings-pane-1"), Held::No),
+    until!(|_, cx| crate::prefs::get(cx).reading.pane == Pane::Bottom),
+    CLOSE_TAB,
+    MAIN,
+    FORGET,
+    SETTLE,
+    until!(|m, cx| tabs_at_list_bottom(m, cx)),
+    Input::Run(settings_reading),
+    until!(|m, cx| screens::settings_on(m, SettingsPage::Reading, cx)),
+    SETTLE,
+    SETTINGS_DOWN,
+    SETTLE,
+    Input::Click(at!("settings-pane-2"), Held::No),
+    until!(|_, cx| crate::prefs::get(cx).reading.pane == Pane::Hidden),
+    CLOSE_TAB,
+    MAIN,
+    FORGET,
+    SETTLE,
+    // Письма нет — список на всю ширину, закладки на месте.
+    until!(|_, _| screens::spotted("quick-tab-Threats").is_some()),
+    until!(|m, cx| m.list.read(cx).bounds.get().size.width > px(f32::from(Layout::LIST) + 100.)),
+    LEFT,
+    OPENED,
+    FORGET,
+    SETTLE,
+];
+
+fn tabs_gone(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    m.reading_instead_of_list(cx) && screens::spotted("quick-tab-Threats").is_none() && screens::spotted("mb-inbox").is_some()
+}
+
+// Раздел 27, шаги 5, 8.
+
+/// Карточка вложения в ленте открытого письма.
+fn card(m: &Mailer, cx: &App, blob: &str) -> Option<Point<Pixels>> {
+    let items = crate::attachments::items(screens::reading(m, cx)?);
+    let i = items.iter().position(|a| a.row.blob_id == blob)?;
+    screens::spotted(&format!("att-card-{i}"))
+}
+
+fn zip_card(m: &Mailer, _: &Window, cx: &App) -> Option<Point<Pixels>> {
+    card(m, cx, "zip")
+}
+
+const ZIP: &[Input] =
+    &[READY, Input::Click(outlook_row, Held::No), OPENED, until!(|m, cx| card(m, cx, "zip").is_some()), Input::Click(zip_card, Held::No)];
+
+/// Файл с именем `name` есть в каталоге или глубже.
+fn has_file(dir: &Path, name: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else { return false };
+    entries.flatten().any(|e| e.file_name() == name || (e.path().is_dir() && has_file(&e.path(), name)))
+}
+
+/// Каталог данных прогона (`tests/manual.rs`: временный `LOCALAPPDATA`).
+fn data_dir() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA").map_or_else(std::env::temp_dir, PathBuf::from)
+}
+
+fn zip_listed(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    let shown = screens::reading(m, cx).and_then(|r| r.preview.as_ref());
+    let Some(PvState::Ready(Shown::Archive(list))) = shown.map(|p| &p.state) else { return false };
+    let names = || list.entries.iter().map(|e| e.name.as_str());
+    let listed = names().any(|n| n == "tools/collect.bat") && names().any(|n| n == "report.docm");
+    let on_disk = [data_dir(), std::env::temp_dir().join("Postman")].iter().any(|d| has_file(d, "collect.bat") || has_file(d, "report.docm"));
+    listed && postman_core::attach::dangerous(names()) == 2 && !on_disk
+}
+
+/// Куда сцена сохраняет: мимо диалога Windows, в каталог данных прогона.
+fn saved_dir() -> PathBuf {
+    data_dir().join("save-all")
+}
+
+fn saved_files() -> Vec<PathBuf> {
+    std::fs::read_dir(saved_dir()).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default()
+}
+
+fn save_all(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+    std::fs::create_dir_all(saved_dir()).map_err(|e| e.to_string())?;
+    m.reading.update(cx, |r, cx| r.save_all_in(saved_dir(), cx));
+    Ok(())
+}
+
+/// Вложений для просмотра в письме Outlook демо.
+const ATTACHED: usize = 5;
+
+const SAVE_ALL: &[Input] = &[
+    READY,
+    Input::Click(outlook_row, Held::No),
+    OPENED,
+    Input::Run(save_all),
+    until!(|m, cx| saved_files().len() == ATTACHED
+        && m.toasts.read(cx).latest().is_some_and(|t| t == tr!("att-saved-all", n = ATTACHED, dir = saved_dir().display().to_string()))),
+    Input::Run(save_all),
+];
+
+fn saved_twice(_: &Scene, _: &Mailer, _: &App) -> bool {
+    let files = saved_files();
+    let copies = files.iter().filter(|f| f.file_stem().is_some_and(|s| s.to_string_lossy().ends_with(" (2)"))).count();
+    let marked = files.iter().all(|f| {
+        let mut ads = f.as_os_str().to_owned();
+        ads.push(":Zone.Identifier");
+        std::fs::read_to_string(ads).is_ok_and(|z| z.contains("ZoneId=3"))
+    });
+    files.len() == ATTACHED * 2 && copies == ATTACHED && marked
+}
+
+// Раздел 28, шаг 3.
+
+fn planner(_: &Scene, m: &mut Mailer, _: &mut Window, _: &mut Context<Mailer>) -> Result<(), String> {
+    if let Some(d) = &mut m.screens {
+        d.planner = true;
+    }
+    Ok(())
+}
+
+fn second() -> i8 {
+    Zoned::now().second()
+}
+
+/// Следующая минута, как в поле: срок ближе нельзя, точность меток — минута.
+fn next_minute() -> String {
+    let at = Zoned::now().checked_add(jiff::Span::new().minutes(1)).unwrap_or_else(|_| Zoned::now());
+    at.strftime("%d.%m.%Y %H:%M").to_string()
+}
+
+const ARRIVE: &[Input] = &[
+    READY,
+    LEFT,
+    OPENED,
+    until!(|m, cx| keep(m.list.read(cx).count) && keep_open(m, cx)),
+    // До следующей минуты — 14–24 с: срок не успеет пройти за набором, а ожидание срока короче предела шага.
+    // Сами шаги ожидания — тоже короче предела, поэтому их три.
+    Input::Until(|_, _, _| !(21..45).contains(&second())),
+    Input::Until(|_, _, _| (8..21).contains(&second())),
+    Input::Until(|_, _, _| (36..46).contains(&second())),
+    // Из палитры — одно письмо; меню строки взяло бы всю беседу, и карточек было бы по числу её писем.
+    Input::Keys(&["ctrl-k"]),
+    Input::Text("Напомнить"), // i18n-ok: ввод сценария
+    PALETTE_SHOWN,
+    ENTER,
+    until!(|m, _| m.lifecycle.picker.as_ref().is_some_and(|p| p.kind == Kind::Remind)),
+    until!(|_, _| screens::spotted("lifecycle-pick-date").is_some()),
+    Input::Click(at!("lifecycle-pick-date"), Held::No),
+    until!(|m, _| m.lifecycle.picker.as_ref().is_some_and(|p| p.input.is_some())),
+    Input::Typed(next_minute),
+    ENTER,
+    until!(|m, cx| m.lifecycle.picker.is_none() && gone(m, cx)),
+    until!(|m, _| !m.lifecycle.cards.is_empty()),
+    until!(|m, cx| reminded_on_top(m, cx)),
+    // Письмо открыто и в срок: метка в шапке — по новой строке.
+    until!(|m, cx| screens::reading(m, cx).is_some_and(|r| kept_is(&r.row.id) && postman_core::marks::find(&r.row.keywords, Kind::Remind).is_none())),
+    until!(|_, _| screens::spotted("reminder-open-0").is_some()),
+    Input::Click(at!("reminder-open-0"), Held::No),
+    until!(|m, cx| m.lifecycle.cards.is_empty() && m.list.read(cx).rows.1.iter().any(|r| kept_is(&r.id) && r.seen)),
+    until!(|m, cx| screens::reading(m, cx).is_some_and(|r| kept_is(&r.row.id))),
+];
+
+/// Запомненное письмо (`keep_open`).
+fn kept_is(id: &str) -> bool {
+    *OPEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner) == id
+}
+
+fn reminded_on_top(m: &Mailer, cx: &App) -> bool {
+    let list = m.list.read(cx);
+    list.row(0).is_some_and(|r| kept_is(&r.id) && postman_core::lifecycle::reminded(r))
+        && list.layout.group_of(0) == Some(&Group::Top)
+        && list.count == kept()
+}
+
+fn reminder_done(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    m.list.read(cx).layout.group_of(0) != Some(&Group::Top)
+}
+
+// Раздел 29, шаг 7.
+
+/// Пункты меню письма (порядок — `menu.rs`).
+const ITEM_FIRST_MANY: usize = 3;
+const ITEM_CATEGORY: usize = 6;
+const ITEM_PHISHING: usize = 16;
+
+const MENU_MOUSE: &[Input] = &[
+    READY,
+    LEFT,
+    OPENED,
+    until!(|m, cx| keep(m.list.read(cx).selected.unwrap_or(0))),
+    Input::Right(row2),
+    MENU,
+    until!(|m, cx| {
+        let list = m.list.read(cx);
+        list.menu_row == Some(2) && list.selection.is_empty() && list.selected == Some(kept()) && m.menu.as_ref().is_some_and(|x| x.sub().is_none())
+    }),
+    until!(|_, _| screens::spotted("menu-item-11").is_some()),
+    Input::Move(at!("menu-item-6")),
+    until!(|m, _| m.menu.as_ref().is_some_and(|x| x.sub() == Some(Sub::Category))),
+    Input::Move(at!("menu-item-11")),
+    until!(|m, _| m.menu.as_ref().is_some_and(|x| x.sub() == Some(Sub::Move))),
+    Input::Move(at!("menu-item-15")),
+    until!(|m, _| m.menu.as_ref().is_some_and(|x| x.sub() == Some(Sub::View))),
+    Input::Move(at!("menu-item-0")),
+    until!(|m, _| m.menu.as_ref().is_some_and(|x| x.sub().is_none())),
+    Input::Move(at!("menu-item-6")),
+    until!(|m, _| m.menu.as_ref().is_some_and(|x| x.sub() == Some(Sub::Category))),
+    until!(|_, _| screens::spotted("menu-cat-0").is_some()),
+    Input::Click(at!("menu-cat-0"), Held::No),
+    until!(|m, cx| m.menu.is_none() && toast_starts(m, cx, "Категория")), // i18n-ok: ввод сценария
+    Input::Right(row3),
+    MENU,
+    // Меню открыто от середины строки вниз: строка выше него — мимо.
+    LEFT,
+];
+
+fn menu_done(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    m.menu.is_none() && m.list.read(cx).menu_row.is_none()
+}
+
+const MENU_KEYS: &[Input] = &[
+    READY,
+    LEFT,
+    OPENED,
+    until!(|m, cx| keep(m.list.read(cx).selected.unwrap_or(0))),
+    Input::Keys(&["shift-f10"]),
+    MENU,
+    until!(|m, cx| m.list.read(cx).menu_row == Some(kept())),
+    Input::Keys(&["down", "down"]),
+    until!(|m, _| m.menu.as_ref().is_some_and(|x| x.cursor().0 == 2)),
+    Input::Keys(&["escape"]),
+    until!(|m, cx| m.menu.is_none() && m.list.read(cx).menu_row.is_none()),
+    Input::Keys(&["menu"]),
+    MENU,
+    Input::Keys(&["down", "down", "down", "down", "down", "down"]),
+    until!(|m, _| m.menu.as_ref().is_some_and(|x| x.cursor().0 == ITEM_CATEGORY)),
+    Input::Keys(&["right"]),
+    until!(|m, _| m.menu.as_ref().is_some_and(|x| x.sub() == Some(Sub::Category))),
+    Input::Keys(&["down"]),
+    until!(|m, _| m.menu.as_ref().is_some_and(|x| x.cursor().1 == 1)),
+    Input::Keys(&["left"]),
+    until!(|m, _| m.menu.as_ref().is_some_and(|x| x.sub().is_none())),
+    Input::Keys(&["right"]),
+    until!(|m, _| m.menu.as_ref().is_some_and(|x| x.sub() == Some(Sub::Category))),
+    Input::Keys(&["j", "k", "7"]),
+    SETTLE,
+    until!(|m, cx| m.menu.is_some() && m.list.read(cx).selected == Some(kept()) && m.toasts.read(cx).on_screen() == 0),
+    ENTER,
+];
+
+const MENU_MANY: &[Input] = &[
+    READY,
+    LEFT,
+    OPENED,
+    CTRL_ROW1,
+    TWO_PICKED,
+    Input::Right(row1),
+    MENU,
+    until!(|m, _| m.menu.as_ref().is_some_and(|x| x.letters() >= 2 && x.cursor().0 == ITEM_FIRST_MANY && x.on_enabled())),
+    Input::Keys(&["up"]),
+    until!(|m, _| m.menu.as_ref().is_some_and(|x| x.cursor().0 == ITEM_PHISHING)),
+    Input::Keys(&["escape"]),
+    until!(|m, cx| m.menu.is_none() && m.list.read(cx).selection.len() >= 2),
+    Input::Right(row3),
+    MENU,
+    until!(|m, cx| m.list.read(cx).menu_row == Some(3) && m.menu.as_ref().is_some_and(|x| x.cursor().0 == 0)),
+    Input::Keys(&["escape"]),
+];
+
+// Раздел 30, шаг 7.
+
+/// Чип «Уточнить» такого вида.
+fn chip(m: &Mailer, cx: &App, wanted: fn(&Refine) -> bool) -> Option<Point<Pixels>> {
+    let list = m.list.read(cx);
+    let i = list.found.as_ref()?.chips.iter().position(|(r, _)| wanted(r))?;
+    screens::spotted(&format!("refine-{i}"))
+}
+
+fn attachment_chip(m: &Mailer, _: &Window, cx: &App) -> Option<Point<Pixels>> {
+    chip(m, cx, |r| matches!(r, Refine::Attachment))
+}
+
+fn unread_chip(m: &Mailer, _: &Window, cx: &App) -> Option<Point<Pixels>> {
+    chip(m, cx, |r| matches!(r, Refine::Unread))
+}
+
+fn query_has(m: &Mailer, cx: &App, part: &str) -> bool {
+    m.search.read(cx).value().contains(part)
+}
+
+/// Результаты после чипа разобраны.
+fn refined(m: &Mailer, cx: &App, part: &str, on: bool) -> bool {
+    let list = m.list.read(cx);
+    let done = query_has(m, cx, part) == on && m.find.active() && !list.computing;
+    done && list.found.as_ref().is_some_and(|f| f.chips.iter().any(|(r, set)| *set == on && r.apply("").contains(part)))
+}
+
+/// Правая граница строки чипов: крайний чип за ней, пока строку не прокрутили.
+fn last_chip_x(m: &Mailer, cx: &App) -> Option<usize> {
+    let n = m.list.read(cx).found.as_ref()?.chips.len();
+    Some(f32::from(screens::spotted(&format!("refine-{}", n.checked_sub(1)?))?.x) as usize)
+}
+
+const REFINE: &[Input] = &[
+    READY,
+    Input::Keys(&["ctrl-e"]),
+    Input::Text("квартал"), // i18n-ok: ввод сценария
+    until!(|m, cx| found(m, cx) && m.list.read(cx).found.as_ref().is_some_and(|f| !f.chips.is_empty())),
+    until!(|m, cx| chip(m, cx, |r| matches!(r, Refine::Attachment)).is_some() && keep(m.list.read(cx).count)),
+    Input::Click(attachment_chip, Held::No),
+    until!(|m, cx| refined(m, cx, "has:attachment", true) && m.list.read(cx).count < kept()),
+    Input::Click(attachment_chip, Held::No),
+    until!(|m, cx| refined(m, cx, "has:attachment", false) && m.list.read(cx).count == kept()),
+    until!(|m, cx| chip(m, cx, |r| matches!(r, Refine::Unread)).is_some()),
+    Input::Click(unread_chip, Held::No),
+    until!(|m, cx| refined(m, cx, "is:unread", true) && m.list.read(cx).count < kept()),
+    Input::Click(unread_chip, Held::No),
+    until!(|m, cx| refined(m, cx, "is:unread", false) && m.list.read(cx).count == kept()),
+    SETTLE,
+    until!(|m, cx| last_chip_x(m, cx).is_some_and(keep)),
+    Input::Wheel(at!("refine-chips"), 300.),
+];
+
+fn chips_scrolled(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    last_chip_x(m, cx).is_some_and(|x| x < kept())
+}
+
+// Раздел 31, шаги 3, 8.
+
+fn stack(s: &Scene, m: &mut Mailer, w: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+    crate::prefs::update(cx, |p| p.reading.set_folder("inbox", Some(Conversation::Stack)));
+    chain(s, m, w, cx)
+}
+
+fn unfolded(m: &Mailer, cx: &App, id: &str) -> bool {
+    m.reading.read(cx).feed.as_ref().is_some_and(|f| f.open.contains(id))
+}
+
+/// Раскрытых писем стопки.
+fn unfolded_n(m: &Mailer, cx: &App) -> usize {
+    m.reading.read(cx).feed.as_ref().map_or(0, |f| f.open.len())
+}
+
+fn opened(m: &Mailer, cx: &App, id: &str) -> bool {
+    screens::reading(m, cx).is_some_and(|r| r.row.id == id)
+}
+
+const STACK: &[Input] = &[
+    until!(|m, cx| m.reading.read(cx).stacked(cx) && feed_loaded(m, cx) && !unfolded(m, cx, "chain1")),
+    until!(|_, _| screens::spotted("stack-row-0").is_some()),
+    Input::Click(at!("stack-row-0"), Held::No),
+    until!(|m, cx| unfolded(m, cx, "chain1") && opened(m, cx, "chain1")),
+    until!(|_, _| screens::spotted("stack-head-0").is_some()),
+    Input::Click(at!("stack-head-0"), Held::No),
+    until!(|m, cx| !unfolded(m, cx, "chain1") && opened(m, cx, "chain1")),
+    ENTER,
+    until!(|m, cx| unfolded(m, cx, "chain1")),
+    Input::Click(at!("stack-all"), Held::No),
+    until!(|m, cx| unfolded_n(m, cx) == postman_demo::CHAIN.len()),
+    SETTLE,
+    Input::Click(at!("stack-all"), Held::No),
+    until!(|m, cx| unfolded_n(m, cx) == 0),
+    Input::Keys(&["ctrl-right"]),
+    until!(|m, cx| opened(m, cx, "chain2") && unfolded(m, cx, "chain2")),
+    Input::Keys(&["ctrl-left"]),
+    until!(|m, cx| opened(m, cx, "chain1") && unfolded(m, cx, "chain1")),
+    SETTLE,
+    Input::Click(at!("stack-all"), Held::No),
+    until!(|m, cx| unfolded_n(m, cx) == postman_demo::CHAIN.len()),
+    SETTLE,
+    until!(|_, _| screens::spotted("thread-reply-2").is_some()),
+    Input::Click(at!("thread-reply-2"), Held::No),
+];
+
+fn feed_loaded(m: &Mailer, cx: &App) -> bool {
+    m.reading.read(cx).feed.as_ref().is_some_and(|f| f.conv.len() == postman_demo::CHAIN.len() && f.ready())
+}
+
+fn stack_replied(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    m.compose.inline.as_ref().is_some_and(|i| i.letter == "chain3") && m.compose.inline_view().is_some_and(|c| c.read(cx).drawn())
+}
+
+/// Вид «как Outlook» у «Входящих» в строке настроек: сегмент `fi * 4 + 2`.
+fn inbox_outlook(m: &Mailer, _: &Window, cx: &App) -> Option<Point<Pixels>> {
+    let view = m.settings.view.as_ref()?.read(cx);
+    let fi = view.info.folders.iter().position(|(id, _)| id == "inbox")?;
+    screens::spotted(&format!("settings-folder-view-{}", fi * 4 + 2))
+}
+
+const VIEW_SETTINGS: &[Input] = &[
+    READY,
+    LEFT,
+    OPENED,
+    Input::Run(settings_reading),
+    until!(|m, cx| screens::settings_on(m, SettingsPage::Reading, cx)),
+    until!(|_, _| screens::spotted("settings-conv-2").is_some()),
+    Input::Click(at!("settings-conv-2"), Held::No),
+    until!(|_, cx| crate::prefs::get(cx).reading.conversation == Conversation::Outlook),
+    Input::Keys(&["ctrl-tab"]),
+    MAIN,
+    until!(|m, cx| !m.list.read(cx).flat_mode(cx) && m.list.read(cx).outline.is_some()),
+    Input::Keys(&["ctrl-tab"]),
+    until!(|m, cx| screens::settings_on(m, SettingsPage::Reading, cx)),
+    SETTLE,
+    Input::Click(at!("settings-conv-0"), Held::No),
+    until!(|_, cx| crate::prefs::get(cx).reading.conversation == Conversation::Feed),
+    SETTLE,
+    Input::Click(inbox_outlook, Held::No),
+    until!(|m, cx| view_of(m, cx) == Some(Conversation::Outlook)),
+    Input::Keys(&["ctrl-tab"]),
+    MAIN,
+    until!(|m, cx| !m.list.read(cx).flat_mode(cx) && m.list.read(cx).outline.is_some() && !m.list.read(cx).computing),
+    SETTLE,
+    RIGHT,
+    MENU,
+    Input::Keys(TO_VIEW),
+    until!(|m, _| m.menu.as_ref().is_some_and(|x| x.sub() == Some(Sub::View))),
+    Input::Keys(&["down", "down", "down", "enter"]),
+];
+
+// Раздел 32, шаг 5.
+
+const NEXT_MATCH: &str = "search.next_match";
+
+/// Клавиши команды в столбце Outlook.
+fn keys_of(id: &str, cx: &App) -> Vec<String> {
+    let set = crate::keymap::KeySet::of(&crate::prefs::get(cx));
+    let Some(c) = pets_commands::find(crate::commands::all(), id) else { return Vec::new() };
+    crate::keymap::column_keys(&crate::commands::SINGLE, &set, c, crate::keymap::Column::Outlook)
+}
+
+const HIT_KEYS: &[Input] = &[
+    READY,
+    until!(|_, cx| keys_of(NEXT_MATCH, cx) == ["f3"] && keys_of("search.prev_match", cx) == ["shift-f3"]),
+    Input::Run(settings_keys),
+    Input::Text("следующее совпадение"), // i18n-ok: ввод сценария
+    until!(|m, cx| m.settings.view.as_ref().is_some_and(|v| v.read(cx).keys.query == "следующее совпадение")), // i18n-ok: ввод сценария
+    SETTLE,
+    until!(|_, _| screens::spotted("settings-keys-edit-0").is_some()),
+    Input::Click(at!("settings-keys-edit-0"), Held::No),
+    until!(|m, cx| m.settings.view.as_ref().is_some_and(|v| v.read(cx).keys.recording == Some(NEXT_MATCH))),
+    Input::Keys(&["f4"]),
+    until!(|_, cx| keys_of(NEXT_MATCH, cx) == ["f4"]),
+    CLOSE_TAB,
+    MAIN,
+    Input::Keys(&["ctrl-e"]),
+    Input::Text("квартал"), // i18n-ok: ввод сценария
+    until!(|m, cx| found(m, cx)),
+    Input::Click(row1, Held::No),
+    until!(|m, cx| m.reading.read(cx).hits.get() > 1 && m.reading.read(cx).hit == 0),
+    Input::Keys(&["f3"]),
+    SETTLE,
+    until!(|m, cx| m.reading.read(cx).hit == 0),
+    Input::Keys(&["f4"]),
+];
+
+// Раздел 37, шаг 2.
+
+fn to_all(m: &Mailer, cx: &App) -> bool {
+    m.compose.last().is_some_and(|c| {
+        let c = c.read(cx);
+        c.drawn() && c.model.subject.to_lowercase().starts_with("re:") && format!("{};{}", c.model.to, c.model.cc).contains("team@corp.example")
+    })
+}
+
+const AFE: &[Input] = &[
+    READY,
+    Input::Click(outlook_row, Held::No),
+    OPENED,
+    until!(|m, cx| keep_open(m, cx)),
+    Input::Keys(&["a"]),
+    until!(|m, cx| to_all(m, cx)),
+    Input::Keys(&["escape"]),
+    until!(|m, _| m.compose.last().is_none()),
+    Input::Keys(&["f"]),
+    until!(|m, cx| replying(m, cx, "FW:")),
+    Input::Keys(&["escape"]),
+    until!(|m, _| m.compose.last().is_none()),
+    Input::Keys(&["e"]),
+];
+
+// T1-04г.
+
+/// Папка отступает от родителя на 16 px: центры шевронов.
+fn indented(child: &str, parent: &str) -> bool {
+    match (screens::spotted(&format!("mb-fold-{child}")), screens::spotted(&format!("mb-fold-{parent}"))) {
+        (Some(a), Some(b)) => f32::from(a.x - b.x) == 16.,
+        _ => false,
+    }
+}
+
+fn inbox_unread(m: &Mailer, cx: &App) -> usize {
+    m.folders.read(cx).mailboxes.iter().find(|b| b.id == "inbox").map_or(0, |b| b.unread as usize)
+}
+
+const DEEP: &str = "inbox-clients-north-contracts";
+
+const TREE: &[Input] = &[
+    READY,
+    until!(|_, _| indented("inbox-clients", "inbox") && indented("inbox-clients-north", "inbox-clients") && indented(DEEP, "inbox-clients-north")),
+    until!(|m, cx| keep(inbox_unread(m, cx))),
+    Input::Click(at!("mb-fold-inbox"), Held::No),
+    until!(|m, cx| m.folders.read(cx).is_folded("inbox")),
+    FORGET,
+    SETTLE,
+    until!(|_, _| screens::spotted("mb-fold-inbox-clients").is_none() && screens::spotted("mb-fold-inbox").is_some()),
+    Input::Keys(&["ctrl-k"]),
+    Input::Text("Договоры"), // i18n-ok: ввод сценария
+    PALETTE_SHOWN,
+    ENTER,
+    until!(|m, cx| m.palette.is_none() && m.folders.read(cx).current.as_deref() == Some(DEEP)),
+    FORGET,
+    SETTLE,
+];
+
+fn tree_open(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    let f = m.folders.read(cx);
+    !f.is_folded("inbox") && indented(DEEP, "inbox-clients-north") && inbox_unread(m, cx) == kept()
+}
+
+// T1-05б.
+
+/// Высота, на которой тянем разделители.
+const SPLIT_Y: f32 = 400.;
+
+fn split_folders(m: &Mailer, _: &Window, _: &App) -> Option<Point<Pixels>> {
+    Some(point(px(crate::chrome::W_RAIL + m.panes.0 + 4.), px(SPLIT_Y)))
+}
+
+fn split_list(m: &Mailer, _: &Window, cx: &App) -> Option<Point<Pixels>> {
+    let b = m.list.read(cx).bounds.get();
+    (b.size.width > px(0.)).then(|| point(b.origin.x + b.size.width + px(4.), px(SPLIT_Y)))
+}
+
+/// Левее любого минимума.
+fn far_left(_: &Mailer, _: &Window, _: &App) -> Option<Point<Pixels>> {
+    Some(point(px(crate::chrome::W_RAIL + 8.), px(SPLIT_Y)))
+}
+
+fn split_list_left(m: &Mailer, w: &Window, cx: &App) -> Option<Point<Pixels>> {
+    split_list(m, w, cx).map(|p| point(p.x - px(60.), p.y))
+}
+
+const SPLITS: &[Input] = &[
+    READY,
+    until!(|m, cx| m.list.read(cx).bounds.get().size.width > px(0.)),
+    Input::Drag(split_folders, far_left),
+    until!(|m, _| m.panes.0 == f32::from(Layout::MIN_FOLDERS)),
+    SETTLE,
+    Input::Drag(split_list, far_left),
+    until!(|m, _| m.panes.1 == f32::from(Layout::MIN_LIST)),
+    SETTLE,
+    Input::Double(split_list),
+    until!(|m, cx| m.panes.1 == W_LIST && crate::prefs::get(cx).layout.list.is_none()),
+    SETTLE,
+    Input::Double(split_folders),
+];
+
+const NARROW: &[Input] = &[
+    READY,
+    // Место есть за счёт чтения: папки и список — как были.
+    Input::Resize(1160., 800.),
+    SETTLE,
+    until!(|m, _| m.panes == (W_FOLDERS, W_LIST)),
+    Input::Resize(1000., 800.),
+    until!(|m, _| m.panes.0 == W_FOLDERS && m.panes.1 < W_LIST && m.panes.1 > f32::from(Layout::MIN_LIST)),
+    Input::Resize(760., 800.),
+];
+
+// T1-D.
+
+const FOCUS: &[Input] = &[READY, LEFT, OPENED, Input::Move(row2), SETTLE];
+
+const BLUR: &[Input] = &[READY, LEFT, OPENED, until!(|m, cx| m.list.read(cx).focused), Input::Keys(&["ctrl-e"]), SETTLE];
+
+fn no_focus(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    !m.list.read(cx).focused && !m.folders.read(cx).focused && !m.contacts.read(cx).focused && m.list.read(cx).selected.is_some()
+}
+
+static TONES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+fn tones() -> Vec<String> {
+    TONES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+}
+
+/// Тон выделения теперь новый: запомнить его.
+fn new_tone(cx: &App) -> bool {
+    let tone = pets_ui::theme::Color::from_hsla(crate::roles::look(cx).row_fill(true)).hex();
+    let mut seen = TONES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let fresh = !seen.contains(&tone);
+    if fresh {
+        seen.push(tone);
+    }
+    fresh
+}
+
+const ACCENTS: &[Input] = &[
+    READY,
+    until!(|_, cx| new_tone(cx)),
+    Input::Run(settings_look),
+    until!(|m, cx| screens::settings_on(m, SettingsPage::Look, cx)),
+    until!(|_, _| screens::spotted("settings-accent-4").is_some()),
+    Input::Click(at!("settings-accent-1"), Held::No),
+    until!(|_, cx| new_tone(cx)),
+    Input::Click(at!("settings-accent-2"), Held::No),
+    until!(|_, cx| new_tone(cx)),
+    Input::Click(at!("settings-accent-3"), Held::No),
+    until!(|_, cx| new_tone(cx)),
+    Input::Click(at!("settings-accent-4"), Held::No),
+    until!(|_, cx| new_tone(cx)),
+    CLOSE_TAB,
+    MAIN,
+    LEFT,
+    OPENED,
+];
+
+/// «Серая» в переключателе тем.
+fn gray_seg(_: &Mailer, _: &Window, cx: &App) -> Option<Point<Pixels>> {
+    let i = Themes::try_get(cx)?.state().ids().position(|id| id == crate::roles::GRAY)?;
+    screens::spotted(&format!("settings-theme-{i}"))
+}
+
+const GRAY: &[Input] = &[
+    READY,
+    Input::Run(settings_look),
+    until!(|m, cx| screens::settings_on(m, SettingsPage::Look, cx)),
+    SETTLE,
+    Input::Click(gray_seg, Held::No),
+    until!(|_, cx| crate::roles::look(cx).gray()),
+    CLOSE_TAB,
+    MAIN,
+    LEFT,
+    OPENED,
+];
+
+// Перезапуск.
+
+const RESTART_SET: &[Input] = &[
+    READY,
+    until!(|m, cx| m.list.read(cx).bounds.get().size.width > px(0.)),
+    Input::Drag(split_list, split_list_left),
+    until!(|_, cx| crate::prefs::get(cx).layout.list.is_some()),
+    until!(|_, _| screens::spotted("mb-fold-inbox").is_some()),
+    Input::Click(at!("mb-fold-inbox"), Held::No),
+    until!(|m, cx| m.folders.read(cx).is_folded("inbox")),
+    Input::Run(settings_reading),
+    until!(|m, cx| screens::settings_on(m, SettingsPage::Reading, cx)),
+    until!(|_, _| screens::spotted("settings-conv-1").is_some()),
+    Input::Click(at!("settings-conv-1"), Held::No),
+    until!(|_, cx| crate::prefs::get(cx).reading.conversation == Conversation::Stack),
+    Input::Run(settings_look),
+    until!(|m, cx| screens::settings_on(m, SettingsPage::Look, cx)),
+    SETTLE,
+    Input::Click(gray_seg, Held::No),
+    until!(|_, cx| crate::roles::look(cx).gray()),
+    // Настройки пишутся в фоне: успеть до выхода.
+    Input::Until(|_, _, _| pause(800)),
+];
+
+const RESTART_CHECK: &[Input] = &[READY, until!(|_, _| screens::spotted("mb-fold-inbox-clients").is_some())];
+
+fn restarted(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    let p = crate::prefs::get(cx);
+    let width = p.layout.list.is_some_and(|w| f32::from(w) == m.panes.1 && m.panes.1 < W_LIST);
+    width && p.reading.conversation == Conversation::Stack && crate::roles::look(cx).gray() && !m.folders.read(cx).is_folded("inbox")
+}
+
+// S5-19, шаг 1.
+
+fn invitation(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+    m.set_section(Section::Calendar, cx);
+    m.cal.update(cx, |c, cx| {
+        c.go_to_demo_week(cx);
+        c.select_pending(cx);
+    });
+    Ok(())
+}
+
+const INVITE: &[Input] = &[
+    until!(|_, _| screens::spotted("accept").is_some() && screens::spotted("tentative").is_some() && screens::spotted("decline").is_some()),
+    Input::Move(at!("tentative")),
+    SETTLE,
+];
 
 /// Вернуть настройки своих сцен перед следующей.
 fn reset(s: &Scene, _: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) {
