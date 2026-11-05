@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui_kit::component::input::{Enter, IndentInline, Input, InputEvent, InputState, MoveDown, MoveUp, Textarea, TextareaState};
@@ -513,6 +514,8 @@ impl Mailer {
             let open = Open {
                 book: self.compose.book.clone(),
                 mailer: cx.entity().downgrade(),
+                worker: self.reading.read(cx).worker.clone(),
+                contacts: self.contacts.clone(),
                 live: self.backend.is_live(),
                 rooms: self.contacts.read(cx).rooms(),
                 me,
@@ -595,6 +598,8 @@ impl Mailer {
 struct Open {
     book: Book,
     mailer: WeakEntity<Mailer>,
+    worker: Arc<Mutex<postman_worker::Client>>,
+    contacts: Entity<crate::contacts::ContactsView>,
     live: bool,
     /// Переговорные и ресурсы справочника: (имя, адрес).
     rooms: Vec<(String, String)>,
@@ -616,6 +621,28 @@ struct Availability {
     error: Option<String>,
     /// Таймер запроса запущен.
     armed: bool,
+    /// Занятость внешних по ссылке (S8-42): адрес → состояние.
+    links: HashMap<String, Link>,
+}
+
+/// Занятость внешнего участника по ссылке (S8-42).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Link {
+    Loading,
+    /// Данные есть: ссылка ничем не подтверждена, строка помечена.
+    Shown,
+    Failed,
+}
+
+/// Интервалы из воркера → занятость помощника.
+fn link_busy(list: Vec<postman_worker::BusySpan>) -> Vec<Busy> {
+    use postman_worker::BusyType;
+    let kind = |k| match k {
+        BusyType::Busy => BusyKind::Busy,
+        BusyType::Tentative => BusyKind::Tentative,
+        BusyType::Unavailable => BusyKind::Unavailable,
+    };
+    list.into_iter().map(|b| Busy { span: Span::new(b.start, b.end), kind: kind(b.kind) }).collect()
 }
 
 /// Участник чипом: имя, адрес (у неразобранного — сам текст), разобран ли.
@@ -697,6 +724,13 @@ pub(crate) struct MeetingView {
     senders: Vec<(String, String)>,
     from_menu: bool,
     busy: Availability,
+    /// Строка ссылки занятости (S8-42): адрес, для которого она открыта, поле, ссылка не годится.
+    link_for: Option<String>,
+    link_input: Entity<InputState>,
+    link_bad: bool,
+    /// Для занятости по ссылке: `Mailer` здесь не читать — `on_sync` идёт из его обновления.
+    worker: Arc<Mutex<postman_worker::Client>>,
+    contacts: Entity<crate::contacts::ContactsView>,
     /// Поля модели поменялись не от ввода (выбрано окно, день) — переписать поля при отрисовке.
     sync_inputs: bool,
     /// Помощник: только общие окна (занятость приглушена) или занятость каждого.
@@ -751,6 +785,15 @@ impl MeetingView {
                 this.model.set(Field::Description, value);
             }
         }));
+        let link_input = cx.new(|cx| InputState::new(window, cx).placeholder(tr!("meeting-link-placeholder")));
+        subscriptions.push(cx.subscribe_in(&link_input, window, |this, _, ev: &InputEvent, _, cx| match ev {
+            InputEvent::PressEnter { .. } => this.save_link(cx),
+            InputEvent::Change => {
+                this.link_bad = false;
+                cx.notify();
+            }
+            _ => {}
+        }));
         title.update(cx, |s, cx| s.focus(window, cx));
         // «Настройки → Календарь» (S5-20): пояс, рабочее время, необязательные, цвет свободного времени; цвет и часы
         // меняются на лету, пояс и флажок — у новой вкладки.
@@ -791,6 +834,11 @@ impl MeetingView {
             senders: open.senders,
             from_menu: false,
             busy: Availability::default(),
+            link_for: None,
+            link_input,
+            link_bad: false,
+            worker: open.worker,
+            contacts: open.contacts,
             sync_inputs: false,
             only_free: true,
             with_optional: cal.with_optional,
@@ -1013,6 +1061,7 @@ impl MeetingView {
         }
         self.busy.asked = Some(want);
         self.busy.error = None;
+        self.busy.links.clear();
         if !self.live {
             let colleagues = demo::colleagues();
             self.busy.me = Some(demo::my_busy());
@@ -1024,6 +1073,7 @@ impl MeetingView {
                 })
                 .collect();
             self.busy.ticket = None;
+            self.link_busy(cx);
             cx.notify();
             return;
         }
@@ -1034,6 +1084,98 @@ impl MeetingView {
             .update(cx, |m, _| m.backend.send(Command::Availability { ticket, emails, from, to, sender: self.model.from.clone() }))
             .unwrap_or(false);
         self.busy.ticket = sent.then_some(ticket);
+        cx.notify();
+    }
+
+    /// Занятость внешних участников без данных сервера — по ссылке (S8-42): указанной на вкладке или `FBURL` контакта;
+    /// спрашивается только здесь, не на каждую букву адреса. Разбор — в песочнице.
+    fn link_busy(&mut self, cx: &mut Context<Self>) {
+        let Some(monday) = self.busy.asked.as_ref().map(|(m, _)| *m) else { return };
+        let links = crate::prefs::get(cx).calendar.free_busy_links;
+        let contacts = self.contacts.clone();
+        let (from, to) = (day_start(monday, &self.tz), day_start(add_days(monday, 7), &self.tz));
+        let wanted: Vec<(String, String)> = self
+            .busy
+            .people
+            .iter()
+            .filter(|(e, b)| b.is_none() && self.external(e) && !self.busy.links.contains_key(*e))
+            .filter_map(|(e, _)| links.get(e).cloned().or_else(|| contacts.read(cx).free_busy_url(e)).map(|u| (e.clone(), u)))
+            .collect();
+        for (email, url) in wanted {
+            self.busy.links.insert(email.clone(), Link::Loading);
+            let (live, worker) = (self.live, self.worker.clone());
+            let task = cx.background_spawn(async move {
+                let bytes = if live { postman_backend_dav::fetch_public(&url, postman_worker::MAX_FREE_BUSY)? } else { demo::free_busy(from) };
+                let mut w = worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                w.free_busy(&bytes, from, to)
+            });
+            cx.spawn(async move |this, cx| {
+                let result = task.await;
+                this.update(cx, |v, cx| v.link_done(email, monday, result, cx)).ok();
+            })
+            .detach();
+        }
+    }
+
+    /// Ответ по ссылке: неделя та же — занятость в строку участника; ошибка — «недоступна», это не «свободен».
+    fn link_done(&mut self, email: String, monday: Date, result: Result<Vec<postman_worker::BusySpan>, String>, cx: &mut Context<Self>) {
+        if self.busy.asked.as_ref().map(|(m, _)| *m) != Some(monday) {
+            return;
+        }
+        match result {
+            Ok(list) => {
+                self.busy.people.insert(email.clone(), Some(link_busy(list)));
+                self.busy.links.insert(email, Link::Shown);
+            }
+            Err(e) => {
+                tracing::info!("free/busy link: {e}");
+                self.busy.links.insert(email, Link::Failed);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Запомнить ссылку адреса (`None` — убрать) и спросить заново.
+    fn set_link(&mut self, email: &str, url: Option<String>, cx: &mut Context<Self>) {
+        let key = email.to_lowercase();
+        crate::prefs::update(cx, |p| match url {
+            Some(u) => {
+                p.calendar.free_busy_links.insert(key.clone(), u);
+            }
+            None => {
+                p.calendar.free_busy_links.remove(&key);
+            }
+        });
+        self.busy.links.remove(&key);
+        if let Some(slot) = self.busy.people.get_mut(&key) {
+            *slot = None;
+        }
+        self.link_busy(cx);
+        cx.notify();
+    }
+
+    /// «Сохранить» строки ссылки: годится только https с именем сервера.
+    fn save_link(&mut self, cx: &mut Context<Self>) {
+        let Some(email) = self.link_for.clone() else { return };
+        let url = self.link_input.read(cx).value().trim().to_owned();
+        if !postman_backend_dav::public_url_ok(&url) {
+            self.link_bad = true;
+            cx.notify();
+            return;
+        }
+        self.link_for = None;
+        self.set_link(&email, Some(url), cx);
+    }
+
+    /// Открыть строку ссылки для адреса.
+    fn edit_link(&mut self, email: String, window: &mut Window, cx: &mut Context<Self>) {
+        let current = crate::prefs::get(cx).calendar.free_busy_links.get(&email.to_lowercase()).cloned().unwrap_or_default();
+        self.link_input.update(cx, |s, cx| {
+            s.set_value(current, window, cx);
+            s.focus(window, cx);
+        });
+        self.link_for = Some(email);
+        self.link_bad = false;
         cx.notify();
     }
 
@@ -1075,6 +1217,7 @@ impl MeetingView {
                 self.busy.me = Some(me.clone());
                 self.busy.people = people.iter().map(|(e, b)| (e.to_lowercase(), b.clone())).collect();
                 self.busy.error = error.clone();
+                self.link_busy(cx);
                 cx.notify();
                 None
             }
@@ -1522,6 +1665,8 @@ impl MeetingView {
                 };
                 if busy.is_none() {
                     sub = tr!("meeting-not-counted", role = sub);
+                } else if self.busy.links.get(&c.email.to_lowercase()) == Some(&Link::Shown) {
+                    sub = tr!("meeting-by-link", role = sub);
                 }
                 rows.push(Row { name: c.shown(), sub, email: Some(c.email.clone()), busy });
             }
@@ -1879,7 +2024,23 @@ impl MeetingView {
                         .border_color(l.border())
                         .text_size(px(12.))
                         .text_color(l.text2())
-                        .child(tr!(if external { "meeting-row-external" } else { "meeting-row-hidden" })),
+                        .gap(px(8.))
+                        .child(match email.as_deref().and_then(|e| self.busy.links.get(&e.to_lowercase())) {
+                            Some(Link::Loading) => tr!("meeting-link-loading"),
+                            Some(Link::Failed) => tr!("meeting-link-failed"),
+                            _ => tr!(if external { "meeting-row-external" } else { "meeting-row-hidden" }),
+                        })
+                        .when_some(email.clone().filter(|_| external), |d, e| {
+                            d.child(
+                                div()
+                                    .id(SharedString::from(format!("link-{e}")))
+                                    .cursor_pointer()
+                                    .text_color(l.accent_text())
+                                    .hover(|d| d.underline())
+                                    .child(tr!("meeting-link-set"))
+                                    .on_click(cx.listener(move |this, _, window, cx| this.edit_link(e.clone(), window, cx))),
+                            )
+                        }),
                 ),
             }
         });
@@ -1999,9 +2160,58 @@ impl MeetingView {
         div().flex().flex_col().flex_1().min_h_0().child(controls).child(legend_row).child(grid)
     }
 
+    /// Строка ссылки занятости (S8-42): одной строкой на вкладке, без диалога.
+    fn link_line(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let email = self.link_for.clone()?;
+        let l = crate::roles::look(cx);
+        let stored = crate::prefs::get(cx).calendar.free_busy_links.contains_key(&email.to_lowercase());
+        let action = |id: &'static str, text: String| {
+            div().id(id).flex_none().cursor_pointer().text_color(l.accent_text()).hover(|d| d.underline()).child(text)
+        };
+        Some(
+            div()
+                .h(px(44.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .px(px(24.))
+                .border_t_1()
+                .border_color(l.border())
+                .child(div().flex_none().child(tr!("meeting-link-title", email = email.clone())))
+                .child(div().flex_1().min_w_0().child(Input::new(&self.link_input)))
+                .when(self.link_bad, |d| d.child(div().flex_none().text_color(l.error()).child(tr!("meeting-link-bad"))))
+                .child(action("link-save", tr!("meeting-link-save")).on_click(cx.listener(|this, _, _, cx| this.save_link(cx))))
+                .when(stored, |d| {
+                    d.child(action("link-remove", tr!("meeting-link-remove")).on_click(cx.listener(move |this, _, _, cx| {
+                        this.link_for = None;
+                        this.set_link(&email, None, cx);
+                    })))
+                })
+                .child(action("link-cancel", tr!("meeting-link-cancel")).on_click(cx.listener(|this, _, _, cx| {
+                    this.link_for = None;
+                    cx.notify();
+                }))),
+        )
+    }
+
     fn footer(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         let l = crate::roles::look(cx);
         let external: Vec<String> = self.chips.iter().flatten().filter(|c| !c.bad && self.external(&c.email)).map(Chip::shown).collect();
+        // Занятость показана по ссылке — строка участника без «Указать ссылку»: сменить её можно здесь.
+        let shown: Vec<String> = self.busy.links.iter().filter(|(_, s)| **s == Link::Shown).map(|(e, _)| e.clone()).collect();
+        let change = shown.into_iter().map(|e| {
+            div()
+                .id(SharedString::from(format!("link-change-{e}")))
+                .flex_none()
+                .cursor_pointer()
+                .text_size(px(12.))
+                .text_color(l.accent_text())
+                .hover(|d| d.underline())
+                .child(tr!("meeting-link-change", email = e.clone()))
+                .on_click(cx.listener(move |this, _, window, cx| this.edit_link(e.clone(), window, cx)))
+        });
+        let change: Vec<_> = change.collect();
         (!external.is_empty()).then(|| {
             div()
                 .h(px(40.))
@@ -2014,7 +2224,8 @@ impl MeetingView {
                 .border_color(l.border())
                 .child(icon(g::MAIL, 14.).text_color(l.text2()))
                 .child(tr!("meeting-external-note"))
-                .child(div().text_size(px(12.)).text_color(l.text2()).truncate().child(external.join(", ")))
+                .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(l.text2()).truncate().child(external.join(", ")))
+                .children(change)
         })
     }
 }
@@ -2181,6 +2392,7 @@ impl Render for MeetingView {
             .child(toolbar)
             .child(fields)
             .child(self.assistant(cx))
+            .children(self.link_line(cx))
             .children(self.footer(cx))
     }
 }
@@ -2238,6 +2450,8 @@ pub(crate) mod scenes {
         Scene::new("meeting-blue", blue, ready).continues(),
         // Вкладка встречи: помощник с занятостью каждого (без «Только общее свободное время»).
         Scene::new("assistant", assistant, ready).continues(),
+        // Внешний участник с занятостью по ссылке (S8-42): строка помечена «по ссылке».
+        Scene::new("meeting-link", link, link_ready).continues(),
     ];
 
     fn meeting(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
@@ -2271,6 +2485,16 @@ pub(crate) mod scenes {
             cx.notify();
         });
         Ok(())
+    }
+
+    fn link(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        let Some(v) = m.meetings.last() else { return Err("no meeting tab".into()) };
+        v.update(cx, |v, cx| v.set_link("guest@partner.example", Some("https://partner.example/free-busy/guest.vfb".into()), cx));
+        Ok(())
+    }
+
+    fn link_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.meetings.last().is_some_and(|v| v.read(cx).busy.links.get("guest@partner.example") == Some(&super::Link::Shown))
     }
 
     fn ready(s: &Scene, m: &Mailer, cx: &App) -> bool {

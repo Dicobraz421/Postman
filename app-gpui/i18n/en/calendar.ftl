@@ -254,3 +254,15 @@ cal-cancel-failed = Meeting not cancelled: { $error }
 meeting-title-edit = Edit meeting
 meeting-tab-edit-titled = Edit meeting · { $title }
 meeting-updated = Changes sent: { $title }
+# External free/busy by link (S8-42)
+meeting-by-link = { $role } · by link
+meeting-link-change = Free/busy link for { $email }
+meeting-link-set = Set link
+meeting-link-loading = Loading free/busy from the link…
+meeting-link-failed = Free/busy link is unavailable
+meeting-link-title = Free/busy link for { $email }
+meeting-link-placeholder = https://… — FBURL or an .ics calendar
+meeting-link-bad = Needs an https:// link with a server name
+meeting-link-save = Save
+meeting-link-remove = Remove
+meeting-link-cancel = Cancel

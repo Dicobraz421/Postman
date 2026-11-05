@@ -1085,6 +1085,19 @@ pub mod calendar {
         v
     }
 
+    /// Ответ по ссылке занятости (S8-42): VFREEBUSY на неделю `[from, …)`: вторник занят, среда — под вопросом.
+    pub fn free_busy(from: i64) -> Vec<u8> {
+        let stamp = |t: i64| jiff::Timestamp::from_second(t).map(|t| t.strftime("%Y%m%dT%H%M%SZ").to_string()).unwrap_or_default();
+        let day = 86_400;
+        let period = |d: i64, h: i64, hours: i64| format!("{}/{}", stamp(from + d * day + h * 3600), stamp(from + d * day + (h + hours) * 3600));
+        format!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Postman//Demo//RU\r\nBEGIN:VFREEBUSY\r\nFREEBUSY;FBTYPE=BUSY:{}\r\nFREEBUSY;FBTYPE=BUSY-TENTATIVE:{}\r\nEND:VFREEBUSY\r\nEND:VCALENDAR\r\n",
+            period(1, 7, 3),
+            period(2, 10, 2)
+        )
+        .into_bytes()
+    }
+
     /// Коллеги для «Помощника планирования»: (имя, адрес, занятость).
     pub fn colleagues() -> Vec<(&'static str, &'static str, Vec<Busy>)> {
         let b = |day, (h, m): (i64, i64), mins: i64, kind| Busy { span: Span::new(at(day, h, m), at(day, h, m) + mins * 60), kind };

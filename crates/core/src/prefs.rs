@@ -863,6 +863,8 @@ pub struct Calendar {
     /// Необязательные участники закрывают общие окна.
     pub with_optional: bool,
     pub free_color: FreeColor,
+    /// Ссылки на занятость внешних участников, указанные на вкладке встречи (S8-42): адрес → ссылка.
+    pub free_busy_links: std::collections::BTreeMap<String, String>,
     /// События коллег — цветом календаря владельца; имя владельца в событии (S5-22).
     pub owner_colors: bool,
     pub owner_names: bool,
@@ -894,6 +896,7 @@ impl Default for Calendar {
             start_late: true,
             with_optional: false,
             free_color: FreeColor::Brand,
+            free_busy_links: std::collections::BTreeMap::new(),
             owner_colors: true,
             owner_names: true,
             calendar_colors: std::collections::BTreeMap::new(),
@@ -1352,6 +1355,7 @@ mod tests {
                 start_late: false,
                 with_optional: true,
                 free_color: FreeColor::Slate,
+                free_busy_links: std::collections::BTreeMap::new(),
                 owner_colors: false,
                 owner_names: false,
                 calendar_colors: std::collections::BTreeMap::from([("a@x".to_string(), "pink".to_string())]),
