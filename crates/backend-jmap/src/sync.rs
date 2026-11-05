@@ -1046,9 +1046,25 @@ async fn handle(
         }
         // Должности, отдела и телефона у JMAP `Principal` нет — подробностей сверх найденного тоже.
         Command::PersonDetails { email } => notify(Event::PersonDetails { email, person: None }),
-        Command::ShareFreeBusy { email } => {
-            notify(match schedule::share_free_busy(client, &email).await {
+        Command::ShareFreeBusy { email, items } => {
+            notify(match schedule::share_free_busy(client, &email, items).await {
                 Ok(()) => Event::FreeBusyShared { email },
+                Err(e) => Event::CalendarFailed(e.to_string()),
+            });
+        }
+        Command::CalendarAccess => {
+            notify(match schedule::calendar_access(client).await {
+                Ok(list) => Event::CalendarAccess(list),
+                Err(e) => Event::CalendarFailed(e.to_string()),
+            });
+        }
+        Command::UnshareCalendar { email } => {
+            let done = schedule::unshare_calendar(client, &email).await;
+            notify(match done {
+                Ok(()) => match schedule::calendar_access(client).await {
+                    Ok(list) => Event::CalendarAccess(list),
+                    Err(e) => Event::CalendarFailed(e.to_string()),
+                },
                 Err(e) => Event::CalendarFailed(e.to_string()),
             });
         }

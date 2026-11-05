@@ -280,8 +280,15 @@ pub(crate) enum CalendarAction {
         from: i64,
         to: i64,
     },
-    /// Открыть коллеге мою занятость (`Command::ShareFreeBusy`).
-    Share(String),
+    /// Открыть коллеге мой календарь (`Command::ShareFreeBusy`): `items` — с подробностями.
+    Share {
+        email: String,
+        items: bool,
+    },
+    /// Кому открыт мой календарь (S8-43).
+    Access,
+    /// Закрыть мой календарь коллеге.
+    Unshare(String),
     /// Ответ на приглашение из подробностей события (`Command::RespondInvite`, путь S3-03).
     Respond {
         event: Box<Event>,
@@ -321,6 +328,12 @@ struct Found {
 }
 
 pub(crate) struct CalendarView {
+    /// Кому открыт мой календарь (S8-43): список, спрашивали ли, «С подробностями» в строке открытия.
+    access: Vec<postman_core::sync::Access>,
+    access_asked: bool,
+    share_items: bool,
+    /// Прокрутка панели слева: список доступа — внизу.
+    side_scroll: ScrollHandle,
     /// Подписки `.ics` (S8-44): воркер для разбора, календари, строка «Добавить по ссылке».
     worker: Option<std::sync::Arc<std::sync::Mutex<postman_worker::Client>>>,
     subs: Vec<subscriptions::Sub>,
@@ -492,6 +505,10 @@ impl CalendarView {
                 s.set_offset(point(px(0.), px(-work_scroll(cal.work_hours(cal.zone()).start))));
                 s
             },
+            access: Vec::new(),
+            access_asked: false,
+            share_items: false,
+            side_scroll: ScrollHandle::new(),
             worker: None,
             subs: Vec::new(),
             sub_input,
@@ -587,6 +604,9 @@ impl CalendarView {
         self.load_subs(cx);
         if !self.live {
             return;
+        }
+        if !std::mem::replace(&mut self.access_asked, true) {
+            cx.emit(CalendarAction::Access);
         }
         let (from, to) = self.range();
         self.pending = Some((from, to));
@@ -730,8 +750,10 @@ impl CalendarView {
                 self.sharing = None;
                 let text = tr!("cal-share-done", email = email.clone());
                 self.share_status = Some((text.clone(), false));
+                cx.emit(CalendarAction::Access);
                 cx.emit(CalendarAction::Toast(Toast::Success, text));
             }
+            SyncEvent::CalendarAccess(list) => self.access = list.clone(),
             SyncEvent::CalendarFailed(error) => {
                 self.pending = None;
                 let text = tr!("cal-failed", error = error.clone());
@@ -753,7 +775,7 @@ impl CalendarView {
                 let email = one.email.clone();
                 self.share_status = Some((tr!("cal-share-sending", email = email.clone()), false));
                 self.sharing = Some(email.clone());
-                cx.emit(CalendarAction::Share(email));
+                cx.emit(CalendarAction::Share { email, items: self.share_items });
             }
             _ => {
                 let shown = bad.first().cloned().unwrap_or_else(|| text.trim().to_string());
@@ -1349,6 +1371,7 @@ impl CalendarView {
                 .pt(px(8.))
                 .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child(tr!("cal-share-label")))
                 .child(Input::new(&self.share))
+                .child(self.share_items_check(&l, cx))
                 .child(
                     div()
                         .flex()
@@ -1398,6 +1421,7 @@ impl CalendarView {
             .flex_none()
             .h_full()
             .overflow_y_scroll()
+            .track_scroll(&self.side_scroll)
             .flex()
             .flex_col()
             .gap(px(2.))
@@ -1418,7 +1442,111 @@ impl CalendarView {
             .children(cats)
             .child(div().h(px(1.)).mx(px(8.)).mt(px(10.)).mb(px(2.)).bg(l.border()))
             .child(title("cal-group-share"))
+            .children(self.access_rows(&l, cx))
             .child(share)
+    }
+
+    /// «С подробностями» в строке открытия.
+    fn share_items_check(&self, l: &Look, cx: &mut Context<Self>) -> impl IntoElement {
+        let on = self.share_items;
+        div()
+            .id("share-items")
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .text_size(px(12.))
+            .cursor_pointer()
+            .child(
+                div()
+                    .size(px(16.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(if on { l.accent() } else { l.text3() })
+                    .when(on, |d| d.bg(l.accent()).text_color(l.on_accent()).child(icon(g::CHECK, 10.))),
+            )
+            .child(tr!("cal-share-items"))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.share_items = !this.share_items;
+                cx.notify();
+            }))
+    }
+
+    /// Кому открыт мой календарь (S8-43): имя, уровень (щелчок меняет), «Закрыть».
+    fn access_rows(&self, l: &Look, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let row = |n: usize, a: &postman_core::sync::Access| {
+            let (email, level, close) = (a.email.clone(), !a.items, a.email.clone());
+            let shown = if a.name.is_empty() { a.email.clone() } else { a.name.clone() };
+            div()
+                .flex()
+                .flex_col()
+                .px(px(8.))
+                .py(px(3.))
+                .child(div().min_w_0().truncate().child(shown))
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(10.))
+                        .text_size(px(11.))
+                        .child(
+                            div()
+                                .id(("cal-access-level", n))
+                                .cursor_pointer()
+                                .text_color(l.text2())
+                                .hover(|d| d.underline())
+                                .child(tr!(if a.items { "cal-access-items" } else { "cal-access-busy" }))
+                                .on_click(cx.listener(move |this, _, _, cx| this.share_level(&email, level, cx))),
+                        )
+                        .child(
+                            div()
+                                .id(("cal-access-close", n))
+                                .cursor_pointer()
+                                .text_color(l.accent_text())
+                                .hover(|d| d.underline())
+                                .child(tr!("cal-access-close"))
+                                .on_click(cx.listener(move |this, _, _, cx| this.close_access(&close, cx))),
+                        ),
+                )
+                .into_any_element()
+        };
+        self.access.iter().enumerate().map(|(n, a)| row(n, a)).collect()
+    }
+
+    /// Сменить уровень: сервер заменяет запись. Демо — сразу.
+    fn share_level(&mut self, email: &str, items: bool, cx: &mut Context<Self>) {
+        if self.live {
+            cx.emit(CalendarAction::Share { email: email.to_owned(), items });
+        } else if let Some(a) = self.access.iter_mut().find(|a| a.email == email) {
+            a.items = items;
+        }
+        cx.notify();
+    }
+
+    /// Закрыть календарь коллеге; список обновит ответ сервера. Демо — сразу.
+    fn close_access(&mut self, email: &str, cx: &mut Context<Self>) {
+        if self.live {
+            cx.emit(CalendarAction::Unshare(email.to_owned()));
+        } else {
+            self.access.retain(|a| a.email != email);
+        }
+        cx.notify();
+    }
+
+    /// Снимок: демо-список и панель прокручена к нему.
+    pub(crate) fn show_access(&mut self, cx: &mut Context<Self>) {
+        use postman_core::sync::Access;
+        self.access = demo::colleagues()
+            .into_iter()
+            .take(2)
+            .enumerate()
+            .map(|(i, (name, email, _))| Access { email: email.to_owned(), name: name.to_owned(), items: i == 1 })
+            .collect();
+        self.share_open = true;
+        self.side_scroll.scroll_to_bottom();
+        cx.notify();
     }
 
     /// Группа «Подписки»: календари по ссылке и «Добавить» строкой, без диалога (S8-44).
@@ -2616,7 +2744,9 @@ impl crate::Mailer {
         let command = match action {
             CalendarAction::Load { from, to } => Command::Events { from: *from, to: *to },
             CalendarAction::Search { text, from, to } => Command::SearchEvents { text: text.clone(), from: *from, to: *to },
-            CalendarAction::Share(email) => Command::ShareFreeBusy { email: email.clone() },
+            CalendarAction::Share { email, items } => Command::ShareFreeBusy { email: email.clone(), items: *items },
+            CalendarAction::Access => Command::CalendarAccess,
+            CalendarAction::Unshare(email) => Command::UnshareCalendar { email: email.clone() },
             CalendarAction::Respond { event, status } => Command::RespondInvite {
                 invite: Box::new(Invitation {
                     method: "REQUEST".into(),
@@ -2826,6 +2956,8 @@ pub(crate) mod scenes {
         Scene::new("calendar-colleagues", colleagues, colleagues_ready),
         // Подписка на календарь `.ics` (S8-44): группа слева, событие на весь день и повтор в неделе.
         Scene::new("calendar-subscription", subscription, subscription_ready),
+        // Кому открыт мой календарь (S8-43): список, уровень, строка открытия.
+        Scene::new("calendar-access", access, access_ready),
         // Виды календаря (S5-21): «День» — среда демо-недели, «Неделя» — с выходными, «Месяц» — клетки с полосами
         // многодневных и строками событий, «+N ещё».
         Scene::new("calendar-day", view, view_ready),
@@ -2855,6 +2987,16 @@ pub(crate) mod scenes {
             c.select_pending(cx);
         });
         Ok(())
+    }
+
+    fn access(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.set_section(Section::Calendar, cx);
+        m.cal.update(cx, |c, cx| c.show_access(cx));
+        Ok(())
+    }
+
+    fn access_ready(_: &Scene, m: &Mailer, _: &App) -> bool {
+        m.section == Section::Calendar
     }
 
     fn subscription(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {

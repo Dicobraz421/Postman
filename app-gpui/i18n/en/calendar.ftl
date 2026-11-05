@@ -86,16 +86,16 @@ cal-failed = Calendar: { $error }
 cal-my-calendar = My calendar
 cal-group-mine = My calendars
 cal-group-categories = Categories
-cal-group-share = Free/busy
-cal-share-open = Share my free/busy
-cal-share-label = Share my free/busy with a colleague
+cal-group-share = Calendar access
+cal-share-open = Share calendar with a colleague
+cal-share-label = Share my calendar with a colleague
 cal-share-placeholder = colleague's address
 cal-share-button = Share
 cal-share-cancel = Cancel
-cal-share-note = A colleague sees your free/busy only if you shared it (without meeting details). Until a colleague shares theirs, the assistant shows "no data" for them, not "free".
+cal-share-note = A colleague sees your calendar only if you shared it. Until a colleague shares theirs, the assistant shows "no data" for them, not "free".
 cal-share-bad = Not an address: { $email }
-cal-share-sending = Sharing free/busy: { $email }…
-cal-share-done = Your free/busy is shared: { $email }
+cal-share-sending = Sharing calendar: { $email }…
+cal-share-done = Calendar shared: { $email }
 
 # Week.
 cal-all-day-1 = All
@@ -277,3 +277,8 @@ cal-sub-refresh = Refresh
 cal-sub-remove = Remove
 cal-sub-new = Calendar by link
 cal-chip-subscription = Subscription
+# Calendar access (S8-43)
+cal-share-items = Include meeting details
+cal-access-busy = Free/busy only
+cal-access-items = Free/busy and details
+cal-access-close = Remove access

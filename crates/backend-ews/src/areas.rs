@@ -594,7 +594,10 @@ impl EwsAreas {
                 }
             },
             // Занятость в Exchange открывает политика сервера, а не владелец календаря.
-            Command::ShareFreeBusy { .. } => notify(SyncEvent::CalendarFailed("Exchange: free/busy sharing is set by the server".into())),
+            Command::ShareFreeBusy { .. } | Command::UnshareCalendar { .. } => {
+                notify(SyncEvent::CalendarFailed("Exchange: free/busy sharing is set by the server".into()))
+            }
+            Command::CalendarAccess => notify(SyncEvent::CalendarAccess(Vec::new())),
             other => return Some(other),
         }
         None

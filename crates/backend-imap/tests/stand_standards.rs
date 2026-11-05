@@ -349,7 +349,7 @@ fn caldav_free_busy() {
     assert!(people.iter().any(|(e, b)| e.starts_with("nobody-") && b.is_none()));
 
     // «Открыть мою занятость» коллеге — только `read-free-busy` моих календарей.
-    a.send(Command::ShareFreeBusy { email: peer.clone() });
+    a.send(Command::ShareFreeBusy { email: peer.clone(), items: false });
     a.wait("FreeBusyShared", |e| matches!(e, Event::FreeBusyShared { .. }));
     rt().block_on(async {
         let c1 = dav(1);

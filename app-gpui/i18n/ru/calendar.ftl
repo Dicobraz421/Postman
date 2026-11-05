@@ -86,16 +86,16 @@ cal-failed = Календарь: { $error }
 cal-my-calendar = Мой календарь
 cal-group-mine = Мои календари
 cal-group-categories = Категории
-cal-group-share = Занятость
-cal-share-open = Открыть мою занятость
-cal-share-label = Открыть мою занятость коллеге
+cal-group-share = Доступ к календарю
+cal-share-open = Открыть календарь коллеге
+cal-share-label = Открыть мой календарь коллеге
 cal-share-placeholder = адрес коллеги
 cal-share-button = Открыть
 cal-share-cancel = Отмена
-cal-share-note = Коллега видит вашу занятость, только если вы её открыли (без подробностей встреч). Пока коллега не открыл свою, в помощнике у него «нет данных», а не «свободен».
+cal-share-note = Коллега видит ваш календарь, только если вы его открыли. Пока коллега не открыл свой, в помощнике у него «нет данных», а не «свободен».
 cal-share-bad = Не адрес: { $email }
-cal-share-sending = Открываю занятость: { $email }…
-cal-share-done = Ваша занятость открыта: { $email }
+cal-share-sending = Открываю календарь: { $email }…
+cal-share-done = Календарь открыт: { $email }
 
 # Неделя.
 cal-all-day-1 = Весь
@@ -277,3 +277,8 @@ cal-sub-refresh = Обновить
 cal-sub-remove = Удалить
 cal-sub-new = Календарь по ссылке
 cal-chip-subscription = Подписка
+# Доступ к календарю (S8-43)
+cal-share-items = С подробностями встреч
+cal-access-busy = Только занятость
+cal-access-items = Занятость и подробности
+cal-access-close = Закрыть доступ

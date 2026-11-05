@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use postman_core::backend::{AreaCtx, AreaPlugin, Areas, BoxFuture, Login};
 use postman_core::model::ErrorKind;
-use postman_core::sync::{Command, Event as SyncEvent, owned_by};
+use postman_core::sync::{Access, Command, Event as SyncEvent, owned_by};
 
 type CoreResult<T> = postman_core::model::Result<T>;
 
@@ -146,6 +146,12 @@ fn parent(href: &str) -> &str {
         Some(i) => &href[..=i],
         None => href,
     }
+}
+
+/// Адрес из пути принципала (`/dav/pal/user2%40itt.test/`), когда сам принципал не виден.
+fn email_of_href(href: &str) -> String {
+    let last = href.trim_end_matches('/').rsplit('/').next().unwrap_or(href);
+    percent_encoding::percent_decode_str(last).decode_utf8_lossy().into_owned()
 }
 
 /// Принципал коллеги по адресу — соседний со своим (`/dav/pal/<адрес>/`, так у Stalwart); проверяется по его
@@ -403,8 +409,43 @@ impl Dav {
         Ok(false)
     }
 
-    /// Открыть коллеге только занятость своих календарей (ACL `read-free-busy`).
-    pub async fn share_free_busy(&self, email: &str) -> Result<(), Error> {
+    /// Кому открыты мои календари (S8-43): чужие записи ACL; подробности — право `read` хотя бы в одном календаре.
+    /// Адрес — из принципала; его может быть не видно (403) — тогда из пути.
+    pub async fn calendar_access(&self) -> Result<Vec<Access>, Error> {
+        let mut rights: BTreeMap<String, bool> = BTreeMap::new();
+        for c in self.event_calendars().filter(|c| c.writable) {
+            for ace in self.client.acl(&c.href).await? {
+                if ace.protected || ace.inherited {
+                    continue;
+                }
+                let postman_dav::acl::Who::Href(who) = &ace.who else { continue };
+                if same_href(who, &self.found.principal) {
+                    continue;
+                }
+                *rights.entry(who.clone()).or_default() |= ace.grant.contains(&Privilege::read());
+            }
+        }
+        let mut out = Vec::new();
+        for (href, items) in rights {
+            let seen = self.client.principal(&href).await.ok();
+            let email = seen.as_ref().and_then(|d| d.email().map(str::to_owned)).unwrap_or_else(|| email_of_href(&href));
+            out.push(Access { email, name: String::new(), items });
+        }
+        out.sort_by_key(|a| a.email.to_lowercase());
+        Ok(out)
+    }
+
+    /// Закрыть коллеге мои календари.
+    pub async fn unshare_calendar(&self, email: &str) -> Result<(), Error> {
+        let principal = sibling_principal(&self.found.principal, email);
+        for c in self.event_calendars().filter(|c| c.writable) {
+            self.client.unshare(&c.href, &principal).await?;
+        }
+        Ok(())
+    }
+
+    /// Открыть коллеге занятость своих календарей (ACL `read-free-busy`), `items` — ещё и подробности (`read`).
+    pub async fn share_free_busy(&self, email: &str, items: bool) -> Result<(), Error> {
         let principal = sibling_principal(&self.found.principal, email);
         // Чужой принципал Stalwart не показывает (403, `docs/STALWART.md` п. 48): проверяем адрес, если он виден, иначе
         // запись ACL на несуществующего принципала отклонит сервер.
@@ -415,7 +456,8 @@ impl Dav {
         }
         let mut shared = 0;
         for c in self.event_calendars().filter(|c| c.writable) {
-            self.client.share(&c.href, &principal, &[Privilege::read_free_busy()]).await?;
+            let rights = [Privilege::read_free_busy(), Privilege::read()];
+            self.client.share(&c.href, &principal, if items { &rights } else { &rights[..1] }).await?;
             shared += 1;
         }
         if shared == 0 {
@@ -791,7 +833,21 @@ impl Dav {
             },
             // Справочника у CardDAV нет — подробностей человека тоже.
             Command::PersonDetails { email } => notify(SyncEvent::PersonDetails { email, person: None }),
-            Command::ShareFreeBusy { email } => notify(match self.share_free_busy(&email).await {
+            Command::CalendarAccess => notify(match self.calendar_access().await {
+                Ok(list) => SyncEvent::CalendarAccess(list),
+                Err(e) => SyncEvent::CalendarFailed(e.to_string()),
+            }),
+            Command::UnshareCalendar { email } => {
+                let done = self.unshare_calendar(&email).await;
+                notify(match done {
+                    Ok(()) => match self.calendar_access().await {
+                        Ok(list) => SyncEvent::CalendarAccess(list),
+                        Err(e) => SyncEvent::CalendarFailed(e.to_string()),
+                    },
+                    Err(e) => SyncEvent::CalendarFailed(e.to_string()),
+                })
+            }
+            Command::ShareFreeBusy { email, items } => notify(match self.share_free_busy(&email, items).await {
                 Ok(()) => SyncEvent::FreeBusyShared { email },
                 Err(e) => SyncEvent::CalendarFailed(e.to_string()),
             }),
@@ -893,6 +949,7 @@ mod tests {
         assert_eq!(parent("/dav/cal/u/default/x.ics"), "/dav/cal/u/default/");
         assert_eq!(parent("/dav/cal/u/default/"), "/dav/cal/u/");
         assert_eq!(sibling_principal("/dav/pal/user1%40itt.test/", "user2@itt.test"), "/dav/pal/user2%40itt.test/");
+        assert_eq!(email_of_href("/dav/pal/user2%40itt.test/"), "user2@itt.test");
     }
 
     #[test]
