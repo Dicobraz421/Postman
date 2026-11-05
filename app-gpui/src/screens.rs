@@ -149,6 +149,12 @@ pub(crate) fn spot_center(id: &str, window: &Window) -> Option<Point<Pixels>> {
     spot_bounds(id).map(|b| b.center()).filter(|p| p.x > px(0.) && p.y > px(0.) && p.x < view.width && p.y < view.height)
 }
 
+/// Точка строки `i` списка с учётом заголовков групп: их число зависит от времени суток, строки демо считаются от «сейчас».
+pub(crate) fn row_place(m: &Mailer, cx: &App, i: usize) -> Option<Point<Pixels>> {
+    let list = m.list.read(cx);
+    (list.bounds.get().size.width > px(0.)).then(|| list.row_point(i)).flatten()
+}
+
 /// Событие очереди: по одному на кадр, чтобы окно успело перестроиться.
 enum Event {
     Key(Keystroke),
