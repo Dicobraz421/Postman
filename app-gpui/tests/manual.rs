@@ -1,4 +1,4 @@
-//! Автопроверка ручных разделов `docs/MANUAL-TESTS.md` (2–6, 12, 13, 15, 16, 18–33, 35–41) без нажатий в окне: запуск `postman.exe` с ключами,
+//! Автопроверка ручных разделов `docs/MANUAL-TESTS.md` (2–6, 12, 13, 15, 16, 18–33, 35–43) без нажатий в окне: запуск `postman.exe` с ключами,
 //! файлы снимков, состояние окна и журнал «Приложение» — средствами Windows. Данные — во временном `LOCALAPPDATA`,
 //! настоящий ящик и настройки не трогаются.
 //!
@@ -514,5 +514,15 @@ fn s37_to_s41_scenes() {
         "invite-side",
     ];
     const DARK: &[&str] = &["compose", "meeting", "meeting-slot", "invite", "invite-answered", "invite-side"];
+    themed_scenes(LIGHT, DARK);
+}
+
+/// Разделы 42, 43 (S5-31, S5-25): цвета главного окна, письма и календаря в обеих темах, контакты и «Часто пишу». Смотрит агент.
+#[test]
+#[ignore = "окно и рабочий стол: cargo nextest run -p postman-gpui --test manual --run-ignored only"]
+fn s42_s43_scenes() {
+    need_worker();
+    const LIGHT: &[&str] = &["list", "letter", "contacts", "contacts-menu", "contact-edit", "contacts-frequent"];
+    const DARK: &[&str] = &["list", "letter", "contacts", "contacts-menu", "contact-edit", "contacts-frequent", "settings-categories"];
     themed_scenes(LIGHT, DARK);
 }
