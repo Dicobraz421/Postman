@@ -865,6 +865,10 @@ pub struct Calendar {
     pub free_color: FreeColor,
     /// Ссылки на занятость внешних участников, указанные на вкладке встречи (S8-42): адрес → ссылка.
     pub free_busy_links: std::collections::BTreeMap<String, String>,
+    /// Календари по ссылке `.ics` (S8-44).
+    pub subscriptions: Vec<CalendarSubscription>,
+    /// Как часто обновлять подписки, мин ([`SUBSCRIPTION_MINUTES`]).
+    pub subscription_minutes: u16,
     /// События коллег — цветом календаря владельца; имя владельца в событии (S5-22).
     pub owner_colors: bool,
     pub owner_names: bool,
@@ -878,6 +882,17 @@ pub struct Calendar {
     /// Письмо-приглашение — в «Удалённые» после ответа.
     pub delete_answered: bool,
 }
+
+/// Календарь по ссылке (S8-44): только для чтения.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CalendarSubscription {
+    pub url: String,
+    /// Имя: из `X-WR-CALNAME`, пока не пришло — пусто.
+    pub name: String,
+}
+
+/// Варианты частоты обновления подписок, мин.
+pub const SUBSCRIPTION_MINUTES: [u16; 4] = [15, 60, 360, 1440];
 
 impl Default for Calendar {
     fn default() -> Self {
@@ -897,6 +912,8 @@ impl Default for Calendar {
             with_optional: false,
             free_color: FreeColor::Brand,
             free_busy_links: std::collections::BTreeMap::new(),
+            subscriptions: Vec::new(),
+            subscription_minutes: 60,
             owner_colors: true,
             owner_names: true,
             calendar_colors: std::collections::BTreeMap::new(),
@@ -1356,6 +1373,8 @@ mod tests {
                 with_optional: true,
                 free_color: FreeColor::Slate,
                 free_busy_links: std::collections::BTreeMap::new(),
+                subscriptions: Vec::new(),
+                subscription_minutes: 60,
                 owner_colors: false,
                 owner_names: false,
                 calendar_colors: std::collections::BTreeMap::from([("a@x".to_string(), "pink".to_string())]),

@@ -349,6 +349,13 @@ impl SettingsView {
                 self.cal_seg(("settings-cal-duration", d as usize), duration_text(i64::from(d) * 60), c.duration == d, move |c| c.duration = d, l, cx)
             })
             .collect();
+        let subscriptions: Vec<Stateful<Div>> = postman_core::prefs::SUBSCRIPTION_MINUTES
+            .into_iter()
+            .map(|m| {
+                let label = duration_text(i64::from(m) * 60);
+                self.cal_seg(("settings-cal-subs", m as usize), label, c.subscription_minutes == m, move |c| c.subscription_minutes = m, l, cx)
+            })
+            .collect();
         let reminders: Vec<Pick> = REMINDERS
             .into_iter()
             .map(|m| {
@@ -387,6 +394,7 @@ impl SettingsView {
             .child(line(tr!("settings-cal-second"), None, Some(tr!("settings-cal-second-hint")), second, l))
             .child(group(tr!("settings-cal-meet-group"), l))
             .child(line(tr!("settings-cal-duration"), None, Some(tr!("settings-cal-duration-hint")), seg_group(durations, l), l))
+            .child(line(tr!("settings-cal-subscriptions"), None, Some(tr!("settings-cal-subscriptions-hint")), seg_group(subscriptions, l), l))
             .child(line(
                 tr!("settings-cal-reminder"),
                 Some(stored(l)),

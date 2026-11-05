@@ -385,6 +385,18 @@ const PUBLIC_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Скачать публичный ресурс без входа, не больше `max` байт; перенаправления — только на такие же адреса.
 pub async fn fetch_public(text: &str, max: usize) -> Result<Vec<u8>> {
+    fetch_public_if(text, max, None).await?.map(|f| f.body).ok_or(Error::Status(304))
+}
+
+/// Ответ на условный запрос.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Public {
+    pub body: Vec<u8>,
+    pub etag: Option<String>,
+}
+
+/// Как [`fetch_public`], с `If-None-Match`: `None` — ресурс не менялся.
+pub async fn fetch_public_if(text: &str, max: usize, etag: Option<&str>) -> Result<Option<Public>> {
     let url = public_url(text).ok_or_else(|| Error::Protocol("bad public address".into()))?;
     let policy = reqwest::redirect::Policy::custom(|a| {
         if a.previous().len() >= MAX_REDIRECTS || public_url(a.url().as_str()).is_none() { a.stop() } else { a.follow() }
@@ -396,15 +408,23 @@ pub async fn fetch_public(text: &str, max: usize) -> Result<Vec<u8>> {
         .redirect(policy)
         .build()
         .map_err(|e| Error::Http(e.without_url()))?;
-    read_limited(http.get(url), max).await
+    let mut request = http.get(url);
+    if let Some(tag) = etag {
+        request = request.header(reqwest::header::IF_NONE_MATCH, tag);
+    }
+    read_limited(request, max).await
 }
 
 /// Тело ответа не больше `max` байт: `Content-Length` врать может, поэтому счёт — по пришедшему.
-async fn read_limited(request: reqwest::RequestBuilder, max: usize) -> Result<Vec<u8>> {
+async fn read_limited(request: reqwest::RequestBuilder, max: usize) -> Result<Option<Public>> {
     let mut response = request.send().await.map_err(|e| Error::Http(e.without_url()))?;
+    if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+        return Ok(None);
+    }
     if !response.status().is_success() {
         return Err(Error::Status(response.status().as_u16()));
     }
+    let etag = response.headers().get(reqwest::header::ETAG).and_then(|v| v.to_str().ok()).map(str::to_owned);
     let mut out = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|e| Error::Http(e.without_url()))? {
         if out.len() + chunk.len() > max {
@@ -412,7 +432,7 @@ async fn read_limited(request: reqwest::RequestBuilder, max: usize) -> Result<Ve
         }
         out.extend_from_slice(&chunk);
     }
-    Ok(out)
+    Ok(Some(Public { body: out, etag }))
 }
 
 #[cfg(test)]
@@ -509,7 +529,7 @@ mod public_tests {
         });
         let http = reqwest::Client::new();
         let url = format!("http://{addr}/");
-        assert_eq!(read_limited(http.get(&url), 10).await.unwrap(), b"hello");
+        assert_eq!(read_limited(http.get(&url), 10).await.unwrap(), Some(Public { body: b"hello".to_vec(), etag: None }));
         assert!(matches!(read_limited(http.get(&url), 10).await, Err(Error::Status(404))));
         assert!(matches!(read_limited(http.get(&url), 3).await, Err(Error::TooLarge)));
     }

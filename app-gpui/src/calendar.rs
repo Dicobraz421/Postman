@@ -38,6 +38,8 @@ use crate::cal_model::{self as model, MonthItem};
 use crate::chrome::icon;
 use crate::roles::{Look, Pm};
 
+mod subscriptions;
+
 pub(crate) const FIRST_HOUR: i64 = 8;
 pub(crate) const HOURS: i64 = 11;
 const HOUR_PX: f32 = 60.;
@@ -319,6 +321,12 @@ struct Found {
 }
 
 pub(crate) struct CalendarView {
+    /// Подписки `.ics` (S8-44): воркер для разбора, календари, строка «Добавить по ссылке».
+    worker: Option<std::sync::Arc<std::sync::Mutex<postman_worker::Client>>>,
+    subs: Vec<subscriptions::Sub>,
+    sub_input: Entity<InputState>,
+    sub_open: bool,
+    sub_bad: bool,
     tz: TimeZone,
     /// Вид и опорная дата: по ней — дни вида (`cal_model::days`).
     pub(crate) view: View,
@@ -405,6 +413,15 @@ impl CalendarView {
                 this.submit_share(window, cx);
             }
         });
+        let sub_input = cx.new(|cx| InputState::new(window, cx).placeholder(tr!("cal-sub-placeholder")));
+        let on_sub = cx.subscribe_in(&sub_input, window, |this: &mut Self, _, ev: &InputEvent, _, cx| match ev {
+            InputEvent::PressEnter { .. } => this.submit_sub(cx),
+            InputEvent::Change => {
+                this.sub_bad = false;
+                cx.notify();
+            }
+            _ => {}
+        });
         let search = cx.new(|cx| InputState::new(window, cx).placeholder(tr!("cal-search-placeholder")));
         let on_search = cx.subscribe_in(&search, window, |this: &mut Self, state, ev: &InputEvent, _, cx| match ev {
             InputEvent::Change => {
@@ -475,7 +492,12 @@ impl CalendarView {
                 s.set_offset(point(px(0.), px(-work_scroll(cal.work_hours(cal.zone()).start))));
                 s
             },
-            _subscriptions: vec![on_share, on_search, on_prefs],
+            worker: None,
+            subs: Vec::new(),
+            sub_input,
+            sub_open: false,
+            sub_bad: false,
+            _subscriptions: vec![on_share, on_search, on_sub, on_prefs],
         }
     }
 
@@ -562,6 +584,7 @@ impl CalendarView {
 
     /// Перечитать период с сервера (раздел открыт, период сменился, создана встреча).
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.load_subs(cx);
         if !self.live {
             return;
         }
@@ -669,6 +692,7 @@ impl CalendarView {
                 self.events = merged;
                 self.loaded = true;
                 self.selected = open.and_then(|(uid, start)| self.events.iter().position(|e| e.uid == uid && e.span.start == start));
+                self.apply_subs(cx);
             }
             SyncEvent::EventsFound { text, events, error } if self.searching.as_deref() == Some(text.as_str()) => {
                 self.searching = None;
@@ -1176,6 +1200,9 @@ impl CalendarView {
     /// Имя «календаря» события в подробностях: владелец (календарь коллеги), категория или «Мой календарь».
     fn source_name(&self, e: &Event) -> String {
         if let Some(o) = &e.owner {
+            if subscriptions::is_subscription(e) {
+                return o.name.clone();
+            }
             return tr!("cal-colleague-calendar", name = o.name.clone());
         }
         self.categories.for_event(&e.keywords).map(|c| c.name.clone()).unwrap_or_else(|| tr!("cal-my-calendar"))
@@ -1276,6 +1303,7 @@ impl CalendarView {
         let mut colleagues: Vec<AnyElement> = self
             .colleagues
             .iter()
+            .filter(|o| !o.email.starts_with("ics:"))
             .enumerate()
             .map(|(n, o)| {
                 let key = o.key();
@@ -1311,6 +1339,7 @@ impl CalendarView {
                 .child(div().size(px(10.)).flex_none().rounded(px(3.)).bg(color.dot))
                 .child(div().min_w_0().truncate().child(c.name.clone()))
         });
+        let subs = self.subscription_rows(&l, cx);
         let share = if self.share_open {
             div()
                 .flex()
@@ -1383,11 +1412,126 @@ impl CalendarView {
             .child(mine)
             .children(my_others)
             .when(!colleagues.is_empty(), |d| d.child(title("cal-group-colleagues")).children(colleagues))
+            .child(title("cal-group-subscriptions"))
+            .child(subs)
             .child(title("cal-group-categories"))
             .children(cats)
             .child(div().h(px(1.)).mx(px(8.)).mt(px(10.)).mb(px(2.)).bg(l.border()))
             .child(title("cal-group-share"))
             .child(share)
+    }
+
+    /// Группа «Подписки»: календари по ссылке и «Добавить» строкой, без диалога (S8-44).
+    fn subscription_rows(&self, l: &Look, cx: &mut Context<Self>) -> Div {
+        let mut rows: Vec<AnyElement> = Vec::new();
+        for (n, s) in self.subs.iter().enumerate() {
+            let key = s.key();
+            let shown = !self.hidden.contains(&key);
+            let color = l.cat(self.calendar_color(&key)).dot;
+            let toggle = key.clone();
+            let check = div()
+                .id(("cal-sub-check", n))
+                .size(px(16.))
+                .flex_none()
+                .rounded(px(4.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .border_1()
+                .border_color(color)
+                .when(shown, |d| d.bg(color).text_color(l.on_accent()).child(icon(g::CHECK, 10.)))
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| this.toggle_calendar(&toggle, cx)));
+            rows.push(self.calendar_row(("cal-sub", n), key.clone(), s.shown_name(), check, l, cx).into_any_element());
+            if s.failed {
+                rows.push(div().pl(px(34.)).text_size(px(11.)).text_color(l.error()).child(tr!("cal-sub-failed")).into_any_element());
+            }
+            // Управление — там же, где выбор цвета: щелчок по образцу цвета.
+            if self.color_menu.as_deref() == Some(key.as_str()) {
+                let id = s.id.clone();
+                let action = |name: (&'static str, usize), text: String| {
+                    div().id(name).cursor_pointer().text_size(px(12.)).text_color(l.accent_text()).hover(|d| d.underline()).child(text)
+                };
+                rows.push(
+                    div()
+                        .flex()
+                        .gap(px(12.))
+                        .pl(px(34.))
+                        .pb(px(6.))
+                        .child(
+                            action(("cal-sub-refresh", n), tr!("cal-sub-refresh")).on_click(cx.listener(|this, _, _, cx| this.fetch_subs(true, cx))),
+                        )
+                        .child(
+                            action(("cal-sub-remove", n), tr!("cal-sub-remove"))
+                                .on_click(cx.listener(move |this, _, _, cx| this.remove_subscription(&id, cx))),
+                        )
+                        .into_any_element(),
+                );
+            }
+        }
+        let add = if self.sub_open {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .px(px(8.))
+                .pt(px(4.))
+                .child(Input::new(&self.sub_input))
+                .when(self.sub_bad, |d| d.child(div().text_size(px(12.)).text_color(l.error()).child(tr!("cal-sub-bad"))))
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(6.))
+                        .child(
+                            crate::buttons::primary("sub-add", l)
+                                .child(tr!("cal-sub-add"))
+                                .on_click(cx.listener(|this, _, _, cx| this.submit_sub(cx))),
+                        )
+                        .child(crate::buttons::secondary("sub-cancel", l).child(tr!("cal-share-cancel")).on_click(cx.listener(|this, _, _, cx| {
+                            this.sub_open = false;
+                            this.sub_bad = false;
+                            cx.notify();
+                        }))),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .id("sub-open")
+                .h(px(30.))
+                .px(px(8.))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .text_size(px(12.))
+                .text_color(l.accent_text())
+                .cursor_pointer()
+                .hover(|d| d.bg(l.hover()))
+                .rounded(px(4.))
+                .child(icon(g::ADD, 12.))
+                .child(tr!("cal-sub-open"))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.sub_open = true;
+                    this.sub_input.update(cx, |s, cx| {
+                        s.set_value("", window, cx);
+                        s.focus(window, cx);
+                    });
+                    cx.notify();
+                }))
+                .into_any_element()
+        };
+        div().flex().flex_col().gap(px(2.)).children(rows).child(add)
+    }
+
+    /// «Добавить»: ссылка не годится — подсказка, строка остаётся.
+    fn submit_sub(&mut self, cx: &mut Context<Self>) {
+        let url = self.sub_input.read(cx).value().to_string();
+        if self.add_subscription(&url, cx) {
+            self.sub_open = false;
+            self.sub_bad = false;
+        } else {
+            self.sub_bad = true;
+        }
+        cx.notify();
     }
 
     // --- сетка дня и недели ---
@@ -2043,6 +2187,7 @@ impl CalendarView {
         let (bar, _, _) = self.colors(e, l);
         let answering = self.answering.as_ref().filter(|(u, _)| *u == e.uid).map(|(_, s)| *s);
         let (chip, outlined) = match (owner, status) {
+            _ if subscriptions::is_subscription(e) => (tr!("cal-chip-subscription"), false),
             _ if e.owner.is_some() && mine.is_none() => (tr!("cal-chip-colleague"), false),
             (true, _) => (tr!("cal-chip-organizer"), false),
             (false, Some(Partstat::NeedsAction)) | (false, None) => (tr!("cal-chip-waits"), true),
@@ -2679,6 +2824,8 @@ pub(crate) mod scenes {
         // Календари коллег (S5-22): события коллег цветом их календаря и с именем владельца, слева «Календари коллег»;
         // открыто событие из календаря коллеги.
         Scene::new("calendar-colleagues", colleagues, colleagues_ready),
+        // Подписка на календарь `.ics` (S8-44): группа слева, событие на весь день и повтор в неделе.
+        Scene::new("calendar-subscription", subscription, subscription_ready),
         // Виды календаря (S5-21): «День» — среда демо-недели, «Неделя» — с выходными, «Месяц» — клетки с полосами
         // многодневных и строками событий, «+N ещё».
         Scene::new("calendar-day", view, view_ready),
@@ -2708,6 +2855,16 @@ pub(crate) mod scenes {
             c.select_pending(cx);
         });
         Ok(())
+    }
+
+    fn subscription(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.set_section(Section::Calendar, cx);
+        m.cal.update(cx, |c, cx| c.add_subscription("https://calendar.example.test/company.ics", cx));
+        Ok(())
+    }
+
+    fn subscription_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.cal.read(cx).has_subscription_events()
     }
 
     fn week_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {

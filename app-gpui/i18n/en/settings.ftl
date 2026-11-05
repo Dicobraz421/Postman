@@ -702,3 +702,5 @@ settings-directory-ok = The directory answers: { $n } certificate(s) for your ad
 directory-not-configured = No directory: this computer is not in a domain and no server is set.
 directory-timeout = The directory did not answer in 5 s.
 directory-unavailable = The directory is unavailable.
+settings-cal-subscriptions = Refresh subscriptions
+settings-cal-subscriptions-hint = How often to download calendars added by link.
