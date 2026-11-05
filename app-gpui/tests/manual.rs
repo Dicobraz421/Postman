@@ -1,4 +1,4 @@
-//! Автопроверка ручных разделов `docs/MANUAL-TESTS.md` (2–6, 12, 13, 15, 16, 18–31) без нажатий в окне: запуск `postman.exe` с ключами,
+//! Автопроверка ручных разделов `docs/MANUAL-TESTS.md` (2–6, 12, 13, 15, 16, 18–33, 35, 36) без нажатий в окне: запуск `postman.exe` с ключами,
 //! файлы снимков, состояние окна и журнал «Приложение» — средствами Windows. Данные — во временном `LOCALAPPDATA`,
 //! настоящий ящик и настройки не трогаются.
 //!
@@ -458,5 +458,31 @@ fn s27_to_s31_scenes() {
         "thread-stack",
         "thread-list",
     ];
+    themed_scenes(LIGHT, DARK);
+}
+
+/// Разделы 32, 33, 35, 36 (S5-14, S5-12 Ф1, S5-16, S5-20): переход по совпадениям, значки палитры, подписи S/MIME, вкладка
+/// почты, настройки календаря и цвет свободного времени. Смотрит агент.
+#[test]
+#[ignore = "окно и рабочий стол: cargo nextest run -p postman-gpui --test manual --run-ignored only"]
+fn s32_to_s36_scenes() {
+    need_worker();
+    const LIGHT: &[&str] = &[
+        "search",
+        "search-letter",
+        "search-next",
+        "palette",
+        "smime",
+        "smime-gost",
+        "smime-bad",
+        "smime-untrusted",
+        "quick",
+        "tab-mail",
+        "settings-calendar",
+        "settings-calendar-free",
+        "meeting",
+        "meeting-blue",
+    ];
+    const DARK: &[&str] = &["palette", "smime", "smime-bad", "smime-untrusted", "settings-calendar", "meeting", "meeting-blue"];
     themed_scenes(LIGHT, DARK);
 }

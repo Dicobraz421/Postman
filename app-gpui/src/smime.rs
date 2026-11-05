@@ -439,7 +439,14 @@ impl ReadingPane {
                 });
                 rows.push(row(
                     tr!("smime-row-issuer"),
-                    div().flex().flex_wrap().items_center().gap(px(6.)).child(issuer).children(corporate).into_any_element(),
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(div().max_w_full().child(issuer))
+                        .children(corporate)
+                        .into_any_element(),
                 ));
                 rows.push(row(tr!("smime-row-valid"), text(tr!("smime-valid-range", from = date(c.not_before), to = date(c.not_after)))));
                 rows.push(row(
@@ -540,22 +547,21 @@ pub(crate) mod scenes {
         screens::select_demo(m, |b| screens::signed(b, kind), cx)
     }
 
-    fn target<'a>(s: &Scene, m: &'a Mailer, cx: &'a App) -> Option<&'a str> {
-        let kind = kind(s);
-        screens::demo_id(m.list.read(cx), |b| screens::signed(b, kind))
+    /// Открыт образец сцены. По письму, а не по строке списка: список перестраивается под беседы, и первая строка с таким
+    /// образцом меняется уже после выбора.
+    fn opened(s: &Scene, r: &crate::reading::Reading) -> bool {
+        screens::signed(&postman_demo::body(&r.row.id), kind(s))
     }
 
     fn signed_ready(s: &Scene, m: &Mailer, cx: &App) -> bool {
         // Подпись проверена воркером, карточка раскрыта, тело разобрано.
-        let target = target(s, m, cx);
         screens::reading(m, cx).is_some_and(|r| {
             let done = r.smime.as_ref().is_some_and(|s| s.open && matches!(s.seal, crate::smime::Seal::Done(_)));
-            Some(r.row.id.as_str()) == target && r.doc.is_some() && done
+            opened(s, r) && r.doc.is_some() && done
         })
     }
 
     fn sealed_ready(s: &Scene, m: &Mailer, cx: &App) -> bool {
-        let target = target(s, m, cx);
         screens::reading(m, cx).is_some_and(|r| {
             let smime = r.smime.as_ref();
             let lock = smime.and_then(|s| s.lock.as_ref());
@@ -565,7 +571,7 @@ pub(crate) mod scenes {
                 "encrypted-bad" => matches!(lock, Some(Lock::Failed(Problem::Damaged))),
                 _ => matches!(lock, Some(Lock::Failed(Problem::NeedPin))),
             };
-            Some(r.row.id.as_str()) == target && ok
+            opened(s, r) && ok
         })
     }
 
