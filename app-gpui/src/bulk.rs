@@ -311,7 +311,9 @@ impl MailList {
     /// Панель массовых действий (макет «Выделение»): «Выделить все», «Выбрано: N из M», «×»; ниже — кнопки.
     pub(crate) fn bulk_header(&self, l: &Look, cx: &mut Context<Self>) -> Div {
         let n = self.selection.len();
-        let all = n >= self.count && self.count > 0;
+        // Выделение — письма, а строк в списке меньше: беседа идёт одной строкой (T1-15).
+        let total = self.threads().map_or(self.count, |o| o.total());
+        let all = n >= total && total > 0;
         let s = self.summary.as_deref();
         let unread = s.is_none_or(|s| s.summary.unread > 0);
         let unflagged = s.is_none_or(|s| s.summary.flagged < s.summary.count);
@@ -351,7 +353,7 @@ impl MailList {
             .pr(px(6.))
             .child(all_box)
             .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child(tr!("bulk-selected", n = n)))
-            .child(div().flex_none().text_size(l.px(Metric::TypeCaption)).text_color(l.text2()).child(tr!("bulk-of", total = self.count)))
+            .child(div().flex_none().text_size(l.px(Metric::TypeCaption)).text_color(l.text2()).child(tr!("bulk-of", total = total)))
             .child(div().flex_1())
             .child(
                 div()
