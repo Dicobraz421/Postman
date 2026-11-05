@@ -705,3 +705,5 @@ settings-directory-ok = Каталог отвечает: сертификато�
 directory-not-configured = Каталог не настроен: компьютер не в домене, сервер не указан.
 directory-timeout = Каталог не ответил за 5 с.
 directory-unavailable = Каталог недоступен.
+settings-cal-subscriptions = Обновлять подписки
+settings-cal-subscriptions-hint = Как часто скачивать календари по ссылке.

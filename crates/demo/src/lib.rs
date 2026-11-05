@@ -1098,6 +1098,24 @@ pub mod calendar {
         .into_bytes()
     }
 
+    /// Календарь подписки (S8-44): праздник на весь день в среду недели `from` и еженедельное событие по вторникам.
+    pub fn holidays(from: i64) -> Vec<u8> {
+        let date = |t: i64, f: &str| jiff::Timestamp::from_second(t).map(|t| t.strftime(f).to_string()).unwrap_or_default();
+        let day = 86_400;
+        // i18n-ok: образец календаря
+        let name = "Праздники и события";
+        let (holiday, weekly) = ("День компании", "Вебинар партнёра");
+        format!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Postman//Demo//RU\r\nX-WR-CALNAME:{name}\r\n\
+             BEGIN:VEVENT\r\nUID:demo-holiday\r\nDTSTAMP:20260101T000000Z\r\nDTSTART;VALUE=DATE:{}\r\nSUMMARY:{holiday}\r\nEND:VEVENT\r\n\
+             BEGIN:VEVENT\r\nUID:demo-weekly\r\nDTSTAMP:20260101T000000Z\r\nDTSTART:{}\r\nDTEND:{}\r\nRRULE:FREQ=WEEKLY\r\nSUMMARY:{weekly}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+            date(from + 2 * day + 12 * 3600, "%Y%m%d"),
+            date(from + day + 13 * 3600, "%Y%m%dT%H%M%SZ"),
+            date(from + day + 14 * 3600, "%Y%m%dT%H%M%SZ"),
+        )
+        .into_bytes()
+    }
+
     /// Коллеги для «Помощника планирования»: (имя, адрес, занятость).
     pub fn colleagues() -> Vec<(&'static str, &'static str, Vec<Busy>)> {
         let b = |day, (h, m): (i64, i64), mins: i64, kind| Busy { span: Span::new(at(day, h, m), at(day, h, m) + mins * 60), kind };

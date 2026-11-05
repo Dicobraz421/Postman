@@ -848,6 +848,16 @@ pub fn fetch_public(text: &str, max: usize) -> Result<Vec<u8>, String> {
     rt.block_on(postman_dav::fetch_public(text, max)).map_err(|e| e.to_string())
 }
 
+/// Новое содержимое публичного ресурса: тело и ETag.
+pub type Changed = (Vec<u8>, Option<String>);
+
+/// Скачать, если изменился (S8-44: подписка); `None` — не менялся. Блокирует поток, только в фоне.
+pub fn fetch_changed(text: &str, max: usize, etag: Option<&str>) -> Result<Option<Changed>, String> {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+    let got = rt.block_on(postman_dav::fetch_public_if(text, max, etag)).map_err(|e| e.to_string())?;
+    Ok(got.map(|f| (f.body, f.etag)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

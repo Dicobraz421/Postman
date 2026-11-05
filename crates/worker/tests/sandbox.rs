@@ -166,6 +166,27 @@ fn free_busy_round_trip() {
     assert!(c.free_busy(&vec![b'x'; postman_worker::MAX_FREE_BUSY + 1], from, to).is_err());
 }
 
+/// Подписка (S8-44): имя календаря, повтор с поясом, событие на весь день без `DTEND`, отменённое не берётся.
+#[test]
+fn ics_round_trip() {
+    let mut c = client();
+    // 2026-11-02 00:00 UTC — понедельник.
+    let (from, to) = (1_793_577_600, 1_793_577_600 + 7 * 86_400);
+    let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//T//T//EN\r\nX-WR-CALNAME:Праздники\r\n\
+        BEGIN:VEVENT\r\nUID:a\r\nDTSTAMP:20261001T000000Z\r\nDTSTART;TZID=Europe/Moscow:20261006T100000\r\nDTEND;TZID=Europe/Moscow:20261006T110000\r\n\
+        RRULE:FREQ=WEEKLY\r\nSUMMARY:Планёрка\r\nLOCATION:Зал\r\nEND:VEVENT\r\n\
+        BEGIN:VEVENT\r\nUID:b\r\nDTSTAMP:20261001T000000Z\r\nDTSTART;VALUE=DATE:20261104\r\nSUMMARY:День единства\r\nEND:VEVENT\r\n\
+        BEGIN:VEVENT\r\nUID:c\r\nDTSTAMP:20261001T000000Z\r\nDTSTART:20261105T090000Z\r\nDTEND:20261105T100000Z\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\n\
+        END:VCALENDAR\r\n";
+    let got = c.ics(ics.as_bytes(), from, to, "Europe/Moscow").unwrap();
+    assert_eq!(got.name.as_deref(), Some("Праздники"));
+    let list: Vec<(&str, i64, i64, bool, bool)> = got.events.iter().map(|e| (e.title.as_str(), e.start, e.end, e.all_day, e.recurring)).collect();
+    let at = |day: i64, h: i64| from + day * 86_400 + h * 3600;
+    assert_eq!(list, [("Планёрка", at(1, 7), at(1, 8), false, true), ("День единства", at(1, 21), at(2, 21), true, false)]);
+    assert_eq!(got.events[0].location, "Зал");
+    assert!(c.ics(b"not a calendar", from, to, "UTC").is_err());
+}
+
 #[test]
 fn parses_invitation_under_seccomp() {
     let mut c = client();

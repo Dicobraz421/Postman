@@ -266,3 +266,14 @@ meeting-link-bad = Needs an https:// link with a server name
 meeting-link-save = Save
 meeting-link-remove = Remove
 meeting-link-cancel = Cancel
+# Calendar subscriptions (S8-44)
+cal-group-subscriptions = Subscriptions
+cal-sub-open = Add by link
+cal-sub-placeholder = https://… or webcal://…
+cal-sub-add = Add
+cal-sub-bad = Needs an https:// or webcal:// link with a server name
+cal-sub-failed = Not updated, showing earlier events
+cal-sub-refresh = Refresh
+cal-sub-remove = Remove
+cal-sub-new = Calendar by link
+cal-chip-subscription = Subscription

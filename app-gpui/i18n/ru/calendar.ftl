@@ -266,3 +266,14 @@ meeting-link-bad = Нужна ссылка https:// с именем сервер
 meeting-link-save = Сохранить
 meeting-link-remove = Убрать
 meeting-link-cancel = Отмена
+# Подписки на календари (S8-44)
+cal-group-subscriptions = Подписки
+cal-sub-open = Добавить по ссылке
+cal-sub-placeholder = https://… или webcal://…
+cal-sub-add = Добавить
+cal-sub-bad = Нужна ссылка https:// или webcal:// с именем сервера
+cal-sub-failed = Не обновился, показаны прежние события
+cal-sub-refresh = Обновить
+cal-sub-remove = Удалить
+cal-sub-new = Календарь по ссылке
+cal-chip-subscription = Подписка
