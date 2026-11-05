@@ -468,7 +468,7 @@ impl Mailer {
             .child(sync)
             .when(tasks, |d| d.child(status))
             .child(div().flex_1())
-            .child(self.last_key.clone())
+            .when(!self.last_key.is_empty(), |d| d.child(self.last_key.clone()))
             .child(self.sandbox.map(crate::reading::sandbox_label).unwrap_or_default())
             .children(self.worker_status(l, cx))
             .children(self.migration_status(l, cx))

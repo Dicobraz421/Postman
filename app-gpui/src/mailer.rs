@@ -379,16 +379,16 @@ impl Mailer {
         }
     }
 
-    /// «Ctrl-e (у) → FocusSearch» в строке состояния; `POSTMAN_KEYLOG=1` — то же строкой `key …` в stdout.
+    /// Разбор клавиш: `POSTMAN_KEYLOG=1` — «ctrl-e (у) → FocusSearch» в строке состояния и строкой `key …` в stdout.
     pub(crate) fn observe_keys(cx: &mut Context<Self>) -> Subscription {
         let to_stdout = std::env::var_os("POSTMAN_KEYLOG").is_some();
         cx.observe_keystrokes(move |this, ev, _window, cx| {
-            let k = &ev.keystroke;
-            let action = ev.action.as_ref().map_or("—", |a| a.name());
-            this.last_key = format!("{} ({}) → {action}", k.unparse(), k.key_char.as_deref().unwrap_or(""));
             // Нажата клавиша — KeyTips не нужны (S5-18).
             this.keytips_key(cx);
             if to_stdout {
+                let k = &ev.keystroke;
+                let action = ev.action.as_ref().map_or("—", |a| a.name());
+                this.last_key = format!("{} ({}) → {action}", k.unparse(), k.key_char.as_deref().unwrap_or(""));
                 println!("key {}", this.last_key);
             }
             cx.notify();
