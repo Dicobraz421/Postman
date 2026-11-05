@@ -45,8 +45,8 @@ const CAPTURE_BACKOFF: Duration = Duration::from_millis(50);
 /// Сцена не готова за это время (воркер не ответил, страница не прочиталась) — ошибка.
 const SCENE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Первая синхронизация живого ящика дольше сцены демо.
-const LIVE_TIMEOUT: Duration = Duration::from_secs(120);
+/// Первая синхронизация живого ящика дольше сцены демо; обрыв связи в простое виден при опросе, раз в 2 мин.
+const LIVE_TIMEOUT: Duration = Duration::from_secs(200);
 
 /// Состояние сцены — через те же методы, что вызывают действия пользователя.
 pub(crate) type Enter = fn(&Scene, &mut Mailer, &mut Window, &mut Context<Mailer>) -> Result<(), String>;
