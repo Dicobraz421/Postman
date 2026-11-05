@@ -46,9 +46,7 @@ fn start(_: &Scene, _: &mut Mailer, _: &mut Window, _: &mut Context<Mailer>) -> 
 }
 
 fn row(m: &Mailer, cx: &App, i: usize) -> Option<Point<Pixels>> {
-    let list = m.list.read(cx);
-    let b = list.bounds.get();
-    (b.size.width > px(0.)).then(|| point(b.origin.x + b.size.width / 2., b.origin.y + px(list.row_h * (i as f32 + 0.5))))
+    crate::screens::row_place(m, cx, i)
 }
 
 fn row0(m: &Mailer, _: &Window, cx: &App) -> Option<Point<Pixels>> {
