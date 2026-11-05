@@ -553,7 +553,15 @@ impl Session {
     /// UID писем выбранной папки с этим `Message-ID` (`UID SEARCH HEADER Message-ID`): повтор выгрузки без дублей и
     /// UID нового письма, когда сервер без UIDPLUS.
     pub async fn find_message_id(&mut self, message_id: &str) -> Result<Vec<u32>> {
-        self.search(&message_id_query(message_id)).await
+        let found = self.search(&message_id_query(message_id)).await?;
+        if found.is_empty() {
+            return Ok(found);
+        }
+        // Сервер может искать по словам, а не по подстроке (Stalwart с индексом заголовков): сверка точная.
+        let uids: Vec<String> = found.iter().map(u32::to_string).collect();
+        let wanted = message_id.trim();
+        let same = |h: &Header| h.message_id.as_deref().is_some_and(|m| m.trim() == wanted);
+        Ok(self.headers(&uids.join(",")).await?.iter().filter(|h| same(h)).map(|h| h.uid).collect())
     }
 
     /// Квоты папки (`GETQUOTAROOT`, RFC 9208): у каждого её корня — объём и число писем. Сервер без `QUOTA` — пусто.

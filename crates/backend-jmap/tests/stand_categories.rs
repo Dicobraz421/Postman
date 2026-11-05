@@ -136,7 +136,10 @@ async fn table_is_shared_between_sessions_last_writer_wins() {
 
     // Одновременно: обе записи читают одно состояние, одна из них получает stateMismatch и сводит заново.
     let mut ca = on_server.clone();
-    let ka = ca.add("Стенд A", "seafoam", Some(6), 4_000).unwrap();
+    // Пять цветов таблицы заняты: новой категории нужен свободный.
+    let free = ca.list.iter().find(|c| c.keyword == "pm.cat.clients").map(|c| c.color.clone()).unwrap();
+    ca.delete("pm.cat.clients", 3_900).unwrap();
+    let ka = ca.add("Стенд A", &free, Some(6), 4_000).unwrap();
     let mut cb = on_server.clone();
     cb.delete("pm.cat.services", 4_100).unwrap();
     cb.rename("pm.cat.pentest", "B pentest", 4_200).unwrap();

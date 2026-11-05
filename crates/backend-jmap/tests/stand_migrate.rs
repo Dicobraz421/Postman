@@ -46,14 +46,26 @@ async fn client(n: u8) -> Client {
 
 /// Письма с меткой в учётке `n`.
 async fn tagged(n: u8, tag: &str) -> Vec<String> {
-    client(n).await.query_ids(&Filter::Subject(tag.into()), 200).await.unwrap()
+    client(n).await.query_ids(&Filter::Text(tag.into()), 200).await.unwrap()
+}
+
+/// Писем по учёткам, когда индекс сервера догонит перенос (не дольше 30 с).
+fn counts(rt: &tokio::runtime::Runtime, word: &str, want: (usize, usize)) -> (usize, usize) {
+    let start = Instant::now();
+    loop {
+        let now = (rt.block_on(tagged(1, word)).len(), rt.block_on(tagged(2, word)).len());
+        if now == want || start.elapsed() > Duration::from_secs(30) {
+            return now;
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
 }
 
 /// Письма с меткой — насовсем, в обеих учётках.
 async fn cleanup(tag: &str) {
     for n in [1, 2] {
         let c = client(n).await;
-        for id in c.query_ids(&Filter::Subject(tag.into()), 200).await.unwrap_or_default() {
+        for id in c.query_ids(&Filter::Text(tag.into()), 200).await.unwrap_or_default() {
             let _ = c.destroy_email(&id).await;
         }
     }
@@ -165,7 +177,9 @@ fn inbox(cache: &Cache, account: &str) -> postman_cache::FolderId {
 fn twenty_letters_to_another_account_and_back() {
     let rt = rt();
     let stamp = stamp();
-    let tag = format!("[postman-test {stamp}]");
+    // Слово для поиска — в тексте и буквами: начало темы в [скобках] и длинные числа индекс Stalwart не находит.
+    let word: String = stamp.to_string().bytes().map(|d| char::from(b'a' + d - b'0')).collect();
+    let tag = format!("[postman-test {word}]");
     // Письма — в «Входящие» первой учётки выгрузкой (`Email/import`), без рассылки.
     rt.block_on(async {
         let c = client(1).await;
@@ -173,7 +187,7 @@ fn twenty_letters_to_another_account_and_back() {
         let (boxes, _) = c.mailboxes().await.unwrap();
         let inbox = boxes.iter().find(|m| m.role.as_deref() == Some("inbox")).unwrap().id.clone();
         for i in 1..=LETTERS {
-            let raw = format!("Message-ID: <{i}.{stamp}@postman.test>\r\nSubject: {tag} {i}\r\nFrom: a@postman.test\r\n\r\nперенос {i}\r\n");
+            let raw = format!("Message-ID: <{i}.{stamp}@postman.test>\r\nSubject: {tag} {i}\r\nFrom: a@postman.test\r\n\r\nперенос {word} {i}\r\n");
             let blob = c.upload(&acc, raw.into_bytes(), "message/rfc822").await.unwrap();
             c.import_email(&acc, &blob, std::slice::from_ref(&inbox), &["$seen".into()], None).await.unwrap();
         }
@@ -181,9 +195,20 @@ fn twenty_letters_to_another_account_and_back() {
     let cache = Cache::open_in_memory().unwrap();
     let first = Live::start(1, None, &cache);
     let second = Live::start(2, Some("@2"), &cache);
-    first.commands.send(Command::Search { query: tag.clone(), mailbox: None, ticket: 1 }).unwrap();
-    let Event::SearchResults { ids, .. } = first.wait("SearchResults", |e| matches!(e, Event::SearchResults { ticket: 1, .. })) else {
-        unreachable!()
+    // Индекс сервера догоняет выгрузку не сразу.
+    let start = std::time::Instant::now();
+    let mut ticket = 0;
+    let ids = loop {
+        ticket += 1;
+        first.commands.send(Command::Search { query: word.clone(), mailbox: None, ticket }).unwrap();
+        let Event::SearchResults { ids, .. } = first.wait("SearchResults", |e| matches!(e, Event::SearchResults { ticket: t, .. } if *t == ticket))
+        else {
+            unreachable!()
+        };
+        if ids.len() == LETTERS as usize || start.elapsed() > std::time::Duration::from_secs(30) {
+            break ids;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
     };
     let letters: Vec<LetterId> = ids.iter().map(|k| postman_core::store::letter_of_key(&cache, k).unwrap().unwrap()).collect();
     assert_eq!(letters.len(), LETTERS as usize);
@@ -192,14 +217,14 @@ fn twenty_letters_to_another_account_and_back() {
     engine.features(None, Features::NONE.with_import(true));
     engine.features(Some("@2"), Features::NONE.with_import(true));
     migrate(&mut engine, &letters, inbox(&cache, "@2"), &first, &second);
-    assert_eq!((rt.block_on(tagged(1, &tag)).len(), rt.block_on(tagged(2, &tag)).len()), (0, LETTERS as usize), "перенесено");
+    assert_eq!(counts(&rt, &word, (0, LETTERS as usize)), (0, LETTERS as usize), "перенесено");
     for l in &letters {
         let refs = cache.remotes(postman_cache::LetterId(l.0)).unwrap();
         assert!(refs.len() == 1 && refs[0].account == "@2" && !refs[0].detached, "{refs:?}");
     }
 
     migrate(&mut engine, &letters, inbox(&cache, ""), &first, &second);
-    assert_eq!((rt.block_on(tagged(1, &tag)).len(), rt.block_on(tagged(2, &tag)).len()), (LETTERS as usize, 0), "и обратно");
-    rt.block_on(cleanup(&tag));
+    assert_eq!(counts(&rt, &word, (LETTERS as usize, 0)), (LETTERS as usize, 0), "и обратно");
+    rt.block_on(cleanup(&word));
     println!("перенос JMAP → JMAP другой учётки и обратно: {LETTERS} писем");
 }

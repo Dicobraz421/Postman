@@ -90,9 +90,12 @@ pub async fn handle(client: &Client, request: Request, notify: &impl Fn(Reply)) 
             Err(e) => notify(Reply::Failed { area: Area::Vacation, error: e.to_string() }),
         },
         Request::SetAutoReply(save) => match set_autoreply(client, *save).await {
-            Ok((v, sieve, reply)) => {
+            Ok((v, sieve, reply, limited)) => {
                 notify(Reply::VacationSaved(v));
                 notify(Reply::AutoReply(reply));
+                if limited {
+                    notify(Reply::Failed { area: Area::Vacation, error: ONE_TEXT_ONLY.to_owned() });
+                }
                 if client.has(SIEVE) {
                     notify(Reply::Rules(sieve.state()));
                 }
@@ -182,7 +185,10 @@ fn with_stored(v: VacationResponse, stored: Option<&Stored>) -> VacationResponse
 
 /// Автоответ Postman: `VacationResponse/set` (как раньше), «Вне офиса» в календаре, затем свой скрипт `vacation`
 /// с теми же включением и периодом.
-async fn set_autoreply(client: &Client, save: AutoReplySave) -> postman_jmap::Result<(VacationResponse, Sieve, Option<AutoReply>)> {
+/// Сервер не даёт записать свой скрипт `vacation`: разные тексты и круг адресатов не применены.
+pub const ONE_TEXT_ONLY: &str = "this server keeps one autoreply text for everyone: separate texts and audience are not applied";
+
+async fn set_autoreply(client: &Client, save: AutoReplySave) -> postman_jmap::Result<(VacationResponse, Sieve, Option<AutoReply>, bool)> {
     let primary = save.reply.primary();
     let text = |s: &str| Some(s.trim().to_owned()).filter(|s| !s.is_empty());
     let v = VacationResponse {
@@ -193,18 +199,45 @@ async fn set_autoreply(client: &Client, save: AutoReplySave) -> postman_jmap::Re
     };
     let (v, sieve) = set_vacation(client, v).await?;
     if !client.has(SIEVE) {
-        return Ok((v, sieve, None));
+        return Ok((v, sieve, None, false));
     }
     let previous = sieve.stored();
     let ooo = out_of_office(client, &save, &v, previous.as_ref().and_then(|p| p.ooo.as_deref())).await;
     let stored = Stored { reply: save.reply.clone(), from: v.from_date.clone(), to: v.to_date.clone(), ooo };
     let script = autoreply::script(&stored, &save.audience);
     let id = sieve.vacation.as_ref().map(|(s, _)| s.id.clone());
-    client.save_sieve(id.as_deref(), VACATION_SCRIPT, &script, Activate::Keep).await.map_err(save_error)?;
+    match client.save_sieve(id.as_deref(), VACATION_SCRIPT, &script, Activate::Keep).await {
+        Ok(_) => {}
+        // Включение и текст уже записаны через `VacationResponse/set`: один текст всем, без условий.
+        Err(SaveError::Forbidden(e)) => {
+            tracing::warn!("autoreply script is refused: {e}");
+            // Uid события хранится в скрипте: без него «Вне офиса» потом не снять.
+            if let Some(uid) = stored.ooo.as_deref() {
+                remove_event(client, uid).await;
+            }
+            return Ok((v, sieve, None, true));
+        }
+        Err(e) => return Err(save_error(e)),
+    }
     let sieve = read_sieve(client).await?;
     let v = with_stored(effective(get_vacation(client).await?, sieve.vacation_in_rules()), sieve.stored().as_ref());
     let reply = sieve.stored().map(|s| s.reply);
-    Ok((v, sieve, reply))
+    Ok((v, sieve, reply, false))
+}
+
+/// Убрать событие «Вне офиса»; ошибка автоответ не останавливает (в журнал).
+async fn remove_event(client: &Client, uid: &str) {
+    match client.event_by_uid(uid).await {
+        Ok(Some(e)) => {
+            if let Some(id) = e["id"].as_str()
+                && let Err(e) = client.destroy_event(id, false).await
+            {
+                tracing::warn!("out of office: old event is not removed: {e}");
+            }
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!("out of office: {e}"),
+    }
 }
 
 /// «Вне офиса»: прежнее событие Postman — прочь, новое — на период включённого автоответа. Ошибки календаря
@@ -214,17 +247,7 @@ async fn out_of_office(client: &Client, save: &AutoReplySave, v: &VacationRespon
         return None;
     }
     if let Some(uid) = old {
-        match client.event_by_uid(uid).await {
-            Ok(Some(e)) => {
-                if let Some(id) = e["id"].as_str()
-                    && let Err(e) = client.destroy_event(id, false).await
-                {
-                    tracing::warn!("out of office: old event is not removed: {e}");
-                }
-            }
-            Ok(None) => {}
-            Err(e) => tracing::warn!("out of office: {e}"),
-        }
+        remove_event(client, uid).await;
     }
     let (Some(from), Some(to)) = (v.from_date.as_deref(), v.to_date.as_deref()) else { return None };
     if !save.reply.out_of_office || !v.is_enabled {
@@ -254,7 +277,7 @@ async fn out_of_office(client: &Client, save: &AutoReplySave, v: &VacationRespon
 
 fn save_error(e: SaveError) -> postman_jmap::Error {
     match e {
-        SaveError::Invalid(m) | SaveError::Other(m) => postman_jmap::Error::Protocol(m),
+        SaveError::Invalid(m) | SaveError::Forbidden(m) | SaveError::Other(m) => postman_jmap::Error::Protocol(m),
     }
 }
 
@@ -301,7 +324,7 @@ async fn save_rules(client: &Client, rules: Vec<Rule>, replace: bool) -> Reply {
     match result {
         Ok(()) => {}
         Err(SaveError::Invalid(m)) => return Reply::RulesInvalid(m),
-        Err(SaveError::Other(m)) => return failed(m),
+        Err(SaveError::Forbidden(m) | SaveError::Other(m)) => return failed(m),
     }
     // Правила выключены, а автоответ был в их скрипте — снова скрипт `vacation`.
     if !enabled
