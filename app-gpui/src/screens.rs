@@ -90,12 +90,20 @@ pub(crate) enum Input {
     Move(Place),
     /// Щелчок левой кнопкой.
     Click(Place, Held),
+    /// Двойной щелчок левой кнопкой.
+    Double(Place),
     /// Щелчок правой кнопкой.
     Right(Place),
+    /// Колесо над точкой: на столько пикселей (вниз и вправо — плюс).
+    Wheel(Place, f32),
     /// Перетащить левой кнопкой внутри окна.
     Drag(Place, Place),
     /// Зажать или отпустить модификатор (`KeyTips`).
     Hold(Held),
+    /// Размер окна, логические пиксели.
+    Resize(f32, f32),
+    /// Шаг без ввода: то, что идёт мимо мыши и клавиш (диалог ОС, вкладка настроек с нужным разделом).
+    Run(Enter),
     /// Щелчок по элементу с этим id (`spot`); сначала дождаться, пока он появится на экране.
     Press(&'static str),
 }
@@ -143,6 +151,11 @@ pub(crate) fn spotted(id: &str) -> Option<Point<Pixels>> {
     spot_bounds(id).map(|b| b.center())
 }
 
+/// Забыть отметки посреди сцены: следующий кадр отметит только то, что на экране (шаг «элемента больше нет»).
+pub(crate) fn forget_spots() {
+    SPOTS.with_borrow_mut(HashMap::clear);
+}
+
 /// Центр отмеченного элемента, если он внутри окна: иначе щелчок ушёл бы мимо.
 pub(crate) fn spot_center(id: &str, window: &Window) -> Option<Point<Pixels>> {
     let view = window.viewport_size();
@@ -159,6 +172,7 @@ pub(crate) fn row_place(m: &Mailer, cx: &App, i: usize) -> Option<Point<Pixels>>
 enum Event {
     Key(Keystroke),
     Raw(PlatformInput),
+    Resize(Size<Pixels>),
 }
 
 /// Сцена снимков (ADR 0005): значение в описи своей части (`PART.scenes`), шаги — функции части.
@@ -297,6 +311,8 @@ pub struct Driver {
     queue: VecDeque<Event>,
     /// Когда начат текущий шаг ввода.
     moved: Instant,
+    /// Планировщик сроков работает и в этой сцене (`lifecycle_pass`): снимки без него повторяемы.
+    pub(crate) planner: bool,
 }
 
 impl Driver {
@@ -321,6 +337,7 @@ impl Driver {
             input: 0,
             queue: VecDeque::new(),
             moved: Instant::now(),
+            planner: false,
             undo: Vec::new(),
             overdue: None,
             gallery: false,
@@ -430,6 +447,7 @@ fn feed(m: &mut Mailer, scene: &'static Scene, window: &mut Window, cx: &mut Con
             Event::Raw(e) => {
                 window.dispatch_event(e, cx);
             }
+            Event::Resize(size) => window.resize(size),
         });
         return true;
     }
@@ -443,6 +461,11 @@ fn feed(m: &mut Mailer, scene: &'static Scene, window: &mut Window, cx: &mut Con
         && spot_center(id, window).is_none()
     {
         return true;
+    }
+    if let Input::Run(run) = step
+        && let Err(e) = run(scene, m, window, cx)
+    {
+        fail(scene, &e);
     }
     let events = match events(step, m, window, cx) {
         Ok(events) => events,
@@ -470,7 +493,7 @@ fn events(step: Input, m: &Mailer, window: &Window, cx: &App) -> Result<VecDeque
     let spot = |id: &str| spot_center(id, window).ok_or_else(|| format!("no element {id} in the window"));
     let mut out = VecDeque::new();
     match step {
-        Input::Until(_) => {}
+        Input::Until(_) | Input::Run(_) => {}
         Input::Keys(keys) => {
             // Мимо `dispatch_keystroke`: он дописал бы к Enter ввод перевода строки, а поле отвечает на него `Change` — и строка
             // ошибки, поставленная по Enter, сразу снималась бы. Текст — шагом `Input::Text`.
@@ -486,9 +509,29 @@ fn events(step: Input, m: &Mailer, window: &Window, cx: &App) -> Result<VecDeque
             let p = at(place)?;
             out.extend([hover(p, None), down(p, MouseButton::Left, held), up(p, MouseButton::Left, held)]);
         }
+        Input::Double(place) => {
+            let p = at(place)?;
+            let second = |e: Event| match e {
+                Event::Raw(PlatformInput::MouseDown(e)) => Event::Raw(PlatformInput::MouseDown(MouseDownEvent { click_count: 2, ..e })),
+                Event::Raw(PlatformInput::MouseUp(e)) => Event::Raw(PlatformInput::MouseUp(MouseUpEvent { click_count: 2, ..e })),
+                e => e,
+            };
+            out.extend([hover(p, None), down(p, MouseButton::Left, Held::No), up(p, MouseButton::Left, Held::No)]);
+            out.extend([second(down(p, MouseButton::Left, Held::No)), second(up(p, MouseButton::Left, Held::No))]);
+        }
         Input::Right(place) => {
             let p = at(place)?;
             out.extend([hover(p, None), down(p, MouseButton::Right, Held::No), up(p, MouseButton::Right, Held::No)]);
+        }
+        Input::Wheel(place, by) => {
+            let position = at(place)?;
+            out.push_back(hover(position, None));
+            out.push_back(Event::Raw(PlatformInput::ScrollWheel(ScrollWheelEvent {
+                position,
+                delta: ScrollDelta::Pixels(point(px(0.), px(-by))),
+                modifiers: Modifiers::default(),
+                touch_phase: TouchPhase::Moved,
+            })));
         }
         Input::Drag(from, to) => {
             let (a, b) = (at(from)?, at(to)?);
@@ -511,6 +554,7 @@ fn events(step: Input, m: &Mailer, window: &Window, cx: &App) -> Result<VecDeque
             modifiers: held.modifiers(),
             capslock: Capslock::default(),
         }))),
+        Input::Resize(w, h) => out.push_back(Event::Resize(size(px(w), px(h)))),
     }
     Ok(out)
 }

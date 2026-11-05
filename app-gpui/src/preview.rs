@@ -519,8 +519,7 @@ impl ReadingPane {
             return;
         }
         let Some(r) = &self.reading else { return };
-        let rows: Vec<AttachmentRow> = attachments::items(r).into_iter().map(|i| i.row).collect();
-        if rows.is_empty() {
+        if attachments::items(r).is_empty() {
             return;
         }
         let id = r.row.id.clone();
@@ -536,19 +535,28 @@ impl ReadingPane {
                 _ => return,
             };
             this.update(cx, |this, cx| {
-                if this.reading.as_ref().is_none_or(|r| r.row.id != id) || this.save_all.is_some() {
-                    return;
+                if this.reading.as_ref().is_some_and(|r| r.row.id == id) {
+                    this.save_all_in(dir, cx);
                 }
-                let waiting = rows.iter().map(|a| a.blob_id.clone()).collect();
-                this.save_all = Some(SaveAll { dir, waiting, got: Vec::new(), failed: Vec::new() });
-                for a in &rows {
-                    this.fetch(a, cx);
-                }
-                cx.notify();
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Каталог выбран: байты всех вложений ленты.
+    pub(crate) fn save_all_in(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
+        if self.save_all.is_some() {
+            return;
+        }
+        let Some(r) = &self.reading else { return };
+        let rows: Vec<AttachmentRow> = attachments::items(r).into_iter().map(|i| i.row).collect();
+        let waiting = rows.iter().map(|a| a.blob_id.clone()).collect();
+        self.save_all = Some(SaveAll { dir, waiting, got: Vec::new(), failed: Vec::new() });
+        for a in &rows {
+            self.fetch(a, cx);
+        }
+        cx.notify();
     }
 
     /// Все байты пришли — записать в фоне с меткой «из Интернета», не затирая файлы каталога.

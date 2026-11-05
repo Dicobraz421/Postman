@@ -111,6 +111,7 @@ impl SettingsView {
             let dot = crate::roles::accent_swatch(a, l.dark());
             div()
                 .id(("settings-accent", a as usize))
+                .children(crate::screens::spot(("settings-accent", a as usize)))
                 .flex()
                 .flex_col()
                 .items_center()

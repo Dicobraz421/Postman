@@ -22,8 +22,8 @@ use crate::settings_tab::{SettingsView, aside_card, keycap, link, seg, seg_group
 
 /// Состояние раздела.
 pub(crate) struct KeysState {
-    search: Entity<InputState>,
-    query: String,
+    pub(crate) search: Entity<InputState>,
+    pub(crate) query: String,
     /// Команда, для которой записывается сочетание.
     pub(crate) recording: Option<&'static str>,
     /// Нажатое сочетание занято другой командой: (сочетание, у кого).

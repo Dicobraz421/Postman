@@ -578,6 +578,7 @@ impl SettingsView {
             let arrow = |id: &'static str, g: char, delta: isize, enabled: bool| {
                 div()
                     .id((id, i))
+                    .children(crate::screens::spot((id, i)))
                     .size(px(24.))
                     .flex()
                     .items_center()
@@ -709,6 +710,7 @@ impl SettingsView {
                 cards.child(
                     div()
                         .id(("settings-conv", i))
+                        .children(crate::screens::spot(("settings-conv", i)))
                         .flex_1()
                         .min_w_0()
                         .flex()

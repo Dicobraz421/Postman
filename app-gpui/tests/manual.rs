@@ -590,10 +590,79 @@ fn mail_drills() {
         "mail-t117-many",
         "mail-t117-one",
         "mail-s519-summary",
+        "mail-10-scroll",
+        "mail-19-solo",
+        "mail-23-draft",
+        "mail-25-two",
+        "mail-25-hide",
+        "mail-25-pane",
+        "mail-27-zip",
+        "mail-27-save",
+        "mail-28-arrive",
+        "mail-29-menu",
+        "mail-29-menu-keys",
+        "mail-29-menu-many",
+        "mail-30-refine",
+        "mail-31-stack",
+        "mail-31-settings",
+        "mail-32-keys",
+        "mail-37-afe",
+        "mail-t104-tree",
+        "mail-t105-split",
+        "mail-t105-narrow",
+        "mail-t1d-focus",
+        "mail-t1d-blur",
+        "mail-t1d-accents",
+        "mail-t1d-gray",
+        "mail-s519-invite",
     ];
     // Сцены меняют ящик и оставляют вкладки: каждая — в своём запуске, со свежей копией демо.
     for name in DRILLS {
         themed_scenes(&[name], &[name]);
+        tones_of(name);
+    }
+    restart_keeps_choices();
+}
+
+/// Цвета снимка сцены: тона таблицы токенов (T1-D, S5-19) видны на экране.
+fn tones_of(name: &str) {
+    let (light, dark): (&[u32], &[u32]) = match name {
+        "mail-t1d-focus" => (&[0xD1E4F4, 0x0067C0, 0xF0F6FB], &[0x2B3E50, 0x191919, 0x2B2B2B, 0x2B333A]),
+        "mail-t1d-blur" => (&[0xEBEBEB, 0x8A8A8A], &[0x3A3A3A]),
+        "mail-t1d-gray" => (&[0xDADADA, 0xEDEDED, 0xC2D5E5], &[0xDADADA, 0xEDEDED, 0xC2D5E5]),
+        "mail-s519-invite" => (&[0x0067C0, 0xDFF0FF, 0xD0E6FA], &[0x23364F, 0x2C4466]),
+        _ => return,
+    };
+    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("manual-screens");
+    has_tones(&root.join("light").join(format!("{name}.png")), light);
+    has_tones(&root.join("dark").join(format!("{name}-dark.png")), dark);
+}
+
+/// На снимке есть пиксели этих цветов (`0xRRGGBB`, допуск на округление — 2).
+fn has_tones(png_file: &Path, tones: &[u32]) {
+    let file = std::fs::File::open(png_file).unwrap();
+    let mut reader = png::Decoder::new(std::io::BufReader::new(file)).read_info().unwrap();
+    let mut rgba = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut rgba).unwrap();
+    assert_eq!(info.color_type, png::ColorType::Rgba, "{}", png_file.display());
+    let (px, _) = rgba[..info.buffer_size()].as_chunks::<4>();
+    for &tone in tones {
+        let want = [(tone >> 16) as u8, (tone >> 8) as u8, tone as u8];
+        let close = |p: &&[u8; 4]| (0..3).all(|i| p[i].abs_diff(want[i]) <= 2);
+        let n = px.iter().filter(close).count();
+        assert!(n > 0, "{}: нет цвета #{tone:06X}", png_file.display());
+    }
+}
+
+/// Перезапуск: первый процесс меняет вид и ширины, второй — на том же каталоге данных — видит их (`mail-restart-check`).
+fn restart_keeps_choices() {
+    let data = tempfile::tempdir().unwrap();
+    let dir = screens_dir("restart");
+    for name in ["mail-restart-set", "mail-restart-check"] {
+        let mut c = postman(data.path(), &["--screens", dir.to_str().unwrap(), "--lang", "ru"]);
+        c.env("POSTMAN_SCREENS_ONLY", name).env("POSTMAN_SCREENS_PREFS", "1");
+        let out = run(c, Duration::from_secs(420));
+        assert!(out.status.success(), "{name}: код {:?}: {}", out.status.code(), String::from_utf8_lossy(&out.stderr));
     }
 }
 

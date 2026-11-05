@@ -344,7 +344,8 @@ fn checkbox(on: bool, l: &Look) -> Div {
 /// Строка панели: флажок, точка цвета (категории), название, число; ноль — бледно.
 fn item(id: SharedString, name: String, n: usize, on: bool, dot: Option<Hsla>, l: &Look) -> Stateful<Div> {
     div()
-        .id(id)
+        .id(id.clone())
+        .children(crate::screens::spot(id))
         .w_full()
         .h(px(28.))
         .flex_none()
@@ -481,6 +482,7 @@ pub(crate) fn funnel(model: &Entity<FilterModel>, m: &FilterModel, l: &Look) -> 
     let model = model.clone();
     div()
         .id("funnel")
+        .children(crate::screens::spot("funnel"))
         .h(px(24.))
         .flex_none()
         .flex()
@@ -539,8 +541,10 @@ pub(crate) fn quick(model: &Entity<FilterModel>, m: &FilterModel, tabs: &[Quick]
     let tabs = tabs.iter().map(|&q| {
         let (n, active) = (m.counts.quick(q), on(q));
         let (short, _) = quick_keys(q);
+        let id = SharedString::from(format!("quick-tab-{q:?}"));
         div()
-            .id(SharedString::from(format!("quick-tab-{q:?}")))
+            .id(id.clone())
+            .children(crate::screens::spot(id))
             .flex_1()
             .min_w_0()
             .flex()
@@ -570,6 +574,7 @@ pub(crate) fn quick(model: &Entity<FilterModel>, m: &FilterModel, tabs: &[Quick]
     });
     let hide = div()
         .id("quick-hide")
+        .children(crate::screens::spot("quick-hide"))
         .ml(px(3.))
         .h(px(20.))
         .w(px(16.))

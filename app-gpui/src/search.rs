@@ -439,6 +439,7 @@ pub(crate) fn header(found: &Found, count: usize, l: &Look, cx: &mut Context<cra
     let refine = (!found.chips.is_empty()).then(|| {
         div()
             .id("refine-chips")
+            .children(crate::screens::spot("refine-chips"))
             .h(px(36.))
             .flex_none()
             .flex()
