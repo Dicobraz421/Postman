@@ -28,6 +28,7 @@ mod diagnostics;
 mod directory;
 mod drill;
 mod drill_live;
+mod drill_mail;
 mod export;
 mod features;
 mod filters;

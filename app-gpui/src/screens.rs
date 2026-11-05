@@ -23,8 +23,10 @@
 //! вкладка «Настройки» (S5-09): `settings-general`, `settings-categories`, `settings-keys`, `settings-accounts` и первый
 //! запуск `firstrun` — демо; `--live` без `POSTMAN_URL` — первый запуск (`firstrun`).
 
-use std::collections::VecDeque;
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use gpui_kit::*;
@@ -47,6 +49,37 @@ const SCENE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Первая синхронизация живого ящика дольше сцены демо; обрыв связи в простое виден при опросе, раз в 2 мин.
 const LIVE_TIMEOUT: Duration = Duration::from_secs(200);
+
+/// Прогон сцен идёт: только тогда элементы отмечают своё место (`spot`).
+static ARMED: AtomicBool = AtomicBool::new(false);
+
+thread_local! {
+    /// Где в окне отмеченные элементы, по их id: щелчок сценария по кнопке, которой нет в модели.
+    static SPOTS: RefCell<HashMap<String, Bounds<Pixels>>> = RefCell::new(HashMap::new());
+}
+
+/// Отметка места элемента для `Input::Click`: прозрачный ребёнок поверх родителя, вне раскладки. В обычной работе — ничего.
+pub(crate) fn spot(id: impl Into<ElementId>) -> Option<AnyElement> {
+    ARMED.load(Ordering::Relaxed).then(|| {
+        let name = id.into().to_string();
+        canvas(
+            move |b, _, _| {
+                SPOTS.with(|s| s.borrow_mut().insert(name.clone(), b));
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .into_any_element()
+    })
+}
+
+/// Середина отмеченного элемента; элемент виден сейчас, а не только был виден когда-то: отметки стираются в начале сцены.
+pub(crate) fn spotted(id: &str) -> Option<Point<Pixels>> {
+    SPOTS.with(|s| s.borrow().get(id).map(|b| b.center()))
+}
 
 /// Состояние сцены — через те же методы, что вызывают действия пользователя.
 pub(crate) type Enter = fn(&Scene, &mut Mailer, &mut Window, &mut Context<Mailer>) -> Result<(), String>;
@@ -80,6 +113,8 @@ pub(crate) enum Input {
     Keys(&'static [&'static str]),
     /// Набор текста по символу.
     Text(&'static str),
+    /// Набор текста, посчитанного во время прогона (даты относительно сегодня).
+    Typed(fn() -> String),
     /// Дождаться условия. Не дождались за время сцены — ошибка прогона.
     Until(Ready),
     /// Навести мышь.
@@ -234,6 +269,8 @@ pub struct Driver {
     input: usize,
     /// События текущего шага ввода.
     queue: VecDeque<Event>,
+    /// Когда начат текущий шаг ввода.
+    moved: Instant,
 }
 
 impl Driver {
@@ -246,6 +283,7 @@ impl Driver {
     pub fn new(dir: PathBuf, live: bool, suffix: &'static str) -> std::io::Result<Self> {
         std::fs::create_dir_all(&dir)?;
         let dir = std::path::absolute(&dir)?;
+        ARMED.store(true, Ordering::Relaxed);
         Ok(Self {
             dir,
             scene: 0,
@@ -256,6 +294,7 @@ impl Driver {
             suffix,
             input: 0,
             queue: VecDeque::new(),
+            moved: Instant::now(),
             undo: Vec::new(),
             overdue: None,
             gallery: false,
@@ -296,6 +335,7 @@ pub fn drive(m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) {
         Phase::Capturing => return,
         Phase::Enter => {
             set_phase(m, Phase::Wait { frames: 0, since: Instant::now() });
+            SPOTS.with(|s| s.borrow_mut().clear());
             if let Some(d) = &mut m.screens {
                 d.input = 0;
                 d.queue.clear();
@@ -308,15 +348,19 @@ pub fn drive(m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) {
             if let Some(wait) = scene.wait {
                 wait(scene, m, cx);
             }
+            // Время — на шаг: длинный сценарий в отладочной сборке идёт дольше времени сцены, а не зависает.
+            let since = m.screens.as_ref().map_or(since, |d| d.moved.max(since));
             if feed(m, scene, window, cx) {
                 if since.elapsed() > timeout {
                     let at = m.screens.as_ref().map_or(0, |d| d.input);
-                    fail(scene, &format!("input step {at} not done in {} s", timeout.as_secs()));
+                    if give_up(m, scene, &format!("input step {at} not done in {} s", timeout.as_secs()), window, cx) {
+                        return;
+                    }
                 }
                 set_phase(m, Phase::Wait { frames: 0, since });
             } else if !(scene.ready)(scene, m, cx) {
-                if since.elapsed() > timeout {
-                    fail(scene, &format!("scene not ready in {} s", timeout.as_secs()));
+                if since.elapsed() > timeout && give_up(m, scene, &format!("scene not ready in {} s", timeout.as_secs()), window, cx) {
+                    return;
                 }
                 set_phase(m, Phase::Wait { frames: 0, since });
             } else if frames + 1 < SETTLE_FRAMES {
@@ -333,6 +377,17 @@ pub fn drive(m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) {
     // Следующий кадр — целиком, без кэша частей: `ready` читает часть (`m.reading`) раньше её отрисовки, gpui не
     // засчитывает части её же сущность, и `notify` части теряется — снимок показал бы прошлое письмо.
     window.on_next_frame(|window, _| window.refresh());
+}
+
+/// Сцена не дошла: ошибка прогона. С `POSTMAN_SCREENS_SHOT_ON_FAIL` — сообщение и снимок как есть (разбор падения сценария).
+fn give_up(m: &mut Mailer, scene: &'static Scene, e: &str, window: &Window, cx: &mut Context<Mailer>) -> bool {
+    if std::env::var_os("POSTMAN_SCREENS_SHOT_ON_FAIL").is_none() {
+        fail(scene, e);
+    }
+    eprintln!("screens: {}: {e}", scene.name);
+    set_phase(m, Phase::Capturing);
+    capture(m, scene, window, cx);
+    true
 }
 
 /// Шаг ввода сцены; `true` — ввод ещё идёт. События уходят после кадра (`Window::defer`): кадр рисует `Mailer`,
@@ -363,6 +418,7 @@ fn feed(m: &mut Mailer, scene: &'static Scene, window: &mut Window, cx: &mut Con
     if let Some(d) = &mut m.screens {
         d.input += 1;
         d.queue = events;
+        d.moved = Instant::now();
     }
     true
 }
@@ -386,13 +442,8 @@ fn events(step: Input, m: &Mailer, window: &Window, cx: &App) -> Result<VecDeque
                 out.push_back(Event::Key(Keystroke::parse(k).map_err(|e| format!("key {k}: {e}"))?));
             }
         }
-        Input::Text(text) => {
-            for c in text.chars() {
-                let key_char = Some(c.to_string());
-                let key = c.to_lowercase().to_string();
-                out.push_back(Event::Key(Keystroke { modifiers: Modifiers::default(), key, key_char }));
-            }
-        }
+        Input::Text(text) => typed(text, &mut out),
+        Input::Typed(text) => typed(&text(), &mut out),
         Input::Move(place) => out.push_back(hover(at(place)?, None)),
         Input::Click(place, held) => {
             let p = at(place)?;
@@ -419,6 +470,15 @@ fn events(step: Input, m: &Mailer, window: &Window, cx: &App) -> Result<VecDeque
         }))),
     }
     Ok(out)
+}
+
+/// Нажатия для текста, по символу.
+fn typed(text: &str, out: &mut VecDeque<Event>) {
+    for c in text.chars() {
+        let key_char = Some(c.to_string());
+        let key = c.to_lowercase().to_string();
+        out.push_back(Event::Key(Keystroke { modifiers: Modifiers::default(), key, key_char }));
+    }
 }
 
 /// Чистое начало сцены: «Входящие» главной вкладки почты, без поиска, фильтров, выделения, меню и палитры.

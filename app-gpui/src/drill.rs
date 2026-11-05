@@ -64,7 +64,7 @@ const PALETTE: &[Input] = &[
     Input::Until(mail_ready),
     Input::Keys(&["ctrl-k"]),
     Input::Until(palette_open),
-    Input::Text("арх"),
+    Input::Text("арх"), // i18n-ok: ввод сценария
     Input::Until(palette_matched),
     Input::Keys(&["escape"]),
 ];
@@ -153,7 +153,7 @@ fn palette_open(_: &Scene, m: &Mailer, cx: &App) -> bool {
 fn palette_matched(_: &Scene, m: &Mailer, cx: &App) -> bool {
     m.palette.as_ref().is_some_and(|p| {
         let view = p.view.read(cx);
-        view.shown() > 0 && view.input.read(cx).value() == "арх"
+        view.shown() > 0 && view.input.read(cx).value() == "арх" // i18n-ok: ввод сценария
     })
 }
 

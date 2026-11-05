@@ -249,6 +249,11 @@ impl Notices {
         self.stack.unread()
     }
 
+    /// Текст последнего уведомления (сценарии сверяют итог действия).
+    pub(crate) fn latest(&self) -> Option<&str> {
+        self.stack.history().next().map(|e| e.text.as_ref())
+    }
+
     /// Раз в секунду, пока тосты на экране: «N с», полоса, уход по времени.
     fn tick(&mut self, cx: &mut Context<Self>) {
         if self.ticking {
@@ -330,6 +335,7 @@ impl Notices {
         let acts = e.action.as_ref().filter(|_| !e.done).map(|a| {
             div()
                 .id(("notice-act", id as usize))
+                .children(crate::screens::spot("notice-act"))
                 .text_color(l.accent_text())
                 .font_weight(FontWeight::SEMIBOLD)
                 .cursor_pointer()
@@ -341,6 +347,7 @@ impl Notices {
         });
         div()
             .id(("notice", id as usize))
+            .children(crate::screens::spot("notice"))
             .occlude()
             .relative()
             .overflow_hidden()

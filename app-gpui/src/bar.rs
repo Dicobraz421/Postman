@@ -71,6 +71,7 @@ impl CommandBar {
             let on = self.scope == scope;
             div()
                 .id(id)
+                .children(crate::screens::spot(id))
                 .h_full()
                 .px_2()
                 .flex()

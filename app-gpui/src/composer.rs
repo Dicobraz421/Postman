@@ -523,6 +523,16 @@ impl Composer {
     }
 
     /// Меню «Отправить позже» открыто (снимок `send-later`).
+    /// Строка выбора даты «Отправить позже» открыта и её ошибка (сценарии).
+    pub(crate) fn later_picking(&self) -> (bool, Option<Reject>) {
+        (self.later.picking, self.later.error)
+    }
+
+    /// Строки «Копия» и «Скрытая» показаны (сценарии).
+    pub(crate) fn copies_shown(&self) -> (bool, bool) {
+        (self.show_cc, self.show_bcc)
+    }
+
     pub(crate) fn later_menu_open(&self) -> bool {
         self.later.menu
     }
@@ -879,7 +889,19 @@ fn quiet(id: impl Into<ElementId>, l: &Look) -> Stateful<Div> {
 /// Тихая кнопка без подложки при наведении (поле «От»). Стиль наведения у элемента задаётся один раз: второй
 /// `.hover` поверх `quiet` в отладочной сборке gpui — паника «hover style already set».
 pub(crate) fn quiet_plain(id: impl Into<ElementId>, l: &Look) -> Stateful<Div> {
-    div().id(id).h(px(30.)).px(px(8.)).flex().flex_none().items_center().gap(px(6.)).rounded(px(4.)).cursor_pointer().active(|d| d.bg(l.pressed()))
+    let id = id.into();
+    div()
+        .children(crate::screens::spot(id.clone()))
+        .id(id)
+        .h(px(30.))
+        .px(px(8.))
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(6.))
+        .rounded(px(4.))
+        .cursor_pointer()
+        .active(|d| d.bg(l.pressed()))
 }
 
 pub(crate) fn menu_box(id: &'static str, l: &Look) -> Stateful<Div> {
@@ -904,6 +926,7 @@ pub(crate) fn menu_box(id: &'static str, l: &Look) -> Stateful<Div> {
 
 pub(crate) fn menu_item(id: ElementId, l: &Look, on: bool) -> Stateful<Div> {
     div()
+        .children(crate::screens::spot(id.clone()))
         .id(id)
         .h(l.px(Metric::HMenuItem))
         .px(px(10.))
@@ -1135,6 +1158,7 @@ impl Composer {
         let link = |id: &'static str, key: &'static str, cx: &mut Context<Self>, show: fn(&mut Self)| {
             div()
                 .id(id)
+                .children(crate::screens::spot(id))
                 .flex_none()
                 .px(px(4.))
                 .text_size(px(12.))
@@ -1422,6 +1446,7 @@ impl Composer {
         }
         let caret = div()
             .id("send-later")
+            .children(crate::screens::spot("send-later"))
             .w(px(30.))
             .h(px(32.))
             .flex()
@@ -1849,6 +1874,7 @@ impl Composer {
                     .child(
                         div()
                             .id(ElementId::NamedInteger("remove-attachment".into(), i as u64))
+                            .children(crate::screens::spot("remove-attachment"))
                             .size(px(24.))
                             .flex()
                             .items_center()
@@ -1931,6 +1957,7 @@ impl Composer {
                     .child(
                         div()
                             .id(ElementId::NamedInteger("remove-attachment".into(), i as u64))
+                            .children(crate::screens::spot("remove-attachment"))
                             .px_1()
                             .cursor_pointer()
                             .text_color(l.text2())

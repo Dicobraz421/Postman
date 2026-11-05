@@ -1205,6 +1205,7 @@ impl MailList {
         });
         let sort = div()
             .id("sort-button")
+            .children(crate::screens::spot("sort-button"))
             .h(px(28.))
             .flex_none()
             .flex()

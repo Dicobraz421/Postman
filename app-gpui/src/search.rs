@@ -421,6 +421,7 @@ pub(crate) fn header(found: &Found, count: usize, l: &Look, cx: &mut Context<cra
         let r = r.clone();
         div()
             .id(("refine", i))
+            .children(crate::screens::spot(("refine", i)))
             .flex_none()
             .h(px(24.))
             .flex()

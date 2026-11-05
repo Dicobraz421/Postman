@@ -17,7 +17,19 @@ use crate::roles::{Look, Pm};
 const H: f32 = 32.;
 
 fn shell(id: impl Into<ElementId>, l: &Look) -> Stateful<Div> {
-    div().id(id).flex_none().h(px(H)).px(px(12.)).flex().items_center().gap(px(6.)).rounded(l.px(Metric::RadiusControl)).cursor_pointer()
+    let id = id.into();
+    let place = crate::screens::spot(id.clone());
+    div()
+        .id(id)
+        .flex_none()
+        .h(px(H))
+        .px(px(12.))
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .rounded(l.px(Metric::RadiusControl))
+        .cursor_pointer()
+        .children(place)
 }
 
 /// Главная кнопка: заливка акцентом.
