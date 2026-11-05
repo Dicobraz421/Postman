@@ -273,6 +273,7 @@ impl SettingsView {
                 div().flex().gap_4().child(label(tr!("settings-cat-color"))).child(
                     div()
                         .flex_1()
+                        .min_w_0()
                         .flex()
                         .flex_col()
                         .gap_2()

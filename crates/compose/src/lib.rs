@@ -138,16 +138,16 @@ pub fn respond(orig: &Original, body: &Document, mode: Mode, me: &Address, signa
             {
                 d.references.push(id.clone());
             }
-            let who = orig.from.first().map(Address::display).unwrap_or_default();
-            top.push_str(&postman_ir::quote(body, &format!("{}, {} пишет:", escape_md(&orig.date), escape_md(&who))));
+            let who = orig.from.first().map(who).unwrap_or_default();
+            top.push_str(&postman_ir::quote(body, &format!("{}, {who} пишет:", escape_md(&orig.date))));
         }
         Mode::Forward => {
             d.subject = prefixed(&orig.subject, "FW: ");
-            let list = |v: &[Address]| v.iter().map(Address::display).collect::<Vec<_>>().join(", ");
+            let list = |v: &[Address]| v.iter().map(who).collect::<Vec<_>>().join(", ");
             top.push_str("-------- Пересланное сообщение --------  \n");
-            top.push_str(&format!("**От:** {}  \n", escape_md(&list(&orig.from))));
+            top.push_str(&format!("**От:** {}  \n", list(&orig.from)));
             top.push_str(&format!("**Дата:** {}  \n", escape_md(&orig.date)));
-            top.push_str(&format!("**Кому:** {}  \n", escape_md(&list(&orig.to))));
+            top.push_str(&format!("**Кому:** {}  \n", list(&orig.to)));
             if !orig.cc.is_empty() {
                 top.push_str(&format!("**Копия:** {}  \n", escape_md(&list(&orig.cc))));
             }
@@ -215,7 +215,18 @@ fn push_unique<'a>(out: &mut Vec<Address>, src: impl Iterator<Item = &'a Address
 }
 
 fn escape_md(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('*', "\\*").replace('_', "\\_").replace('<', "\\<").replace('[', "\\[")
+    escape_addr(s).replace('_', "\\_")
+}
+
+/// Адрес почты: `_` внутри слова — не разметка, обратная косая черта перед ним видна бы в тексте.
+fn escape_addr(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('*', "\\*").replace('<', "\\<").replace('[', "\\[")
+}
+
+/// Адресат в шапке цитаты: `Имя (адрес)`. Угловые скобки в Markdown пришлось бы экранировать, а `text/plain` письма —
+/// тот же Markdown: получатель увидел бы обратную косую черту.
+fn who(a: &Address) -> String {
+    if a.name.is_empty() { escape_addr(&a.email) } else { format!("{} ({})", escape_md(&a.name), escape_addr(&a.email)) }
 }
 
 /// Убрать переводы строк из значений заголовков (защита от инъекции заголовков).
@@ -331,7 +342,7 @@ mod tests {
         assert_eq!(cc, ["petr@corp.example", "anna@corp.example"]);
         assert_eq!(d.subject, "RE: Отчёт");
         assert_eq!(d.references, ["root@corp.example", "orig@corp.example"]);
-        assert!(d.markdown.starts_with("\n\nС уважением,\nЯ\n\n17.10.2026 12:00, Иван \\<ivan@corp.example> пишет:\n> текст"), "{}", d.markdown);
+        assert!(d.markdown.starts_with("\n\nС уважением,\nЯ\n\n17.10.2026 12:00, Иван (ivan@corp.example) пишет:\n> текст"), "{}", d.markdown);
     }
 
     #[test]
@@ -341,7 +352,7 @@ mod tests {
         let d = respond(&o, &postman_ir::from_plain("x"), Mode::Forward, &me(), "");
         assert_eq!(d.subject, "FW: Отчёт");
         assert!(d.to.is_empty() && d.in_reply_to.is_none());
-        assert!(d.markdown.contains("**От:** Иван \\<ivan@corp.example>"));
+        assert!(d.markdown.contains("**От:** Иван (ivan@corp.example)"));
     }
 
     #[test]

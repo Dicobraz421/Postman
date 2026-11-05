@@ -287,7 +287,7 @@ impl SignIn {
             .flex()
             .items_center()
             .gap_3()
-            .child(div().w(px(90.)).flex_none().text_color(l.text2()).child(label))
+            .child(div().w(px(110.)).flex_none().whitespace_nowrap().text_color(l.text2()).child(label))
             .child(div().flex_1().min_w_0().truncate().child(value))
             .child(
                 div()
