@@ -9,7 +9,7 @@ use crate::{CONTACTS, CORE, Client, Error, Result, take};
 
 const USING: &[&str] = &[CORE, CONTACTS];
 /// Свойства карточки, которые показывает и правит клиент.
-const PROPERTIES: &[&str] = &["id", "name", "emails", "phones", "organizations", "titles"];
+const PROPERTIES: &[&str] = &["id", "name", "emails", "phones", "organizations", "titles", "calendars"];
 
 /// Карточка контакта. У новой (ещё не на сервере) `id` пустой.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -21,6 +21,8 @@ pub struct ContactCard {
     pub organization: String,
     /// Должность (`titles` с `kind: title`, иначе роль).
     pub title: String,
+    /// Ссылка на занятость (`calendars` вида `freeBusy`): только чтение (S8-42).
+    pub free_busy: Option<String>,
 }
 
 /// Адресная книга (`AddressBook/get`).
@@ -171,6 +173,14 @@ fn card(v: &Value) -> ContactCard {
         phones: strings("phones", "number"),
         organization,
         title,
+        free_busy: v["calendars"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(_, c)| c)
+            .find(|c| c["kind"] == "freeBusy")
+            .and_then(|c| c["uri"].as_str())
+            .map(str::to_string),
     }
 }
 
@@ -224,6 +234,7 @@ mod tests {
             phones: vec!["+7 495 000-00-01".into()],
             organization: "ООО Ромашка".into(),
             title: String::new(),
+            free_busy: None,
         }
     }
 

@@ -66,6 +66,11 @@ pub enum Request {
     Calendar,
     /// Карточки vCard (.vcf, одна или несколько) в бинарной части; ответ — JSContact (JSON) каждой (S7-05б, CardDAV).
     Contacts,
+    /// Занятость по ссылке (S8-42): iCalendar (VFREEBUSY или события) в бинарной части → интервалы в `[from, to)`.
+    FreeBusy {
+        from: i64,
+        to: i64,
+    },
     /// Картинка (PNG/JPEG/GIF/WebP/BMP/ICO, у TIFF — первая страница) в бинарной части; ответ — RGBA не больше
     /// `max_side` по стороне.
     Image {
@@ -256,6 +261,7 @@ enum Response {
     },
     Calendar(serde_json::Value),
     Contacts(Vec<serde_json::Value>),
+    FreeBusy(Vec<BusySpan>),
     Preview(Preview),
     /// Итог проверки подписи; DER цепочки — в бинарной части.
     Smime {
@@ -426,6 +432,97 @@ pub fn parse_calendar(bytes: &[u8]) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({ "method": method, "data": data }))
 }
 
+/// Вид занятости интервала по ссылке (RFC 5545 `FBTYPE`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BusyType {
+    Busy,
+    Tentative,
+    Unavailable,
+}
+
+/// Интервал занятости (Unix-секунды).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BusySpan {
+    pub start: i64,
+    pub end: i64,
+    pub kind: BusyType,
+}
+
+/// Файл занятости — не больше: календарь по чужой ссылке.
+pub const MAX_FREE_BUSY: usize = 2 * 1024 * 1024;
+/// Интервалов и развёрнутых повторов — не больше.
+const MAX_BUSY: usize = 20_000;
+
+/// iCalendar → занятость в `[from, to)`: `FREEBUSY` из VFREEBUSY и непрозрачные неотменённые события с повторами
+/// (опубликованные календари Outlook и Google — события, а не VFREEBUSY). Чужие данные — только в песочнице.
+pub fn parse_free_busy(bytes: &[u8], from: i64, to: i64) -> Result<Vec<BusySpan>, String> {
+    use calcard::icalendar::{
+        ICalendarComponentType as Kind, ICalendarFreeBusyType as Fb, ICalendarParameterName as Param, ICalendarParameterValue as Value,
+        ICalendarPeriod as Period, ICalendarProperty as Prop, ICalendarStatus, ICalendarTransparency, ICalendarValue,
+    };
+    if bytes.len() > MAX_FREE_BUSY {
+        return Err("календарь слишком большой".into());
+    }
+    let text = std::str::from_utf8(bytes).map_err(|_| "календарь не в UTF-8".to_string())?;
+    let ical = match calcard::Parser::new(text).entry() {
+        calcard::Entry::ICalendar(c) => c,
+        _ => return Err("не iCalendar".into()),
+    };
+    let mut out = Vec::new();
+    let mut push = |start: i64, end: i64, kind: BusyType| {
+        if start < to && end > from && start < end && out.len() < MAX_BUSY {
+            out.push(BusySpan { start, end, kind });
+        }
+    };
+    for comp in ical.components.iter().filter(|c| c.component_type == Kind::VFreebusy) {
+        for entry in comp.entries.iter().filter(|e| e.name == Prop::Freebusy) {
+            let fb = entry.params.iter().find(|p| p.name == Param::Fbtype).map(|p| &p.value);
+            let kind = match fb {
+                Some(Value::Fbtype(Fb::Free)) => continue,
+                Some(Value::Fbtype(Fb::BusyTentative)) => BusyType::Tentative,
+                Some(Value::Fbtype(Fb::BusyUnavailable)) => BusyType::Unavailable,
+                _ => BusyType::Busy,
+            };
+            for value in &entry.values {
+                let ICalendarValue::Period(period) = value else { continue };
+                let (start, end) = match period {
+                    Period::Range { start, end } => (start.to_timestamp(), end.to_timestamp()),
+                    Period::Duration { start, duration } => {
+                        let s = start.to_timestamp();
+                        (s, s.map(|s| s.saturating_add(duration.as_seconds())))
+                    }
+                };
+                if let (Some(s), Some(e)) = (start, end) {
+                    push(s, e, kind);
+                }
+            }
+        }
+    }
+    // Значение свойства события: прозрачное и отменённое занятости не дают, предварительное — «под вопросом».
+    let has = |id: u32, test: &dyn Fn(&ICalendarValue) -> bool| {
+        ical.components.get(id as usize).is_some_and(|c| c.entries.iter().any(|e| e.values.iter().any(test)))
+    };
+    for event in ical.expand_dates(calcard::common::timezone::Tz::UTC, MAX_BUSY).events {
+        let id = event.comp_id;
+        let is_event = ical.components.get(id as usize).is_some_and(|c| c.component_type == Kind::VEvent);
+        let idle = |v: &ICalendarValue| {
+            matches!(v, ICalendarValue::Transparency(ICalendarTransparency::Transparent) | ICalendarValue::Status(ICalendarStatus::Cancelled))
+        };
+        if !is_event || has(id, &idle) {
+            continue;
+        }
+        let start = event.start.timestamp();
+        let end = match event.end {
+            calcard::icalendar::dates::TimeOrDelta::Time(t) => t.timestamp(),
+            calcard::icalendar::dates::TimeOrDelta::Delta(d) => start.saturating_add(d.num_seconds()),
+        };
+        let tentative = has(id, &|v| matches!(v, ICalendarValue::Status(ICalendarStatus::Tentative)));
+        push(start, end, if tentative { BusyType::Tentative } else { BusyType::Busy });
+    }
+    out.sort_by_key(|b| (b.start, b.end));
+    Ok(out)
+}
+
 /// Карточек в одном .vcf — не больше: адресная книга приходит по карточке на ресурс.
 const MAX_CARDS: usize = 1000;
 
@@ -567,6 +664,10 @@ fn handle(req: Result<Request, serde_json::Error>, bin: &[u8]) -> (Response, Vec
         },
         Ok(Request::Html(h)) => Response::Ok(postman_ir::from_html(&h)),
         Ok(Request::Text(t)) => Response::Ok(postman_ir::from_plain(&t)),
+        Ok(Request::FreeBusy { from, to }) => match parse_free_busy(bin, from, to) {
+            Ok(v) => Response::FreeBusy(v),
+            Err(e) => Response::Err(e),
+        },
         Ok(Request::Calendar) => match parse_calendar(bin) {
             Ok(v) => Response::Calendar(v),
             Err(e) => Response::Err(e),
@@ -738,6 +839,7 @@ impl Client {
             Response::Image { .. }
             | Response::Calendar(_)
             | Response::Contacts(_)
+            | Response::FreeBusy(_)
             | Response::Preview(_)
             | Response::Smime { .. }
             | Response::Envelope(_)
@@ -1021,6 +1123,15 @@ impl Client {
     pub fn parse_calendar(&mut self, ics: &[u8]) -> Result<serde_json::Value, String> {
         match self.call(&Request::Calendar, ics)?.0 {
             Response::Calendar(v) => Ok(v),
+            Response::Err(e) => Err(e),
+            _ => Err("неожиданный ответ".into()),
+        }
+    }
+
+    /// Занятость из iCalendar по ссылке (S8-42) в песочнице.
+    pub fn free_busy(&mut self, ics: &[u8], from: i64, to: i64) -> Result<Vec<BusySpan>, String> {
+        match self.call(&Request::FreeBusy { from, to }, ics)?.0 {
+            Response::FreeBusy(v) => Ok(v),
             Response::Err(e) => Err(e),
             _ => Err("неожиданный ответ".into()),
         }

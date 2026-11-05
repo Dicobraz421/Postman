@@ -63,6 +63,8 @@ pub struct ContactCard {
     pub organization: String,
     /// Должность.
     pub title: String,
+    /// Ссылка на занятость: JSContact `calendars` вида `freeBusy`, в vCard — `FBURL` (S8-42).
+    pub free_busy: Option<String>,
 }
 
 impl ContactCard {
@@ -109,6 +111,7 @@ impl ContactCard {
             phones: strings("phones", "number"),
             organization,
             title,
+            free_busy: entries("calendars").into_iter().find(|c| c["kind"] == "freeBusy").and_then(|c| c["uri"].as_str()).map(str::to_string),
         }
     }
 }
@@ -440,6 +443,22 @@ const _: () = assert!(Features::ALL.0 & (IMPORT | SERVER_COPY) == 0, "биты �
 impl Default for Features {
     fn default() -> Self {
         Features::ALL
+    }
+}
+
+#[cfg(test)]
+mod free_busy_tests {
+    use super::ContactCard;
+
+    /// `FBURL` приходит в JSContact как `calendars` вида `freeBusy`; просто календарь — не ссылка занятости.
+    #[test]
+    fn free_busy_link_of_a_card() {
+        let v = serde_json::json!({ "calendars": {
+            "c1": { "kind": "calendar", "uri": "https://cal.example.test/a.ics" },
+            "c2": { "kind": "freeBusy", "uri": "https://cal.example.test/a.vfb" },
+        }});
+        assert_eq!(ContactCard::from_jscontact(&v).free_busy.as_deref(), Some("https://cal.example.test/a.vfb"));
+        assert_eq!(ContactCard::from_jscontact(&serde_json::json!({})).free_busy, None);
     }
 }
 

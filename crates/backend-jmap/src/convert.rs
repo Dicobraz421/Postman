@@ -104,16 +104,16 @@ impl FromJmap<postman_jmap::Release> for Release {
 
 impl FromJmap<postman_jmap::ContactCard> for ContactCard {
     fn from_jmap(c: postman_jmap::ContactCard) -> Self {
-        let postman_jmap::ContactCard { id, name, emails, phones, organization, title } = c;
-        ContactCard { id, name, emails, phones, organization, title }
+        let postman_jmap::ContactCard { id, name, emails, phones, organization, title, free_busy } = c;
+        ContactCard { id, name, emails, phones, organization, title, free_busy }
     }
 }
 
 impl ToJmap for ContactCard {
     type Jmap = postman_jmap::ContactCard;
     fn to_jmap(&self) -> postman_jmap::ContactCard {
-        let ContactCard { id, name, emails, phones, organization, title } = self.clone();
-        postman_jmap::ContactCard { id, name, emails, phones, organization, title }
+        let ContactCard { id, name, emails, phones, organization, title, free_busy } = self.clone();
+        postman_jmap::ContactCard { id, name, emails, phones, organization, title, free_busy }
     }
 }
 
@@ -207,6 +207,7 @@ mod tests {
             phones: vec!["+7 900".into()],
             organization: "ИТТ".into(),
             title: "инженер".into(),
+            free_busy: None,
         };
         assert_eq!(ContactCard::from_jmap(card.to_jmap()), card);
         // Патч карточки — по-прежнему только изменённые свойства (форма «Контакты», `app-gpui/src/contacts.rs`).

@@ -122,6 +122,50 @@ fn all_supported_formats_decode_under_seccomp() {
     }
 }
 
+/// Занятость по ссылке (S8-42) в песочнице: VFREEBUSY — виды `FBTYPE`, период длительностью, свободное и вне диапазона не
+/// берутся; опубликованный календарь — события с повторами, поясом; прозрачное и отменённое занятости не дают.
+#[test]
+fn free_busy_round_trip() {
+    use postman_worker::{BusySpan, BusyType};
+    let mut c = client();
+    // 2026-11-02 00:00 UTC — понедельник.
+    let (from, to) = (1_793_577_600, 1_793_577_600 + 7 * 86_400);
+    let vfb = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//T//T//EN\r\nBEGIN:VFREEBUSY\r\n\
+        FREEBUSY;FBTYPE=BUSY:20261103T090000Z/20261103T100000Z,20261103T120000Z/PT30M\r\n\
+        FREEBUSY;FBTYPE=BUSY-TENTATIVE:20261104T090000Z/20261104T100000Z\r\n\
+        FREEBUSY;FBTYPE=BUSY-UNAVAILABLE:20261105T090000Z/20261105T100000Z\r\n\
+        FREEBUSY;FBTYPE=FREE:20261106T090000Z/20261106T100000Z\r\n\
+        FREEBUSY:20261201T090000Z/20261201T100000Z\r\n\
+        END:VFREEBUSY\r\nEND:VCALENDAR\r\n";
+    let got = c.free_busy(vfb.as_bytes(), from, to).unwrap();
+    let hour = |day: i64, h: i64| from + day * 86_400 + h * 3600;
+    assert_eq!(
+        got,
+        vec![
+            BusySpan { start: hour(1, 9), end: hour(1, 10), kind: BusyType::Busy },
+            BusySpan { start: hour(1, 12), end: hour(1, 12) + 1800, kind: BusyType::Busy },
+            BusySpan { start: hour(2, 9), end: hour(2, 10), kind: BusyType::Tentative },
+            BusySpan { start: hour(3, 9), end: hour(3, 10), kind: BusyType::Unavailable },
+        ]
+    );
+    let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//T//T//EN\r\n\
+        BEGIN:VEVENT\r\nUID:a\r\nDTSTAMP:20261001T000000Z\r\nDTSTART:20261005T090000Z\r\nDTEND:20261005T100000Z\r\nRRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n\
+        BEGIN:VEVENT\r\nUID:b\r\nDTSTAMP:20261001T000000Z\r\nDTSTART:20261103T090000Z\r\nDTEND:20261103T100000Z\r\nTRANSP:TRANSPARENT\r\nEND:VEVENT\r\n\
+        BEGIN:VEVENT\r\nUID:c\r\nDTSTAMP:20261001T000000Z\r\nDTSTART:20261104T090000Z\r\nDTEND:20261104T100000Z\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\n\
+        BEGIN:VEVENT\r\nUID:d\r\nDTSTAMP:20261001T000000Z\r\nDTSTART:20261105T090000Z\r\nDTEND:20261105T100000Z\r\nSTATUS:TENTATIVE\r\nEND:VEVENT\r\n\
+        END:VCALENDAR\r\n";
+    let got = c.free_busy(ics.as_bytes(), from, to).unwrap();
+    assert_eq!(
+        got,
+        vec![
+            BusySpan { start: hour(0, 9), end: hour(0, 10), kind: BusyType::Busy },
+            BusySpan { start: hour(3, 9), end: hour(3, 10), kind: BusyType::Tentative },
+        ]
+    );
+    assert!(c.free_busy(b"<html>not a calendar</html>", from, to).is_err());
+    assert!(c.free_busy(&vec![b'x'; postman_worker::MAX_FREE_BUSY + 1], from, to).is_err());
+}
+
 #[test]
 fn parses_invitation_under_seccomp() {
     let mut c = client();

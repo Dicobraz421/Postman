@@ -463,6 +463,7 @@ async fn contacts_are_edited_and_directory_is_listed() {
         phones: vec!["+7 495 000-00-01".into()],
         organization: "ООО Стенд".into(),
         title: "Инженер".into(),
+        free_busy: None,
     };
     let id = c.client.create_contact(&new).await.unwrap();
     let find = |cards: Vec<ContactCard>| cards.into_iter().find(|x| x.id == id);

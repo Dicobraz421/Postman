@@ -360,6 +360,61 @@ pub fn child_href(collection: &str, name: &str, content: Content) -> String {
     format!("{base}{}.{}", percent_encoding::utf8_percent_encode(name, KEEP), content.ext())
 }
 
+/// Ссылка на публичный ресурс (FBURL, календарь `.ics`; S8-42): `https://` или `webcal://` с именем сервера, без
+/// имени и пароля в адресе. IP-адрес и `localhost` не годятся: ссылка приходит из чужой карточки контакта, а запрос —
+/// изнутри сети пользователя.
+pub fn public_url(text: &str) -> Option<Url> {
+    let text = text.trim();
+    let text = match text.get(..9) {
+        Some(p) if p.eq_ignore_ascii_case("webcal://") => format!("https://{}", &text[9..]),
+        _ => text.to_owned(),
+    };
+    let url = Url::parse(&text).ok()?;
+    let host_ok = match url.host() {
+        Some(url::Host::Domain(d)) => {
+            let d = d.trim_end_matches('.').to_ascii_lowercase();
+            d != "localhost" && !d.ends_with(".localhost") && d.contains('.')
+        }
+        _ => false,
+    };
+    (url.scheme() == "https" && host_ok && url.username().is_empty() && url.password().is_none()).then_some(url)
+}
+
+/// Ждать публичный ресурс — не дольше: помощник планирования не висит.
+const PUBLIC_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Скачать публичный ресурс без входа, не больше `max` байт; перенаправления — только на такие же адреса.
+pub async fn fetch_public(text: &str, max: usize) -> Result<Vec<u8>> {
+    let url = public_url(text).ok_or_else(|| Error::Protocol("bad public address".into()))?;
+    let policy = reqwest::redirect::Policy::custom(|a| {
+        if a.previous().len() >= MAX_REDIRECTS || public_url(a.url().as_str()).is_none() { a.stop() } else { a.follow() }
+    });
+    let http = reqwest::Client::builder()
+        .user_agent(concat!("Postman/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(PUBLIC_TIMEOUT)
+        .timeout(PUBLIC_TIMEOUT)
+        .redirect(policy)
+        .build()
+        .map_err(|e| Error::Http(e.without_url()))?;
+    read_limited(http.get(url), max).await
+}
+
+/// Тело ответа не больше `max` байт: `Content-Length` врать может, поэтому счёт — по пришедшему.
+async fn read_limited(request: reqwest::RequestBuilder, max: usize) -> Result<Vec<u8>> {
+    let mut response = request.send().await.map_err(|e| Error::Http(e.without_url()))?;
+    if !response.status().is_success() {
+        return Err(Error::Status(response.status().as_u16()));
+    }
+    let mut out = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| Error::Http(e.without_url()))? {
+        if out.len() + chunk.len() > max {
+            return Err(Error::TooLarge);
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -402,5 +457,60 @@ mod tests {
         let client = Client::new(&c).unwrap();
         assert!(!format!("{client:?}").contains("secret"));
         assert!(Client::new(&Config { url: "ftp://x".into(), ..c }).is_err());
+    }
+}
+#[cfg(test)]
+mod public_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    /// Годится только https с именем сервера; `webcal` — тот же https.
+    #[test]
+    fn public_addresses() {
+        assert_eq!(public_url(" https://cal.example.test/f.vfb ").unwrap().as_str(), "https://cal.example.test/f.vfb");
+        assert_eq!(public_url("WEBCAL://cal.example.test/f.ics").unwrap().as_str(), "https://cal.example.test/f.ics");
+        for bad in [
+            "http://cal.example.test/f",
+            "ftp://cal.example.test/f",
+            "file:///c:/x",
+            "https://10.0.0.1/f",
+            "https://[::1]/f",
+            "https://localhost/f",
+            "https://a.localhost/f",
+            "https://intranet/f",
+            "https://u:p@cal.example.test/f",
+            "cal.example.test/f",
+            "",
+        ] {
+            assert!(public_url(bad).is_none(), "{bad}");
+        }
+    }
+
+    /// Ответ длиннее предела и отказ сервера — ошибки; короткий — байты как есть.
+    #[tokio::test]
+    async fn limited_body() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for reply in [
+                "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello",
+                "HTTP/1.1 404 No\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            ]
+            .into_iter()
+            .chain(std::iter::once("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello"))
+            {
+                let (mut s, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 2048];
+                let _ = s.read(&mut buf);
+                s.write_all(reply.as_bytes()).unwrap();
+            }
+        });
+        let http = reqwest::Client::new();
+        let url = format!("http://{addr}/");
+        assert_eq!(read_limited(http.get(&url), 10).await.unwrap(), b"hello");
+        assert!(matches!(read_limited(http.get(&url), 10).await, Err(Error::Status(404))));
+        assert!(matches!(read_limited(http.get(&url), 3).await, Err(Error::TooLarge)));
     }
 }

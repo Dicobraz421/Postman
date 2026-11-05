@@ -86,6 +86,7 @@ pub fn card(c: postman_ews::Contact) -> Option<ContactCard> {
         phones: c.data.phones.into_iter().map(|p| p.number).collect(),
         organization: c.data.company,
         title: c.data.job_title,
+        free_busy: None,
     })
 }
 

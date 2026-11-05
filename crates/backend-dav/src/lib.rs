@@ -837,6 +837,17 @@ impl Dav {
     }
 }
 
+/// Ссылка годится для публичного ресурса (`postman_dav::public_url`): интерфейс знает плагин, а не протокол.
+pub fn public_url_ok(text: &str) -> bool {
+    postman_dav::public_url(text).is_some()
+}
+
+/// Скачать публичный ресурс (S8-42: занятость по ссылке): блокирует поток, только в фоне.
+pub fn fetch_public(text: &str, max: usize) -> Result<Vec<u8>, String> {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+    rt.block_on(postman_dav::fetch_public(text, max)).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

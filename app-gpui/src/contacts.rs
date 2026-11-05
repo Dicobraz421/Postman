@@ -90,6 +90,14 @@ pub(crate) struct Entry {
     digits: Vec<String>,
 }
 
+impl ContactsView {
+    /// Ссылка на занятость адреса из личных контактов (`FBURL`, S8-42).
+    pub(crate) fn free_busy_url(&self, email: &str) -> Option<String> {
+        let found = self.mine.iter().find(|e| e.card.emails.iter().any(|m| m.eq_ignore_ascii_case(email)));
+        found.and_then(|e| e.card.free_busy.clone())
+    }
+}
+
 impl Entry {
     pub(crate) fn new(card: ContactCard, kind: Kind) -> Self {
         let mut keys = Vec::new();
@@ -117,6 +125,7 @@ impl Entry {
             phones: Some(p.phone.trim().to_owned()).filter(|t| !t.is_empty()).into_iter().collect(),
             organization: p.department.trim().to_owned(),
             title: p.title.trim().to_owned(),
+            free_busy: None,
         };
         Self::new(card, Kind::of_principal(&p.kind))
     }
@@ -422,6 +431,7 @@ impl FormText {
             phones: self.phones.split([';', ',']).map(str::trim).filter(|p| !p.is_empty()).map(str::to_string).collect(),
             organization: self.organization.trim().to_string(),
             title: self.title.trim().to_string(),
+            free_busy: None,
         };
         if card.name.is_empty() && card.emails.is_empty() {
             return Err(FormError::NeedName);
@@ -2198,6 +2208,7 @@ fn demo_mine() -> Vec<Entry> {
                 phones: c.phones.iter().map(|s| s.to_string()).collect(),
                 organization: c.organization.into(),
                 title: c.title.into(),
+                free_busy: None,
             };
             Entry::new(card, Kind::Contact)
         })
@@ -2524,6 +2535,7 @@ mod tests {
             phones: vec!["+7 495 000-00-01".into()],
             organization: "ООО Ромашка".into(),
             title: String::new(),
+            free_busy: None,
         };
         let mut text = FormText::of(&old);
         assert_eq!(text.card("c1"), Ok(old.clone()), "форма без правок — та же карточка");

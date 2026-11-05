@@ -254,3 +254,15 @@ cal-cancel-failed = Встреча не отменена: { $error }
 meeting-title-edit = Изменение встречи
 meeting-tab-edit-titled = Изменение встречи · { $title }
 meeting-updated = Изменения отправлены: { $title }
+# Занятость внешних по ссылке (S8-42)
+meeting-by-link = { $role } · по ссылке
+meeting-link-change = Ссылка занятости { $email }
+meeting-link-set = Указать ссылку
+meeting-link-loading = Загружаю занятость по ссылке…
+meeting-link-failed = Занятость по ссылке недоступна
+meeting-link-title = Ссылка занятости { $email }
+meeting-link-placeholder = https://… — FBURL или календарь .ics
+meeting-link-bad = Нужна ссылка https:// с именем сервера
+meeting-link-save = Сохранить
+meeting-link-remove = Убрать
+meeting-link-cancel = Отмена
