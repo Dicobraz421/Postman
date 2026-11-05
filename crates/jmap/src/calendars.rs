@@ -49,6 +49,17 @@ pub struct Calendar {
     pub is_visible: bool,
     #[serde(default)]
     pub is_subscribed: bool,
+    /// Кому открыт: принципал → права (`shareWith`); нет — никому.
+    #[serde(default)]
+    pub share_with: Option<std::collections::HashMap<String, Rights>>,
+}
+
+/// Права на календарь у принципала.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Rights {
+    #[serde(default)]
+    pub may_read_items: bool,
 }
 
 fn yes() -> bool {
@@ -263,6 +274,14 @@ impl Client {
         self.update_event(event_id, patch, true).await
     }
 
+    /// Принципалы по идентификаторам: кому открыт календарь (S8-43).
+    pub async fn principals_by_id(&self, ids: &[String]) -> Result<Vec<Principal>> {
+        let acc = self.account_for(PRINCIPALS)?;
+        let mut r = self.call(USING, &[inv("Principal/get", json!({ "accountId": acc, "ids": ids }), "g")]).await?;
+        let g: GetResponse<Principal> = take(&mut r, "g")?;
+        Ok(g.list)
+    }
+
     /// Поиск сотрудников, переговорных и ресурсов (для приглашений и помощника).
     pub async fn principals(&self, text: &str, limit: u64) -> Result<Vec<Principal>> {
         let acc = self.account_for(PRINCIPALS)?;
@@ -325,6 +344,25 @@ impl Client {
         let mut r = self.call(&using, &[inv("Principal/getAvailability", args, "a")]).await?;
         let a: AvailabilityResponse = take(&mut r, "a")?;
         Ok(a.list)
+    }
+}
+
+#[cfg(test)]
+mod share_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::Calendar;
+
+    /// Кому открыт календарь: `shareWith` с правами; нет свойства или `null` — никому (S8-43).
+    #[test]
+    fn share_with_is_read() {
+        let v = serde_json::json!({ "id": "c", "name": "К", "shareWith": { "p1": { "mayReadFreeBusy": true, "mayReadItems": true }, "p2": { "mayReadFreeBusy": true } } });
+        let c: Calendar = serde_json::from_value(v).unwrap();
+        let s = c.share_with.unwrap();
+        assert!(s["p1"].may_read_items);
+        assert!(!s["p2"].may_read_items);
+        let c: Calendar = serde_json::from_value(serde_json::json!({ "id": "c", "name": "К", "shareWith": null })).unwrap();
+        assert!(c.share_with.is_none());
     }
 }
 

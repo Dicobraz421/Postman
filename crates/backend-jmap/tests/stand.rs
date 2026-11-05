@@ -572,7 +572,7 @@ async fn calendar_through_sync() {
     let stamp = stamp();
 
     // user3: открыть занятость user1 и занять 14:00–15:00.
-    schedule::share_free_busy(&c.client, &a.email).await.unwrap();
+    schedule::share_free_busy(&c.client, &a.email, false).await.unwrap();
     let busy = Meeting {
         uid: format!("postman-s305-busy-{stamp}@itt.test"),
         title: "Postman: занят".into(),

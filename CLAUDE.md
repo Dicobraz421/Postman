@@ -1,7 +1,7 @@
 # Postman — правила для Claude Code
 <!-- ≤3 КБ. Только стабильные правила. Текущая работа — в карточках docs/tasks/. -->
 
-Клиент почты, календаря и контактов под Stalwart (JMAP; плагины IMAP, DAV, EWS); Rust, gpui, Windows.
+Клиент почты, календаря и контактов. Основной сервер — The Post, с остальными — совместимость по стандартам, Stalwart не правим (JMAP; плагины IMAP, DAV, EWS); Rust, gpui, Windows.
 Базис — скилл `pets-architecture`, процесс — скилл `pets-dev`.
 
 ## Где правда

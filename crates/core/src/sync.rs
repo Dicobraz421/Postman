@@ -47,6 +47,14 @@ impl Account {
     }
 }
 
+/// Кому открыт мой календарь (S8-43): адрес, имя и видит ли подробности событий (иначе — только занятость).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Access {
+    pub email: String,
+    pub name: String,
+    pub items: bool,
+}
+
 pub enum Command {
     Body(String),
     /// Беседа (ключ цепочки, `EmailRow::thread_id`): письма из всех папок и их тела — в кэш → `ThreadReady`.
@@ -190,8 +198,16 @@ pub enum Command {
         from: Option<String>,
         ticket: u64,
     },
-    /// Открыть коллеге (адрес) только мою занятость → `FreeBusyShared` или `CalendarFailed`.
+    /// Открыть коллеге (адрес) мою занятость, `items` — ещё и подробности событий; уровень у открытого заменяется →
+    /// `FreeBusyShared` или `CalendarFailed`.
     ShareFreeBusy {
+        email: String,
+        items: bool,
+    },
+    /// Кому открыт мой календарь (S8-43) → `CalendarAccess` или `CalendarFailed`.
+    CalendarAccess,
+    /// Закрыть мой календарь коллеге → `CalendarAccess` или `CalendarFailed`.
+    UnshareCalendar {
         email: String,
     },
     /// Настройки ящика на сервере: автоответ, квота (`settings.rs`) → `Event::Settings`.
@@ -717,6 +733,8 @@ pub enum Event {
         ticket: u64,
         error: String,
     },
+    /// Кому открыт мой календарь (S8-43).
+    CalendarAccess(Vec<Access>),
     FreeBusyShared {
         email: String,
     },

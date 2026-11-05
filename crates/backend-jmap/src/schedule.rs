@@ -6,10 +6,13 @@
 //!
 //! Сетевые функции проверяются тестом `stand`. Вызывает их поток синхронизации (`sync`).
 
+use std::collections::BTreeMap;
+
 use jiff::tz::TimeZone;
 use postman_calendar::{Busy, BusyKind, Event, Owner};
 pub use postman_core::schedule::Meeting;
 use postman_core::schedule::{SEARCH_LIMIT, busy_from_events, parse_events, utc};
+use postman_core::sync::Access;
 use postman_jmap::{BusyPeriod, Calendar, Client, Error, Identity, Result};
 use serde_json::{Map, Value};
 
@@ -119,15 +122,50 @@ pub async fn create(client: &Client, identities: &[Identity], meeting: &Meeting)
     client.create_event(meeting.to_jmap(&cal.id, (&me.name, &me.email)), send).await
 }
 
-/// Открыть коллеге (по адресу) только занятость всех своих календарей — без подробностей событий.
-pub async fn share_free_busy(client: &Client, email: &str) -> Result<()> {
+/// Открыть коллеге (по адресу) занятость всех своих календарей, `items` — ещё и подробности событий.
+pub async fn share_free_busy(client: &Client, email: &str, items: bool) -> Result<()> {
     let id = principal(client, email).await?.ok_or_else(|| Error::Protocol(format!("сотрудник {email} не найден")))?;
     let calendars = client.calendars().await?;
     if calendars.is_empty() {
         return Err(Error::Protocol("у учётной записи нет календаря".into()));
     }
     for c in &calendars {
-        client.share_calendar(&c.id, &id, false).await?;
+        client.share_calendar(&c.id, &id, items).await?;
+    }
+    Ok(())
+}
+
+/// Кому открыты мои календари (S8-43): по всем календарям; подробности — если открыты хотя бы в одном.
+pub async fn calendar_access(client: &Client) -> Result<Vec<Access>> {
+    let mut rights: BTreeMap<String, bool> = BTreeMap::new();
+    for c in client.calendars().await? {
+        for (id, r) in c.share_with.iter().flatten() {
+            *rights.entry(id.clone()).or_default() |= r.may_read_items;
+        }
+    }
+    if rights.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<String> = rights.keys().cloned().collect();
+    let people = client.principals_by_id(&ids).await?;
+    let mut out: Vec<Access> = rights
+        .into_iter()
+        .map(|(id, items)| match people.iter().find(|p| p.id == id) {
+            Some(p) => Access { email: p.email.clone().unwrap_or_else(|| p.name.clone()), name: p.display_name().to_owned(), items },
+            None => Access { email: id, name: String::new(), items },
+        })
+        .collect();
+    out.sort_by_key(|a| a.email.to_lowercase());
+    Ok(out)
+}
+
+/// Закрыть коллеге все мои календари, где он есть.
+pub async fn unshare_calendar(client: &Client, email: &str) -> Result<()> {
+    let id = principal(client, email).await?.ok_or_else(|| Error::Protocol(format!("сотрудник {email} не найден")))?;
+    for c in client.calendars().await? {
+        if c.share_with.as_ref().is_some_and(|s| s.contains_key(&id)) {
+            client.unshare_calendar(&c.id, &id).await?;
+        }
     }
     Ok(())
 }
@@ -291,6 +329,7 @@ mod tests {
             sort_order: order,
             is_visible: visible,
             is_subscribed: true,
+            share_with: None,
         };
         let cals = [c("hidden", 0, false), c("b", 2, true), c("a", 1, true)];
         assert_eq!(default_calendar(&cals).map(|c| c.id.as_str()), Some("a"));
