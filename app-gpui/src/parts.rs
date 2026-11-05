@@ -36,6 +36,7 @@ pub(crate) const PARTS: &[Part] = &[
     crate::signin::PART,
     crate::buttons::PART,
     crate::features::PART,
+    crate::drill::PART,
 ];
 
 /// Тексты всех частей (без `pets_ui::FTL`: его добавляет запуск).

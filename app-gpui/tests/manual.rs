@@ -526,3 +526,12 @@ fn s42_s43_scenes() {
     const DARK: &[&str] = &["list", "letter", "contacts", "contacts-menu", "contact-edit", "contacts-frequent", "settings-categories"];
     themed_scenes(LIGHT, DARK);
 }
+
+/// Сценарии с вводом внутри процесса (`app-gpui/src/drill.rs`): клавиши и мышь идут только в окно Postman.
+#[test]
+#[ignore = "окно и рабочий стол: cargo nextest run -p postman-gpui --test manual --run-ignored only"]
+fn input_drills() {
+    need_worker();
+    const DRILLS: &[&str] = &["drill-tabs", "drill-select", "drill-split", "drill-keytips", "drill-palette"];
+    themed_scenes(DRILLS, DRILLS);
+}

@@ -23,6 +23,7 @@
 //! вкладка «Настройки» (S5-09): `settings-general`, `settings-categories`, `settings-keys`, `settings-accounts` и первый
 //! запуск `firstrun` — демо; `--live` без `POSTMAN_URL` — первый запуск (`firstrun`).
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -54,6 +55,51 @@ pub(crate) type Ready = fn(&Scene, &Mailer, &App) -> bool;
 /// Шаг ожидания (перед проверкой готовности): то, что можно сделать только после фоновой работы.
 pub(crate) type Wait = fn(&Scene, &mut Mailer, &mut Context<Mailer>);
 
+/// Точка окна для ввода мышью (`Input`): обычно считается из модели — строка списка, ручка, кнопка.
+pub(crate) type Place = fn(&Mailer, &Window, &App) -> Option<Point<Pixels>>;
+
+/// Клавиша, зажатая при щелчке.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Held {
+    No,
+    Ctrl,
+    Shift,
+}
+
+impl Held {
+    fn modifiers(self) -> Modifiers {
+        Modifiers { control: self == Held::Ctrl, shift: self == Held::Shift, ..Modifiers::default() }
+    }
+}
+
+/// Шаг ввода сцены: события идут только в это окно, внутри процесса (`Window::dispatch_event`), мимо ОС.
+/// В чужое окно они попасть не могут, поэтому ввод разрешён на рабочей машине (решение владельца 2026-11-05).
+#[derive(Clone, Copy)]
+pub(crate) enum Input {
+    /// Клавиши по одной, в записи gpui: `ctrl-n`, `shift-f3`, `down`.
+    Keys(&'static [&'static str]),
+    /// Набор текста по символу.
+    Text(&'static str),
+    /// Дождаться условия. Не дождались за время сцены — ошибка прогона.
+    Until(Ready),
+    /// Навести мышь.
+    Move(Place),
+    /// Щелчок левой кнопкой.
+    Click(Place, Held),
+    /// Щелчок правой кнопкой.
+    Right(Place),
+    /// Перетащить левой кнопкой внутри окна.
+    Drag(Place, Place),
+    /// Зажать или отпустить модификатор (`KeyTips`).
+    Hold(Held),
+}
+
+/// Событие очереди: по одному на кадр, чтобы окно успело перестроиться.
+enum Event {
+    Key(Keystroke),
+    Raw(PlatformInput),
+}
+
 /// Сцена снимков (ADR 0005): значение в описи своей части (`PART.scenes`), шаги — функции части.
 pub(crate) struct Scene {
     /// Имя файла (`<имя>.png`) и строки `screen …`.
@@ -67,11 +113,15 @@ pub(crate) struct Scene {
     pub enter: Enter,
     pub ready: Ready,
     pub wait: Option<Wait>,
+    /// Ввод сцены: идёт после `enter`, до проверки `ready`.
+    pub input: &'static [Input],
+    /// Только по имени в `POSTMAN_SCREENS_ONLY`: в обычный прогон снимков не входит.
+    pub on_request: bool,
 }
 
 impl Scene {
     pub(crate) const fn new(name: &'static str, enter: Enter, ready: Ready) -> Self {
-        Self { name, live: false, after: None, continues: false, enter, ready, wait: None }
+        Self { name, live: false, after: None, continues: false, enter, ready, wait: None, input: &[], on_request: false }
     }
 
     pub(crate) const fn live(self) -> Self {
@@ -88,6 +138,14 @@ impl Scene {
 
     pub(crate) const fn wait(self, wait: Wait) -> Self {
         Self { wait: Some(wait), ..self }
+    }
+
+    pub(crate) const fn input(self, input: &'static [Input]) -> Self {
+        Self { input, ..self }
+    }
+
+    pub(crate) const fn on_request(self) -> Self {
+        Self { on_request: true, ..self }
     }
 }
 
@@ -172,6 +230,10 @@ pub struct Driver {
     pub(crate) overdue: Option<String>,
     /// Сцена `buttons`: поверх окна — образцы кнопок.
     pub(crate) gallery: bool,
+    /// Следующий шаг `Scene::input`.
+    input: usize,
+    /// События текущего шага ввода.
+    queue: VecDeque<Event>,
 }
 
 impl Driver {
@@ -184,7 +246,20 @@ impl Driver {
     pub fn new(dir: PathBuf, live: bool, suffix: &'static str) -> std::io::Result<Self> {
         std::fs::create_dir_all(&dir)?;
         let dir = std::path::absolute(&dir)?;
-        Ok(Self { dir, scene: 0, phase: Phase::Enter, live, signin: false, composer: None, suffix, undo: Vec::new(), overdue: None, gallery: false })
+        Ok(Self {
+            dir,
+            scene: 0,
+            phase: Phase::Enter,
+            live,
+            signin: false,
+            composer: None,
+            suffix,
+            input: 0,
+            queue: VecDeque::new(),
+            undo: Vec::new(),
+            overdue: None,
+            gallery: false,
+        })
     }
 
     /// Окно открывается со строкой входа: снимается она.
@@ -203,7 +278,7 @@ impl Driver {
         });
         match std::env::var("POSTMAN_SCREENS_ONLY") {
             Ok(only) if !only.trim().is_empty() => all.filter(|s| only.split(',').any(|o| o.trim() == s.name)).collect(),
-            _ => all.collect(),
+            _ => all.filter(|s| !s.on_request).collect(),
         }
     }
 
@@ -221,6 +296,10 @@ pub fn drive(m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) {
         Phase::Capturing => return,
         Phase::Enter => {
             set_phase(m, Phase::Wait { frames: 0, since: Instant::now() });
+            if let Some(d) = &mut m.screens {
+                d.input = 0;
+                d.queue.clear();
+            }
             if let Err(e) = enter(m, scene, window, cx) {
                 fail(scene, &e);
             }
@@ -229,7 +308,13 @@ pub fn drive(m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) {
             if let Some(wait) = scene.wait {
                 wait(scene, m, cx);
             }
-            if !(scene.ready)(scene, m, cx) {
+            if feed(m, scene, window, cx) {
+                if since.elapsed() > timeout {
+                    let at = m.screens.as_ref().map_or(0, |d| d.input);
+                    fail(scene, &format!("input step {at} not done in {} s", timeout.as_secs()));
+                }
+                set_phase(m, Phase::Wait { frames: 0, since });
+            } else if !(scene.ready)(scene, m, cx) {
                 if since.elapsed() > timeout {
                     fail(scene, &format!("scene not ready in {} s", timeout.as_secs()));
                 }
@@ -248,6 +333,92 @@ pub fn drive(m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) {
     // Следующий кадр — целиком, без кэша частей: `ready` читает часть (`m.reading`) раньше её отрисовки, gpui не
     // засчитывает части её же сущность, и `notify` части теряется — снимок показал бы прошлое письмо.
     window.on_next_frame(|window, _| window.refresh());
+}
+
+/// Шаг ввода сцены; `true` — ввод ещё идёт. События уходят после кадра (`Window::defer`): кадр рисует `Mailer`,
+/// а обработчики ввода меняют его же.
+fn feed(m: &mut Mailer, scene: &'static Scene, window: &mut Window, cx: &mut Context<Mailer>) -> bool {
+    let Some(d) = &mut m.screens else { return false };
+    if let Some(e) = d.queue.pop_front() {
+        window.defer(cx, move |window, cx| match e {
+            Event::Key(k) => {
+                window.dispatch_keystroke(k, cx);
+            }
+            Event::Raw(e) => {
+                window.dispatch_event(e, cx);
+            }
+        });
+        return true;
+    }
+    let Some(step) = scene.input.get(d.input).copied() else { return false };
+    if let Input::Until(done) = step
+        && !done(scene, m, cx)
+    {
+        return true;
+    }
+    let events = match events(step, m, window, cx) {
+        Ok(events) => events,
+        Err(e) => fail(scene, &e),
+    };
+    if let Some(d) = &mut m.screens {
+        d.input += 1;
+        d.queue = events;
+    }
+    true
+}
+
+/// События шага ввода.
+fn events(step: Input, m: &Mailer, window: &Window, cx: &App) -> Result<VecDeque<Event>, String> {
+    let at = |place: Place| place(m, window, cx).ok_or_else(|| "no such place in the window".to_owned());
+    let down = |position, button, held: Held| {
+        Event::Raw(PlatformInput::MouseDown(MouseDownEvent { button, position, modifiers: held.modifiers(), click_count: 1, first_mouse: false }))
+    };
+    let up = |position, button, held: Held| {
+        Event::Raw(PlatformInput::MouseUp(MouseUpEvent { button, position, modifiers: held.modifiers(), click_count: 1 }))
+    };
+    let hover =
+        |position, pressed_button| Event::Raw(PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button, modifiers: Modifiers::default() }));
+    let mut out = VecDeque::new();
+    match step {
+        Input::Until(_) => {}
+        Input::Keys(keys) => {
+            for k in keys {
+                out.push_back(Event::Key(Keystroke::parse(k).map_err(|e| format!("key {k}: {e}"))?));
+            }
+        }
+        Input::Text(text) => {
+            for c in text.chars() {
+                let key_char = Some(c.to_string());
+                let key = c.to_lowercase().to_string();
+                out.push_back(Event::Key(Keystroke { modifiers: Modifiers::default(), key, key_char }));
+            }
+        }
+        Input::Move(place) => out.push_back(hover(at(place)?, None)),
+        Input::Click(place, held) => {
+            let p = at(place)?;
+            out.extend([hover(p, None), down(p, MouseButton::Left, held), up(p, MouseButton::Left, held)]);
+        }
+        Input::Right(place) => {
+            let p = at(place)?;
+            out.extend([hover(p, None), down(p, MouseButton::Right, Held::No), up(p, MouseButton::Right, Held::No)]);
+        }
+        Input::Drag(from, to) => {
+            let (a, b) = (at(from)?, at(to)?);
+            let middle = point((a.x + b.x) / 2., (a.y + b.y) / 2.);
+            out.extend([
+                hover(a, None),
+                down(a, MouseButton::Left, Held::No),
+                hover(middle, Some(MouseButton::Left)),
+                hover(b, Some(MouseButton::Left)),
+                up(b, MouseButton::Left, Held::No),
+            ]);
+        }
+        Input::Hold(held) => out.push_back(Event::Raw(PlatformInput::ModifiersChanged(ModifiersChangedEvent {
+            modifiers: held.modifiers(),
+            capslock: Capslock::default(),
+        }))),
+    }
+    Ok(out)
 }
 
 /// Чистое начало сцены: «Входящие» главной вкладки почты, без поиска, фильтров, выделения, меню и палитры.
