@@ -1,4 +1,4 @@
-//! Автопроверка ручных разделов `docs/MANUAL-TESTS.md` (2–6) без нажатий в окне: запуск `postman.exe` с ключами,
+//! Автопроверка ручных разделов `docs/MANUAL-TESTS.md` (2–6, 12, 13, 15, 16) без нажатий в окне: запуск `postman.exe` с ключами,
 //! файлы снимков, состояние окна и журнал «Приложение» — средствами Windows. Данные — во временном `LOCALAPPDATA`,
 //! настоящий ящик и настройки не трогаются.
 //!
@@ -217,4 +217,123 @@ fn s06_toasts_scene() {
     let out = run(c, Duration::from_secs(180));
     assert!(out.status.success(), "код {:?}: {}", out.status.code(), String::from_utf8_lossy(&out.stderr));
     assert!(dir.join("toasts.png").exists());
+}
+
+/// Подсистема из заголовка PE: 2 — окно, 3 — консоль.
+fn pe_subsystem(exe: &Path) -> u16 {
+    let bytes = std::fs::read(exe).unwrap();
+    let pe = u32::from_le_bytes(bytes[0x3c..0x40].try_into().unwrap()) as usize;
+    u16::from_le_bytes(bytes[pe + 24 + 68..pe + 24 + 70].try_into().unwrap())
+}
+
+/// Раздел 12 (S4-01): архив — установка без прав, запуск, отказ при открытом Postman, удаление с сохранением данных.
+/// Ярлык и «Пуск» — владельцу: тест не трогает настоящее меню (`-NoShortcut`), установка идёт во временный `LOCALAPPDATA`.
+/// `POSTMAN_ARCHIVE` — распакованный архив релиза; без него файлы собираются из текущей сборки (она с консолью).
+#[test]
+#[ignore = "окно и рабочий стол: cargo nextest run -p postman-gpui --test manual --run-ignored only"]
+fn s12_install() {
+    need_worker();
+    assert!(!others_running(), "закройте Postman: установка отказывает при открытом");
+    // Временный каталог — без коротких имён 8.3: сравнение путей в `install.ps1` их не разворачивает.
+    let root = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let data = root.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let archive = std::env::var_os("POSTMAN_ARCHIVE").map(PathBuf::from);
+    let src = archive.clone().unwrap_or_else(|| {
+        let src = root.path().join("zip");
+        std::fs::create_dir_all(&src).unwrap();
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("scripts/windows");
+        for f in ["install.ps1", "README.txt"] {
+            std::fs::copy(repo.join(f), src.join(f)).unwrap();
+        }
+        for f in ["postman.exe", "postman-worker.exe"] {
+            std::fs::copy(exe().with_file_name(f), src.join(f)).unwrap();
+        }
+        src
+    });
+    // Шаг 1: README в UTF-8 с меткой — читается в «Блокноте» и консоли.
+    let readme = std::fs::read(src.join("README.txt")).unwrap();
+    assert!(readme.starts_with(&[0xef, 0xbb, 0xbf]), "README.txt без метки UTF-8");
+    assert!(String::from_utf8_lossy(&readme).contains("УСТАНОВКА"));
+
+    let script = |args: &[&str]| {
+        let mut c = Command::new("powershell");
+        c.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]).arg(src.join("install.ps1")).args(args).env("LOCALAPPDATA", &data);
+        run(c, Duration::from_secs(60))
+    };
+    // Шаг 2: каталог по умолчанию, без прав администратора; песочнице открыт доступ к файлам.
+    let out = script(&["-NoShortcut"]);
+    assert!(out.status.success(), "установка: {}", String::from_utf8_lossy(&out.stderr));
+    let dest = data.join(r"Programs\Postman");
+    let installed = dest.join("postman.exe");
+    assert!(dest.join("postman-worker.exe").exists() && dest.join("README.txt").exists());
+    let acl = ps(&format!("(Get-Acl '{}').Sddl", dest.join("postman-worker.exe").display()));
+    assert!(acl.contains(";;;AC)"), "нет доступа песочнице: {acl}");
+    // Шаг 3: свойства файла и значок.
+    let file = installed.display();
+    let info = ps(&format!("$v = (Get-Item '{file}').VersionInfo; $v.ProductName + '|' + $v.ProductVersion"));
+    assert!(info.starts_with("Postman|") && info.contains(env!("CARGO_PKG_VERSION")), "свойства файла: {info}");
+    let icons = ps(&format!(
+        "Add-Type -Name I -Namespace P -MemberDefinition '[DllImport(\"shell32.dll\", CharSet = CharSet.Unicode)] public static extern uint ExtractIconEx(string f, int i, IntPtr[] l, IntPtr[] s, uint n);'; \
+         [P.I]::ExtractIconEx('{file}', -1, $null, $null, 0)"
+    ));
+    assert!(icons.trim().parse::<u32>().unwrap_or(0) >= 1, "в exe нет значка: {icons}");
+    if archive.is_some() {
+        assert_eq!(pe_subsystem(&installed), 2, "у сборки релиза не должно быть консоли");
+    }
+    // Шаг 6: справка в той же консоли.
+    let mut c = Command::new(&installed);
+    c.arg("--help").env("LOCALAPPDATA", &data);
+    let help = run(c, Duration::from_secs(20));
+    let text = String::from_utf8_lossy(&help.stdout);
+    assert!(help.status.success() && text.contains("--screens"), "--help: код {:?}, вывод {text}", help.status.code());
+    // Шаг 4: установленная копия работает, снимок строки состояния смотрит агент.
+    let dir = screens_dir("install");
+    let mut c = Command::new(&installed);
+    c.args(["--screens", dir.to_str().unwrap(), "--lang", "ru"]).env("LOCALAPPDATA", &data).env("POSTMAN_SCREENS_ONLY", "letter");
+    let out = run(c, Duration::from_secs(180));
+    assert!(out.status.success(), "снимок установленной копии: код {:?}, {}", out.status.code(), String::from_utf8_lossy(&out.stderr));
+    assert!(dir.join("letter.png").exists());
+    // Шаг 7: открытый Postman не даёт заменить файлы.
+    {
+        let mut c = Command::new(&installed);
+        c.args(["--demo", "300", "--minimized"]).env("LOCALAPPDATA", &data);
+        let open = Running(c.spawn().unwrap());
+        assert!(wait_for(Duration::from_secs(30), || window_of(open.0.id())).is_some(), "установленная копия не открыла окно");
+        let out = script(&["-NoShortcut"]);
+        let text = String::from_utf8_lossy(&out.stderr).to_lowercase().replace(['\r', '\n'], "");
+        assert!(!out.status.success() && text.contains("close it"), "повторная установка при открытом: {text}");
+    }
+    // Шаг 8: файлы удалены, данные и вход — на месте.
+    std::fs::create_dir_all(data.join("Postman")).unwrap();
+    std::fs::write(data.join(r"Postman\keep.txt"), "x").unwrap();
+    let mut gone = script(&["-Uninstall", "-NoShortcut"]);
+    // Процесс только что закрыт: Windows отпускает файл не сразу.
+    for _ in 0..5 {
+        if gone.status.success() {
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(2));
+        gone = script(&["-Uninstall", "-NoShortcut"]);
+    }
+    assert!(gone.status.success(), "удаление: {}", String::from_utf8_lossy(&gone.stderr));
+    assert!(!dest.exists(), "папка установки осталась");
+    assert!(data.join(r"Postman\keep.txt").exists(), "данные пользователя удалены");
+}
+
+/// Разделы 13, 15, 16 (S4-02, S4-05, S4-07): экраны без сервера — контакты, карточка, меню строки, автоответ, правила,
+/// квота. Смотрит агент: снимки в `target/tmp/manual-screens/settings`.
+#[test]
+#[ignore = "окно и рабочий стол: cargo nextest run -p postman-gpui --test manual --run-ignored only"]
+fn s13_s15_s16_scenes() {
+    need_worker();
+    let data = tempfile::tempdir().unwrap();
+    let dir = screens_dir("settings");
+    let mut c = postman(data.path(), &["--screens", dir.to_str().unwrap(), "--lang", "ru"]);
+    c.env("POSTMAN_SCREENS_ONLY", "contacts,contacts-menu,contact-edit,vacation,rules,quota");
+    let out = run(c, Duration::from_secs(240));
+    assert!(out.status.success(), "код {:?}: {}", out.status.code(), String::from_utf8_lossy(&out.stderr));
+    for name in ["contacts", "contacts-menu", "contact-edit", "vacation", "rules", "quota"] {
+        assert!(dir.join(format!("{name}.png")).exists(), "нет снимка {name}");
+    }
 }

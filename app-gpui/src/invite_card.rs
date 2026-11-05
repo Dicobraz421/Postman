@@ -395,7 +395,7 @@ fn answer_buttons(card: &Card, side: bool, l: &Look, cx: &mut Context<ReadingPan
         };
         let ink = crate::buttons::ink(primary, l);
         let b = b
-            .when(!side, |d| d.w(px(160.)).min_w(px(88.)).px(px(8.)))
+            .when(!side, |d| d.flex_grow(1.).max_w(px(160.)).px(px(8.)))
             .when(sending.is_some(), |d| d.opacity(if sending == Some(s) { 1. } else { 0.5 }))
             .child(status_mark(s, ink))
             .child(tr!(key))
