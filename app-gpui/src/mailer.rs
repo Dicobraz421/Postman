@@ -60,6 +60,8 @@ pub(crate) struct Mailer {
     /// Контекстное меню письма (S5-08, `menu.rs`); после закрытия — фокус обратно экрану.
     pub(crate) menu: Option<crate::menu::Menu>,
     pub(crate) refocus: bool,
+    /// Открыта форма контакта: когда закроется — фокус экрану (`refocus`).
+    pub(crate) contact_form: bool,
     /// Ширины папок и списка в этом кадре (T1-05б): из настроек или перетаскивания, ужаты окном.
     pub(crate) panes: (f32, f32),
     /// Тянется разделитель панелей (T1-05б).
@@ -337,6 +339,7 @@ impl Mailer {
             summary,
             menu: None,
             refocus: false,
+            contact_form: false,
             panes: (W_FOLDERS, W_LIST),
             split: SplitDrag::default(),
             offline: Default::default(),
@@ -569,6 +572,9 @@ impl Render for Mailer {
         self.panes = (f32::from(f), f32::from(li));
         self.sync_focus(window, cx);
         self.drive_bench(window, cx);
+        // Форма контакта закрылась, поле с фокусом пропало: иначе F2 и Delete раздела не сработают до щелчка (раздел 26, шаг 12).
+        let contact_form = self.contacts.read(cx).editing();
+        self.refocus |= std::mem::replace(&mut self.contact_form, contact_form) && !contact_form;
         screens::drive(self, window, cx);
         if std::mem::take(&mut self.refocus) {
             window.focus(&self.focus, cx);

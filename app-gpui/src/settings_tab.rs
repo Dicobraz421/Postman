@@ -292,6 +292,11 @@ impl SettingsView {
         v
     }
 
+    /// Запрос поиска разделов.
+    pub(crate) fn query(&self) -> &str {
+        &self.query
+    }
+
     /// Открыть раздел (навигация, `settings.rules`, `settings.vacation`).
     pub(crate) fn select(&mut self, section: Section, _window: &mut Window, cx: &mut Context<Self>) {
         if self.section != section {
@@ -376,7 +381,8 @@ pub(crate) fn switch(on: bool, l: &Look) -> Div {
 
 /// Переключатель с id для нажатия.
 pub(crate) fn toggle(id: impl Into<ElementId>, on: bool, l: &Look) -> Stateful<Div> {
-    div().id(id).flex_none().cursor_pointer().child(switch(on, l))
+    let id = id.into();
+    div().id(id.clone()).children(crate::screens::spot(id)).flex_none().cursor_pointer().child(switch(on, l))
 }
 
 /// Кружок выбора одного из.
@@ -394,8 +400,10 @@ pub(crate) fn radio(on: bool, l: &Look) -> Div {
 
 /// Кнопка группы «одно из» (сегмент).
 pub(crate) fn seg(id: impl Into<ElementId>, label: String, on: bool, enabled: bool, l: &Look) -> Stateful<Div> {
+    let id = id.into();
     div()
-        .id(id)
+        .id(id.clone())
+        .children(crate::screens::spot(id))
         .h(px(28.))
         .px_3()
         .flex()
@@ -454,8 +462,10 @@ pub(crate) fn keycap(text: String, l: &Look) -> Div {
 
 /// Тихая кнопка-ссылка.
 pub(crate) fn link(id: impl Into<ElementId>, label: String, l: &Look) -> Stateful<Div> {
+    let id = id.into();
     div()
-        .id(id)
+        .id(id.clone())
+        .children(crate::screens::spot(id))
         .flex_none()
         .px_2()
         .py_0p5()
@@ -497,6 +507,7 @@ impl SettingsView {
             list = list.child(
                 div()
                     .id(("settings-nav", i))
+                    .children(crate::screens::spot(("settings-nav", i)))
                     .h(px(34.))
                     .px_2p5()
                     .flex()
@@ -530,7 +541,7 @@ impl SettingsView {
                     .items_center()
                     .gap_2()
                     .child(icon(glyph::SEARCH, 14.).text_color(l.text2()))
-                    .child(div().flex_1().child(Input::new(&self.search))),
+                    .child(div().flex_1().relative().children(crate::screens::spot("settings-search")).child(Input::new(&self.search))),
             )
             .child(list)
     }

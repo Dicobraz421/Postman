@@ -195,6 +195,16 @@ pub(crate) struct Notices {
 }
 
 impl Notices {
+    /// На экране есть тост.
+    pub(crate) fn toast_shown(&self) -> bool {
+        !self.stack.shown(Instant::now()).is_empty()
+    }
+
+    /// История уведомлений: что было показано.
+    pub(crate) fn stack_history(&self) -> impl Iterator<Item = &Entry> {
+        self.stack.history()
+    }
+
     pub(crate) fn new() -> Self {
         Self::default()
     }

@@ -395,10 +395,11 @@ fn answer_buttons(card: &Card, side: bool, l: &Look, cx: &mut Context<ReadingPan
         };
         let ink = crate::buttons::ink(primary, l);
         let b = b
-            .when(!side, |d| d.flex_grow(1.).max_w(px(160.)).px(px(8.)))
+            // Узкая панель: кнопка сужается, подпись — с многоточием (`shell` кнопки не сжимается).
+            .when(!side, |d| d.flex_grow(1.).flex_shrink(1.).min_w_0().overflow_hidden().max_w(px(160.)).px(px(8.)))
             .when(sending.is_some(), |d| d.opacity(if sending == Some(s) { 1. } else { 0.5 }))
             .child(status_mark(s, ink))
-            .child(tr!(key))
+            .child(div().min_w_0().truncate().child(tr!(key)))
             .on_click(cx.listener(move |this, _, _, cx| {
                 if sending.is_none() {
                     this.answer_invite(s, cx);
@@ -637,7 +638,8 @@ pub(crate) fn render(card: &Card, me: Option<&str>, cx: &mut Context<ReadingPane
                 d.child(div().ml(px(8.)).text_size(px(12.)).text_color(l.text2()).child(tr!("reading-invite-sending")))
             }),
         })
-        .child(route(p.answered.is_some(), "invite-route", &l).ml_auto().pl(px(8.)));
+        // Подпись уступает место первой: кнопки сужаются, когда она уже свёрнута.
+        .child(route(p.answered.is_some(), "invite-route", &l).ml_auto().pl(px(8.)).flex_shrink(ROUTE_SHRINK));
     frame().flex().flex_col().min_w_0().flex_none().child(details).child(day).child(actions).into_any_element()
 }
 
@@ -784,6 +786,9 @@ fn updated_banner(changes: &[Change], l: &Look) -> Option<Div> {
 }
 
 /// Куда уйдёт ответ: коротко, подробно — в подсказке.
+/// Во сколько раз охотнее подпись сжимается, чем кнопки ответа.
+const ROUTE_SHRINK: f32 = 1000.;
+
 fn route(done: bool, id: &'static str, l: &Look) -> Stateful<Div> {
     let long = tr!(if done { "invite-route-done" } else { "invite-route" });
     div()

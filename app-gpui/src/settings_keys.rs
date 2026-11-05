@@ -216,7 +216,7 @@ impl SettingsView {
                     .child(schemes)
                     .child(div().flex_1())
                     .child(crate::chrome::icon(crate::chrome::glyph::SEARCH, 14.).text_color(l.text2()))
-                    .child(div().w(px(320.)).child(Input::new(&self.keys.search))),
+                    .child(div().w(px(320.)).relative().children(crate::screens::spot("settings-keys-search")).child(Input::new(&self.keys.search))),
             )
             .child(div().text_size(px(12.)).text_color(l.text2()).child(note))
             .child(conflicts_block)

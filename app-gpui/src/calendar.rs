@@ -857,6 +857,21 @@ impl CalendarView {
         out
     }
 
+    /// Ссылка подписки не принята, поле открыто.
+    pub(crate) fn subscription_refused(&self) -> bool {
+        self.sub_bad
+    }
+
+    /// Список найденного: сколько строк (закрыт — 0) и строка под курсором.
+    pub(crate) fn result_state(&self) -> (usize, usize) {
+        (if self.results_open { self.results().len() } else { 0 }, self.cursor)
+    }
+
+    /// Имя пояса, в котором показана неделя.
+    pub(crate) fn zone_name(&self) -> Option<&str> {
+        self.tz.iana_name()
+    }
+
     /// ↑/↓ в поле поиска: строка найденного под курсором. `false` — списка нет.
     pub(crate) fn step_result(&mut self, delta: isize, cx: &mut Context<Self>) -> bool {
         let n = if self.results_open { self.results().len() } else { 0 };
@@ -1053,6 +1068,7 @@ impl CalendarView {
         let answer = |id: &'static str, text: String, strong: bool, act: Option<bool>, cx: &mut Context<Self>| {
             div()
                 .id(id)
+                .children(crate::screens::spot(id))
                 .flex_none()
                 .px_3()
                 .py_0p5()
@@ -1346,6 +1362,8 @@ impl CalendarView {
                 let toggle = key.clone();
                 let check = div()
                     .id(("cal-colleague-check", n))
+                    .relative()
+                    .children(crate::screens::spot(("cal-colleague-check", n)))
                     .size(px(16.))
                     .flex_none()
                     .rounded(px(4.))
@@ -1710,6 +1728,8 @@ impl CalendarView {
         } else {
             div()
                 .id("sub-open")
+                .relative()
+                .children(crate::screens::spot("sub-open"))
                 .h(px(30.))
                 .px(px(8.))
                 .flex()
@@ -2182,6 +2202,7 @@ impl CalendarView {
                                 d.child(
                                     div()
                                         .id(("month-more", w * 7 + c))
+                                        .children(crate::screens::spot(("month-more", w * 7 + c)))
                                         .absolute()
                                         .top(px(MONTH_NUM_H + MONTH_LANES as f32 * MONTH_ITEM_H))
                                         .left(px(6.))

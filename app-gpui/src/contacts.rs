@@ -745,6 +745,26 @@ impl ContactsView {
     }
 
     /// Адреса моих контактов: автоответ «только контактам» (S5-29).
+    /// Запрос поиска.
+    pub(crate) fn query(&self) -> &str {
+        &self.query
+    }
+
+    /// Найденные адреса поиска по всем источникам.
+    pub(crate) fn found_emails(&self) -> Vec<String> {
+        self.pool.iter().flat_map(|e| e.card.emails.iter().cloned()).collect()
+    }
+
+    /// Сколько групп в найденном.
+    pub(crate) fn found_groups(&self) -> usize {
+        self.items.iter().filter(|i| matches!(i, Item::Group(..))).count()
+    }
+
+    /// Адрес выбранной записи.
+    pub(crate) fn selected_email(&self) -> Option<String> {
+        self.selected_address().map(|a| a.email)
+    }
+
     pub(crate) fn personal_emails(&self) -> Vec<String> {
         self.mine.iter().flat_map(|e| e.card.emails.iter().cloned()).collect()
     }
@@ -1631,6 +1651,8 @@ impl ContactsView {
             let answer = |id: &'static str, text: String, yes: bool, cx: &mut Context<Self>| {
                 div()
                     .id(id)
+                    .relative()
+                    .children(crate::screens::spot(id))
                     .px_3()
                     .py_0p5()
                     .rounded_md()
@@ -1910,7 +1932,7 @@ impl ContactsView {
                 .flex_col()
                 .gap(px(4.))
                 .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!(label)))
-                .child(Input::new(state))
+                .child(div().relative().children(crate::screens::spot(SharedString::from(label.to_owned()))).child(Input::new(state)))
         };
         let title = tr!(if f.old.is_some() { "contacts-form-edit" } else { "contacts-form-new" });
         let note = tr!(if self.live { "contacts-form-where" } else { "contacts-form-where-demo" });
@@ -1988,6 +2010,8 @@ fn row(ix: usize, e: &Entry, selected: bool, focused: bool, external: bool, l: &
     let menu_id = id.clone();
     div()
         .id(("contact", ix))
+        .relative()
+        .children(crate::screens::spot(("contact", ix)))
         .w_full()
         .h(px(ROW_H))
         .flex()
