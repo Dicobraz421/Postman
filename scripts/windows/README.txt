@@ -1,4 +1,4 @@
-﻿Postman — почта, календарь и контакты (сервер Stalwart, JMAP) для Windows 10/11 x64
+﻿Postman — почта, календарь и контакты для Windows 10/11 x64
 
 Файлы:
   postman.exe         — приложение

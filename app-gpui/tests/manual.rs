@@ -1,4 +1,4 @@
-//! Автопроверка ручных разделов `docs/MANUAL-TESTS.md` (2–6, 12, 13, 15, 16, 18–26) без нажатий в окне: запуск `postman.exe` с ключами,
+//! Автопроверка ручных разделов `docs/MANUAL-TESTS.md` (2–6, 12, 13, 15, 16, 18–31) без нажатий в окне: запуск `postman.exe` с ключами,
 //! файлы снимков, состояние окна и журнал «Приложение» — средствами Windows. Данные — во временном `LOCALAPPDATA`,
 //! настоящий ящик и настройки не трогаются.
 //!
@@ -392,7 +392,12 @@ fn s22_to_s26_scenes() {
         "meeting-slot",
     ];
     const DARK: &[&str] = &["compose", "checks", "filters", "quick", "calendar", "event", "meeting", "contacts"];
-    for (theme, names) in [("light", LIGHT), ("dark", DARK)] {
+    themed_scenes(LIGHT, DARK);
+}
+
+/// Снимки сцен в обеих темах: `target/tmp/manual-screens/{light,dark}`; тёмные файлы — с окончанием `-dark`.
+fn themed_scenes(light: &[&str], dark: &[&str]) {
+    for (theme, names) in [("light", light), ("dark", dark)] {
         let data = tempfile::tempdir().unwrap();
         let dir = screens_dir(theme);
         let mut c = postman(data.path(), &["--screens", dir.to_str().unwrap(), "--lang", "ru", "--theme", theme]);
@@ -400,9 +405,58 @@ fn s22_to_s26_scenes() {
         let out = run(c, Duration::from_secs(420));
         assert!(out.status.success(), "{theme}: код {:?}: {}", out.status.code(), String::from_utf8_lossy(&out.stderr));
         for name in names {
-            // Снимки тёмной темы — с окончанием `-dark`.
             let file = if theme == "dark" { format!("{name}-dark.png") } else { format!("{name}.png") };
             assert!(dir.join(file).exists(), "{theme}: нет снимка {name}");
         }
     }
+}
+
+/// Разделы 27–31 (S5-07, S5-04, S5-08, S5-10, S5-05б): вложения и просмотр, сроки, выделение и меню, офлайн, палитра,
+/// поиск, виды беседы. Смотрит агент.
+#[test]
+#[ignore = "окно и рабочий стол: cargo nextest run -p postman-gpui --test manual --run-ignored only"]
+fn s27_to_s31_scenes() {
+    need_worker();
+    const LIGHT: &[&str] = &[
+        "attachments",
+        "preview-image",
+        "preview-pdf",
+        "preview-pdf-end",
+        "preview-zip",
+        "attach-macro",
+        "lifecycle",
+        "overdue",
+        "bulk",
+        "context-menu",
+        "phishing",
+        "offline",
+        "palette",
+        "palette-query",
+        "search",
+        "search-letter",
+        "search-next",
+        "folder-menu",
+        "thread",
+        "thread-view-menu",
+        "thread-stack",
+        "thread-list",
+        "settings-reading",
+    ];
+    const DARK: &[&str] = &[
+        "attachments",
+        "preview-pdf",
+        "attach-macro",
+        "lifecycle",
+        "overdue",
+        "bulk",
+        "context-menu",
+        "phishing",
+        "palette",
+        "search",
+        "search-letter",
+        "thread",
+        "thread-stack",
+        "thread-list",
+    ];
+    themed_scenes(LIGHT, DARK);
 }
