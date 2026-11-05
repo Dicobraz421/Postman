@@ -426,7 +426,9 @@ mod tests {
         let mut found = Vec::new();
         for entry in std::fs::read_dir(&dir).unwrap() {
             let path = entry.unwrap().path();
-            if path.extension().is_some_and(|e| e == "rs") {
+            // `drill*.rs` — сценарии проверки: кириллица там — набираемый текст, а не строки интерфейса.
+            let drill = path.file_name().is_some_and(|n| n.to_string_lossy().starts_with("drill"));
+            if !drill && path.extension().is_some_and(|e| e == "rs") {
                 let source = std::fs::read_to_string(&path).unwrap();
                 for r in pets_i18n::raw_strings(&source) {
                     found.push(format!("{}:{}: {}", path.display(), r.line, r.text));
