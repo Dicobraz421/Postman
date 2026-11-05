@@ -92,7 +92,7 @@ pub(crate) mod scenes {
     pub(crate) const SCENES: &[Scene] = &[
         // Свои «Входящие» с полосами категорий и метками (S5-02): первому письму без меток клавишами 1 и 3 (как
         // `mail.categorize`) поставлены «Клиенты» и «Тендеры», оно открыто.
-        Scene::new("labels", labels, labels_ready),
+        Scene::new("labels", labels, labels_ready).wait(pick),
     ];
 
     fn labels(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
@@ -100,18 +100,20 @@ pub(crate) mod scenes {
         let inbox = crate::live::inbox(&m.folders.read(cx).mailboxes);
         let Some(id) = inbox else { return Err("no inbox".into()) };
         m.open_mailbox(id, cx);
-        let list = m.list.read(cx);
-        let (offset, rows) = &list.rows;
-        let plain = rows.iter().position(|r| super::row_labels(&list.labels, r).chips.is_empty());
-        let Some(i) = plain.map(|p| p + offset) else {
-            return Err("no message without labels in the first rows of the demo inbox".into());
-        };
-        m.list.update(cx, |l, cx| {
-            l.select(i, cx);
-            l.toggle_category(1, cx);
-            l.toggle_category(3, cx);
-        });
         Ok(())
+    }
+
+    /// Письмо — когда папка открылась: смена папки снимает выделение событием фильтров уже после шага сцены.
+    fn pick(_: &Scene, m: &mut Mailer, cx: &mut Context<Mailer>) {
+        m.list.update(cx, |l, cx| {
+            let (offset, rows) = &l.rows;
+            let plain = rows.iter().position(|r| super::row_labels(&l.labels, r).chips.is_empty()).map(|p| p + offset);
+            if let (None, Some(i)) = (l.selected, plain) {
+                l.select(i, cx);
+                l.toggle_category(1, cx);
+                l.toggle_category(3, cx);
+            }
+        });
     }
 
     fn labels_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
