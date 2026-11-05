@@ -865,6 +865,8 @@ fn timeline(card: &Card, inv: &Invitation, me: Option<&str>, tz: &TimeZone, side
         let (top, bottom) = (y(b.span.start), y(b.span.end));
         let invite = l.pm(Pm::DayAccepted);
         let gap = if b.columns > 1 { 2. } else { 0. };
+        // Узкая колонка панели: время — второй строкой, если блок не короче двух строк; часовой блок — впритык, без зазоров.
+        let two_lines = side && bottom - top >= 28.;
         div()
             .absolute()
             .top(px(top + 1.))
@@ -876,12 +878,19 @@ fn timeline(card: &Card, inv: &Invitation, me: Option<&str>, tz: &TimeZone, side
                 div()
                     .size_full()
                     .flex()
-                    // Узкая колонка панели: время — второй строкой, если блок не короче двух строк.
-                    .when(side && bottom - top >= 28., |d| d.flex_col())
+                    .when(two_lines, |d| d.flex_col().justify_center())
                     .items_start()
-                    .gap(px(if side { 2. } else { 8. }))
+                    .gap(px(if two_lines {
+                        0.
+                    } else if side {
+                        2.
+                    } else {
+                        8.
+                    }))
                     .px(px(if side { 6. } else { 8. }))
-                    .py(px(if bottom - top < 24. {
+                    .py(px(if two_lines {
+                        0.
+                    } else if bottom - top < 24. {
                         1.
                     } else if side {
                         2.

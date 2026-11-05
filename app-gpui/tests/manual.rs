@@ -1,4 +1,4 @@
-//! Автопроверка ручных разделов `docs/MANUAL-TESTS.md` (2–6, 12, 13, 15, 16, 18–33, 35, 36) без нажатий в окне: запуск `postman.exe` с ключами,
+//! Автопроверка ручных разделов `docs/MANUAL-TESTS.md` (2–6, 12, 13, 15, 16, 18–33, 35–41) без нажатий в окне: запуск `postman.exe` с ключами,
 //! файлы снимков, состояние окна и журнал «Приложение» — средствами Windows. Данные — во временном `LOCALAPPDATA`,
 //! настоящий ящик и настройки не трогаются.
 //!
@@ -397,9 +397,14 @@ fn s22_to_s26_scenes() {
 
 /// Снимки сцен в обеих темах: `target/tmp/manual-screens/{light,dark}`; тёмные файлы — с окончанием `-dark`.
 fn themed_scenes(light: &[&str], dark: &[&str]) {
+    themed_scenes_in("", light, dark);
+}
+
+/// То же в каталогах `<приставка><тема>`: отдельный запуск со своим порядком сцен.
+fn themed_scenes_in(prefix: &str, light: &[&str], dark: &[&str]) {
     for (theme, names) in [("light", light), ("dark", dark)] {
         let data = tempfile::tempdir().unwrap();
-        let dir = screens_dir(theme);
+        let dir = screens_dir(&format!("{prefix}{theme}"));
         let mut c = postman(data.path(), &["--screens", dir.to_str().unwrap(), "--lang", "ru", "--theme", theme]);
         c.env("POSTMAN_SCREENS_ONLY", names.join(","));
         let out = run(c, Duration::from_secs(420));
@@ -484,5 +489,30 @@ fn s32_to_s36_scenes() {
         "meeting-blue",
     ];
     const DARK: &[&str] = &["palette", "smime", "smime-bad", "smime-untrusted", "settings-calendar", "meeting", "meeting-blue"];
+    themed_scenes(LIGHT, DARK);
+}
+
+/// Разделы 37–41 (S5-17, S5-23, S5-18, S5-27, S5-24): схема клавиш, KeyTips, окна встречи, разметка письма, состояния
+/// карточки приглашения и боковая панель. Смотрит агент.
+#[test]
+#[ignore = "окно и рабочий стол: cargo nextest run -p postman-gpui --test manual --run-ignored only"]
+fn s37_to_s41_scenes() {
+    need_worker();
+    // `settings-keys` — в `s22_to_s26_scenes`. KeyTips — отдельным запуском: сцена ждёт удержания Ctrl, и прошлые сцены
+    // его сбрасывают.
+    themed_scenes_in("keytips-", &["keytips", "keytips-single"], &["keytips"]);
+    const LIGHT: &[&str] = &[
+        "compose",
+        "meeting",
+        "meeting-slot",
+        "meeting-blue",
+        "invite",
+        "invite-answered",
+        "invite-updated",
+        "invite-cancelled",
+        "invite-outdated",
+        "invite-side",
+    ];
+    const DARK: &[&str] = &["compose", "meeting", "meeting-slot", "invite", "invite-answered", "invite-side"];
     themed_scenes(LIGHT, DARK);
 }
