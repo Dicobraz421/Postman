@@ -82,7 +82,8 @@ pub(crate) fn tree<'a>(folders: &[&'a MailboxRow], folded: &HashSet<String>) -> 
     }
     let children = |of: Option<&str>| {
         let mut v: Vec<&'a MailboxRow> = folders.iter().copied().filter(|m| parent(m, &ids) == of).collect();
-        v.sort_by_key(|m| m.sort_order);
+        // Серверы без `sortOrder` (The Post): системные папки — в привычном порядке.
+        v.sort_by_key(|m| (m.sort_order, role_rank(m.role.as_deref())));
         v
     };
     let mut out = Vec::new();
@@ -666,7 +667,7 @@ impl Folders {
             .gap(px(10.))
             .child(chevron)
             .child(crate::chrome::icon(folder_glyph(m.role.as_deref()), 16.).text_color(l.text2()).ml(px(-6.)))
-            .child(div().flex_1().min_w_0().truncate().child(m.name.clone()))
+            .child(div().flex_1().min_w_0().truncate().child(shown_name(m)))
             // Непрочитанные — с сервера (`Mailbox.unreadEmails`), а не по загруженной части папки.
             .when(m.unread > 0, |d| unread(d, m.unread, l))
             // «На этом компьютере» (S8-15, макет): число писем — серым.
@@ -868,6 +869,34 @@ fn row_h(l: &Look) -> f32 {
     l.m(Metric::HRow) + 8.
 }
 
+/// Порядок системных папок: «Входящие» первыми; папки без роли — после них, в порядке сервера.
+fn role_rank(role: Option<&str>) -> u8 {
+    match role {
+        Some("inbox") => 0,
+        Some("drafts") => 1,
+        Some("sent") => 2,
+        Some("archive") => 3,
+        Some("junk") => 4,
+        Some("trash") => 5,
+        _ => 6,
+    }
+}
+
+/// Имя системной папки по роли, если сервер отдал стандартное английское имя (The Post: `INBOX`, `Sent`, Exchange:
+/// `Sent Items`); переименованная — как есть.
+pub(crate) fn shown_name(m: &MailboxRow) -> String {
+    let (key, names): (&str, &[&str]) = match m.role.as_deref() {
+        Some("inbox") => ("folder-role-inbox", &["inbox"]),
+        Some("sent") => ("folder-role-sent", &["sent", "sent items", "sent mail"]),
+        Some("drafts") => ("folder-role-drafts", &["drafts"]),
+        Some("trash") => ("folder-role-trash", &["trash", "deleted items", "deleted"]),
+        Some("junk") => ("folder-role-junk", &["junk", "junk email", "spam"]),
+        Some("archive") => ("folder-role-archive", &["archive"]),
+        _ => return m.name.clone(),
+    };
+    if names.iter().any(|n| n.eq_ignore_ascii_case(m.name.trim())) { tr!(key) } else { m.name.clone() }
+}
+
 /// Значок папки по роли JMAP.
 pub(crate) fn folder_glyph(role: Option<&str>) -> char {
     use crate::chrome::glyph;
@@ -1019,7 +1048,7 @@ pub(crate) mod scenes {
 #[cfg(test)]
 mod tests {
     // Не `super::*`: из `gpui_kit::*` пришёл бы атрибут `test` gpui вместо встроенного.
-    use super::{DropTarget, Folders, OWN, Row, changeable, drop_on, new_folder, rename, tree};
+    use super::{DropTarget, Folders, OWN, Row, changeable, drop_on, new_folder, rename, role_rank, shown_name, tree};
     use postman_cache::{AccountRow, MailboxRow, Rights};
     use postman_core::sync::Command;
     use std::collections::HashSet;
@@ -1039,6 +1068,24 @@ mod tests {
 
     fn mb(id: &str, rights: Rights) -> MailboxRow {
         MailboxRow { id: id.into(), parent_id: None, name: id.into(), role: None, sort_order: 0, total: 0, unread: 0, rights }
+    }
+
+    /// Стандартное имя системной папки — на языке интерфейса, своё — как есть; без роли — как есть.
+    #[test]
+    fn system_folders_are_named_by_role() {
+        let _ = pets_i18n::init(&crate::parts::texts(), "ru");
+        let row = |name: &str, role: &str| MailboxRow { name: name.into(), role: Some(role.into()), ..mb("x", Rights::default()) };
+        assert_eq!(shown_name(&row("INBOX", "inbox")), "Входящие");
+        assert_eq!(shown_name(&row("Sent Items", "sent")), "Отправленные");
+        assert_eq!(shown_name(&row("Важное", "inbox")), "Важное");
+        assert_eq!(shown_name(&mb("Sent", Rights::default())), "Sent");
+    }
+
+    /// Без `sortOrder` «Входящие» — первыми.
+    #[test]
+    fn inbox_goes_first() {
+        assert!(role_rank(Some("inbox")) < role_rank(Some("drafts")));
+        assert!(role_rank(Some("trash")) < role_rank(None));
     }
 
     fn acc(id: &str, read_only: bool) -> AccountRow {
