@@ -31,3 +31,10 @@ fatal-window = окно
 needs-server = Нужна учётная запись на сервере: в демо-режиме это недоступно.
 # «Нет у сервера — нет на экране» (S7-03): клавиша команды, которой у сервера нет.
 feature-unavailable = Нет у сервера этой учётной записи
+# Системные папки (стандартное имя сервера — на языке интерфейса)
+folder-role-inbox = Входящие
+folder-role-sent = Отправленные
+folder-role-drafts = Черновики
+folder-role-trash = Удалённые
+folder-role-junk = Спам
+folder-role-archive = Архив

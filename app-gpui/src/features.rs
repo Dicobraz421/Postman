@@ -137,7 +137,8 @@ pub(crate) mod scenes {
 
     /// Сервер умеет всё — кроме своих сцен (S7-03).
     pub(crate) fn reset(s: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) {
-        if !s.name.starts_with("features-") && super::get(cx) != Features::ALL {
+        // Живой ящик: возможности — настоящие, с сервера.
+        if !screens::live(m) && !s.name.starts_with("features-") && super::get(cx) != Features::ALL {
             m.set_features(Features::ALL, cx);
         }
     }

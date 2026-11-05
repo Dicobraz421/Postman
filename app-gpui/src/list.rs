@@ -762,7 +762,7 @@ impl MailList {
 
     /// Права и имена папок после перечитывания папок: права запоминаются только урезанные.
     pub(crate) fn set_rights(&mut self, mailboxes: &[MailboxRow]) {
-        self.names = mailboxes.iter().map(|m| (m.id.clone(), m.name.clone())).collect();
+        self.names = mailboxes.iter().map(|m| (m.id.clone(), crate::folders::shown_name(m))).collect();
         self.rights = mailboxes.iter().filter(|m| m.rights != Rights::ALL).map(|m| (m.id.clone(), m.rights)).collect();
         self.order = mailboxes.iter().map(|m| m.id.clone()).collect();
     }

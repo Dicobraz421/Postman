@@ -31,3 +31,10 @@ fatal-window = window
 needs-server = This needs a server account: not available in demo mode.
 # «Нет у сервера — нет на экране» (S7-03): клавиша команды, которой у сервера нет.
 feature-unavailable = Not available on this account's server
+# System folders (server's default name in the interface language)
+folder-role-inbox = Inbox
+folder-role-sent = Sent
+folder-role-drafts = Drafts
+folder-role-trash = Deleted
+folder-role-junk = Junk
+folder-role-archive = Archive
