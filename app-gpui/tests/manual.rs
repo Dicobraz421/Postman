@@ -535,3 +535,64 @@ fn input_drills() {
     const DRILLS: &[&str] = &["drill-tabs", "drill-select", "drill-split", "drill-keytips", "drill-palette"];
     themed_scenes(DRILLS, DRILLS);
 }
+
+/// Сценарии области «почта и письмо» (`app-gpui/src/drill_mail.rs`): клавиши и мышь идут только в окно Postman.
+#[test]
+#[ignore = "окно и рабочий стол: cargo nextest run -p postman-gpui --test manual --run-ignored only"]
+fn mail_drills() {
+    need_worker();
+    const DRILLS: &[&str] = &[
+        "mail-06-toast",
+        "mail-07-send",
+        "mail-07-remove",
+        "mail-10-bar",
+        "mail-19-feed",
+        "mail-19-nav",
+        "mail-20-keys",
+        "mail-21-later",
+        "mail-22-tabs",
+        "mail-23-tab",
+        "mail-23-chips",
+        "mail-23-format",
+        "mail-23-reply",
+        "mail-23-switch",
+        "mail-25-sort",
+        "mail-27-steps",
+        "mail-27-broken",
+        "mail-27-chart",
+        "mail-28-due",
+        "mail-28-date",
+        "mail-28-remind",
+        "mail-28-wait",
+        "mail-28-expire",
+        "mail-29-range",
+        "mail-29-read",
+        "mail-29-archive",
+        "mail-29-due",
+        "mail-29-move",
+        "mail-30-recent",
+        "mail-30-letter",
+        "mail-30-bold",
+        "mail-30-syntax",
+        "mail-32-hits",
+        "mail-35-keys",
+        "mail-35-tabs",
+        "mail-37-single",
+        "mail-37-search",
+        "mail-37-custom",
+        "mail-39-hint",
+        "mail-39-off",
+        "mail-40-md",
+        "mail-40-reply",
+        "mail-t114-view",
+        "mail-t116-order",
+        "mail-31-outlook",
+        "mail-t117-many",
+        "mail-t117-one",
+        "mail-s519-summary",
+    ];
+    // Сцены меняют ящик и оставляют вкладки: каждая — в своём запуске, со свежей копией демо.
+    for name in DRILLS {
+        themed_scenes(&[name], &[name]);
+    }
+}

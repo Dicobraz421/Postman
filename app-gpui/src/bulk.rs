@@ -380,6 +380,7 @@ impl MailList {
         let button = |id: &'static str, g: char, label: String, on: bool, drop: bool| {
             div()
                 .id(id)
+                .children(crate::screens::spot(id))
                 .flex_1()
                 .min_w_0()
                 .h(px(44.))

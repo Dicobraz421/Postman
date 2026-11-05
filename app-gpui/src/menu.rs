@@ -189,6 +189,11 @@ pub(crate) struct Menu {
 }
 
 impl Menu {
+    /// Открытое подменю (сценарии).
+    pub(crate) fn sub(&self) -> Option<Sub> {
+        self.sub
+    }
+
     fn item(&self) -> Option<Item> {
         items(self.features).nth(self.cursor)
     }

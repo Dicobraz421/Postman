@@ -270,6 +270,7 @@ fn notice_text(n: &Notice) -> Option<(Toast, String)> {
 
 fn menu_item(id: ElementId, l: &Look) -> Stateful<Div> {
     div()
+        .children(crate::screens::spot(id.clone()))
         .id(id)
         .h(l.px(Metric::HMenuItem))
         .px(px(10.))
@@ -329,16 +330,17 @@ impl Mailer {
 
     /// Esc: закрыть панель выбора (`true` — была открыта).
     pub(crate) fn close_picker(&mut self, cx: &mut Context<Self>) -> bool {
-        let open = self.lifecycle.picker.take().is_some();
-        if open {
-            cx.notify();
-        }
-        open
+        let Some(p) = self.lifecycle.picker.take() else { return false };
+        // Фокус был в поле даты панели: поля больше нет, клавиши — снова экрану.
+        self.refocus |= p.input.is_some();
+        cx.notify();
+        true
     }
 
     /// Вариант панели или «Убрать»: правка письма.
     fn choose(&mut self, when: Option<When>, cx: &mut Context<Self>) {
         let Some(p) = self.lifecycle.picker.take() else { return };
+        self.refocus |= p.input.is_some();
         let roles = self.roles(cx);
         let patches: Vec<Patch> = std::iter::once(&p.row)
             .chain(&p.rest)

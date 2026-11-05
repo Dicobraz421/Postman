@@ -348,6 +348,7 @@ impl ReadingPane {
                     let row = m.row.clone();
                     let card = div()
                         .id(("feed-msg", n))
+                        .children(crate::screens::spot(("feed-msg", n)))
                         .flex()
                         .flex_col()
                         .gap_1()

@@ -134,6 +134,7 @@ pub(crate) fn vbar<H: ScrollbarHandle + Clone>(handle: &H, mode: ScrollbarMode) 
 pub(crate) fn quiet_button(id: &'static str, l: &Look) -> Stateful<Div> {
     div()
         .id(id)
+        .children(crate::screens::spot(id))
         .h(px(32.))
         .px(px(10.))
         .flex()
@@ -172,7 +173,7 @@ impl MoreMenu {
 
 impl Mailer {
     /// Название вкладки и есть ли в ней несохранённое (письмо — точка после названия).
-    fn tab_title(&self, t: &Tab, cx: &App) -> (String, bool) {
+    pub(crate) fn tab_title(&self, t: &Tab, cx: &App) -> (String, bool) {
         match t.kind {
             // Главная вкладка — по модулю (макеты: «Задачи», «Календарь», «Контакты»); во вкладке почты раздел главной
             // ждёт в `main_section`.
@@ -474,6 +475,7 @@ impl Mailer {
                 // 🔔 — история уведомлений панелью справа (S5-08); нажата, пока панель открыта.
                 div()
                     .id("notifications")
+                    .children(crate::screens::spot("notifications"))
                     .h(px(22.))
                     .px(px(6.))
                     .mr(px(-6.))
@@ -502,6 +504,7 @@ impl Mailer {
         let item = |id: &'static str, g: char, key: &'static str, action: fn() -> Box<dyn Action>| {
             div()
                 .id(id)
+                .children(crate::screens::spot(id))
                 .h(l.px(Metric::HMenuItem))
                 .px(px(10.))
                 .flex()

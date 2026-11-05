@@ -413,6 +413,7 @@ impl ReadingPane {
             })));
         let mut card = div()
             .id(("att-card", n))
+            .children(crate::screens::spot(("att-card", n)))
             .group(group)
             .relative()
             .h(px(CARD_H))
