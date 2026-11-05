@@ -287,6 +287,10 @@ pub(crate) enum CalendarAction {
     },
     /// Кому открыт мой календарь (S8-43).
     Access,
+    /// Ссылки публикации (S8-45): список, создать, отозвать.
+    Publications,
+    Publish(bool),
+    Unpublish(String),
     /// Закрыть мой календарь коллеге.
     Unshare(String),
     /// Ответ на приглашение из подробностей события (`Command::RespondInvite`, путь S3-03).
@@ -332,6 +336,9 @@ pub(crate) struct CalendarView {
     access: Vec<postman_core::sync::Access>,
     access_asked: bool,
     share_items: bool,
+    /// Ссылки публикации (S8-45): `None` — сервер не умеет; только что созданный адрес показан один раз.
+    publications: Option<Vec<postman_core::sync::Publication>>,
+    published: Option<String>,
     /// Прокрутка панели слева: список доступа — внизу.
     side_scroll: ScrollHandle,
     /// Подписки `.ics` (S8-44): воркер для разбора, календари, строка «Добавить по ссылке».
@@ -508,6 +515,8 @@ impl CalendarView {
             access: Vec::new(),
             access_asked: false,
             share_items: false,
+            publications: None,
+            published: None,
             side_scroll: ScrollHandle::new(),
             worker: None,
             subs: Vec::new(),
@@ -607,6 +616,7 @@ impl CalendarView {
         }
         if !std::mem::replace(&mut self.access_asked, true) {
             cx.emit(CalendarAction::Access);
+            cx.emit(CalendarAction::Publications);
         }
         let (from, to) = self.range();
         self.pending = Some((from, to));
@@ -754,6 +764,8 @@ impl CalendarView {
                 cx.emit(CalendarAction::Toast(Toast::Success, text));
             }
             SyncEvent::CalendarAccess(list) => self.access = list.clone(),
+            SyncEvent::Publications(list) => self.publications = list.clone(),
+            SyncEvent::Published { url } => self.published = Some(url.clone()),
             SyncEvent::CalendarFailed(error) => {
                 self.pending = None;
                 let text = tr!("cal-failed", error = error.clone());
@@ -1444,6 +1456,7 @@ impl CalendarView {
             .child(title("cal-group-share"))
             .children(self.access_rows(&l, cx))
             .child(share)
+            .children(self.publication_rows(&l, cx))
     }
 
     /// «С подробностями» в строке открытия.
@@ -1515,6 +1528,76 @@ impl CalendarView {
         self.access.iter().enumerate().map(|(n, a)| row(n, a)).collect()
     }
 
+    /// Публикация по ссылке (S8-45): только если сервер умеет. Новый адрес — один раз, с «Скопировать».
+    fn publication_rows(&self, l: &Look, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let list = self.publications.as_ref()?;
+        let action = |id: (&'static str, usize), text: String| {
+            div().id(id).flex_none().cursor_pointer().text_size(px(12.)).text_color(l.accent_text()).hover(|d| d.underline()).child(text)
+        };
+        let rows = list.iter().enumerate().map(|(n, p)| {
+            let id = p.id.clone();
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .px(px(8.))
+                .py(px(3.))
+                .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).child(tr!(if p.items {
+                    "cal-access-items"
+                } else {
+                    "cal-access-busy"
+                })))
+                .child(action(("cal-pub-revoke", n), tr!("cal-pub-revoke")).on_click(cx.listener(move |this, _, _, cx| {
+                    this.published = None;
+                    this.unpublish(&id, cx);
+                })))
+        });
+        let created = self.published.clone().map(|url| {
+            let copy = url.clone();
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .px(px(8.))
+                .py(px(3.))
+                .child(div().text_size(px(12.)).truncate().child(url))
+                .child(action(("cal-pub-copy", 0), tr!("cal-pub-copy")).on_click(cx.listener(move |_, _, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
+                })))
+                .child(div().text_size(px(11.)).text_color(l.text2()).child(tr!("cal-pub-once")))
+        });
+        let add = div()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .px(px(8.))
+            .py(px(3.))
+            .child(action(("cal-pub-add", 0), tr!("cal-pub-add-busy")).on_click(cx.listener(|this, _, _, cx| this.publish(false, cx))))
+            .child(action(("cal-pub-add", 1), tr!("cal-pub-add-items")).on_click(cx.listener(|this, _, _, cx| this.publish(true, cx))));
+        let title = div().text_size(px(12.)).text_color(l.text2()).px(px(8.)).pt(px(10.)).pb(px(4.)).child(tr!("cal-group-publish"));
+        Some(div().flex().flex_col().child(title).children(rows).children(created).child(add).into_any_element())
+    }
+
+    /// Создать ссылку; демо — образец.
+    fn publish(&mut self, items: bool, cx: &mut Context<Self>) {
+        if self.live {
+            cx.emit(CalendarAction::Publish(items));
+        } else {
+            self.published = Some("https://mail.example.test/calendar/public/5f2c9a1e.ics".into());
+            self.publications.get_or_insert_default().push(postman_core::sync::Publication { id: format!("demo-{items}"), items });
+        }
+        cx.notify();
+    }
+
+    fn unpublish(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.live {
+            cx.emit(CalendarAction::Unpublish(id.to_owned()));
+        } else if let Some(list) = &mut self.publications {
+            list.retain(|p| p.id != id);
+        }
+        cx.notify();
+    }
+
     /// Сменить уровень: сервер заменяет запись. Демо — сразу.
     fn share_level(&mut self, email: &str, items: bool, cx: &mut Context<Self>) {
         if self.live {
@@ -1545,6 +1628,8 @@ impl CalendarView {
             .map(|(i, (name, email, _))| Access { email: email.to_owned(), name: name.to_owned(), items: i == 1 })
             .collect();
         self.share_open = true;
+        self.publications = Some(vec![postman_core::sync::Publication { id: "demo".into(), items: false }]);
+        self.published = Some("https://mail.example.test/calendar/public/5f2c9a1e.ics".into());
         self.side_scroll.scroll_to_bottom();
         cx.notify();
     }
@@ -2746,6 +2831,9 @@ impl crate::Mailer {
             CalendarAction::Search { text, from, to } => Command::SearchEvents { text: text.clone(), from: *from, to: *to },
             CalendarAction::Share { email, items } => Command::ShareFreeBusy { email: email.clone(), items: *items },
             CalendarAction::Access => Command::CalendarAccess,
+            CalendarAction::Publications => Command::Publications,
+            CalendarAction::Publish(items) => Command::Publish { items: *items },
+            CalendarAction::Unpublish(id) => Command::Unpublish { id: id.clone() },
             CalendarAction::Unshare(email) => Command::UnshareCalendar { email: email.clone() },
             CalendarAction::Respond { event, status } => Command::RespondInvite {
                 invite: Box::new(Invitation {

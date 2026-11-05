@@ -55,6 +55,14 @@ pub struct Access {
     pub items: bool,
 }
 
+/// Ссылка публикации моего календаря (S8-45): адрес виден только при создании.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Publication {
+    pub id: String,
+    /// С подробностями событий, иначе — только занятость.
+    pub items: bool,
+}
+
 pub enum Command {
     Body(String),
     /// Беседа (ключ цепочки, `EmailRow::thread_id`): письма из всех папок и их тела — в кэш → `ThreadReady`.
@@ -206,6 +214,16 @@ pub enum Command {
     },
     /// Кому открыт мой календарь (S8-43) → `CalendarAccess` или `CalendarFailed`.
     CalendarAccess,
+    /// Ссылки публикации (S8-45) → `Publications`.
+    Publications,
+    /// Создать ссылку публикации → `Published`, затем `Publications`, или `CalendarFailed`.
+    Publish {
+        items: bool,
+    },
+    /// Отозвать ссылку → `Publications` или `CalendarFailed`.
+    Unpublish {
+        id: String,
+    },
     /// Закрыть мой календарь коллеге → `CalendarAccess` или `CalendarFailed`.
     UnshareCalendar {
         email: String,
@@ -735,6 +753,12 @@ pub enum Event {
     },
     /// Кому открыт мой календарь (S8-43).
     CalendarAccess(Vec<Access>),
+    /// Ссылки публикации (S8-45); `None` — сервер публикацию не умеет.
+    Publications(Option<Vec<Publication>>),
+    /// Создана ссылка публикации: адрес показывается один раз.
+    Published {
+        url: String,
+    },
     FreeBusyShared {
         email: String,
     },

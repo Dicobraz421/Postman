@@ -12,7 +12,7 @@ mod sieve;
 mod submission;
 mod vacation;
 
-pub use calendars::{BusyPeriod, Calendar, EVENT_PROPERTIES, Principal};
+pub use calendars::{AVAILABILITY, AddressAvailability, BusyPeriod, CALENDAR_PUBLISH, Calendar, EVENT_PROPERTIES, Principal, Publication};
 pub use contacts::{AddressBook, ContactCard};
 pub use files::{FILENODE, FileNode, Written};
 pub use mail::*;

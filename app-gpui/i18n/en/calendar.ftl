@@ -282,3 +282,10 @@ cal-share-items = Include meeting details
 cal-access-busy = Free/busy only
 cal-access-items = Free/busy and details
 cal-access-close = Remove access
+# Calendar publishing (S8-45)
+cal-group-publish = Publish by link
+cal-pub-add-busy = Create link: free/busy only
+cal-pub-add-items = Create link: with details
+cal-pub-revoke = Revoke
+cal-pub-copy = Copy link
+cal-pub-once = The link is shown once. Anyone you give it to can open it.

@@ -11,6 +11,11 @@ use crate::{CALENDARS, CORE, Client, Error, PRINCIPALS, PRINCIPALS_AVAILABILITY,
 
 const USING: &[&str] = &[CORE, CALENDARS, PRINCIPALS];
 
+/// Расширение The Post: занятость по адресам, в том числе внешним (`Availability/get`). У других серверов его нет.
+pub const AVAILABILITY: &str = "urn:thepost:availability";
+/// Расширение The Post: ссылки публикации календаря (`CalendarPublication/get`, `/set`).
+pub const CALENDAR_PUBLISH: &str = "urn:thepost:calendarpublish";
+
 /// Свойства события, нужные для отображения; `utcStart`/`utcEnd` вычисляет сервер.
 pub const EVENT_PROPERTIES: &[&str] = &[
     "id",
@@ -92,6 +97,24 @@ impl Principal {
     }
 }
 
+/// Ответ `Availability/get` по адресу: `busy_periods: None` — нет данных, это не «свободен».
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddressAvailability {
+    pub address: String,
+    #[serde(default)]
+    pub busy_periods: Option<Vec<BusyPeriod>>,
+}
+
+/// Ссылка публикации календаря. Адрес сервер отдаёт только при создании: хранит он хэш токена.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Publication {
+    pub id: String,
+    /// `freeBusy` или `details`.
+    pub detail: String,
+}
+
 /// Период занятости из `Principal/getAvailability`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -106,6 +129,12 @@ pub struct BusyPeriod {
 #[derive(Deserialize)]
 struct AvailabilityResponse {
     list: Vec<BusyPeriod>,
+}
+
+/// Ответ `Availability/get`: не стандартный `/get`, состояния в нём нет.
+#[derive(Deserialize)]
+struct AddressesResponse {
+    list: Vec<AddressAvailability>,
 }
 
 impl Client {
@@ -274,6 +303,43 @@ impl Client {
         self.update_event(event_id, patch, true).await
     }
 
+    /// Занятость по адресам, расширение The Post (S8-46): источник выбирает сервер.
+    pub async fn address_availability(&self, addresses: &[String], utc_start: &str, utc_end: &str) -> Result<Vec<AddressAvailability>> {
+        let acc = self.account_for(AVAILABILITY)?;
+        let args = json!({ "accountId": acc, "addresses": addresses, "utcStart": utc_start, "utcEnd": utc_end });
+        let mut r = self.call(&[CORE, CALENDARS, AVAILABILITY], &[inv("Availability/get", args, "a")]).await?;
+        let a: AddressesResponse = take(&mut r, "a")?;
+        Ok(a.list)
+    }
+
+    /// Ссылки публикации моих календарей (S8-45).
+    pub async fn publications(&self) -> Result<Vec<Publication>> {
+        let acc = self.account_for(CALENDAR_PUBLISH)?;
+        let args = json!({ "accountId": acc, "ids": null });
+        let mut r = self.call(&[CORE, CALENDARS, CALENDAR_PUBLISH], &[inv("CalendarPublication/get", args, "p")]).await?;
+        let p: GetResponse<Publication> = take(&mut r, "p")?;
+        Ok(p.list)
+    }
+
+    /// Создать ссылку публикации календаря → адрес: больше сервер его не покажет.
+    pub async fn publish(&self, calendar_id: &str, detail: &str) -> Result<String> {
+        let acc = self.account_for(CALENDAR_PUBLISH)?;
+        let args = json!({ "accountId": acc, "create": { "new": { "calendarId": calendar_id, "detail": detail } } });
+        let mut r = self.call(&[CORE, CALENDARS, CALENDAR_PUBLISH], &[inv("CalendarPublication/set", args, "s")]).await?;
+        let v: Value = take(&mut r, "s")?;
+        set_error(&v, "notCreated", "new", "CalendarPublication/set")?;
+        v["created"]["new"]["url"].as_str().map(str::to_string).ok_or_else(|| Error::Protocol("CalendarPublication/set не вернул url".into()))
+    }
+
+    /// Отозвать ссылку публикации.
+    pub async fn unpublish(&self, id: &str) -> Result<()> {
+        let acc = self.account_for(CALENDAR_PUBLISH)?;
+        let args = json!({ "accountId": acc, "destroy": [id] });
+        let mut r = self.call(&[CORE, CALENDARS, CALENDAR_PUBLISH], &[inv("CalendarPublication/set", args, "s")]).await?;
+        let v: Value = take(&mut r, "s")?;
+        set_error(&v, "notDestroyed", id, "CalendarPublication/set")
+    }
+
     /// Принципалы по идентификаторам: кому открыт календарь (S8-43).
     pub async fn principals_by_id(&self, ids: &[String]) -> Result<Vec<Principal>> {
         let acc = self.account_for(PRINCIPALS)?;
@@ -351,7 +417,29 @@ impl Client {
 mod share_tests {
     #![allow(clippy::unwrap_used)]
 
-    use super::Calendar;
+    use super::{AddressesResponse, Calendar, Publication};
+
+    /// `Availability/get`: пустой список — свободен, `null` — нет данных (S8-46).
+    #[test]
+    fn address_availability_keeps_no_data() {
+        let v = serde_json::json!({ "list": [
+            { "address": "a@x.test", "source": "organization", "detail": "freeBusy", "busyPeriods": [{ "utcStart": "2026-11-05T09:00:00Z", "utcEnd": "2026-11-05T10:00:00Z", "busyStatus": "tentative" }] },
+            { "address": "b@x.test", "busyPeriods": [] },
+            { "address": "c@x.test", "busyPeriods": null },
+        ]});
+        let g: AddressesResponse = serde_json::from_value(v).unwrap();
+        assert_eq!(g.list[0].busy_periods.as_ref().unwrap()[0].busy_status.as_deref(), Some("tentative"));
+        assert!(g.list[1].busy_periods.as_ref().unwrap().is_empty());
+        assert!(g.list[2].busy_periods.is_none());
+    }
+
+    /// Ссылка публикации: адреса в списке нет.
+    #[test]
+    fn publication_is_read() {
+        let p: Publication =
+            serde_json::from_value(serde_json::json!({ "id": "p1", "calendarId": "c", "detail": "freeBusy", "expires": null })).unwrap();
+        assert_eq!(p, Publication { id: "p1".into(), detail: "freeBusy".into() });
+    }
 
     /// Кому открыт календарь: `shareWith` с правами; нет свойства или `null` — никому (S8-43).
     #[test]
