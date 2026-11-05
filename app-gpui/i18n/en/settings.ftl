@@ -405,7 +405,7 @@ settings-account-remove-confirm = Remove account { $user }? The address, login a
 settings-account-kind = { $kind ->
     [standards] IMAP, CalDAV, CardDAV
     [exchange] Exchange (EWS)
-   *[jmap] JMAP (Stalwart)
+   *[jmap] JMAP
 }
 settings-account-shared = shared mailbox
 settings-account-one = Each account is a group in the folder tree, like shared mailboxes; "From" in a message picks the account to send from. The first one is the main account: contacts, tasks, rules and auto-reply are its.

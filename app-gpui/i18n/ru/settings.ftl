@@ -408,7 +408,7 @@ settings-account-remove-confirm = Удалить аккаунт { $user }? Ад�
 settings-account-kind = { $kind ->
     [standards] IMAP, CalDAV, CardDAV
     [exchange] Exchange (EWS)
-   *[jmap] JMAP (Stalwart)
+   *[jmap] JMAP
 }
 settings-account-shared = общий ящик
 settings-account-one = Каждая учётная запись — группой в дереве папок, как общие ящики; «От» в письме выбирает, с какой отправить. Первая — основная: контакты, задачи, правила и автоответ — её.

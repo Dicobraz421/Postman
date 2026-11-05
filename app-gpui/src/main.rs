@@ -147,7 +147,7 @@ fn listen_second_instance(listener: pets_shell::Listener, (window, mailer): (Any
 }
 
 /// `--help`: консольный вывод — по-английски, как журнал.
-const USAGE: &str = "Postman - mail, calendar and contacts for Stalwart (JMAP)
+const USAGE: &str = "Postman - mail, calendar and contacts (JMAP, IMAP, Exchange)
 
 Usage: postman [options]
   --demo [N]            demo mailbox with N messages (default 50000), no server

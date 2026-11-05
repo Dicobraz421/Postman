@@ -9,7 +9,7 @@ account-sync-stopped = No connection to the server: sync stopped, working with t
 account-remember-failed = Signed in, but the password was not saved: { $error }
 # Adding an account in place and first run (S5-09).
 signin-title = Welcome to Postman
-signin-hint = Mail, calendar and contacts of a Stalwart server. Works offline with a local copy and sends nothing to third parties.
+signin-hint = Mail, calendar and contacts. Works offline with a local copy and sends nothing to third parties.
 signin-new = New account
 signin-new-hint = — set up in place, no window opens
 signin-step-server = Server

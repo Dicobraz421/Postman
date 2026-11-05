@@ -1,4 +1,4 @@
-//! Автопроверка ручных разделов `docs/MANUAL-TESTS.md` (2–6, 12, 13, 15, 16, 18–21) без нажатий в окне: запуск `postman.exe` с ключами,
+//! Автопроверка ручных разделов `docs/MANUAL-TESTS.md` (2–6, 12, 13, 15, 16, 18–26) без нажатий в окне: запуск `postman.exe` с ключами,
 //! файлы снимков, состояние окна и журнал «Приложение» — средствами Windows. Данные — во временном `LOCALAPPDATA`,
 //! настоящий ящик и настройки не трогаются.
 //!
@@ -356,6 +356,53 @@ fn s18_to_s21_scenes() {
         assert!(out.status.success(), "{names:?}: код {:?}: {}", out.status.code(), String::from_utf8_lossy(&out.stderr));
         for name in names {
             assert!(dir.join(format!("{name}.png")).exists(), "нет снимка {name}");
+        }
+    }
+}
+
+/// Разделы 22–26 (S5-01, S5-06б, S5-09, S5-03, S5-11): письмо вкладкой и замечания, настройки, первый запуск, фильтры,
+/// календарь, встреча, приглашение; тёмная тема — отдельным запуском. Смотрит агент: снимки в
+/// `target/tmp/manual-screens/{light,dark}`.
+#[test]
+#[ignore = "окно и рабочий стол: cargo nextest run -p postman-gpui --test manual --run-ignored only"]
+fn s22_to_s26_scenes() {
+    need_worker();
+    const LIGHT: &[&str] = &[
+        "compose",
+        "checks",
+        "reply-inline",
+        "filters",
+        "quick",
+        "tab-mail",
+        "settings-general",
+        "settings-categories",
+        "settings-keys",
+        "settings-accounts",
+        "settings-quick",
+        "settings-reading",
+        "settings-sign",
+        "signin",
+        "calendar",
+        "event",
+        "event-organizer",
+        "calendar-day",
+        "calendar-week",
+        "calendar-month",
+        "meeting",
+        "meeting-slot",
+    ];
+    const DARK: &[&str] = &["compose", "checks", "filters", "quick", "calendar", "event", "meeting", "contacts"];
+    for (theme, names) in [("light", LIGHT), ("dark", DARK)] {
+        let data = tempfile::tempdir().unwrap();
+        let dir = screens_dir(theme);
+        let mut c = postman(data.path(), &["--screens", dir.to_str().unwrap(), "--lang", "ru", "--theme", theme]);
+        c.env("POSTMAN_SCREENS_ONLY", names.join(","));
+        let out = run(c, Duration::from_secs(420));
+        assert!(out.status.success(), "{theme}: код {:?}: {}", out.status.code(), String::from_utf8_lossy(&out.stderr));
+        for name in names {
+            // Снимки тёмной темы — с окончанием `-dark`.
+            let file = if theme == "dark" { format!("{name}-dark.png") } else { format!("{name}.png") };
+            assert!(dir.join(file).exists(), "{theme}: нет снимка {name}");
         }
     }
 }
