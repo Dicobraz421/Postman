@@ -37,6 +37,7 @@ pub(crate) const PARTS: &[Part] = &[
     crate::buttons::PART,
     crate::features::PART,
     crate::drill::PART,
+    crate::drill_cal::PART,
     crate::drill_live::PART,
     crate::drill_mail::PART,
 ];

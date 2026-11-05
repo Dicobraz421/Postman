@@ -842,7 +842,17 @@ impl Composer {
 
     /// Подписи на выбор: «без подписи», свои подписи для адреса «От» (настройки, S5-09) и подписи адресов «От»
     /// (своя и общих ящиков) без повторов.
-    fn signatures(&self) -> Vec<String> {
+    /// Открыто меню «Подпись».
+    pub(crate) fn signature_menu_open(&self) -> bool {
+        self.menu == Menu::Signature
+    }
+
+    /// Сколько подсказок адресов открыто.
+    pub(crate) fn suggestions(&self) -> usize {
+        self.suggest.items.len()
+    }
+
+    pub(crate) fn signatures(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for s in self.prefs.signatures_for(&self.model.from().email) {
             let s = s.text.trim_end();
@@ -871,7 +881,7 @@ fn default_signature(model: &mut Model, prefs: &AccountPrefs, reply: bool) -> bo
     if model.signature == text {
         return false;
     }
-    model.set_signature(&text);
+    model.set_default_signature(&text);
     true
 }
 
@@ -883,7 +893,7 @@ fn signature_title(s: &str) -> String {
 }
 
 fn quiet(id: impl Into<ElementId>, l: &Look) -> Stateful<Div> {
-    quiet_plain(id, l).hover(|d| d.bg(l.hover()))
+    quiet_plain(id, l).relative().hover(|d| d.bg(l.hover()))
 }
 
 /// Тихая кнопка без подложки при наведении (поле «От»). Стиль наведения у элемента задаётся один раз: второй

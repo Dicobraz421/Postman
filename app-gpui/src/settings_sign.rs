@@ -33,7 +33,7 @@ pub(crate) struct SignState {
     pub(crate) path: Option<PathBuf>,
     pub(crate) prefs: AccountPrefs,
     loaded: bool,
-    edit: Option<SignEdit>,
+    pub(crate) edit: Option<SignEdit>,
     writer: Writer,
 }
 
@@ -197,11 +197,14 @@ impl SettingsView {
                 d.child(div().flex().gap_4().child(label(tr!("settings-tpl-subject"))).child(div().flex_1().child(Input::new(&e.subject))))
             })
             .child(
-                div()
-                    .flex()
-                    .gap_4()
-                    .child(label(if e.template { tr!("settings-tpl-body") } else { tr!("settings-sign-text") }))
-                    .child(div().flex_1().h(px(120.)).child(Textarea::new(&e.text).h(relative(1.)))),
+                div().flex().gap_4().child(label(if e.template { tr!("settings-tpl-body") } else { tr!("settings-sign-text") })).child(
+                    div()
+                        .flex_1()
+                        .h(px(120.))
+                        .relative()
+                        .children(crate::screens::spot("settings-sign-text"))
+                        .child(Textarea::new(&e.text).h(relative(1.))),
+                ),
             )
             .when(!e.template, |d| d.child(div().pl(px(126.)).text_size(px(12.)).text_color(l.text2()).child(tr!("settings-sign-fields"))))
             .child(

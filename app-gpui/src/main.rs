@@ -27,6 +27,7 @@ mod contacts;
 mod diagnostics;
 mod directory;
 mod drill;
+mod drill_cal;
 mod drill_live;
 mod drill_mail;
 mod export;
@@ -205,7 +206,9 @@ fn main() {
     let dir = data_dir();
     let screening = args.iter().any(|a| a == "--screens");
     let persist = !(bench || screening);
-    let user_prefs = if persist { prefs::load(&dir) } else { postman_core::prefs::Prefs::default() };
+    // Сценарии «после перезапуска» (`app-gpui/src/drill_cal.rs`): снимки — с файлом настроек, только по запросу.
+    let keep_prefs = persist || std::env::var_os("POSTMAN_SCREENS_PREFS").is_some();
+    let user_prefs = if keep_prefs { prefs::load(&dir) } else { postman_core::prefs::Prefs::default() };
     // Журнал (S5-30): уровень — из «Настройки → Общие», если `POSTMAN_LOG` не задан; без консоли (release) — в файл
     // папки журнала, по файлу на день, старше недели — удаляются.
     if persist {
@@ -250,7 +253,7 @@ fn main() {
     if persist {
         std::thread::spawn(|| sys::drag::clean(&sys::drag::copies()));
     }
-    let prefs_path = persist.then(|| prefs::path(&dir));
+    let prefs_path = keep_prefs.then(|| prefs::path(&dir));
     if args.iter().any(|a| a == "--sign-out") {
         account::forget(&dir);
     }

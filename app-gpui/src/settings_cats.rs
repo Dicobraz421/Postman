@@ -168,6 +168,7 @@ impl SettingsView {
             let s = l.cat(key);
             let mut b = div()
                 .id(("settings-cat-color", i))
+                .children(crate::screens::spot(("settings-cat-color", i)))
                 .size(px(28.))
                 .relative()
                 .rounded(px(6.))
@@ -199,6 +200,8 @@ impl SettingsView {
             let on = e.key == Some(k);
             let mut chip = div()
                 .id(("settings-cat-key", k as usize))
+                .relative()
+                .children(crate::screens::spot(("settings-cat-key", k as usize)))
                 .size(px(28.))
                 .flex()
                 .items_center()

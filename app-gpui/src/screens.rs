@@ -50,37 +50,6 @@ const SCENE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Первая синхронизация живого ящика дольше сцены демо; обрыв связи в простое виден при опросе, раз в 2 мин.
 const LIVE_TIMEOUT: Duration = Duration::from_secs(200);
 
-/// Прогон сцен идёт: только тогда элементы отмечают своё место (`spot`).
-static ARMED: AtomicBool = AtomicBool::new(false);
-
-thread_local! {
-    /// Где в окне отмеченные элементы, по их id: щелчок сценария по кнопке, которой нет в модели.
-    static SPOTS: RefCell<HashMap<String, Bounds<Pixels>>> = RefCell::new(HashMap::new());
-}
-
-/// Отметка места элемента для `Input::Click`: прозрачный ребёнок поверх родителя, вне раскладки. В обычной работе — ничего.
-pub(crate) fn spot(id: impl Into<ElementId>) -> Option<AnyElement> {
-    ARMED.load(Ordering::Relaxed).then(|| {
-        let name = id.into().to_string();
-        canvas(
-            move |b, _, _| {
-                SPOTS.with(|s| s.borrow_mut().insert(name.clone(), b));
-            },
-            |_, _, _, _| {},
-        )
-        .absolute()
-        .top_0()
-        .left_0()
-        .size_full()
-        .into_any_element()
-    })
-}
-
-/// Середина отмеченного элемента; элемент виден сейчас, а не только был виден когда-то: отметки стираются в начале сцены.
-pub(crate) fn spotted(id: &str) -> Option<Point<Pixels>> {
-    SPOTS.with(|s| s.borrow().get(id).map(|b| b.center()))
-}
-
 /// Состояние сцены — через те же методы, что вызывают действия пользователя.
 pub(crate) type Enter = fn(&Scene, &mut Mailer, &mut Window, &mut Context<Mailer>) -> Result<(), String>;
 /// Условие готовности сцены: данные, которые она показывает, уже в состоянии view.
@@ -109,7 +78,7 @@ impl Held {
 /// В чужое окно они попасть не могут, поэтому ввод разрешён на рабочей машине (решение владельца 2026-11-05).
 #[derive(Clone, Copy)]
 pub(crate) enum Input {
-    /// Клавиши по одной, в записи gpui: `ctrl-n`, `shift-f3`, `down`.
+    /// Клавиши по одной, в записи gpui: `ctrl-n`, `shift-f3`, `down`. Символов в поле не вводят.
     Keys(&'static [&'static str]),
     /// Набор текста по символу.
     Text(&'static str),
@@ -127,6 +96,57 @@ pub(crate) enum Input {
     Drag(Place, Place),
     /// Зажать или отпустить модификатор (`KeyTips`).
     Hold(Held),
+    /// Щелчок по элементу с этим id (`spot`); сначала дождаться, пока он появится на экране.
+    Press(&'static str),
+}
+
+/// Точки элементов для ввода (`Input::Press`): только в прогоне снимков, в обычной работе `spot` — пустой.
+static SPOTS_ON: AtomicBool = AtomicBool::new(false);
+
+thread_local! {
+    /// Границы отмеченных элементов прошлого кадра по `ElementId` в записи `id-номер`.
+    static SPOTS: RefCell<HashMap<String, Bounds<Pixels>>> = RefCell::default();
+}
+
+/// Отметка элемента для `Input::Press`: `.children(screens::spot(id))` внутри него. Границы — те же, что у строк
+/// (`MailList::bounds`), только по имени: кнопок много, поле на каждую не заводится.
+pub(crate) fn spot(id: impl Into<ElementId>) -> Option<impl IntoElement> {
+    SPOTS_ON.load(Ordering::Relaxed).then(|| {
+        let key = id.into().to_string();
+        canvas(
+            move |b, _, _| {
+                SPOTS.with_borrow_mut(|s| {
+                    s.insert(key, b);
+                });
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+    })
+}
+
+/// Границы отмеченного элемента (`spot`).
+pub(crate) fn spot_bounds(id: &str) -> Option<Bounds<Pixels>> {
+    SPOTS.with_borrow(|s| s.get(id).copied())
+}
+
+/// Границы первого отмеченного элемента с такой приставкой id: номер у него не считается заранее.
+pub(crate) fn spot_first(prefix: &str) -> Option<Bounds<Pixels>> {
+    SPOTS.with_borrow(|s| s.iter().filter(|(k, _)| k.starts_with(prefix)).min_by_key(|(k, _)| (k.len(), (*k).clone())).map(|(_, b)| *b))
+}
+
+/// Середина отмеченного элемента: отметки живут один кадр, так что элемент виден сейчас.
+pub(crate) fn spotted(id: &str) -> Option<Point<Pixels>> {
+    spot_bounds(id).map(|b| b.center())
+}
+
+/// Центр отмеченного элемента, если он внутри окна: иначе щелчок ушёл бы мимо.
+pub(crate) fn spot_center(id: &str, window: &Window) -> Option<Point<Pixels>> {
+    let view = window.viewport_size();
+    spot_bounds(id).map(|b| b.center()).filter(|p| p.x > px(0.) && p.y > px(0.) && p.x < view.width && p.y < view.height)
 }
 
 /// Событие очереди: по одному на кадр, чтобы окно успело перестроиться.
@@ -283,7 +303,7 @@ impl Driver {
     pub fn new(dir: PathBuf, live: bool, suffix: &'static str) -> std::io::Result<Self> {
         std::fs::create_dir_all(&dir)?;
         let dir = std::path::absolute(&dir)?;
-        ARMED.store(true, Ordering::Relaxed);
+        SPOTS_ON.store(true, Ordering::Relaxed);
         Ok(Self {
             dir,
             scene: 0,
@@ -372,6 +392,8 @@ pub fn drive(m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) {
             }
         }
     }
+    // Границы — только этого кадра: от скрытого элемента не должно остаться точки.
+    SPOTS.with_borrow_mut(HashMap::clear);
     // Кадры — по запросу (патч gpui): без запроса в простое ничего не рисуется.
     window.request_animation_frame();
     // Следующий кадр — целиком, без кэша частей: `ready` читает часть (`m.reading`) раньше её отрисовки, gpui не
@@ -411,6 +433,11 @@ fn feed(m: &mut Mailer, scene: &'static Scene, window: &mut Window, cx: &mut Con
     {
         return true;
     }
+    if let Input::Press(id) = step
+        && spot_center(id, window).is_none()
+    {
+        return true;
+    }
     let events = match events(step, m, window, cx) {
         Ok(events) => events,
         Err(e) => fail(scene, &e),
@@ -434,12 +461,16 @@ fn events(step: Input, m: &Mailer, window: &Window, cx: &App) -> Result<VecDeque
     };
     let hover =
         |position, pressed_button| Event::Raw(PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button, modifiers: Modifiers::default() }));
+    let spot = |id: &str| spot_center(id, window).ok_or_else(|| format!("no element {id} in the window"));
     let mut out = VecDeque::new();
     match step {
         Input::Until(_) => {}
         Input::Keys(keys) => {
+            // Мимо `dispatch_keystroke`: он дописал бы к Enter ввод перевода строки, а поле отвечает на него `Change` — и строка
+            // ошибки, поставленная по Enter, сразу снималась бы. Текст — шагом `Input::Text`.
             for k in keys {
-                out.push_back(Event::Key(Keystroke::parse(k).map_err(|e| format!("key {k}: {e}"))?));
+                let keystroke = Keystroke::parse(k).map_err(|e| format!("key {k}: {e}"))?;
+                out.push_back(Event::Raw(PlatformInput::KeyDown(KeyDownEvent { keystroke, is_held: false, prefer_character_input: false })));
             }
         }
         Input::Text(text) => typed(text, &mut out),
@@ -461,8 +492,14 @@ fn events(step: Input, m: &Mailer, window: &Window, cx: &App) -> Result<VecDeque
                 down(a, MouseButton::Left, Held::No),
                 hover(middle, Some(MouseButton::Left)),
                 hover(b, Some(MouseButton::Left)),
+                // Перетаскивание gpui начинается с первого движения: второе в точке `b` — уже его шаг.
+                hover(b, Some(MouseButton::Left)),
                 up(b, MouseButton::Left, Held::No),
             ]);
+        }
+        Input::Press(id) => {
+            let p = spot(id)?;
+            out.extend([hover(p, None), down(p, MouseButton::Left, Held::No), up(p, MouseButton::Left, Held::No)]);
         }
         Input::Hold(held) => out.push_back(Event::Raw(PlatformInput::ModifiersChanged(ModifiersChangedEvent {
             modifiers: held.modifiers(),

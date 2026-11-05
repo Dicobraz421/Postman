@@ -211,6 +211,8 @@ impl Mailer {
             let close = t.kind.closable().then(|| {
                 div()
                     .id(("tab-close", id as usize))
+                    .relative()
+                    .children(crate::screens::spot(("tab-close", id as usize)))
                     .size(px(20.))
                     .flex_none()
                     .flex()
@@ -310,6 +312,7 @@ impl Mailer {
         let button = |id: &'static str, g: char, key: &'static str, on: bool, action: fn() -> Box<dyn Action>| {
             let b = div()
                 .id(id)
+                .children(crate::screens::spot(id))
                 .size(px(RAIL_BUTTON))
                 .flex()
                 .items_center()

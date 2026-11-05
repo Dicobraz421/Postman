@@ -18,9 +18,9 @@ const H: f32 = 32.;
 
 fn shell(id: impl Into<ElementId>, l: &Look) -> Stateful<Div> {
     let id = id.into();
-    let place = crate::screens::spot(id.clone());
     div()
-        .id(id)
+        .id(id.clone())
+        .children(crate::screens::spot(id))
         .flex_none()
         .h(px(H))
         .px(px(12.))
@@ -29,7 +29,6 @@ fn shell(id: impl Into<ElementId>, l: &Look) -> Stateful<Div> {
         .gap(px(6.))
         .rounded(l.px(Metric::RadiusControl))
         .cursor_pointer()
-        .children(place)
 }
 
 /// Главная кнопка: заливка акцентом.

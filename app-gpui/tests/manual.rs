@@ -596,3 +596,45 @@ fn mail_drills() {
         themed_scenes(&[name], &[name]);
     }
 }
+
+/// Сценарии с вводом для настроек, календаря, встреч и контактов (`app-gpui/src/drill_cal.rs`); `-kept` — второй запуск с тем
+/// же каталогом данных: выбор пережил перезапуск.
+#[test]
+#[ignore = "окно и рабочий стол: cargo nextest run -p postman-gpui --test manual --run-ignored only"]
+fn cal_drills() {
+    need_worker();
+    const DRILLS: &[&str] = &[
+        "cal-24-open",
+        "cal-24-search",
+        "cal-24-cats",
+        "cal-24-purge",
+        "cal-24-keys",
+        "cal-24-sign",
+        "cal-24-accounts",
+        "cal-42-old-colors",
+        "cal-38-arrows",
+        "cal-38-long",
+        "cal-38-drag",
+        "cal-38-days",
+        "cal-38-discard",
+        "cal-26-meeting",
+        "cal-26-contact",
+        "cal-13-write",
+        "cal-13-suggest",
+        "cal-43-search",
+        "cal-s521-views",
+        "cal-s521-search",
+    ];
+    themed_scenes_in("cal-", DRILLS, DRILLS);
+    // Настройки на диске: сцены первого запуска меняют их одна за другой, второй читает всё разом.
+    let data = tempfile::tempdir().unwrap();
+    let dir = screens_dir("cal-kept");
+    let pass = |names: &str, args: &[&str]| {
+        let mut c = postman(data.path(), &[&["--screens", dir.to_str().unwrap()], args].concat());
+        c.env("POSTMAN_SCREENS_ONLY", names).env("POSTMAN_SCREENS_PREFS", "1");
+        let out = run(c, Duration::from_secs(420));
+        assert!(out.status.success(), "{names}: код {:?}: {}", out.status.code(), String::from_utf8_lossy(&out.stderr));
+    };
+    pass("cal-36-hours,cal-36-zone,cal-24-reading,cal-24-look", &["--lang", "ru", "--theme", "light"]);
+    pass("cal-36-kept", &[]);
+}

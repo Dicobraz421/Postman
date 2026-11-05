@@ -595,6 +595,15 @@ impl Model {
         self.signature = signature.trim_end().to_owned();
         self.set(Field::Body, next);
     }
+
+    /// Подпись по умолчанию из настроек: нетронутое письмо остаётся нетронутым — закрытие без вопроса, без черновика.
+    pub(crate) fn set_default_signature(&mut self, signature: &str) {
+        let clean = !self.is_dirty();
+        self.set_signature(signature);
+        if clean {
+            self.saved = self.snapshot();
+        }
+    }
 }
 
 // --- текст письма: подпись, разметка, адреса ---
@@ -1705,6 +1714,18 @@ mod tests {
         assert!(!m.is_dirty() && m.body == "\n\nПодпись");
         m.set(Field::Body, "моё".into());
         assert!(!m.set_identity(Address::new("Я", "me@corp.example"), "Подпись"), "набранный текст не трогаем");
+    }
+
+    /// Подпись по умолчанию не считается правкой: иначе закрытие пустого письма спрашивало бы «Сохранить?».
+    #[test]
+    fn default_signature_keeps_a_new_message_clean() {
+        let mut m = model();
+        m.set_default_signature("С уважением");
+        assert!(m.body.contains("С уважением") && !m.is_dirty() && m.request_close());
+        let mut m = model();
+        m.set(Field::Subject, "Тема".into());
+        m.set_default_signature("С уважением");
+        assert!(m.is_dirty(), "свои правки остаются правками");
     }
 
     /// S5-06б: подпись меняется на месте; в ответе новая встаёт перед цитатой.

@@ -1271,6 +1271,47 @@ impl MeetingView {
     }
 
     /// ←/→ (S5-23): курсор — на соседнее общее окно; от окна под курсором, без него — от выбранного времени.
+    /// Начала общих окон дня.
+    pub(crate) fn free_starts(&self) -> Vec<i64> {
+        self.windows().1.iter().map(|r| r.start).collect()
+    }
+
+    /// Самое короткое общее окно дня, с.
+    pub(crate) fn shortest_free(&self) -> Option<i64> {
+        self.windows().1.iter().map(|r| r.len()).min()
+    }
+
+    /// Выбранное время и границы дня сетки.
+    pub(crate) fn picked_range(&self) -> Option<(Span, Span)> {
+        let (range, _) = self.windows();
+        self.picked_in(range).map(|p| (p, range))
+    }
+
+    /// Шаг сетки, с.
+    pub(crate) fn grid_step(&self) -> i64 {
+        self.step
+    }
+
+    /// Ссылка занятости не принята, строка открыта.
+    pub(crate) fn link_refused(&self) -> bool {
+        self.link_for.is_some() && self.link_bad
+    }
+
+    /// Текст поля «Тема».
+    pub(crate) fn title_text(&self, cx: &App) -> String {
+        self.title.read(cx).value().to_string()
+    }
+
+    /// Подсказки адресов под полем «Обязательные»: сколько, и какая подсвечена.
+    pub(crate) fn suggestions(&self) -> (usize, usize) {
+        (self.suggest.len(), self.selected)
+    }
+
+    /// Чипы участников: (обязательные, необязательные).
+    pub(crate) fn chips(&self) -> (usize, usize) {
+        (self.chips[0].len(), self.chips[1].len())
+    }
+
     pub(crate) fn step_cursor(&mut self, forward: bool, cx: &mut Context<Self>) {
         let (range, runs) = self.windows();
         let picked = self.model.span(&self.tz, self.today()).filter(|p| p.overlaps(&range)).map(|p| p.start);
@@ -1478,6 +1519,7 @@ impl MeetingView {
                 .child(
                     div()
                         .id(("chip-x", kind.index() * 1000 + i))
+                        .children(crate::screens::spot(("chip-x", kind.index() * 1000 + i)))
                         .size(px(18.))
                         .flex()
                         .items_center()
@@ -1527,6 +1569,7 @@ impl MeetingView {
             let items = self.suggest.iter().enumerate().map(|(i, s)| {
                 div()
                     .id(("suggest", i))
+                    .children(crate::screens::spot(("suggest", i)))
                     .px_2()
                     .py_0p5()
                     .rounded_md()
@@ -1742,6 +1785,7 @@ impl MeetingView {
                 let on = secs == self.model.duration;
                 div()
                     .id(("duration", secs as usize))
+                    .children(crate::screens::spot(("duration", secs as usize)))
                     .h_full()
                     .px(px(12.))
                     .flex()
@@ -2034,6 +2078,8 @@ impl MeetingView {
                             d.child(
                                 div()
                                     .id(SharedString::from(format!("link-{e}")))
+                                    .relative()
+                                    .children(crate::screens::spot(SharedString::from(format!("link-{e}"))))
                                     .cursor_pointer()
                                     .text_color(l.accent_text())
                                     .hover(|d| d.underline())
@@ -2087,6 +2133,7 @@ impl MeetingView {
         let handle = |id: &'static str, grip: Grip| {
             div()
                 .id(id)
+                .children(crate::screens::spot(id))
                 .absolute()
                 .top(px(frame_h / 2. - 12.))
                 .when(grip == Grip::Start, |d| d.left(px(-5.)))
@@ -2110,6 +2157,7 @@ impl MeetingView {
         let frame = picked.filter(|p| p.overlaps(&range)).map(|p| {
             div()
                 .id("picked")
+                .children(crate::screens::spot("picked"))
                 .absolute()
                 .top(px(24.))
                 .h(px(frame_h))
@@ -2130,6 +2178,7 @@ impl MeetingView {
         let hint = slot_hint(cx);
         let grid = div()
             .id("assistant")
+            .children(crate::screens::spot("assistant"))
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
@@ -2346,25 +2395,26 @@ impl Render for MeetingView {
                     .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(tr!("cmd-meeting-discard")).build(window, cx))
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(MeetingEvent::Close))),
             );
-        let fields = div()
-            .flex_none()
-            .flex()
-            .flex_col()
-            .px(px(24.))
-            .children(self.sender_row(cx))
-            .child(
-                Self::field_row(&l).child(Self::label(tr!("meeting-subject"))).child(div().flex_1().child(Input::new(&self.title).appearance(false))),
-            )
-            .child(self.people_row(Kind::Required, "meeting-required", cx))
-            .child(self.people_row(Kind::Optional, "meeting-optional", cx))
-            .children(self.rooms_row(cx))
-            .child(
-                Self::field_row(&l)
-                    .child(Self::label(tr!("meeting-location")))
-                    .child(div().flex_1().child(Input::new(&self.location).appearance(false))),
-            )
-            .child(self.time_row(cx))
-            .child(self.description_row(cx));
+        let fields =
+            div()
+                .flex_none()
+                .flex()
+                .flex_col()
+                .px(px(24.))
+                .children(self.sender_row(cx))
+                .child(Self::field_row(&l).child(Self::label(tr!("meeting-subject"))).child(
+                    div().flex_1().relative().children(crate::screens::spot("meeting-title")).child(Input::new(&self.title).appearance(false)),
+                ))
+                .child(self.people_row(Kind::Required, "meeting-required", cx))
+                .child(self.people_row(Kind::Optional, "meeting-optional", cx))
+                .children(self.rooms_row(cx))
+                .child(
+                    Self::field_row(&l)
+                        .child(Self::label(tr!("meeting-location")))
+                        .child(div().flex_1().child(Input::new(&self.location).appearance(false))),
+                )
+                .child(self.time_row(cx))
+                .child(self.description_row(cx));
         div()
             .key_context("Meeting")
             .track_focus(&self.focus)

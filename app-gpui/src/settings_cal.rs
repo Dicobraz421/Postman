@@ -112,6 +112,8 @@ impl SettingsView {
         let open = self.cal_menu == Some(menu);
         let field = div()
             .id(("settings-cal-select", menu as usize))
+            .relative()
+            .children(crate::screens::spot(("settings-cal-select", menu as usize)))
             .w(px(width))
             .h(px(28.))
             .px_2()
@@ -137,6 +139,8 @@ impl SettingsView {
             let rows = items.into_iter().enumerate().map(|(i, (text, on, set))| {
                 div()
                     .id(("settings-cal-item", menu as usize * 100 + i))
+                    .relative()
+                    .children(crate::screens::spot(("settings-cal-item", menu as usize * 100 + i)))
                     .h(px(28.))
                     .px_2()
                     .flex()
