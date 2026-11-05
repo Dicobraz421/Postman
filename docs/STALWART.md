@@ -161,13 +161,15 @@ cargo test -p postman-dav --test stand -- --ignored --test-threads=1
    активный скрипт не трогает; тема и текст без `isEnabled` активность не меняют. `isEnabled` в ответе
    `VacationResponse/get` — «скрипт `vacation` активен». Автоответ приходит за секунды. Повтор тому же
    отправителю сервер, по RFC 5230, подавляет — тест берёт новую тему на каждый прогон [проверить срок подавления].
-14а. **Свой скрипт `vacation`** (S5-29) [проверить]: Postman после `VacationResponse/set` переписывает скрипт
-   `vacation` своим (`SieveScript/set`, тот же id, активность не меняется): коллегам — `address :domain :is "from"`,
-   внешним — `address :is "from" [контакты]` или все, `:days`, `:addresses`, `:mime` (текст и HTML), период —
-   `currentdate`. Не проверено на стенде: принимает ли Stalwart запись скрипта `vacation` клиентом, что после неё
-   отдаёт `VacationResponse/get` (Postman берёт период из заголовка своего скрипта, если сервер его не вернёт),
-   соблюдает ли `:days` и `:addresses`; событие «Вне офиса» — `freeBusyStatus: busy` на весь день (своего «oof» у
-   JSCalendar нет) — тест `stand_settings::autoreply_split_texts`. Не умеет — строкой в `docs/STALWART-GAPS.md`.
+14а. **Свой скрипт `vacation`** (S5-29): Stalwart v0.16 запрещает его запись клиентом: `SieveScript/set` отвечает `forbidden`
+   («use VacationResponse/set instead»). На таком сервере автоответ — один текст всем: разные тексты и круг адресатов не
+   применяются, «Вне офиса» убирается, панель показывает причину (`stand_settings::autoreply_split_texts`). На серверах,
+   где запись разрешена, Postman пишет свой скрипт: коллегам — `address :domain :is "from"`, внешним — `address :is "from"
+   [контакты]` или все, `:days`, `:addresses`, `:mime` (текст и HTML), период — `currentdate`.
+
+14б. **Индекс поиска.** Stalwart не находит начало темы в `[скобках]` (оно уходит из имени цепочки) и длинные числа, а
+   `SEARCH HEADER Message-ID` с индексом заголовков ищет по словам, поэтому Postman сверяет `Message-ID` точно.
+
 15. **Квота** (RFC 9425): у пользователей стенда `Quota/get` — пустой список (ограничений нет), строка состояния без
    заполненности; ящик с квотой — [проверить] (на стенде не задана).
 16. **Правила — Sieve** (RFC 9661, S4-07). Скрипты — blob: загрузка, затем `SieveScript/validate` по `blobId`

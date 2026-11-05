@@ -284,7 +284,16 @@ async fn event_keywords_sequence_and_principal_kinds() {
     v["keywords"] = serde_json::json!({ "pm.cat.clients": true });
     v["categories"] = serde_json::json!({ "http://example.com/categories/team": true });
     let id = a.client.create_event(v, false).await.unwrap();
-    let got = a.client.event_by_uid(&uid).await.unwrap().expect("событие по uid");
+    // Индекс сервера догоняет запись не сразу.
+    let mut found = None;
+    for _ in 0..20 {
+        found = a.client.event_by_uid(&uid).await.unwrap();
+        if found.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let got = found.expect("событие по uid");
     let e = Event::from_jmap(&got, &jiff::tz::TimeZone::UTC).unwrap();
     eprintln!("keywords={:?} sequence={} raw.keywords={} raw.categories={}", e.keywords, e.sequence, got["keywords"], got["categories"]);
     assert!(e.keywords.iter().any(|k| k == "pm.cat.clients"), "keywords потеряны: {got}");

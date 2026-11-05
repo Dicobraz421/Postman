@@ -186,7 +186,16 @@ async fn autoreply_split_texts() {
 
     let result = async {
         let replies = settings(&b.client, Request::SetAutoReply(Box::new(save(true, reply.clone())))).await;
-        if let Some(Reply::Failed { error, .. }) = replies.first() {
+        let failed = replies.iter().find_map(|r| match r {
+            Reply::Failed { error, .. } => Some(error.clone()),
+            _ => None,
+        });
+        // Stalwart не даёт менять `vacation`: остаётся один текст через `VacationResponse/set`, и пользователю об этом сказано.
+        if failed.as_deref() == Some(postman_backend_jmap::settings::ONE_TEXT_ONLY) {
+            let saved = replies.iter().any(|r| matches!(r, Reply::VacationSaved(v) if v.is_enabled));
+            return if saved { Ok(()) } else { Err("автоответ не включён".to_owned()) };
+        }
+        if let Some(error) = failed {
             return Err(format!("автоответ Postman не записан: {error}"));
         }
         let saved = replies.iter().find_map(|r| match r {

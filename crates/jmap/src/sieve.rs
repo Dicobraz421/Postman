@@ -33,6 +33,8 @@ pub enum Activate {
 pub enum SaveError {
     /// Скрипт не прошёл проверку сервера: его сообщение (строка, столбец).
     Invalid(String),
+    /// Сервер запрещает менять этот скрипт (Stalwart — `vacation`, только через `VacationResponse/set`).
+    Forbidden(String),
     Other(String),
 }
 
@@ -95,6 +97,7 @@ impl Client {
             let text = e["description"].as_str().unwrap_or("").to_string();
             return Err(match e["type"].as_str() {
                 Some("invalidScript") => SaveError::Invalid(text),
+                Some("forbidden") => SaveError::Forbidden(text),
                 kind => SaveError::Other(format!("SieveScript/set: {} {text}", kind.unwrap_or("?"))),
             });
         }
