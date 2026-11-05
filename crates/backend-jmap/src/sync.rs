@@ -1052,6 +1052,31 @@ async fn handle(
                 Err(e) => Event::CalendarFailed(e.to_string()),
             });
         }
+        Command::Publications => {
+            notify(match schedule::publications(client).await {
+                Ok(list) => Event::Publications(list),
+                Err(e) => Event::CalendarFailed(e.to_string()),
+            });
+        }
+        Command::Publish { items } => match schedule::publish(client, items).await {
+            Ok(url) => {
+                notify(Event::Published { url });
+                if let Ok(list) = schedule::publications(client).await {
+                    notify(Event::Publications(list));
+                }
+            }
+            Err(e) => notify(Event::CalendarFailed(e.to_string())),
+        },
+        Command::Unpublish { id } => {
+            let done = client.unpublish(&id).await;
+            notify(match done {
+                Ok(()) => match schedule::publications(client).await {
+                    Ok(list) => Event::Publications(list),
+                    Err(e) => Event::CalendarFailed(e.to_string()),
+                },
+                Err(e) => Event::CalendarFailed(e.to_string()),
+            });
+        }
         Command::CalendarAccess => {
             notify(match schedule::calendar_access(client).await {
                 Ok(list) => Event::CalendarAccess(list),

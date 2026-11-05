@@ -12,14 +12,19 @@ use jiff::tz::TimeZone;
 use postman_calendar::{Busy, BusyKind, Event, Owner};
 pub use postman_core::schedule::Meeting;
 use postman_core::schedule::{SEARCH_LIMIT, busy_from_events, parse_events, utc};
-use postman_core::sync::Access;
-use postman_jmap::{BusyPeriod, Calendar, Client, Error, Identity, Result};
+use postman_core::sync::{Access, Publication};
+use postman_jmap::{AVAILABILITY, AddressAvailability, BusyPeriod, CALENDAR_PUBLISH, Calendar, Client, Error, Identity, Result};
 use serde_json::{Map, Value};
 
 /// Ответ `Principal/getAvailability` → занятость. Пустой список — `None`, «нет данных»: Stalwart отдаёт пустой
 /// список без ошибки, если календарь не открыт (`docs/STALWART.md` п. 5), — это не «свободен».
 pub fn busy_from_periods(periods: &[BusyPeriod]) -> Option<Vec<Busy>> {
-    let busy: Vec<Busy> = periods
+    let busy = busy_list(periods);
+    (!busy.is_empty()).then_some(busy)
+}
+
+fn busy_list(periods: &[BusyPeriod]) -> Vec<Busy> {
+    periods
         .iter()
         .filter_map(|p| {
             let span = postman_calendar::Span::new(ts(&p.utc_start)?, ts(&p.utc_end)?);
@@ -30,8 +35,19 @@ pub fn busy_from_periods(periods: &[BusyPeriod]) -> Option<Vec<Busy>> {
             };
             Some(Busy { span, kind })
         })
-        .collect();
-    (!busy.is_empty()).then_some(busy)
+        .collect()
+}
+
+/// Уровень публикации с подробностями (`CalendarPublication.detail`).
+const DETAILS: &str = "details";
+
+/// Занятость расширением The Post (S8-46): адрес → периоды; пустой список — свободен, нет данных — `None`.
+fn address_busy(list: Vec<AddressAvailability>, emails: &[String]) -> Vec<(String, Option<Vec<Busy>>)> {
+    let of = |email: &String| {
+        let found = list.iter().find(|a| a.address.eq_ignore_ascii_case(email));
+        found.and_then(|a| a.busy_periods.as_deref()).map(busy_list)
+    };
+    emails.iter().map(|e| (e.clone(), of(e))).collect()
 }
 
 fn ts(s: &str) -> Option<i64> {
@@ -92,6 +108,13 @@ pub async fn search(client: &Client, text: &str, from: i64, to: i64) -> Result<V
 /// календарь не открыт мне или сервер не ответил).
 pub async fn availability(client: &Client, emails: &[String], from: i64, to: i64) -> Result<(Vec<Busy>, Vec<(String, Option<Vec<Busy>>)>)> {
     let mine = busy_from_events(&week(client, from, to).await?);
+    // The Post отвечает и за внешние адреса; не ответил — как у других серверов, остальное решит запасной путь клиента.
+    if client.has(AVAILABILITY) {
+        match client.address_availability(emails, &utc(from), &utc(to)).await {
+            Ok(list) => return Ok((mine, address_busy(list, emails))),
+            Err(e) => tracing::info!("Availability/get: {e}"),
+        }
+    }
     let mut people = Vec::with_capacity(emails.len());
     for email in emails {
         let busy = match principal(client, email).await {
@@ -133,6 +156,22 @@ pub async fn share_free_busy(client: &Client, email: &str, items: bool) -> Resul
         client.share_calendar(&c.id, &id, items).await?;
     }
     Ok(())
+}
+
+/// Ссылки публикации (S8-45); сервер без расширения — `None`.
+pub async fn publications(client: &Client) -> Result<Option<Vec<Publication>>> {
+    if !client.has(CALENDAR_PUBLISH) {
+        return Ok(None);
+    }
+    let list = client.publications().await?;
+    Ok(Some(list.into_iter().map(|p| Publication { items: p.detail == DETAILS, id: p.id }).collect()))
+}
+
+/// Создать ссылку публикации основного календаря → адрес.
+pub async fn publish(client: &Client, items: bool) -> Result<String> {
+    let calendars = client.calendars().await?;
+    let cal = default_calendar(&calendars).ok_or_else(|| Error::Protocol("у учётной записи нет календаря".into()))?;
+    client.publish(&cal.id, if items { DETAILS } else { "freeBusy" }).await
 }
 
 /// Кому открыты мои календари (S8-43): по всем календарям; подробности — если открыты хотя бы в одном.
@@ -318,6 +357,22 @@ mod tests {
         .unwrap();
         assert_eq!(busy.iter().map(|b| b.kind).collect::<Vec<_>>(), [BusyKind::Busy, BusyKind::Tentative, BusyKind::Unavailable]);
         assert_eq!(busy[0].span.start, at("2026-10-20T07:00:00Z"));
+    }
+
+    /// Расширение The Post: период, свободен (пусто) и нет данных — разные ответы; адрес не из ответа — нет данных.
+    #[test]
+    fn address_busy_keeps_no_data() {
+        let period = |s: &str, e: &str| BusyPeriod { utc_start: s.into(), utc_end: e.into(), busy_status: Some("tentative".into()) };
+        let list = vec![
+            AddressAvailability { address: "A@x.test".into(), busy_periods: Some(vec![period("2026-11-05T09:00:00Z", "2026-11-05T10:00:00Z")]) },
+            AddressAvailability { address: "b@x.test".into(), busy_periods: Some(Vec::new()) },
+            AddressAvailability { address: "c@x.test".into(), busy_periods: None },
+        ];
+        let emails: Vec<String> = ["a@x.test", "b@x.test", "c@x.test", "d@x.test"].map(String::from).to_vec();
+        let got = address_busy(list, &emails);
+        assert_eq!(got[0].1.as_ref().map(|b| (b.len(), b[0].kind)), Some((1, BusyKind::Tentative)));
+        assert_eq!(got[1].1.as_deref(), Some(&[][..]));
+        assert_eq!((got[2].1.is_none(), got[3].1.is_none()), (true, true));
     }
 
     #[test]
