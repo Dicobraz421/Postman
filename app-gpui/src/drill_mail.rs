@@ -96,7 +96,7 @@ const SCENES: &[Scene] = &[
     // Раздел 28, шаг 2: ошибки ввода даты, прошлая дата, срок через час; «Убрать срок» снимает.
     scene("mail-28-date", no_badges, DATE),
     // Раздел 28, шаг 3 (без наступления срока): «Напомнить» → «Сегодня позже»: тост, письмо ушло из «Входящих».
-    scene("mail-28-remind", count_fell, REMIND),
+    scene("mail-28-remind", letter_left, REMIND),
     // Раздел 28, шаг 4: «Ждать ответа…» у письма — метка; «Не ждать ответа» снимает.
     scene("mail-28-wait", no_badges, WAIT),
     // Раздел 28, шаг 7: «Исчезнет…» → «Через 1 д»; дата в прошлом отклоняется; «Никогда» — метки нет.
@@ -110,7 +110,7 @@ const SCENES: &[Scene] = &[
     // Раздел 29, шаг 6: «Срок» на выделении — панель «N писем», метка у всех.
     scene("mail-29-due", selected_due, BULK_DUE),
     // Раздел 29, шаг 8: Ctrl+Shift+V — меню с открытым «Переместить»; выбор папки — письмо там, тост.
-    scene("mail-29-move", count_fell, MOVE),
+    scene("mail-29-move", letter_left, MOVE),
     // Раздел 30, шаг 2: выполненные строки палитры — первыми при пустом запросе.
     scene("mail-30-recent", |_, m, _| m.recent.len() >= 2 && m.palette.is_some(), RECENT),
     // Раздел 30, шаг 4: слово из темы — группа «Письма», Enter открывает письмо.
@@ -644,7 +644,7 @@ const REMIND: &[Input] = &[
     READY,
     LEFT,
     OPENED,
-    until!(|m, cx| keep(m.list.read(cx).count)),
+    until!(|m, cx| keep(m.list.read(cx).letter_total()) && keep_open(m, cx)),
     RIGHT,
     MENU,
     Input::Keys(TO_REMIND),
@@ -802,7 +802,7 @@ const MOVE: &[Input] = &[
     READY,
     LEFT,
     OPENED,
-    until!(|m, cx| keep(m.list.read(cx).count)),
+    until!(|m, cx| keep(m.list.read(cx).letter_total()) && keep_open(m, cx)),
     Input::Keys(&["ctrl-shift-v"]),
     until!(|m, _| m.menu.as_ref().is_some_and(|x| x.sub() == Some(Sub::Move))),
     ENTER,
@@ -810,6 +810,12 @@ const MOVE: &[Input] = &[
 
 fn count_fell(_: &Scene, m: &Mailer, cx: &App) -> bool {
     m.list.read(cx).count < kept()
+}
+
+/// Письмо ушло из папки, ровно одно. Строк может остаться столько же: меню берёт последнее письмо беседы (решение владельца
+/// 2026-11-06, п. 10), а её остальные письма остаются строкой.
+fn letter_left(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    m.list.read(cx).letter_total() + 1 == kept() && gone(m, cx)
 }
 
 const RECENT: &[Input] = &[
@@ -1631,6 +1637,9 @@ const MENU_KEYS: &[Input] = &[
     Input::Keys(&["j", "k", "7"]),
     SETTLE,
     until!(|m, cx| m.menu.is_some() && m.list.read(cx).selected == Some(kept()) && m.toasts.read(cx).on_screen() == 0),
+    // Меню берёт одно письмо строки, а у него уже стоят категории первых двух пунктов: пункт снял бы её. Третий — ставит.
+    Input::Keys(&["down", "down"]),
+    until!(|m, _| m.menu.as_ref().is_some_and(|x| x.cursor().1 == 2)),
     ENTER,
 ];
 
