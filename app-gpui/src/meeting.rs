@@ -1094,6 +1094,7 @@ impl MeetingView {
         let links = crate::prefs::get(cx).calendar.free_busy_links;
         let contacts = self.contacts.clone();
         let (from, to) = (day_start(monday, &self.tz), day_start(add_days(monday, 7), &self.tz));
+        let tz = self.tz.iana_name().unwrap_or("UTC").to_owned();
         let wanted: Vec<(String, String)> = self
             .busy
             .people
@@ -1103,11 +1104,11 @@ impl MeetingView {
             .collect();
         for (email, url) in wanted {
             self.busy.links.insert(email.clone(), Link::Loading);
-            let (live, worker) = (self.live, self.worker.clone());
+            let (live, worker, tz) = (self.live, self.worker.clone(), tz.clone());
             let task = cx.background_spawn(async move {
                 let bytes = if live { postman_backend_dav::fetch_public(&url, postman_worker::MAX_FREE_BUSY)? } else { demo::free_busy(from) };
                 let mut w = worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                w.free_busy(&bytes, from, to)
+                w.free_busy(&bytes, from, to, &tz)
             });
             cx.spawn(async move |this, cx| {
                 let result = task.await;

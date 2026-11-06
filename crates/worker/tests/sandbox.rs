@@ -137,7 +137,7 @@ fn free_busy_round_trip() {
         FREEBUSY;FBTYPE=FREE:20261106T090000Z/20261106T100000Z\r\n\
         FREEBUSY:20261201T090000Z/20261201T100000Z\r\n\
         END:VFREEBUSY\r\nEND:VCALENDAR\r\n";
-    let got = c.free_busy(vfb.as_bytes(), from, to).unwrap();
+    let got = c.free_busy(vfb.as_bytes(), from, to, "UTC").unwrap();
     let hour = |day: i64, h: i64| from + day * 86_400 + h * 3600;
     assert_eq!(
         got,
@@ -154,7 +154,7 @@ fn free_busy_round_trip() {
         BEGIN:VEVENT\r\nUID:c\r\nDTSTAMP:20261001T000000Z\r\nDTSTART:20261104T090000Z\r\nDTEND:20261104T100000Z\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\n\
         BEGIN:VEVENT\r\nUID:d\r\nDTSTAMP:20261001T000000Z\r\nDTSTART:20261105T090000Z\r\nDTEND:20261105T100000Z\r\nSTATUS:TENTATIVE\r\nEND:VEVENT\r\n\
         END:VCALENDAR\r\n";
-    let got = c.free_busy(ics.as_bytes(), from, to).unwrap();
+    let got = c.free_busy(ics.as_bytes(), from, to, "UTC").unwrap();
     assert_eq!(
         got,
         vec![
@@ -162,8 +162,8 @@ fn free_busy_round_trip() {
             BusySpan { start: hour(3, 9), end: hour(3, 10), kind: BusyType::Tentative },
         ]
     );
-    assert!(c.free_busy(b"<html>not a calendar</html>", from, to).is_err());
-    assert!(c.free_busy(&vec![b'x'; postman_worker::MAX_FREE_BUSY + 1], from, to).is_err());
+    assert!(c.free_busy(b"<html>not a calendar</html>", from, to, "UTC").is_err());
+    assert!(c.free_busy(&vec![b'x'; postman_worker::MAX_FREE_BUSY + 1], from, to, "UTC").is_err());
 }
 
 /// Подписка (S8-44): имя календаря, повтор с поясом, событие на весь день без `DTEND`, отменённое не берётся.
@@ -184,6 +184,25 @@ fn ics_round_trip() {
     let at = |day: i64, h: i64| from + day * 86_400 + h * 3600;
     assert_eq!(list, [("Планёрка", at(1, 7), at(1, 8), false, true), ("День единства", at(1, 21), at(2, 21), true, false)]);
     assert_eq!(got.events[0].location, "Зал");
+    assert!(c.ics(b"not a calendar", from, to, "UTC").is_err());
+}
+
+/// Календарь предельного размера с дорогими правилами в песочнице: укладывается в память и сторожа, воркер жив.
+/// Выбраны самые дорогие виды из `hostile_rules_are_bounded` (`crates/worker/src/ics.rs`).
+#[test]
+fn ics_at_the_size_limit() {
+    let mut c = client();
+    let (from, to) = (1_793_577_600, 1_793_577_600 + 7 * 86_400);
+    for rule in ["FREQ=DAILY;COUNT=4000000000", "FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYSETPOS=1,2,3,4,5,6,7,8,9,10", "FREQ=SECONDLY"] {
+        let mut ics = String::from("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//T//T//EN\r\n");
+        let mut i = 0;
+        while ics.len() < postman_worker::MAX_ICS - 2048 {
+            ics += &format!("BEGIN:VEVENT\r\nUID:h{i}\r\nDTSTART:19710101T000000Z\r\nDURATION:PT1H\r\nRRULE:{rule}\r\nEND:VEVENT\r\n");
+            i += 1;
+        }
+        ics += "END:VCALENDAR\r\n";
+        assert!(!c.ics(ics.as_bytes(), from, to, "Europe/Moscow").unwrap().events.is_empty(), "{rule}");
+    }
     assert!(c.ics(b"not a calendar", from, to, "UTC").is_err());
 }
 
