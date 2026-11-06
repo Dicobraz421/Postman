@@ -3,6 +3,7 @@
 //! учётом своих), Папки (все аккаунты, общие ящики тоже), Быстрые фильтры, Письма (первые из поиска по своим данным).
 //! Совпадение — нечёткое и в любой раскладке (`postman_core::fuzzy`); при пустом запросе недавние — первыми.
 //! ↑/↓, Enter, Esc — команды `palette.*`; работает из любой вкладки: команда уходит туда, где был фокус.
+//! «Перейти к папке» (Ctrl+Y, как в Outlook) — та же палитра, только группа «Папки» и без предела в три строки.
 
 use std::ops::Range;
 
@@ -32,6 +33,8 @@ const PAD: f32 = 8.0;
 const LETTERS_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
 /// Недавних — не больше.
 pub(crate) const RECENT: usize = 12;
+/// Строк папок в выборе папки: остальные — набором.
+const FOLDERS_ONLY: usize = 12;
 
 /// Группа строк палитры (порядок групп — порядок вариантов).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -166,6 +169,15 @@ enum Row {
     Item { item: Box<Item>, label: Vec<Range<usize>>, extra: Vec<Range<usize>> },
 }
 
+/// Что показывает палитра.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Scope {
+    /// Все группы (Ctrl+K).
+    All,
+    /// Только папки (Ctrl+Y).
+    Folders,
+}
+
 /// Открытая палитра: view, куда вернуть фокус, подписка на её события.
 pub(crate) struct Open {
     pub(crate) view: Entity<Palette>,
@@ -184,6 +196,7 @@ impl EventEmitter<PaletteEvent> for Palette {}
 
 pub(crate) struct Palette {
     pub(crate) input: Entity<InputState>,
+    scope: Scope,
     items: Vec<Item>,
     letters: Vec<Item>,
     rows: Vec<Row>,
@@ -200,6 +213,7 @@ pub(crate) struct Palette {
 
 impl Palette {
     pub(crate) fn new(
+        scope: Scope,
         items: Vec<Item>,
         recent: Vec<String>,
         cache: Cache,
@@ -207,7 +221,8 @@ impl Palette {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder(tr!("palette-placeholder")));
+        let placeholder = tr!(if scope == Scope::Folders { "palette-folder-placeholder" } else { "palette-placeholder" });
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
         let subscriptions = vec![cx.subscribe(&input, |this: &mut Self, _, ev: &InputEvent, cx| {
             if let InputEvent::Change = ev {
                 this.typed(cx);
@@ -215,6 +230,7 @@ impl Palette {
         })];
         let mut p = Self {
             input,
+            scope,
             items,
             letters: Vec::new(),
             rows: Vec::new(),
@@ -238,6 +254,9 @@ impl Palette {
     pub(crate) fn typed(&mut self, cx: &mut Context<Self>) {
         self.selected = 0;
         self.refresh(cx);
+        if self.scope == Scope::Folders {
+            return;
+        }
         self.typed += 1;
         let typed = self.typed;
         let text = Query::parse(&self.query(cx)).text();
@@ -292,9 +311,10 @@ impl Palette {
                 pool.iter().map(|i| Row::Item { item: Box::new((*i).clone()), label: Vec::new(), extra: term_spans(&i.extra, &marks) }).collect()
             } else {
                 let cands: Vec<Candidate<'_>> = pool.iter().map(|i| Candidate { key: &i.key, text: &i.label, extra: &i.extra }).collect();
+                let limit = if self.scope == Scope::Folders { FOLDERS_ONLY } else { kind.limit(empty) };
                 rank(&q, &cands, &self.recent)
                     .into_iter()
-                    .take(kind.limit(empty))
+                    .take(limit)
                     .map(|r| {
                         let spans = r.hit.map(|m| m.spans).unwrap_or_default();
                         let (label, extra) = if r.in_extra { (Vec::new(), spans) } else { (spans, Vec::new()) };
@@ -325,6 +345,11 @@ impl Palette {
     /// Строк с действием (снимки экранов).
     pub(crate) fn shown(&self) -> usize {
         self.count()
+    }
+
+    /// Что показывает палитра (сценарии).
+    pub(crate) fn scope(&self) -> Scope {
+        self.scope
     }
 
     /// Письма по запросу пришли и показаны (снимки экранов).
@@ -528,7 +553,7 @@ pub(crate) fn command_icon(id: &str) -> Option<char> {
         "mail.reply_all" => REPLY_ALL,
         "mail.forward" => FORWARD,
         "mail.forward_attached" => ATTACH,
-        "folder.new" => FOLDER,
+        "folder.new" | "folder.go" => FOLDER,
         "folder.rename" => EDIT,
         "mail.export" | "account.export" | "export.all" => crate::export::EXPORT,
         "mail.delete" | "compose.discard" | "meeting.discard" | "contacts.delete" => DELETE,
@@ -623,7 +648,6 @@ impl Mailer {
             return self.close_palette(window, cx);
         }
         // Команды — те, что сработали бы там, где сейчас фокус (письмо во вкладке, список, календарь).
-        let back = window.focused(cx);
         let set = crate::keymap::KeySet::of(&crate::prefs::get(cx));
         let mut items = Vec::new();
         let features = crate::features::get(cx);
@@ -642,8 +666,21 @@ impl Mailer {
             let (short, long) = crate::filters::quick_keys(q);
             items.push(Item::quick(q, tr!(short), tr!(long), counts.quick(q), crate::filters::quick_color(q, &l)));
         }
+        self.show_palette(Scope::All, items, window, cx);
+    }
+
+    /// `folder.go` (Ctrl+Y, как в Outlook): выбор папки. Палитра с командами уступает ему место.
+    pub(crate) fn pick_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_palette(window, cx);
+        let items = self.palette_folders(cx);
+        self.show_palette(Scope::Folders, items, window, cx);
+    }
+
+    fn show_palette(&mut self, scope: Scope, items: Vec<Item>, window: &mut Window, cx: &mut Context<Self>) {
+        // Фокус вернётся туда, где был до палитры.
+        let back = window.focused(cx);
         let (cache, index, recent) = (self.cache.clone(), self.live.index(), self.recent.clone());
-        let view = cx.new(|cx| Palette::new(items, recent, cache, index, window, cx));
+        let view = cx.new(|cx| Palette::new(scope, items, recent, cache, index, window, cx));
         let events = cx.subscribe_in(&view, window, |this, _, ev: &PaletteEvent, window, cx| match ev {
             PaletteEvent::Run(a) => this.run_palette(a.clone(), window, cx),
             PaletteEvent::Close => this.close_palette(window, cx),
@@ -800,6 +837,8 @@ pub(crate) mod scenes {
         Scene::new("palette", open, open_ready),
         // Палитра с запросом в другой раскладке.
         Scene::new("palette-query", query, query_ready).continues(),
+        // «Перейти к папке» (Ctrl+Y): только папки.
+        Scene::new("palette-folders", folders, open_ready).on_request(),
     ];
 
     /// Палитра с запросом: «от», набранное в английской раскладке, — команды, папки и письма (S5-10).
@@ -809,6 +848,11 @@ pub(crate) mod scenes {
         // Недавние — как после трёх запусков из палитры.
         m.recent = vec!["cmd:mail.due".into(), "folder:archive".into(), "cmd:mail.reply_all".into()];
         m.toggle_palette(window, cx);
+        Ok(())
+    }
+
+    fn folders(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.pick_folder(window, cx);
         Ok(())
     }
 

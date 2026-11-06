@@ -1319,7 +1319,10 @@ impl TasksView {
         t.important = p.important;
         let uid = t.uid.clone();
         self.save(vec![t], cx);
-        self.select(uid, cx);
+        // На другой день задача уходит из списка: без неё в списке выбор остаётся прежним, иначе карточка пустая.
+        if self.shown.iter().any(|t| t.uid == uid) {
+            self.select(uid, cx);
+        }
         true
     }
 
@@ -2852,13 +2855,13 @@ impl crate::Mailer {
                 let text = tr!("tasks-remind-toast", title = title.clone());
                 self.toasts.update(cx, |t, cx| t.push_action(Toast::Info, text.clone(), act, cx));
                 // Окно свёрнуто или не в фокусе — ещё и уведомление Windows (решение 7).
-                let active = self.window.update(cx, |_, window, _| window.is_window_active()).unwrap_or(true);
+                let active = self.window.update(cx, |_, window, _| crate::screens::window_active(window)).unwrap_or(true);
                 if !active {
                     // В фоне: показ — вызов COM в другой процесс, поток окна на это время качает сообщения при занятом `App`,
                     // и кадр окна теряется (`RefCell already borrowed`).
                     let (head, title) = (tr!("tasks-remind-title"), title.clone());
                     cx.background_spawn(async move {
-                        if let Err(e) = crate::sys::shell::notify(&head, &title) {
+                        if let Err(e) = crate::screens::notify(&head, &title) {
                             tracing::warn!("task reminder notification: {e}");
                         }
                     })

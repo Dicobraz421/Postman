@@ -86,6 +86,8 @@ const SCENES: &[Scene] = &[
     Scene::new("cal-41-narrow", narrow, invite_fits).input(INVITE).wait(new_invite).on_request(),
     // Раздел 41, шаг 3: схема «Одиночные клавиши», A в списке — ответ; демо — тост «нужен сервер».
     Scene::new("cal-41-answer", wide, answered_again).input(ANSWER).wait(new_invite).on_request(),
+    // Решение владельца п. 11: поиск, Enter по встрече в субботу при «Раб. неделе»: вид «Неделя», событие видно и выбрано.
+    Scene::new("cal-s521-weekend", start, weekend_shown).input(WEEKEND_SEARCH).on_request(),
 ];
 
 const OPEN: &[Input] = &[
@@ -497,6 +499,34 @@ const CAL_SEARCH: &[Input] = &[
     Input::Until(event_opened),
     Input::Keys(&["escape"]),
 ];
+
+const WEEKEND: &str = "Встреча в субботу"; // i18n-ok: ввод сценария
+/// Суббота демо-недели, дней от понедельника.
+const SATURDAY: i64 = 5;
+
+const WEEKEND_SEARCH: &[Input] = &[
+    Input::Until(mail_ready),
+    Input::Keys(&["ctrl-2"]),
+    Input::Until(in_calendar),
+    Input::Run(|_, m, _, cx| {
+        m.cal.update(cx, |c, cx| {
+            c.go_to_demo_week(cx);
+            c.add_demo_event(WEEKEND, SATURDAY, cx);
+        });
+        Ok(())
+    }),
+    Input::Keys(&["2", "ctrl-e"]),
+    Input::Until(|_, m, cx| cal_view(m, cx) == V::WorkWeek),
+    Input::Text(WEEKEND),
+    Input::Until(|_, m, cx| m.cal.read(cx).results_ready()),
+    Input::Keys(&["enter"]),
+];
+
+fn weekend_shown(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    let (view, days) = m.cal.read(cx).view_days();
+    let saturday = days.iter().any(|d| d.weekday() == jiff::civil::Weekday::Saturday);
+    view == V::Week && saturday && m.cal.read(cx).selected_title() == Some(WEEKEND)
+}
 
 const COLLEAGUES: &[Input] = &[
     Input::Until(mail_ready),

@@ -15,6 +15,7 @@ cmd-mail-reply-all = Ответить всем
 cmd-mail-forward = Переслать
 cmd-folder-new = Новая папка
 cmd-folder-rename = Переименовать папку
+cmd-folder-go = Перейти к папке
 cmd-mail-forward-attached = Переслать вложениями
 cmd-mail-delete = Удалить
 cmd-mail-due = Срок…

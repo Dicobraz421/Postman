@@ -31,11 +31,12 @@ pub(crate) struct CertBook {
     pub(crate) directory: Option<DirectoryStatus>,
 }
 
-/// Поиск в каталоге: идёт, нашёл (сколько адресов получили сертификат) или не смог (текст для строки).
+/// Поиск в каталоге: идёт, нашёл (сколько адресов получили сертификат, сколько сертификатов воркер не принял) или не смог
+/// (текст для строки).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DirectoryStatus {
     Searching,
-    Done { found: usize },
+    Done { found: usize, refused: usize },
     Failed(String),
 }
 
@@ -205,10 +206,10 @@ impl Mailer {
             let result = crate::directory::search(dir, &addrs, &cache, &worker, &env.anchors.trust(), now);
             let mut b = lock(&book);
             b.directory = Some(match result {
-                Ok(list) => {
-                    b.add(list);
+                Ok(searched) => {
+                    b.add(searched.prepared);
                     let found = addrs.iter().filter(|a| b.prepared.contains_key(a.as_str())).count();
-                    DirectoryStatus::Done { found }
+                    DirectoryStatus::Done { found, refused: searched.refused }
                 }
                 Err(e) => {
                     tracing::info!("directory: {e}");

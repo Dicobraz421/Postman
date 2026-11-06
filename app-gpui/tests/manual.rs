@@ -608,6 +608,9 @@ fn mail_drills() {
         "mail-32-keys",
         "mail-37-afe",
         "mail-t104-tree",
+        "mail-t104-go",
+        "mail-29-thread-remind",
+        "mail-29-thread-forward",
         "mail-t105-split",
         "mail-t105-narrow",
         "mail-t1d-focus",
@@ -708,6 +711,7 @@ fn cal_drills() {
         "cal-43-search",
         "cal-s521-views",
         "cal-s521-search",
+        "cal-s521-weekend",
     ];
     themed_scenes_in("cal-", DRILLS, DRILLS);
     // Настройки на диске: сцены первого запуска меняют их одна за другой, второй читает всё разом.
@@ -738,6 +742,8 @@ fn task_drills() {
         "task-s605-row",
         "task-s605-done",
         "task-s605-new",
+        "task-s604-other-day",
+        "task-s511-tab",
         "task-s605-keys",
         "task-s605-mail",
         "task-s606-fields",

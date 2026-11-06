@@ -41,8 +41,35 @@ impl Directory for Empty {
     }
 }
 
-/// Спросить каталог об адресах `addrs`, проверить ответ в воркере и запомнить проверенные: подготовленные
-/// получатели (только с адресом из `addrs`) или ошибка каталога.
+/// Итог поиска: подготовленные получатели (только с адресом из запроса) и сколько сертификатов каталога воркер не принял.
+pub(crate) struct Searched {
+    pub(crate) prepared: Vec<Prepared>,
+    pub(crate) refused: usize,
+}
+
+/// Разобрать ответ воркера по кандидатам: проверенные с нужным адресом — в кэш и получателям; отказ воркера считается,
+/// чужой адрес — нет: такой сертификат адресату и не предназначался.
+fn sift(ders: Vec<Vec<u8>>, checked: Vec<Result<Prepared, String>>, addrs: &[String]) -> (Vec<Found>, Searched) {
+    let wanted = |e: &str| addrs.iter().any(|a| a.trim().eq_ignore_ascii_case(e.trim()));
+    let mut found = Vec::new();
+    let mut prepared = Vec::new();
+    let mut refused = 0;
+    // Ответ воркера — по индексу кандидата: сертификат и его DER.
+    for (der, p) in ders.into_iter().zip(checked) {
+        let Ok(p) = p else {
+            refused += 1;
+            continue;
+        };
+        if !p.emails.iter().any(|e| wanted(e)) {
+            continue;
+        }
+        found.push(Found { emails: p.emails.clone(), fingerprint: p.fingerprint.clone(), not_after: p.not_after, der });
+        prepared.push(p);
+    }
+    (found, Searched { prepared, refused })
+}
+
+/// Спросить каталог об адресах `addrs`, проверить ответ в воркере и запомнить проверенные: итог поиска или ошибка каталога.
 pub(crate) fn search(
     dir: Arc<dyn Directory>,
     addrs: &[String],
@@ -50,7 +77,7 @@ pub(crate) fn search(
     worker: &Mutex<Worker>,
     trust: &postman_smime::Trust,
     now: i64,
-) -> Result<Vec<Prepared>, DirectoryError> {
+) -> Result<Searched, DirectoryError> {
     let ders = directory::lookup(dir, addrs, directory::TIMEOUT)?;
     let checked = if ders.is_empty() {
         Vec::new()
@@ -64,20 +91,9 @@ pub(crate) fn search(
             }
         }
     };
-    let wanted = |e: &str| addrs.iter().any(|a| a.trim().eq_ignore_ascii_case(e.trim()));
-    let mut found = Vec::new();
-    let mut prepared = Vec::new();
-    // Ответ воркера — по индексу кандидата: сертификат и его DER.
-    for (der, p) in ders.into_iter().zip(checked) {
-        let Ok(p) = p else { continue };
-        if !p.emails.iter().any(|e| wanted(e)) {
-            continue;
-        }
-        found.push(Found { emails: p.emails.clone(), fingerprint: p.fingerprint.clone(), not_after: p.not_after, der });
-        prepared.push(p);
-    }
+    let (found, searched) = sift(ders, checked, addrs);
     directory::remember(cache, addrs, &found, now);
-    Ok(prepared)
+    Ok(searched)
 }
 
 /// Текст ошибки каталога для строки «Перед отправкой» и настроек.
@@ -86,5 +102,35 @@ pub(crate) fn error_text(e: &DirectoryError) -> String {
         DirectoryError::NotConfigured => tr!("directory-not-configured"),
         DirectoryError::Timeout => tr!("directory-timeout"),
         DirectoryError::Unavailable(_) => tr!("directory-unavailable"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sift;
+    use postman_smime::prepare::{Prepared, RecipientKey};
+
+    fn prepared(email: &str) -> Prepared {
+        Prepared {
+            issuer: vec![],
+            serial: vec![1],
+            ski: None,
+            key: RecipientKey::Rsa { n: vec![1], e: vec![1] },
+            emails: vec![email.to_owned()],
+            fingerprint: format!("fp-{email}"),
+            not_after: 1,
+        }
+    }
+
+    /// S5-12.5, шаг 5: отказ воркера считается как «не принят», сертификат на чужой адрес — нет: его просто не искали.
+    #[test]
+    fn a_refused_certificate_differs_from_none() {
+        let addrs = vec!["bob@example.test".to_owned()];
+        let ders = vec![vec![1], vec![2], vec![3]];
+        let checked = vec![Ok(prepared("bob@example.test")), Err("untrusted".to_owned()), Ok(prepared("eve@example.test"))];
+        let (found, s) = sift(ders, checked, &addrs);
+        assert_eq!((found.len(), s.prepared.len(), s.refused), (1, 1, 1));
+        let (found, s) = sift(vec![], vec![], &addrs);
+        assert_eq!((found.len(), s.prepared.len(), s.refused), (0, 0, 0));
     }
 }

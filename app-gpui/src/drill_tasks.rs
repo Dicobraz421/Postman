@@ -83,6 +83,10 @@ const SCENES: &[Scene] = &[
     scene("task-s605-done", reopened, DONE),
     // S6-05, шаг 4: Ctrl+N, Esc, строка «Добавить задачу», заголовки вкладок, строка состояния, письмо в почте.
     scene("task-s605-new", new_letter, NEW),
+    // S6-04: «Добавить задачу» на другой день: задача создана, выбор и карточка прежние.
+    scene("task-s604-other-day", kept_selection, OTHER_DAY),
+    // S5-11: форма контакта: Tab и Shift+Tab ходят по полям.
+    scene("task-s511-tab", form_filled, FORM_TAB),
     // S6-05, шаг 5: Insert, F2, Esc, Del и «Отменить», ↑/↓, Ctrl+E, «!», подзадача.
     scene("task-s605-keys", keys_done, KEYS),
     // S6-05, шаг 6: письмо со сроком в «Из почты»: выполнить, «Отменить», письмо в новой вкладке, папка та же.
@@ -99,7 +103,8 @@ const SCENES: &[Scene] = &[
     scene("task-s607-next", repeat_undone, NEXT),
     // S6-07, шаг 3: срок 31-го, каждый месяц: следующая — 30-го.
     Scene::new("task-s607-31", with_31st, thirtieth).input(THIRTY_FIRST).on_request(),
-    // S6-07, шаг 4 (без уведомления Windows): напоминание — тост с «Отложить на 10 мин».
+    // S6-07, шаг 4: напоминание — тост с «Отложить на 10 мин»; окно не в фокусе: уведомление Windows запрошено, но в прогоне
+    // снимков не показано и AUMID в реестр не записан (решение владельца п. 13).
     Scene::new("task-s607-remind", with_reminder, snoozed).input(REMIND).on_request(),
     // S6-07, шаг 5: первым в вариантах — значение из «Настройки → Календарь».
     scene("task-s607-default", default_first, DEFAULT),
@@ -256,6 +261,7 @@ fn reset(s: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer
     });
     // Тосты прошлой сцены: их «Отменить» перехватило бы щелчок.
     m.toasts.update(cx, |t, cx| t.hide_all(cx));
+    screens::in_background(false);
     m.live.signin = None;
     m.cal.update(cx, |c, cx| c.today(cx));
     m.folders.update(cx, |f, _| f.own = None);
@@ -570,6 +576,46 @@ const NEW: &[Input] = &[
     Input::Keys(&["ctrl-n"]),
 ];
 
+const OTHER_TASK: &str = "Дрилл другой день";
+
+const OTHER_DAY: &[Input] = &[
+    TASKS,
+    IN_TASKS,
+    until!(|m, cx| view(m, cx).selected_task().is_some_and(|t| keep(t.uid.clone()))),
+    QUICK,
+    Input::Text("Дрилл другой день завтра"),
+    ENTER,
+    until!(|m, cx| view(m, cx).tasks.iter().any(|t| t.title.starts_with(OTHER_TASK) && due_day(t, cx) == Some(after(today(cx), 1)))),
+];
+
+fn kept_selection(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    let v = view(m, cx);
+    !v.shown.iter().any(|t| t.title.starts_with(OTHER_TASK)) && v.selected_task().is_some_and(|t| t.uid == kept())
+}
+
+const FORM_TAB: &[Input] = &[
+    READY_MAIL,
+    CONTACTS,
+    IN_CONTACTS,
+    Input::Keys(&["ctrl-shift-c"]),
+    until!(|m, cx| people(m, cx).editing()),
+    Input::Text("Анна"), // i18n-ok: ввод сценария
+    Input::Keys(&["tab"]),
+    Input::Text("Орг"), // i18n-ok: ввод сценария
+    Input::Keys(&["tab"]),
+    Input::Text("Глава"), // i18n-ok: ввод сценария
+    Input::Keys(&["tab"]),
+    Input::Text("anna@example.test"),
+    Input::Keys(&["shift-tab", "tab", "tab"]),
+    Input::Text("+7"),
+];
+
+fn form_filled(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    people(m, cx).form_text(cx).is_some_and(|f| {
+        f.name == "Анна" && f.organization == "Орг" && f.title == "Глава" && f.emails == "anna@example.test" && f.phones == "+7" // i18n-ok: ввод сценария
+    })
+}
+
 fn new_letter(_: &Scene, m: &Mailer, cx: &App) -> bool {
     screens::compose_tab(m).is_some_and(|c| c.read(cx).drawn())
 }
@@ -804,6 +850,7 @@ const REMINDED: &str = "Дрилл: напоминание";
 const REMIND_IN: i64 = 3;
 
 fn with_reminder(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+    screens::in_background(true);
     let tz = zone(cx);
     let due = jiff::Timestamp::now().as_second() + 15 * 60 + REMIND_IN;
     let at = jiff::Timestamp::from_second(due).map_err(|e| e.to_string())?.to_zoned(tz);
@@ -814,7 +861,11 @@ fn with_reminder(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mai
     Ok(())
 }
 
-const REMIND: &[Input] = &[until!(|m, cx| toast(m, cx, &tr!("tasks-remind-toast", title = REMINDED))), Input::Press("notice-act")];
+const REMIND: &[Input] = &[
+    until!(|m, cx| toast(m, cx, &tr!("tasks-remind-toast", title = REMINDED))),
+    until!(|_, _| screens::notified().contains(&(tr!("tasks-remind-title"), REMINDED.to_owned()))),
+    Input::Press("notice-act"),
+];
 
 fn snoozed(_: &Scene, m: &Mailer, cx: &App) -> bool {
     view(m, cx).snoozed.iter().any(|(u, at)| u == "drill-remind@postman" && *at > jiff::Timestamp::now().as_second() + 9 * 60)
@@ -1970,10 +2021,10 @@ const ROW_MENU: &[Input] = &[
     Input::Right(|_, _, _| contact(2)),
     CONTACT_MENU,
     until!(|m, cx| people(m, cx).selected_email().as_deref() == Some(kept().as_str())),
-    // «Копировать адрес»: тост с адресом строки под курсором, карточка на месте.
+    // «Копировать адрес»: тост с адресом строки под курсором, карточка на месте; настоящий буфер Windows не тронут.
     Input::Press("contact-menu-item-2"),
     until!(|m, cx| !people(m, cx).menu_open()
-        && m.toasts.read(cx).latest().is_some()
+        && screens::clipboard().is_some_and(|a| m.toasts.read(cx).latest() == Some(tr!("contacts-copied", email = a).as_str()))
         && people(m, cx).selected_email().as_deref() == Some(kept().as_str())),
     Input::Right(|_, _, _| contact(2)),
     CONTACT_MENU,

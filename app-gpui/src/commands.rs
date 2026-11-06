@@ -32,6 +32,8 @@ pub(crate) const TASKS: Option<&str> = Some("TasksView && !Input");
 pub(crate) const TASKS_ANY: Option<&str> = Some("TasksView");
 /// Весь экран почты (любой раздел), включая поле поиска.
 pub(crate) const MAILER: Option<&str> = Some("Mailer");
+/// Весь экран почты вне полей ввода и меню: в поле Ctrl+Y — повтор правки (gpui-kit).
+pub(crate) const MAILER_NO_INPUT: Option<&str> = Some("Mailer && !Input && !ContextMenu");
 /// Письмо, в том числе поля ввода: `Composer > Input` глубже привязок поля (`ctrl-enter` в тексте —
 /// отправка, а не перевод строки), а при равной глубине побеждает привязка, заданная позже (`bind` — после
 /// `gpui_kit::init`).
@@ -426,6 +428,14 @@ mod tests {
         assert_eq!(keys("calendar.today"), ["home"]);
         assert_eq!(keys("compose.send"), ["ctrl-enter"]);
         assert_eq!(keys("meeting.send"), ["ctrl-enter"]);
+    }
+
+    /// Решение владельца 2026-11-06, п. 7: Ctrl+Y — «Перейти к папке», как в Outlook, вне полей ввода: в поле это повтор правки.
+    #[test]
+    fn ctrl_y_goes_to_a_folder_outside_inputs() {
+        let bound = pets_commands::bound_to(all(), "ctrl-y");
+        assert_eq!(bound.iter().map(|c| c.id).collect::<Vec<_>>(), ["folder.go"]);
+        assert!(bound[0].context.is_some_and(|c| c.contains("!Input")));
     }
 
     /// Хоткеи classic Outlook из `docs/HANDOFF.md` §2a.

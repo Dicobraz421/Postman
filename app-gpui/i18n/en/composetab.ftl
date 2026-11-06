@@ -67,4 +67,5 @@ checks-split-detail = These recipients have GOST certificates, the others RSA or
 checks-no-cert-find = Find in directory
 checks-no-cert-searching = Looking for certificates in the directory…
 checks-no-cert-not-in-directory = No certificate in the directory either. Without it the recipient cannot read the message — remove them or turn off Confidential.
+checks-no-cert-refused = The certificate in the directory was not accepted: it has expired or cannot be trusted. Without it the recipient cannot read the message — remove them or turn off Confidential.
 checks-no-cert-directory-failed = { $reason } Remove the recipients or turn off Confidential.

@@ -745,7 +745,7 @@ impl Mailer {
         let same = self.live.account.as_ref() == Some(&settings) || self.live.profile.names.iter().any(|(_, s)| *s == settings);
         if same {
             if let Some(panel) = &self.settings.add {
-                panel.update(cx, |p, cx| p.failed(&tr!("settings-account-exists"), cx));
+                panel.update(cx, |p, cx| p.refused(tr!("settings-account-exists"), cx));
             }
             return;
         }

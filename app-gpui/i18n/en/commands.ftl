@@ -15,6 +15,7 @@ cmd-mail-reply-all = Reply all
 cmd-mail-forward = Forward
 cmd-folder-new = New folder
 cmd-folder-rename = Rename folder
+cmd-folder-go = Go to folder
 cmd-mail-forward-attached = Forward as attachments
 cmd-mail-delete = Delete
 cmd-mail-due = Due date…

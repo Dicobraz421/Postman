@@ -27,6 +27,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use gpui_kit::*;
@@ -116,6 +117,56 @@ thread_local! {
     static SPOTS: RefCell<HashMap<String, Bounds<Pixels>>> = RefCell::default();
     /// Текст последней показанной подсказки.
     static TIP: RefCell<String> = RefCell::default();
+}
+
+/// Что прогон снимков не отдал в Windows (решение владельца 2026-11-06, п. 13): машина рабочая, сцены не пишут в её
+/// буфер обмена и не показывают уведомления. Сцена сверяет, что было бы вызвано.
+static HELD_CLIPBOARD: Mutex<Option<String>> = Mutex::new(None);
+static HELD_NOTICES: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+/// Сцена просит считать окно неактивным: в прогоне оно бывает и так, и этак.
+static IN_BACKGROUND: AtomicBool = AtomicBool::new(false);
+
+/// Идёт прогон снимков (`--screens`).
+pub(crate) fn screening() -> bool {
+    SPOTS_ON.load(Ordering::Relaxed)
+}
+
+/// Текст в буфер обмена Windows; в прогоне снимков — только запомнить (`clipboard`).
+pub(crate) fn to_clipboard(text: String, cx: &mut App) {
+    if screening() {
+        *HELD_CLIPBOARD.lock().unwrap_or_else(PoisonError::into_inner) = Some(text);
+    } else {
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+    }
+}
+
+/// Что попало бы в буфер обмена.
+pub(crate) fn clipboard() -> Option<String> {
+    HELD_CLIPBOARD.lock().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
+/// Уведомление Windows; в прогоне снимков — только запомнить (`notified`): AUMID в реестр не пишется.
+pub(crate) fn notify(title: &str, body: &str) -> Result<(), String> {
+    if screening() {
+        HELD_NOTICES.lock().unwrap_or_else(PoisonError::into_inner).push((title.to_owned(), body.to_owned()));
+        return Ok(());
+    }
+    sys::shell::notify(title, body)
+}
+
+/// Какие уведомления показал бы Windows.
+pub(crate) fn notified() -> Vec<(String, String)> {
+    HELD_NOTICES.lock().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
+/// Окно активно: как в ОС, а в сцене с `in_background` — нет.
+pub(crate) fn window_active(window: &Window) -> bool {
+    window.is_window_active() && !IN_BACKGROUND.load(Ordering::Relaxed)
+}
+
+/// Сцена: считать окно неактивным (`window_active`).
+pub(crate) fn in_background(on: bool) {
+    IN_BACKGROUND.store(on, Ordering::Relaxed);
 }
 
 /// Отметка элемента для `Input::Press`: `.children(screens::spot(id))` внутри него. Границы — те же, что у строк

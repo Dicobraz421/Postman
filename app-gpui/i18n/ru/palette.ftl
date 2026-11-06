@@ -1,5 +1,6 @@
 # Палитра команд Ctrl+K (S5-10).
 palette-placeholder = Команда, папка, фильтр или письмо
+palette-folder-placeholder = Перейти к папке
 palette-group-commands = Команды
 palette-group-folders = Папки
 palette-group-quick = Быстрые фильтры

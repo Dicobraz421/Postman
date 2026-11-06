@@ -113,7 +113,7 @@ const SCENES: &[Scene] = &[
     // S5-12.5, шаг 4: адресата нет в каталоге.
     scene("net-s5125-none", letter, |_, m, cx| found_none(m, cx, DAVE), NONE),
     // S5-12.5, шаг 5: сертификат чужого корня: воркер не принял, замка нет.
-    scene("net-s5125-untrusted", letter, |_, m, cx| found_none(m, cx, CAROL), FOREIGN),
+    scene("net-s5125-untrusted", letter, |_, m, cx| refused_one(m, cx, CAROL), FOREIGN),
     // S5-12.5, шаг 4: сеть выключена: «Каталог недоступен…», окно не замирает.
     scene("net-s5125-down", server_down, |_, m, cx| directory_failed(m, cx, "directory-unavailable"), DOWN),
     // S5-12.5, шаг 4: каталог молчит: не позже чем через 5 с.
@@ -952,7 +952,16 @@ fn directory(m: &Mailer) -> Option<DirectoryStatus> {
 
 /// Каталог ответил, сертификата у адресата нет: замечание осталось, замка нет.
 fn found_none(m: &Mailer, cx: &App, address: &str) -> bool {
-    directory(m) == Some(DirectoryStatus::Done { found: 0 }) && no_certificate(m, cx).iter().any(|a| a == address) && !locked(m, cx, address)
+    directory(m) == Some(DirectoryStatus::Done { found: 0, refused: 0 })
+        && no_certificate(m, cx).iter().any(|a| a == address)
+        && !locked(m, cx, address)
+}
+
+/// Сертификат в каталоге есть, воркер его не принял (S5-12.5, шаг 5): замечание осталось, замка нет.
+fn refused_one(m: &Mailer, cx: &App, address: &str) -> bool {
+    directory(m) == Some(DirectoryStatus::Done { found: 0, refused: 1 })
+        && no_certificate(m, cx).iter().any(|a| a == address)
+        && !locked(m, cx, address)
 }
 
 /// Письмо «Конфиденциально» адресату и поиск в каталоге.
