@@ -1368,7 +1368,7 @@ fn settings_middle(_: &Mailer, _: &Window, _: &App) -> Option<Point<Pixels>> {
     Some(point(px(640.), px(400.)))
 }
 
-const SETTINGS_DOWN: Input = Input::Wheel(settings_middle, 500.);
+const SETTINGS_DOWN: Input = Input::Wheel(settings_middle, 560.);
 
 const PANES: &[Input] = &[
     READY,

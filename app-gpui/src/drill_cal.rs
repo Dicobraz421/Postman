@@ -651,7 +651,7 @@ fn old_colors(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<M
 }
 
 /// Прокрутка раздела «Чтение» до панели, px.
-const READING_SCROLL: f32 = -500.;
+const READING_SCROLL: f32 = -560.;
 /// Прежнее имя цвета: `palette::LEGACY`.
 const OLD_COLOR: &str = "red";
 
