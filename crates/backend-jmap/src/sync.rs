@@ -833,10 +833,6 @@ async fn refresh(
         }
         let destroyed: Vec<String> = ch.destroyed.iter().map(|id| acc.key(id)).collect();
         cache.delete_emails(&destroyed).map_err(db_err)?;
-        if let Some(i) = index {
-            let _ = i.delete(&destroyed);
-            let _ = i.commit();
-        }
         state = ch.new_state;
         if !ch.has_more_changes {
             break;
@@ -936,10 +932,6 @@ async fn handle(
             if let Err(e) = destroyed {
                 restore(accounts, cache, index, &key, notify).await;
                 return Err(e.into());
-            }
-            if let Some(i) = index {
-                let _ = i.delete(std::slice::from_ref(&key));
-                let _ = i.commit();
             }
         }
         Command::Send { draft, replace, ticket, release } => {
