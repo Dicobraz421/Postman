@@ -665,9 +665,10 @@ pub(crate) fn live(m: &Mailer) -> bool {
     m.screens.as_ref().is_some_and(|d| d.live)
 }
 
-/// Окно строк прочитано (первое — сразу при открытии папки, следующие — в фоне).
+/// Окно строк прочитано (первое — сразу при открытии папки, следующие — в фоне) и беседы разложены: до этого строки — письма
+/// подряд, и номер строки указывает не туда.
 pub(crate) fn rows_loaded(list: &MailList) -> bool {
-    list.count > 0 && !list.rows.1.is_empty() && list.page_pending.is_none()
+    list.count > 0 && !list.rows.1.is_empty() && list.page_pending.is_none() && !list.computing
 }
 
 /// Открытое письмо области чтения.
