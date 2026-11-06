@@ -1298,7 +1298,12 @@ const SECOND_CALENDAR: &[Input] = &[
     Input::Until(mail_ready),
     Input::Keys(&["ctrl-2"]),
     Input::Run(|_, m, _, cx| {
-        m.cal.update(cx, |c, cx| c.today(cx));
+        // Событие — через час (`peer.py`): вечером это уже завтра, в пятницу — выходной, «Раб. неделя» его не покажет.
+        let day = jiff::Zoned::now().checked_add(jiff::Span::new().hours(1)).map_err(|e| e.to_string())?.date();
+        m.cal.update(cx, |c, cx| {
+            c.set_view(postman_core::prefs::CalendarView::Week, cx);
+            c.go_to(day, cx);
+        });
         Ok(())
     }),
 ];
