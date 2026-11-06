@@ -822,6 +822,7 @@ pub(crate) fn link(
 ) -> Stateful<Div> {
     div()
         .id(id)
+        .children(crate::screens::spot(id))
         .flex_none()
         .px(px(8.))
         .py(px(4.))

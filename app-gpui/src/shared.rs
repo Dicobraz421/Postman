@@ -185,6 +185,7 @@ pub(crate) fn strip(row: &EmailRow, l: &Look, cx: &App) -> Option<Div> {
     let button = match act {
         Act::Release => div()
             .id("shared-act")
+            .children(crate::screens::spot("shared-act"))
             .h(px(28.))
             .px(px(12.))
             .flex()

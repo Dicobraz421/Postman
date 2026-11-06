@@ -62,6 +62,7 @@ impl SettingsView {
         let step = |id: &'static str, g: char, to: u16, enabled: bool| {
             div()
                 .id(id)
+                .children(crate::screens::spot(id))
                 .size(px(28.))
                 .flex()
                 .items_center()

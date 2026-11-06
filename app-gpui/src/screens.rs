@@ -114,6 +114,8 @@ static SPOTS_ON: AtomicBool = AtomicBool::new(false);
 thread_local! {
     /// Границы отмеченных элементов прошлого кадра по `ElementId` в записи `id-номер`.
     static SPOTS: RefCell<HashMap<String, Bounds<Pixels>>> = RefCell::default();
+    /// Текст последней показанной подсказки.
+    static TIP: RefCell<String> = RefCell::default();
 }
 
 /// Отметка элемента для `Input::Press`: `.children(screens::spot(id))` внутри него. Границы — те же, что у строк
@@ -136,6 +138,24 @@ pub(crate) fn spot(id: impl Into<ElementId>) -> Option<impl IntoElement> {
     })
 }
 
+/// Подсказка при наведении: как `Tooltip::new(text).build`, а в прогоне снимков ещё запоминает, что показано (`shown_tip`).
+pub(crate) fn tip(text: String, window: &mut Window, cx: &mut App) -> AnyView {
+    if SPOTS_ON.load(Ordering::Relaxed) {
+        TIP.set(text.clone());
+    }
+    gpui_kit::component::tooltip::Tooltip::new(text).build(window, cx)
+}
+
+/// Последняя показанная подсказка (`tip`).
+pub(crate) fn shown_tip() -> String {
+    TIP.with_borrow(Clone::clone)
+}
+
+/// Забыть подсказку: следующий шаг ждёт новую.
+pub(crate) fn forget_tip() {
+    TIP.set(String::new());
+}
+
 /// Границы отмеченного элемента (`spot`).
 pub(crate) fn spot_bounds(id: &str) -> Option<Bounds<Pixels>> {
     SPOTS.with_borrow(|s| s.get(id).copied())
@@ -144,6 +164,14 @@ pub(crate) fn spot_bounds(id: &str) -> Option<Bounds<Pixels>> {
 /// Границы первого отмеченного элемента с такой приставкой id: номер у него не считается заранее.
 pub(crate) fn spot_first(prefix: &str) -> Option<Bounds<Pixels>> {
     SPOTS.with_borrow(|s| s.iter().filter(|(k, _)| k.starts_with(prefix)).min_by_key(|(k, _)| (k.len(), (*k).clone())).map(|(_, b)| *b))
+}
+
+/// Отмеченные элементы `<приставка><номер>` сверху вниз: кнопки с той же приставкой не считаются.
+pub(crate) fn spots_numbered(prefix: &str) -> Vec<Bounds<Pixels>> {
+    let mut spots: Vec<Bounds<Pixels>> = SPOTS
+        .with_borrow(|s| s.iter().filter(|(k, _)| k.strip_prefix(prefix).is_some_and(|n| n.parse::<usize>().is_ok())).map(|(_, b)| *b).collect());
+    spots.sort_by(|a, b| f32::from(a.origin.y).total_cmp(&f32::from(b.origin.y)));
+    spots
 }
 
 /// Середина отмеченного элемента: отметки живут один кадр, так что элемент виден сейчас.
@@ -634,6 +662,11 @@ pub(crate) fn rows_loaded(list: &MailList) -> bool {
 /// Открытое письмо области чтения.
 pub(crate) fn reading<'a>(m: &'a Mailer, cx: &'a App) -> Option<&'a crate::reading::Reading> {
     m.reading.read(cx).reading.as_ref()
+}
+
+/// Ключ открытого письма области чтения.
+pub(crate) fn reading_id(m: &Mailer, cx: &App) -> Option<String> {
+    reading(m, cx).map(|r| r.row.id.clone())
 }
 
 /// Первое прочитанное письмо демо-ящика, тело которого подходит сцене.

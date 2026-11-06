@@ -159,7 +159,7 @@ pub(crate) fn command(el: Stateful<Div>, id: &'static str, name: Option<String>,
         Some(n) => with_key(n, key.clone()),
         None => tip(id, cx),
     };
-    let el = el.tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(text.clone()).build(window, cx));
+    let el = el.tooltip(move |window, cx| crate::screens::tip(text.clone(), window, cx));
     badge(el, key, l, cx)
 }
 

@@ -708,6 +708,7 @@ impl TasksView {
             let on = tab == which;
             div()
                 .id(id)
+                .children(crate::screens::spot(id))
                 .h(px(26.))
                 .px(px(12.))
                 .flex()
@@ -733,6 +734,7 @@ impl TasksView {
         let own = (tab == flow::Tab::ByMe).then(|| {
             div()
                 .id("deleg-own")
+                .children(crate::screens::spot("deleg-own"))
                 .flex()
                 .items_center()
                 .gap(px(8.))
@@ -821,7 +823,10 @@ impl TasksView {
         match action {
             Some(a) => self.deleg_act_on(t, a, String::new(), cx),
             None => {
-                self.nav = super::Nav::List(postman_core::tasks::List::Today);
+                // Срок поручения бывает не сегодня: раздел «Поручения» показывает его всегда.
+                let tab = if t.is_assigned_to(&self.me_email()) { flow::Tab::ToMe } else { flow::Tab::ByMe };
+                self.tab = tab;
+                self.nav = super::Nav::Delegations(tab);
                 self.selected = Some(t.uid.clone());
                 self.reshow(cx);
                 self.selected = Some(t.uid);
@@ -863,6 +868,7 @@ impl TasksView {
             let on = self.deleg.due_days == Some(n);
             div()
                 .id(("assign-due", n as usize))
+                .children(crate::screens::spot(("assign-due", n as usize)))
                 .h(px(26.))
                 .px(px(10.))
                 .flex()
@@ -906,7 +912,7 @@ impl TasksView {
             .bg(l.fill_passive())
             .when(due, |d| d.child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("assign-new-due"))).child(self.due_chips(l, cx)))
             .child(div().text_size(px(12.)).text_color(l.text2()).child(label))
-            .when(comment, |d| d.child(Input::new(&self.deleg.comment)))
+            .when(comment, |d| d.child(div().relative().children(crate::screens::spot("assign-comment")).child(Input::new(&self.deleg.comment))))
             .child(
                 div()
                     .flex()
@@ -1219,6 +1225,7 @@ impl TasksView {
                 .child(
                     div()
                         .id("assign-unpick")
+                        .children(crate::screens::spot("assign-unpick"))
                         .size(px(24.))
                         .flex()
                         .items_center()
@@ -1233,7 +1240,7 @@ impl TasksView {
                         })),
                 )
                 .into_any_element(),
-            None => div().child(Input::new(&self.deleg.person)).into_any_element(),
+            None => div().relative().children(crate::screens::spot("assign-person")).child(Input::new(&self.deleg.person)).into_any_element(),
         };
         let suggest = |watcher: bool, cx: &mut Context<Self>| -> Option<Div> {
             (self.deleg.suggest_watcher == watcher && !self.deleg.suggest.is_empty()).then(|| {
@@ -1242,6 +1249,7 @@ impl TasksView {
                         let pick = a.clone();
                         div()
                             .id(("assign-suggest", i))
+                            .children(crate::screens::spot(("assign-suggest", i)))
                             .h(px(36.))
                             .px(px(10.))
                             .flex()
@@ -1327,12 +1335,19 @@ impl TasksView {
                                 .child(div().text_size(px(12.)).text_color(l.text3()).child(tr!("assign-form-watchers-opt"))),
                         )
                         .child(watchers)
-                        .child(Input::new(&self.deleg.watcher))
+                        .child(div().relative().children(crate::screens::spot("assign-watcher")).child(Input::new(&self.deleg.watcher)))
                         .children(suggest(true, cx)),
                 )
             })
             .child(div().flex().flex_col().gap(px(6.)).child(label("assign-form-due")).child(self.due_chips(&l, cx)))
-            .child(div().flex().flex_col().gap(px(6.)).child(label("assign-form-comment")).child(Input::new(&self.deleg.comment)))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(label("assign-form-comment"))
+                    .child(div().relative().children(crate::screens::spot("assign-comment")).child(Input::new(&self.deleg.comment))),
+            )
             .child(div().flex().items_center().gap(px(8.)).child(send).child(cancel))
             .child(div().text_size(px(12.)).text_color(l.text2()).child(note))
             .into_any_element()

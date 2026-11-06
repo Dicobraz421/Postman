@@ -707,3 +707,109 @@ fn cal_drills() {
     pass("cal-36-hours,cal-36-zone,cal-24-reading,cal-24-look", &["--lang", "ru", "--theme", "light"]);
     pass("cal-36-kept", &[]);
 }
+
+/// Сценарии задач, поручений, общих ящиков, локальных папок и экспорта (`app-gpui/src/drill_tasks.rs`). Диалоги Windows обойдены:
+/// каталог экспорта задаёт сценарий. Отдельные запуски: тёмная и «Серая» темы, английский язык, перезапуск, модуль просмотра в папке.
+#[test]
+#[ignore = "окно и рабочий стол: cargo nextest run -p postman-gpui --test manual --run-ignored only"]
+fn task_drills() {
+    need_worker();
+    const DRILLS: &[&str] = &[
+        "task-s604-chips",
+        "task-s604-unchip",
+        "task-s604-layout",
+        "task-s604-phrases",
+        "task-s605-lists",
+        "task-s605-row",
+        "task-s605-done",
+        "task-s605-new",
+        "task-s605-keys",
+        "task-s605-mail",
+        "task-s606-fields",
+        "task-s606-subs",
+        "task-s606-notes",
+        "task-s607-repeat",
+        "task-s607-next",
+        "task-s607-31",
+        "task-s607-remind",
+        "task-s607-default",
+        "task-s608-block",
+        "task-s609-statuses",
+        "task-s609-return",
+        "task-s609-accept",
+        "task-s609-proposed",
+        "task-s609-remind",
+        "task-s609-incoming",
+        "task-s609-assign",
+        "task-s609-letter",
+        "task-s611-by-me",
+        "task-s611-to-me",
+        "task-s611-remind",
+        "task-s611-delete",
+        "task-s611-wait",
+        "task-s526-rule",
+        "task-s528-hints",
+        "task-s528-button",
+        "task-s528-marks",
+        "task-s528-take",
+        "task-s528-strip",
+        "task-s528-steal",
+        "task-s528-reply",
+        "task-s528-readonly",
+        "task-s528-revocation",
+        "task-s529-look",
+        "task-s530-order",
+        "task-s530-look",
+        "task-s815-group",
+        "task-s815-edit",
+        "task-s815-move",
+        "task-s832-bar",
+        "task-s833-formats",
+        "task-s832-mbox",
+        "task-s833-pst",
+        "task-s832-stop",
+        "task-t106-groups",
+        "task-t109-day",
+        "task-t122-sent",
+        "task-t123-menu",
+        "task-t123-keys",
+        "task-s521-event",
+        "task-24-firstrun",
+        "task-38-tip",
+        "task-41-tip",
+        "task-s823-sections",
+        "task-t113-word",
+        "task-s827-viewers",
+        "task-t118-click",
+    ];
+    /// Вид в тёмной теме проверяется по снимку.
+    const DARK: &[&str] =
+        &["task-s604-chips", "task-s605-row", "task-s609-statuses", "task-s528-strip", "task-s529-look", "task-t109-day", "task-s521-event"];
+    let pass = |names: &[&str], args: &[&str], folder: &str, data: &Path| {
+        let dir = screens_dir(folder);
+        let mut c = postman(data, &[&["--screens", dir.to_str().unwrap()], args].concat());
+        c.env("POSTMAN_SCREENS_ONLY", names.join(",")).env("POSTMAN_SCREENS_PREFS", "1");
+        let out = run(c, Duration::from_secs(1500));
+        assert!(out.status.success(), "{folder}: код {:?}: {}", out.status.code(), String::from_utf8_lossy(&out.stderr));
+        for name in names {
+            let found = std::fs::read_dir(&dir).unwrap().flatten().any(|f| f.file_name().to_string_lossy().starts_with(name));
+            assert!(found, "{folder}: нет снимка {name}");
+        }
+    };
+    let fresh = || tempfile::tempdir().unwrap();
+    pass(DRILLS, &["--lang", "ru", "--theme", "light"], "task-light", fresh().path());
+    pass(DARK, &["--lang", "ru", "--theme", "dark"], "task-dark", fresh().path());
+    pass(&["task-t109-day"], &["--lang", "ru", "--theme", "gray"], "task-gray", fresh().path());
+    pass(&["task-s604-en"], &["--lang", "en", "--theme", "light"], "task-en", fresh().path());
+    // S5-22, шаг 2: цвет календаря после перезапуска.
+    let data = fresh();
+    pass(&["task-s522-colors"], &["--lang", "ru", "--theme", "light"], "task-colors", data.path());
+    pass(&["task-s522-kept"], &[], "task-kept", data.path());
+    // S8-27, шаг 2: модуль в папке до запуска; содержимое не исполняется, нужен только заголовок WASM.
+    let data = fresh();
+    let viewers = data.path().join("Postman").join("viewers");
+    std::fs::create_dir_all(&viewers).unwrap();
+    std::fs::write(viewers.join("fb2.json"), r#"{"name": "FB2", "version": "1.0", "abi": 1, "extensions": ["fb2"]}"#).unwrap();
+    std::fs::write(viewers.join("fb2.wasm"), b"\0asm\x01\0\0\0").unwrap();
+    pass(&["task-s827-module"], &["--lang", "ru", "--theme", "light"], "task-module", data.path());
+}
