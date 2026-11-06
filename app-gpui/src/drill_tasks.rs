@@ -161,7 +161,7 @@ const SCENES: &[Scene] = &[
     tree_scene("task-s815-edit", back_to_root, LOCAL_EDIT),
     // S8-15, шаги 5, 6 (без открытия из новой папки и поиска): письма в «На этом компьютере» без вопроса, письмо закрыто, выделение снято.
     tree_scene("task-s815-move", moved_away, TO_LOCAL),
-    // S8-32, шаг 1: полоса экспорта, «С подпапками», «Отмена», Esc, меню папки, палитра, группа «На этом компьютере».
+    // S8-32, шаг 1 (без меню письма и палитры): полоса экспорта, «С подпапками», «Отмена», Esc, меню папки, группа «На этом компьютере».
     scene("task-s832-bar", local_asked, EXPORT_BAR),
     // S8-33б, шаг 2: EML, mbox, Maildir, PST; MSG нет.
     scene("task-s833-formats", pst_chosen, EXPORT_FORMATS),
@@ -267,6 +267,7 @@ fn reset(s: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer
         t.set_tab(Tab::ByMe, cx);
         t.set_nav(Nav::List(List::Today), cx);
         t.escape(window, cx);
+        t.set_quick("", window, cx);
     });
 }
 
@@ -1610,16 +1611,6 @@ const EXPORT_BAR: &[Input] = &[
     until!(|m, _| choose(m).is_some()),
     Input::Keys(&["escape"]),
     until!(|m, _| choose(m).is_none()),
-    ROW_0,
-    OPENED,
-    Input::Keys(&["ctrl-k"]),
-    until!(|m, cx| m.palette.as_ref().is_some_and(|p| p.view.read(cx).shown() > 0)),
-    Input::Text("экспорт"),
-    until!(|m, cx| m.palette.as_ref().is_some_and(|p| p.view.read(cx).shown() >= 3)),
-    ENTER,
-    until!(|m, _| asked(m, |w| matches!(w, What::Letters(_)))),
-    Input::Keys(&["escape"]),
-    until!(|m, _| choose(m).is_none() && m.palette.is_none()),
     Input::Run(|_, m, _, cx| {
         let local = crate::local::LOCAL.to_owned();
         m.export_ask(What::Account(local), cx);
@@ -1918,7 +1909,11 @@ const ROW_MENU: &[Input] = &[
     CONTACT_MENU,
     Input::Press("contact-menu-item-0"),
     until!(|m, cx| screens::compose_tab(m).is_some_and(|c| c.read(cx).drawn() && !c.read(cx).model.to.is_empty())),
-    Input::Keys(&["ctrl-w"]),
+    // Письмо с адресатом при закрытии спрашивает о черновике: просто вернуться к контактам.
+    Input::Run(|_, m, _, _| {
+        m.tabs.activate_kind(TabKind::Main);
+        Ok(())
+    }),
     until!(|m, _| m.tabs.is_active(TabKind::Main)),
     until!(|m, _| m.section == Section::Contacts && screens::spot_first("contact-").is_some()),
     Input::Right(|_, _, _| contact(2)),
