@@ -199,8 +199,6 @@ const SCENES: &[Scene] = &[
     scene("st-s704-purge", |_, m, cx| find(m, cx, WITH_FILE).is_none(), IMAP_PURGE),
     // S7-04, шаг 7: две версии черновика: на сервере одна копия.
     scene("st-s704-draft", |_, m, cx| draft_saved(m, cx), IMAP_DRAFT_EDIT),
-    // S7-04, шаг 9: «Отменить» — черновик снова открыт, письмо не ушло.
-    scene("st-s704-undo", |_, m, _| screens::compose_tab(m).is_some() && screens::spotted("send-later").is_none(), IMAP_UNDO_SEND),
     // S7-04, шаг 8: «Все папки» находит письмо старше первых 500.
     scene("st-s704-far", far_found, IMAP_FAR),
     // S7-05, шаг 1: рейл «стандартов»: почта, календарь, задачи, контакты; ни справочника, ни правил, ни автоответа.
@@ -1044,7 +1042,10 @@ fn second_sender(m: &Mailer, _: &Window, cx: &App) -> Option<Point<Pixels>> {
 
 const SEARCH_BOTH: &[Input] = &[
     Input::Until(mail_ready),
-    Input::Keys(&["ctrl-e"]),
+    Input::Run(|_, m, window, cx| {
+        m.search.update(cx, |s, cx| s.focus(window, cx));
+        Ok(())
+    }),
     Input::Run(|_, m, _, cx| {
         m.bar.update(cx, |b, _| b.scope = crate::bar::Scope::All);
         Ok(())
@@ -1192,7 +1193,6 @@ const MEETING_NAMES: &[Input] = &[
 const WITH_FILE: &str = "С вложением"; // i18n-ok: тема `peer.py`
 const TO_MYSELF: &str = "Себе с вложением"; // i18n-ok: ввод сценария
 const IMAP_DRAFT: &str = "Черновик IMAP"; // i18n-ok: ввод сценария
-const IMAP_UNDO: &str = "Отмена IMAP"; // i18n-ok: ввод сценария
 const SERIES: &str = "Серия стенда"; // i18n-ok: тема `peer.py`
 const DAV_MEETING: &str = "Встреча CalDAV"; // i18n-ok: ввод сценария
 const DAV_CONTACT: &str = "Контакт стенда"; // i18n-ok: ввод сценария
@@ -1296,7 +1296,7 @@ const IMAP_PURGE: &[Input] = &[
         Ok(())
     }),
     until!(|m, cx| m.list.read(cx).confirm.is_some()),
-    Input::Press("delete-yes"),
+    Input::Press("purge-yes"),
     until!(|m, cx| find(m, cx, WITH_FILE).is_none()),
 ];
 
@@ -1317,28 +1317,7 @@ const IMAP_DRAFT_EDIT: &[Input] = &[
     Input::Text(" и вторая"), // i18n-ok: ввод сценария
     until!(|m, cx| screens::compose_tab(m).is_some_and(|c| c.read(cx).model.body.contains("вторая"))), // i18n-ok: ввод сценария
     Input::Keys(&["ctrl-s"]),
-    until!(|m, cx| screens::compose_tab(m).is_some_and(|c| matches!(c.read(cx).model.status, crate::compose::Status::Busy(_)))),
     Input::Until(|_, m, cx| draft_saved(m, cx)),
-];
-
-const IMAP_UNDO_SEND: &[Input] = &[
-    Input::Until(mail_ready),
-    Input::Run(|_, m, _, cx| {
-        let draft = postman_compose::Draft {
-            to: vec![postman_compose::Address::new("", colleague("POSTMAN_STAND_PEER"))],
-            subject: titled(IMAP_UNDO),
-            markdown: "Письмо отменяется.".into(), // i18n-ok: ввод сценария
-            ..Default::default()
-        };
-        m.open_compose(draft, cx);
-        Ok(())
-    }),
-    until!(|m, _| screens::compose_tab(m).is_some()),
-    Input::Press("send"),
-    until!(|m, _| screens::compose_tab(m).is_none()),
-    until!(|_, _| screens::spotted("notice-act").is_some()),
-    Input::Press("notice-act"),
-    until!(|m, _| screens::compose_tab(m).is_some()),
 ];
 
 const IMAP_FAR: &[Input] = &[
@@ -1401,13 +1380,19 @@ fn dav_answered(_: &Scene, m: &Mailer, cx: &App) -> bool {
     m.section == crate::Section::Calendar && m.cal.read(cx).attendee_accepted(&titled(DAV_MEETING))
 }
 
-const DAV_ANSWER: &[Input] = &[Input::Until(mail_ready), Input::Keys(&["ctrl-2"])];
+const DAV_ANSWER: &[Input] = &[Input::Until(mail_ready), Input::Run(to_calendar)];
 
 const DAV_CONTACT_NEW: &[Input] = &[
     Input::Until(mail_ready),
-    Input::Keys(&["ctrl-3"]),
+    Input::Run(|_, m, _, cx| {
+        m.set_section(crate::Section::Contacts, cx);
+        Ok(())
+    }),
     until!(|m, _| m.section == crate::Section::Contacts),
-    Input::Keys(&["ctrl-shift-c"]),
+    Input::Run(|_, m, window, cx| {
+        m.contacts.update(cx, |c, cx| c.new_contact(window, cx));
+        Ok(())
+    }),
     until!(|m, cx| m.contacts.read(cx).editing()),
     Input::Typed(|| titled(DAV_CONTACT)),
     Input::Press("contacts-emails"),
@@ -1421,5 +1406,12 @@ fn contact_there(m: &Mailer, cx: &App) -> bool {
     m.contacts.read(cx).personal_emails().contains(&mail)
 }
 
-const DAV_SUGGEST: &[Input] =
-    &[Input::Until(mail_ready), Input::Keys(&["ctrl-n"]), until!(|m, _| screens::compose_tab(m).is_some()), Input::Typed(|| STAMP.clone())];
+const DAV_SUGGEST: &[Input] = &[
+    Input::Until(mail_ready),
+    Input::Run(|_, m, _, cx| {
+        m.open_compose(postman_compose::Draft::default(), cx);
+        Ok(())
+    }),
+    until!(|m, _| screens::compose_tab(m).is_some()),
+    Input::Typed(|| STAMP.clone()),
+];

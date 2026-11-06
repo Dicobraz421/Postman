@@ -60,7 +60,8 @@ pub fn mail_usage(quotas: &[Quota]) -> Option<Usage> {
     quotas
         .iter()
         .filter(|q| q.resource_type == "octets" && q.hard_limit > 0)
-        .filter(|q| q.types.is_empty() || q.types.iter().any(|t| t == "Mail"))
+        // RFC 9425 пишет «Mail», Stalwart отдаёт «Email».
+        .filter(|q| q.types.is_empty() || q.types.iter().any(|t| t == "Mail" || t == "Email"))
         .map(|q| Usage { used: q.used, limit: q.hard_limit })
         .max_by(|a, b| (u128::from(a.used) * u128::from(b.limit)).cmp(&(u128::from(b.used) * u128::from(a.limit))))
 }
@@ -393,6 +394,7 @@ mod tests {
     #[test]
     fn the_fullest_mail_quota_in_bytes() {
         assert_eq!(mail_usage(&[]), None);
+        assert_eq!(mail_usage(&[q("octets", 5, 10, &["Email", "CalendarEvent"])]), Some(Usage { used: 5, limit: 10 }));
         // Число писем и квота без предела — не то.
         assert_eq!(mail_usage(&[q("count", 10, 100, &["Mail"]), q("octets", 5, 0, &[])]), None);
         // Квота календаря — не про почту; без типов — про всё.
