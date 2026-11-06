@@ -976,6 +976,8 @@ const REVOKE: &[Input] = &[
         Ok(())
     }),
     until!(|_, _| clock_past(16)),
+    // После «Отменить» выбрана первая строка, а в ящике стенда могут быть поручения прошлых прогонов.
+    Input::Run(|_, m, _, cx| pick(m, cx, Nav::Delegations(Tab::ByMe), SECOND_ORDER)),
     Input::Press("assign-revoke"),
 ];
 
@@ -1349,6 +1351,9 @@ const UNREAD_FELL: &[Input] = &[
 ];
 
 const UNREAD_ROSE: &[Input] = &[
+    // `peer.py` сверяет «прочитано» на сервере уже во время этой сцены.
+    Input::Run(start_clock),
+    until!(|_, _| clock_past(4)),
     Input::Run(|_, m, _, cx| {
         m.mark(Some(false), cx);
         Ok(())
