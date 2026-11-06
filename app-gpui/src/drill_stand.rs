@@ -14,6 +14,7 @@ use postman_cache::EmailRow;
 use postman_calendar::Task;
 use postman_calendar::assign::Status;
 use postman_core::assign::Tab;
+use postman_core::model::MigrationState;
 use postman_core::rules::Action;
 use postman_core::tasks::List;
 
@@ -39,6 +40,19 @@ const fn scene(name: &'static str, ready: screens::Ready, input: &'static [Input
 
 const fn more(name: &'static str, ready: screens::Ready, input: &'static [Input]) -> Scene {
     Scene::new(name, start, ready).input(input).live().on_request().continues()
+}
+
+/// Письмо с файлом: открыть и нажать первую карточку вложения.
+macro_rules! file_letter {
+    ($word:expr) => {
+        &[
+            Input::Until(mail_ready),
+            until!(|m, cx| placed(m, cx, $word).is_some()),
+            Input::Click(|m, _, cx| placed(m, cx, $word), Held::No),
+            until!(|m, cx| picked(m, cx, $word).is_some()),
+            Input::Press("att-card-0"),
+        ]
+    };
 }
 
 const SCENES: &[Scene] = &[
@@ -90,8 +104,10 @@ const SCENES: &[Scene] = &[
     scene("st-s605-push", pushed_tasks, TASKS_PUSHED),
     // S6-06, шаг 4: «!» в карточке: поля VTODO сверяет `peer.py`, второе окно видит правку.
     scene("st-s606-card", |_, m, cx| task(m, cx, EDITED_TASK).is_some_and(|t| t.important), IMPORTANT),
+    // S6-06, шаг 4: второй Postman открыт раньше правки.
+    scene("st-s606-open", tasks_ready, &[Input::Until(mail_ready), OPEN_TASKS, Input::Until(tasks_ready)]),
     // S6-06, шаг 4: второй Postman: правка пришла сама.
-    scene("st-s606-seen", |_, m, cx| task(m, cx, EDITED_TASK).is_some_and(|t| t.important), SECOND_WINDOW),
+    more("st-s606-seen", |_, m, cx| task(m, cx, EDITED_TASK).is_some_and(|t| t.important), SECOND_WINDOW),
     // S6-08, шаг 2: блок поставлен, рядом «Убрать».
     scene("st-s608-block", |_, m, cx| task(m, cx, EDITED_TASK).is_some_and(|t| t.block.is_some()), PLACE_BLOCK),
     // S6-08, шаг 3: в календаре событие с названием задачи.
@@ -215,6 +231,202 @@ const SCENES: &[Scene] = &[
     scene("st-s705-contact", |_, m, cx| contact_there(m, cx), DAV_CONTACT_NEW),
     // S7-05, шаг 8: адрес карточки — в подсказках «Кому».
     scene("st-s705-suggest", |_, m, cx| screens::compose_tab(m).is_some_and(|c| c.read(cx).suggestions() > 0), DAV_SUGGEST),
+    // S7-05, шаг 6: новая задача во «Входящих» задач: VTODO на сервере (`peer.py`, CalDAV).
+    scene("st-s705-task", |_, m, cx| task(m, cx, FIRST_TASK).is_some(), DAV_TASK_NEW),
+    // S7-05, шаг 6: срок.
+    more("st-s705-task-due", |_, m, cx| task(m, cx, FIRST_TASK).is_some_and(|t| t.due.is_some()), DAV_TASK_DUE),
+    // S7-05, шаг 6: правка в другом клиенте и новая задача — опросом, до 2 мин; строка состояния не держит «Загрузка».
+    scene("st-s705-task-back", |s, m, cx| pushed_tasks(s, m, cx) && synced_line(m), TASKS_PUSHED),
+    // S7-05, шаг 6: выполнение: `STATUS:COMPLETED` на сервере.
+    scene("st-s705-task-done", |_, m, cx| task(m, cx, EDITED_TASK).is_some_and(|t| t.progress.is_closed()), DAV_TASK_DONE),
+    // S7-05, шаг 6: удаление: задачи на сервере нет.
+    scene("st-s705-task-gone", |_, m, cx| task(m, cx, SERVER_TASK).is_none(), DELETE_TASK),
+    // S7-05, шаг 7: поручение user2: письмо от user1, своей копии на сервере user2 нет.
+    scene("st-s705-order", |_, m, cx| status_of(m, cx, ORDER) == Some(Status::Waiting), DAV_ORDER),
+    // S7-05, шаг 7: окно «Отменить» прошло: выход из прогона не забирает письмо, которое держит синхронизация.
+    more("st-s705-order-sent", |_, m, cx| status_of(m, cx, ORDER) == Some(Status::Waiting), PAST_UNDO),
+    // S7-05, шаг 7: у user2 задача пришла письмом iMIP.
+    scene("st-s705-order-got", |_, m, cx| status_of(m, cx, ORDER) == Some(Status::Accepted), TAKE_ORDER),
+    // S7-05, шаг 5: коллега не открыл календарь: «нет данных», а не «свободен».
+    scene("st-s705-nobusy", |_, m, cx| lane(m, cx) == Some(None), ASSISTANT),
+    // S7-05, шаг 5: открыл: занятость видна.
+    scene("st-s705-busy", |_, m, cx| lane(m, cx).flatten().is_some_and(|n| n > 0), ASSISTANT),
+    // S7-04, шаг 3: письмо с HTML и вложением: текст, список вложений, внешняя картинка не загружена.
+    scene("st-s704-html", html_open, IMAP_HTML),
+    // S7-04, шаг 3: просмотр вложения.
+    more("st-s704-preview", |_, m, cx| screens::reading(m, cx).is_some_and(|r| r.preview.is_some()), IMAP_PREVIEW),
+    // S7-04, шаг 9: «Отменить»: письмо не ушло, черновик открыт снова.
+    scene("st-s704-undo", |_, m, cx| !m.undo_shown() && undo_draft(m, cx), IMAP_UNDO_SEND),
+    // S7-04, шаг 9: без «Отменить»: письмо ушло (`peer.py`: у user2).
+    more("st-s704-resend", |_, m, cx| !undo_draft(m, cx) && !m.undo_shown(), IMAP_RESEND),
+    // S7-04, шаг 9: письмо в окне «Отменить», Postman закрывается: письмо уходит при закрытии (`peer.py`: у user2).
+    scene("st-s704-quit", |_, m, _| screens::compose_tab(m).is_none() && m.undo_shown(), IMAP_QUIT),
+    more("st-s704-quit-close", |_, _, _| false, IMAP_CLOSE),
+    // S7-04, шаг 10: ответ — в одной беседе с письмом.
+    scene("st-s704-thread", thread_of_two, IMAP_THREAD),
+    // S7-04, шаг 10: фильтр «Все папки» находит письмо за первыми 500.
+    scene("st-s704-filter", filter_found, IMAP_FILTER),
+    // S8-43, шаг 1: «Открыть коллеге»: в списке с уровнем «Только занятость».
+    scene("st-s843-share", |_, m, cx| access_of(m, cx) == Some(false), SHARE),
+    // S8-43, шаг 1: у коллеги в помощнике занятость владельца.
+    scene("st-s843-busy", |_, m, cx| lane(m, cx).flatten().is_some_and(|n| n > 0), ASSISTANT),
+    // S8-43, шаг 2: щелчок по уровню: «Занятость и подробности».
+    scene("st-s843-level", |_, m, cx| access_of(m, cx) == Some(true), SHARE_LEVEL),
+    // S8-43, шаг 2: у коллеги — событие владельца.
+    scene("st-s843-seen", |_, m, cx| event_shown(m, cx, &titled(BUSY_EVENT)), TO_WEEK),
+    // S8-43, шаг 3: открыть ещё раз: запись заменилась, повтора нет.
+    scene("st-s843-again", |_, m, cx| access_of(m, cx) == Some(false) && access_count(m, cx) == 1, SHARE_AGAIN),
+    // S8-43, шаг 5: новый запуск: список с сервера.
+    scene("st-s843-kept", |_, m, cx| access_of(m, cx) == Some(false), SHARE_KEPT),
+    // S8-43, шаг 4: «Закрыть доступ».
+    more("st-s843-close", |_, m, cx| access_of(m, cx).is_none(), SHARE_CLOSE),
+    // S8-43, шаг 4: у коллеги снова «нет данных».
+    scene("st-s843-none", |_, m, cx| lane(m, cx) == Some(None), ASSISTANT),
+    // S6-05, шаг 4: Ctrl+N в «Сегодня»: задача со сроком сегодня.
+    scene("st-s605-today", |_, m, cx| card_shown(m, cx, CARD_TASK), CARD_NEW),
+    // S6-05, шаг 3: Space — зачёркнута, повторный Space — отмена.
+    more("st-s605-space", |_, m, cx| task(m, cx, CARD_TASK).is_some_and(|t| !t.progress.is_closed()), CARD_SPACE),
+    // S6-05, шаг 3: выполнена: тост, на сервере `STATUS:COMPLETED`.
+    more("st-s605-closed", |_, m, cx| task(m, cx, CARD_TASK).is_some_and(|t| t.progress.is_closed()), CARD_CLOSE),
+    // S6-05, шаг 3: «Отменить» — снова в работе, и на сервере.
+    more("st-s605-undone", |_, m, cx| task(m, cx, CARD_TASK).is_some_and(|t| !t.progress.is_closed()), &[Input::Press("notice-act")]),
+    // S6-05, шаг 5: Insert — срок «Завтра»; F2 — новое название.
+    more("st-s605-keys", |_, m, cx| task(m, cx, CARD_RENAMED).is_some_and(|t| t.due.is_some()), CARD_KEYS),
+    // S6-05, шаг 5: Del — удалена, на сервере нет.
+    more("st-s605-del", |_, m, cx| task(m, cx, CARD_RENAMED).is_none(), CARD_DELETE),
+    // S6-05, шаг 5: «Отменить» — снова на сервере.
+    more("st-s605-undel", |_, m, cx| task(m, cx, CARD_RENAMED).is_some(), &[Input::Press("notice-act")]),
+    // S6-06, шаг 1: напоминание, проект, категория: на сервере (`peer.py`, CalDAV).
+    more("st-s606-fields", card_fields, CARD_FIELDS),
+    // S6-06, шаг 2: подзадачи, отмеченная — сразу.
+    more(
+        "st-s606-subs",
+        |_, m, cx| task(m, cx, CARD_RENAMED).is_some_and(|t| postman_core::tasks::subtask_progress(&m.tasks.read(cx).tasks, &t.uid) == (1, 2)),
+        CARD_SUBS,
+    ),
+    // S6-06, шаг 3: заметки: переключить задачу и вернуться — текст сохранён.
+    more("st-s606-notes", |_, m, cx| m.tasks.read(cx).notes.read(cx).value().as_str() == CARD_NOTE, CARD_NOTES),
+    // S6-07, шаг 1: «Каждый месяц»: на сервере `RRULE`.
+    more("st-s607-repeat", |_, m, cx| task(m, cx, CARD_RENAMED).and_then(postman_core::recur::rule_of).is_some(), CARD_REPEAT),
+    // S6-07, шаг 2: выполнить: копия со следующим сроком, тост «следующая».
+    more("st-s607-next", |_, m, cx| open_copies(m, cx) == 1 && toast_is(m, cx, DONE_NEXT), CARD_NEXT),
+    // S6-07, шаг 2: «Отменить» — как было: одна задача с повтором.
+    more("st-s607-undo", |_, m, cx| open_copies(m, cx) == 1 && closed_copies(m, cx) == 0, &[Input::Press("notice-act")]),
+    // S6-08, шаг 1: блок «Время в календаре»: окно и кнопка.
+    more("st-s608-card", |_, _, _| screens::spotted("block-place").is_some(), CARD_BLOCK),
+    // S6-05, шаг 6: письмо со сроком — в «Из почты»; выполнить — срок снят; «Отменить» — вернулся.
+    scene("st-s605-mail", |_, m, cx| letter_task(m, cx), FROM_MAIL),
+    more("st-s605-mail-done", |_, m, cx| !letter_task(m, cx), MAIL_DONE),
+    more("st-s605-mail-undo", |_, m, cx| letter_task(m, cx), &[Input::Press("notice-act")]),
+    // S7-03а, шаг 1: полный сервер: на рейле все разделы.
+    scene("st-s703a-rail", full_rail, &[Input::Until(mail_ready)]),
+    // S7-03а, шаг 2: разделы настроек сервера на месте.
+    more("st-s703a-settings", |_, m, cx| settings_on(m, Page::Calendar, cx), SETTINGS_PAGES),
+    // S7-03а, шаг 3: календарь, контакты, задачи открываются, тоста «нет у сервера» нет.
+    scene("st-s703a-sections", |s, m, cx| tasks_ready(s, m, cx) && !toast_is(m, cx, &tr!("feature-unavailable")), SECTIONS),
+    // S7-03а, шаг 4: палитра: команды разделов сервера.
+    scene("st-s703a-palette", palette_found, PALETTE_RULES),
+    // S7-03а, шаг 5: «Контакты»: кнопки карточки на месте.
+    scene(
+        "st-s703a-contacts",
+        |_, _, _| ["contact-write", "contact-meet", "contact-copy"].iter().all(|id| screens::spotted(id).is_some()),
+        CARD_BUTTONS,
+    ),
+    // S7-03а, шаг 6: схема «Одиночные клавиши» применяется и возвращается.
+    scene("st-s703a-keys", |_, _, cx| crate::prefs::get(cx).key_scheme == postman_core::prefs::KeyScheme::Outlook, KEY_SCHEME),
+    // S5-21, шаг 8: поиск находит встречу на другой неделе; переход — неделя и подробности.
+    scene("st-s521-found", |_, m, cx| m.cal.read(cx).results_ready(), FAR_SEARCH),
+    more("st-s521-open", |_, m, cx| event_shown(m, cx, &titled(FAR_EVENT)), FAR_OPEN),
+    // S5-22, шаг 4: календарь коллеги: его событие в неделе, общая встреча — один раз.
+    scene("st-s522-week", colleague_week, TO_WEEK),
+    // T1-06, шаги 1, 2: своя группа сворачивается: подпись выбрана, папки скрыты.
+    scene("st-t106-fold", |_, m, cx| m.folders.read(cx).is_collapsed(""), OWN_FOLD),
+    // T1-06, шаг 4: в календарь и обратно: группа осталась свёрнутой.
+    more("st-t106-kept", |_, m, cx| m.section == crate::Section::Mail && m.folders.read(cx).is_collapsed(""), LEAVE_AND_BACK),
+    // T1-06, шаг 3: ветка общего ящика: палитра открывает папку — ветка развернулась.
+    more("st-t106-branch", branch_open, OPEN_BRANCH),
+    // S7-07б, шаг 1: своя встреча: «Изменить» и «Отменить встречу».
+    scene("st-s707-new", |_, m, cx| event_shown(m, cx, &titled(OWN_MEETING)), OWN_NEW),
+    more("st-s707-buttons", |_, _, _| own_buttons(), OWN_SELECT),
+    // S7-07б, шаг 1: у приглашённого кнопок нет.
+    scene("st-s707-foreign", |_, m, cx| m.cal.read(cx).selected() && !own_buttons(), FOREIGN_SELECT),
+    // S7-07б, шаг 2: новая тема и «Отправить»: тост, вкладка закрылась, в неделе — новое.
+    scene("st-s707-edit", |_, m, cx| event_shown(m, cx, &titled(OWN_EDITED)) && toast_is(m, cx, UPDATED), OWN_EDIT),
+    // S7-07б, шаг 3: «Не отменять» убирает строку, «Отменить встречу» — встречи нет.
+    more("st-s707-cancel", |_, m, cx| m.section == crate::Section::Calendar && !m.cal.read(cx).has_title(&titled(OWN_EDITED)), OWN_CANCEL),
+    // S8-23, шаг 1: книга Excel: листы разделами.
+    scene("st-s823-book", |_, m, cx| sections_in(m, cx, 2), file_letter!(FILE_BOOK)),
+    // S8-23, шаг 2: презентация: слайды разделами.
+    scene("st-s823-slides", |_, m, cx| sections_in(m, cx, 2), file_letter!(FILE_SLIDES)),
+    // S8-23, шаг 3: таблица CSV — сеткой.
+    scene("st-s823-csv", |_, m, cx| sections_in(m, cx, 1), file_letter!(FILE_CSV)),
+    // S8-23, шаг 4: письмо `.eml`: шапка, текст.
+    scene("st-s823-eml", |_, m, cx| preview_is(m, cx, |s| matches!(s, crate::preview::Shown::Letter(_))), file_letter!(FILE_EML)),
+    // S8-23, шаг 5: Markdown и RTF — текстом.
+    scene("st-s823-md", |_, m, cx| preview_ready(m, cx), file_letter!(FILE_MD)),
+    // T1-13в, шаг 1: документ Word.
+    scene("st-t113-docx", |_, m, cx| sections_in(m, cx, 1), file_letter!(FILE_DOCX)),
+    // T1-17, шаги 1, 3: три письма без тел в кэше: вкладка с тремя `.eml`; письмо уходит себе.
+    scene("st-t117-many", |_, m, _| screens::compose_tab(m).is_none(), FORWARD_MANY),
+    // T1-17, шаг 2: меню строки: одно вложение, тема «FW: …».
+    scene(
+        "st-t117-one",
+        |_, m, cx| {
+            screens::compose_tab(m).is_some_and(|c| c.read(cx).model.subject.starts_with("FW:") && c.read(cx).model.attachments().count() == 1)
+        },
+        FORWARD_ONE,
+    ),
+    // S5-12 Ф4, шаг 9: «Конфиденциально» без своего сертификата шифрования: «Нет сертификата: <свой адрес>».
+    scene("st-s512-own", own_no_cert, OWN_CERT),
+    // T1-02б, шаг 5: адрес не EWS: выбора «Войти как пользователь Windows» нет.
+    scene("st-t102-plain", plain_login, PLAIN_LOGIN),
+    // T1-23, шаги 1, 2: меню строки справочника: карточка на месте, «Копировать адрес», «Написать», «Встреча».
+    scene("st-t123-menu", |_, m, _| m.tabs.active().kind == crate::tabs::TabKind::Meeting, CONTACT_MENU),
+    // T1-23, шаг 3: «Мои контакты»: «Изменить» — форма контакта.
+    scene("st-t123-mine", |_, m, cx| m.contacts.read(cx).editing(), MINE_MENU),
+    // S6-11, шаги 1, 2: «Я поручил»: счётчик, группы; «Только свои».
+    scene("st-s611-by-me", |_, m, cx| matches!(m.tasks.read(cx).nav, Nav::Delegations(Tab::ByMe)) && !m.tasks.read(cx).shown.is_empty(), DELEG_BY_ME),
+    // S6-11, шаг 3: «Мне поручили»: у исполнителя задача в группе новых.
+    scene("st-s611-to-me", |_, m, cx| matches!(m.tasks.read(cx).nav, Nav::Delegations(Tab::ToMe)) && task(m, cx, ORDER).is_some(), DELEG_TO_ME),
+    // S6-11, шаг 6: Del на чужом поручении — ничего не удалено.
+    more("st-s611-foreign", |_, m, cx| task(m, cx, ORDER).is_some() && m.toasts.read(cx).latest().is_some(), DELEG_FOREIGN),
+    // S6-11, шаг 6: Del на своём поручении — «Поручение удалено», «Отменить» — на месте.
+    scene("st-s611-delete", |_, m, cx| task(m, cx, ORDER).is_some(), DELEG_DELETE),
+    // T1-10, шаг 1, T1-10в, шаги 1, 4: картинки `cid:` письма разобраны; ширина — по снимку.
+    scene("st-t110-images", |_, m, cx| picked(m, cx, IMAGES).is_some() && screens::reading(m, cx).is_some_and(|r| r.images.len() >= 3), IMAGES_OPEN),
+    // S8-16, шаг 1, и S8-15, шаг 5: перенос в «На этом компьютере» без вопроса.
+    scene("st-s816-local", |_, m, cx| m.list.read(cx).selection.is_empty() && m.toasts.read(cx).latest().is_some(), TO_LOCAL),
+    // S8-15, шаг 5: письмо открывается: тело — из базы.
+    more("st-s815-letter", |_, m, cx| screens::reading(m, cx).is_some_and(|r| r.doc.is_some()), LOCAL_LETTER),
+    // S8-15, шаг 4: «В папку ▾»: другие учётки и «На этом компьютере».
+    scene("st-s815-menu", menu_has_groups, MOVE_MENU),
+    // S8-15, шаг 3: Ctrl+A, перетащить на папку другой учётной записи: источник пуст.
+    scene("st-s815-drag", |_, m, cx| m.list.read(cx).count == 0, DRAG_ALL),
+    // S8-15, шаг 3: список цели — письма со значком «ждёт переноса»; S8-16, шаг 2: полоса вопроса.
+    more("st-s815-target", |_, m, cx| ask_shown(m, cx) && m.list.read(cx).has_marks(), OPEN_TARGET),
+    // S8-16, шаг 2: другая папка — полосы нет, вернуться — есть.
+    more("st-s816-ask", |_, m, cx| ask_shown(m, cx), ASK_AWAY_AND_BACK),
+    // S8-16, шаг 2: новый запуск: вопрос на месте.
+    scene("st-s816-kept", |_, m, cx| ask_shown(m, cx), ASK_KEPT),
+    // S8-16, шаг 3: «Перенести на сервер», строка состояния, «Пауза».
+    more("st-s816-pause", |_, m, _| job_state(m) == Some(MigrationState::Paused), UPLOAD_PAUSE),
+    // S8-16, шаг 3: «Продолжить».
+    more("st-s816-resume", |_, m, _| job_state(m) == Some(MigrationState::Running), UPLOAD_RESUME),
+    // S8-16, шаг 5: «Остановить» → «Не останавливать».
+    more("st-s816-stop-no", |_, m, _| job_state(m) == Some(MigrationState::Running), STOP_NO),
+    // S8-16, шаги 4, 7: новый запуск: перенос дошёл до конца.
+    scene("st-s816-done", |_, m, _| no_jobs_left(m), RESUMED),
+    // S8-16, шаг 5: новый перенос и «Вернуть на место».
+    scene("st-s816-start", |_, m, _| job_state(m).is_some(), DRAG_AND_START),
+    more("st-s816-return", |_, m, _| no_jobs_left(m), STOP_AND_RETURN),
+    // S8-16, шаг 5: «Оставить остальные локально».
+    scene("st-s816-start-2", |_, m, _| job_state(m).is_some(), DRAG_AND_START),
+    more("st-s816-keep", |_, m, _| no_jobs_left(m), STOP_AND_KEEP),
+    // S8-16, шаг 6: квота цели: полоса и «Перенос стоит: нет места».
+    scene("st-s816-start-3", |_, m, _| job_state(m).is_some(), DRAG_AND_START),
+    more("st-s816-full", |_, m, _| job_state(m) == Some(MigrationState::QuotaFull), NO_SPACE),
+    // S8-16, шаг 6: «Оставить локально».
+    more("st-s816-local-rest", |_, m, _| no_jobs_left(m), KEEP_LOCAL),
 ];
 
 fn start(_: &Scene, _: &mut Mailer, _: &mut Window, _: &mut Context<Mailer>) -> Result<(), String> {
@@ -497,6 +709,8 @@ const SAVE_VACATION: &[Input] = &[
     Input::Press("vacation-to"),
     Input::Keys(&["ctrl-a", "backspace"]),
     Input::Typed(|| day(2)),
+    // Без этого шага сцена могла сохранить «с» прошлой сцены, и автоответ ждал бы начала периода.
+    until!(|m, cx| vacation(m, cx).is_some_and(|p| p.form.from == day(0) && p.form.to == day(2))),
     Input::Press("vacation-tab-0"),
     until!(|m, cx| vacation(m, cx).is_some_and(|p| p.tab_index() == 0)),
     Input::Press("vacation-subject"),
@@ -520,8 +734,9 @@ const SAVE_VACATION: &[Input] = &[
     Input::Press("vacation-save"),
 ];
 
+/// Сохранено; на Stalwart панель говорит, что применён один текст всем (`STALWART.md` п. 14а).
 fn vacation_saved(_: &Scene, m: &Mailer, cx: &App) -> bool {
-    m.settings.bar.is_some() && vacation(m, cx).is_some_and(|p| !p.busy && !p.dirty() && p.form.enabled)
+    m.settings.bar.is_some() && vacation(m, cx).is_some_and(|p| !p.busy && !p.dirty() && p.form.enabled && p.limit.is_some() && p.error.is_none())
 }
 
 fn event_shown(m: &Mailer, cx: &App, title: &str) -> bool {
@@ -628,7 +843,7 @@ const TASKS_PUSHED: &[Input] = &[OPEN_TASKS, Input::Until(tasks_ready), Input::U
 const IMPORTANT: &[Input] =
     &[OPEN_TASKS, Input::Until(tasks_ready), Input::Run(|_, m, _, cx| pick(m, cx, today(), EDITED_TASK)), Input::Press("card-prio")];
 
-const SECOND_WINDOW: &[Input] = &[Input::Until(mail_ready), OPEN_TASKS, Input::Until(tasks_ready)];
+const SECOND_WINDOW: &[Input] = &[OPEN_TASKS, Input::Until(tasks_ready)];
 
 const PLACE_BLOCK: &[Input] =
     &[OPEN_TASKS, Input::Until(tasks_ready), Input::Run(|_, m, _, cx| pick(m, cx, today(), EDITED_TASK)), Input::Press("block-place")];
@@ -1380,6 +1595,11 @@ fn dav_answered(_: &Scene, m: &Mailer, cx: &App) -> bool {
     m.section == crate::Section::Calendar && m.cal.read(cx).attendee_accepted(&titled(DAV_MEETING))
 }
 
+/// Опрос папок молчит: «Загрузка: …» — только первая загрузка, дальше строка держит «Синхронизировано».
+fn synced_line(m: &Mailer) -> bool {
+    m.live.status == tr!("sync-synced")
+}
+
 const DAV_ANSWER: &[Input] = &[Input::Until(mail_ready), Input::Run(to_calendar)];
 
 const DAV_CONTACT_NEW: &[Input] = &[
@@ -1406,6 +1626,66 @@ fn contact_there(m: &Mailer, cx: &App) -> bool {
     m.contacts.read(cx).personal_emails().contains(&mail)
 }
 
+const DAV_TASK_NEW: &[Input] = &[
+    Input::Until(mail_ready),
+    OPEN_TASKS,
+    Input::Until(tasks_ready),
+    Input::Run(|_, m, _, cx| {
+        m.tasks.update(cx, |t, cx| t.set_nav(Nav::List(List::Inbox), cx));
+        Ok(())
+    }),
+    Input::Keys(&["ctrl-n"]),
+    Input::Typed(|| titled(FIRST_TASK)),
+    Input::Keys(&["enter"]),
+    until!(|m, cx| task(m, cx, FIRST_TASK).is_some()),
+];
+
+const DAV_TASK_DUE: &[Input] = &[
+    // Тост прошлой сцены лежит поверх строки «Срок» (находка F3): щелчок ушёл бы в него.
+    Input::Run(|_, m, _, cx| {
+        m.toasts.update(cx, |t, cx| t.hide_all(cx));
+        Ok(())
+    }),
+    Input::Run(|_, m, _, cx| pick(m, cx, Nav::List(List::Inbox), FIRST_TASK)),
+    Input::Press("card-due"),
+    Input::Press("due-opt-1"),
+];
+
+const DAV_TASK_DONE: &[Input] = &[
+    OPEN_TASKS,
+    Input::Until(tasks_ready),
+    Input::Run(|_, m, _, cx| pick(m, cx, Nav::List(List::Upcoming), EDITED_TASK)),
+    Input::Press("card-check"),
+];
+
+const DAV_ORDER: &[Input] = &[
+    Input::Until(mail_ready),
+    OPEN_TASKS,
+    Input::Until(tasks_ready),
+    Input::Run(|_, m, _, cx| {
+        m.tasks.update(cx, |t, cx| t.set_nav(today(), cx));
+        Ok(())
+    }),
+    Input::Keys(&["ctrl-n"]),
+    Input::Typed(|| titled(ORDER)),
+    Input::Keys(&["enter"]),
+    until!(|m, cx| task(m, cx, ORDER).is_some()),
+    Input::Run(delegate),
+    Input::Typed(|| colleague("POSTMAN_STAND_PEER")),
+    Input::Keys(&["enter"]),
+    until!(|m, cx| m.tasks.read(cx).screen_form_open()),
+    Input::Press("assign-submit"),
+];
+
+/// Окно «Отменить» — 10 с.
+const PAST_UNDO: &[Input] = &[
+    Input::Run(|_, _, _, _| {
+        *lock_clock() = Some(Instant::now());
+        Ok(())
+    }),
+    until!(|_, _| lock_clock().is_some_and(|t| t.elapsed() > Duration::from_secs(14))),
+];
+
 const DAV_SUGGEST: &[Input] = &[
     Input::Until(mail_ready),
     Input::Run(|_, m, _, cx| {
@@ -1414,4 +1694,938 @@ const DAV_SUGGEST: &[Input] = &[
     }),
     until!(|m, _| screens::compose_tab(m).is_some()),
     Input::Typed(|| STAMP.clone()),
+];
+
+// --- S7-05, шаг 5, и S8-43: занятость и доступ к календарю ---
+
+const BUSY_EVENT: &str = "Занятость стенда"; // i18n-ok: тема `peer.py`
+
+/// Помощник планирования: занятость коллеги.
+fn lane(m: &Mailer, cx: &App) -> Option<Option<usize>> {
+    meeting_view(m)?.read(cx).lane_of(&colleague("POSTMAN_STAND_PEER"))
+}
+
+const ASSISTANT: &[Input] = &[
+    Input::Until(mail_ready),
+    Input::Run(open_meeting),
+    until!(|m, _| meeting_view(m).is_some()),
+    Input::Keys(&["ctrl-shift-b"]),
+    Input::Typed(|| format!("{};", colleague("POSTMAN_STAND_PEER"))),
+    until!(|m, cx| lane(m, cx).is_some()),
+];
+
+fn access(m: &Mailer, cx: &App) -> Vec<postman_core::sync::Access> {
+    m.cal.read(cx).access_list().to_vec()
+}
+
+fn access_count(m: &Mailer, cx: &App) -> usize {
+    let peer = colleague("POSTMAN_STAND_PEER");
+    access(m, cx).iter().filter(|a| a.email == peer).count()
+}
+
+/// Уровень доступа коллеги: `false` — только занятость.
+fn access_of(m: &Mailer, cx: &App) -> Option<bool> {
+    let peer = colleague("POSTMAN_STAND_PEER");
+    access(m, cx).iter().find(|a| a.email == peer).map(|a| a.items)
+}
+
+/// Строка коллеги: на стенде в списке могут быть и другие записи.
+fn access_spot(m: &Mailer, cx: &App, id: &str) -> Option<Point<Pixels>> {
+    let peer = colleague("POSTMAN_STAND_PEER");
+    let n = access(m, cx).iter().position(|a| a.email == peer)?;
+    screens::spotted(&format!("{id}-{n}"))
+}
+
+/// Левая панель календаря: строки доступа — внизу, за краем окна.
+fn calendar_side(_: &Mailer, window: &Window, _: &App) -> Option<Point<Pixels>> {
+    Some(point(px(150.), window.viewport_size().height / 2.))
+}
+
+const SIDE_DOWN: Input = Input::Wheel(calendar_side, 3000.);
+
+const TO_WEEK: &[Input] = &[
+    Input::Until(mail_ready),
+    Input::Run(to_calendar),
+    Input::Run(|_, m, _, cx| {
+        m.cal.update(cx, |c, cx| c.today(cx));
+        Ok(())
+    }),
+];
+
+const SHARE: &[Input] = &[
+    Input::Until(mail_ready),
+    Input::Run(to_calendar),
+    until!(|m, cx| m.section == crate::Section::Calendar && m.cal.read(cx).loaded),
+    SIDE_DOWN,
+    Input::Press("share-open"),
+    // Строка открытия растёт вниз, за край окна.
+    SIDE_DOWN,
+    Input::Typed(|| colleague("POSTMAN_STAND_PEER")),
+    Input::Press("share"),
+    until!(|m, cx| access_of(m, cx).is_some()),
+];
+
+const SHARE_LEVEL: &[Input] = &[
+    Input::Until(mail_ready),
+    Input::Run(to_calendar),
+    until!(|m, cx| access_of(m, cx) == Some(false)),
+    SIDE_DOWN,
+    Input::Click(|m, _, cx| access_spot(m, cx, "cal-access-level"), Held::No),
+];
+
+const SHARE_AGAIN: &[Input] = &[
+    Input::Until(mail_ready),
+    Input::Run(to_calendar),
+    until!(|m, cx| access_of(m, cx) == Some(true)),
+    SIDE_DOWN,
+    Input::Press("share-open"),
+    SIDE_DOWN,
+    Input::Typed(|| colleague("POSTMAN_STAND_PEER")),
+    Input::Press("share"),
+];
+
+const SHARE_KEPT: &[Input] = &[Input::Until(mail_ready), Input::Run(to_calendar), until!(|m, cx| access_of(m, cx).is_some())];
+
+const SHARE_CLOSE: &[Input] = &[SIDE_DOWN, Input::Click(|m, _, cx| access_spot(m, cx, "cal-access-close"), Held::No)];
+
+// --- S7-04, шаги 3, 9, 10 ---
+
+const RICH: &str = "Письмо с оформлением"; // i18n-ok: тема `peer.py`
+const RICH_FILE: &str = "отчёт.txt"; // i18n-ok: вложение `peer.py`
+const IMAP_UNDO: &str = "Отмена IMAP"; // i18n-ok: ввод сценария
+const IMAP_CLOSED: &str = "Закрытие IMAP"; // i18n-ok: ввод сценария
+const THREAD_LETTER: &str = "Беседа IMAP"; // i18n-ok: тема `peer.py`
+
+fn html_open(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    screens::reading(m, cx)
+        .filter(|_| picked(m, cx, RICH).is_some())
+        .is_some_and(|r| r.body.as_ref().is_some_and(|b| b.attachments.iter().any(|a| a.name == RICH_FILE)))
+}
+
+const IMAP_HTML: &[Input] =
+    &[Input::Until(mail_ready), until!(|m, cx| placed(m, cx, RICH).is_some()), Input::Click(|m, _, cx| placed(m, cx, RICH), Held::No)];
+
+const IMAP_PREVIEW: &[Input] = &[Input::Press("att-card-0")];
+
+fn undo_draft(m: &Mailer, cx: &App) -> bool {
+    screens::compose_tab(m).is_some_and(|c| c.read(cx).model.subject == titled(IMAP_UNDO))
+}
+
+const IMAP_UNDO_SEND: &[Input] = &[
+    Input::Until(mail_ready),
+    Input::Run(|_, m, _, cx| {
+        let draft = postman_compose::Draft {
+            to: vec![postman_compose::Address::new("", colleague("POSTMAN_STAND_PEER"))],
+            subject: titled(IMAP_UNDO),
+            markdown: "Письмо отменяется.".into(), // i18n-ok: ввод сценария
+            ..Default::default()
+        };
+        m.open_compose(draft, cx);
+        Ok(())
+    }),
+    until!(|m, _| screens::compose_tab(m).is_some()),
+    Input::Press("send"),
+    until!(|m, _| m.undo_shown()),
+    Input::Press("undo-send"),
+    until!(|m, cx| undo_draft(m, cx)),
+];
+
+const IMAP_QUIT: &[Input] = &[
+    Input::Until(mail_ready),
+    Input::Run(|_, m, _, cx| {
+        let draft = postman_compose::Draft {
+            to: vec![postman_compose::Address::new("", colleague("POSTMAN_STAND_PEER"))],
+            subject: titled(IMAP_CLOSED),
+            markdown: "Письмо уходит при закрытии.".into(), // i18n-ok: ввод сценария
+            ..Default::default()
+        };
+        m.open_compose(draft, cx);
+        Ok(())
+    }),
+    until!(|m, _| screens::compose_tab(m).is_some()),
+    Input::Press("send"),
+    until!(|m, _| screens::compose_tab(m).is_none() && m.undo_shown()),
+];
+
+/// Как «✕» заголовка: окно закрывается, процесс выходит сам (мимо `finish` прогона).
+const IMAP_CLOSE: &[Input] = &[Input::Run(|_, _, window, _| {
+    window.remove_window();
+    Ok(())
+})];
+
+/// `peer.py` 12 с сверяет, что отменённого письма нет: отправка — после этого.
+const IMAP_RESEND: &[Input] = &[
+    Input::Run(|_, _, _, _| {
+        *lock_clock() = Some(Instant::now());
+        Ok(())
+    }),
+    until!(|_, _| lock_clock().is_some_and(|t| t.elapsed() > Duration::from_secs(14))),
+    Input::Press("send"),
+    until!(|m, _| m.undo_shown()),
+];
+
+/// Письмо `THREAD_LETTER` и его ответ — одна беседа: лента в области чтения из двух писем.
+fn thread_of_two(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    m.reading.read(cx).feed.as_ref().is_some_and(|f| f.conv.messages.len() >= 2)
+}
+
+const IMAP_THREAD: &[Input] = &[
+    Input::Until(mail_ready),
+    until!(|m, cx| placed(m, cx, THREAD_LETTER).is_some()),
+    Input::Click(|m, _, cx| placed(m, cx, THREAD_LETTER), Held::No),
+    until!(|m, cx| picked(m, cx, THREAD_LETTER).is_some()),
+    Input::Keys(&["ctrl-r"]),
+    until!(|m, _| m.compose.inline_view().is_some()),
+    Input::Text(ANSWER),
+    until!(|m, cx| m.compose.inline_view().is_some_and(|c| c.read(cx).model.body.contains(ANSWER))),
+    Input::Keys(&["ctrl-enter"]),
+    until!(|m, _| m.compose.inline.is_none()),
+    // Окно «Отменить» прошло, копия в «Отправленных» пришла в кэш; лента собирается при открытии письма.
+    until!(|m, cx| thread_letters(m, cx) >= 2),
+    Input::Click(|m, _, cx| placed(m, cx, RICH), Held::No),
+    until!(|m, cx| picked(m, cx, RICH).is_some()),
+    Input::Click(|m, _, cx| placed(m, cx, THREAD_LETTER), Held::No),
+];
+
+fn thread_letters(m: &Mailer, cx: &App) -> usize {
+    let list = m.list.read(cx);
+    list.rows.1.iter().find(|r| mine(r, THREAD_LETTER)).and_then(|r| m.cache.thread_len(&r.thread_id).ok()).unwrap_or(0)
+}
+
+fn filter_found(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    let word = colleague("POSTMAN_STAND_WORD");
+    let list = m.list.read(cx);
+    !list.computing && list.rows.1.iter().any(|r| r.subject.contains(&word))
+}
+
+const IMAP_FILTER: &[Input] = &[
+    Input::Until(mail_ready),
+    Input::Run(|_, m, _, cx| {
+        m.filters.update(cx, |f, cx| {
+            f.change(cx, |q| {
+                q.scope = crate::filters::Where::All;
+                q.criteria.toggle_check(postman_core::filters::Check::Unread);
+            });
+        });
+        Ok(())
+    }),
+];
+
+// --- перенос между учётками (S8-15, S8-16) ---
+
+const LOCAL_FOLDER: &str = "Архив стенда"; // i18n-ok: ввод сценария
+
+fn local_folder(m: &Mailer, cx: &App) -> Option<String> {
+    m.folders.read(cx).mailboxes.iter().find(|b| crate::local::is_local(&b.id) && b.name == LOCAL_FOLDER).map(|b| b.id.clone())
+}
+
+fn place_of_folder(id: Option<String>) -> Option<Point<Pixels>> {
+    screens::spotted(&format!("mb-{}", id?))
+}
+
+fn target_inbox(m: &Mailer, cx: &App) -> Option<String> {
+    second_folder(m, cx, "inbox")
+}
+
+fn first_row(m: &Mailer, _: &Window, cx: &App) -> Option<Point<Pixels>> {
+    screens::row_place(m, cx, 0)
+}
+
+fn job_state(m: &Mailer) -> Option<MigrationState> {
+    m.migration.active().map(|j| j.state)
+}
+
+fn no_jobs_left(m: &Mailer) -> bool {
+    m.migration
+        .jobs
+        .values()
+        .all(|j| !matches!(j.state, MigrationState::Running | MigrationState::Paused | MigrationState::QuotaFull | MigrationState::Asking))
+}
+
+fn inbox_open(m: &Mailer, cx: &App) -> bool {
+    let list = m.list.read(cx);
+    let f = m.folders.read(cx);
+    f.mailboxes
+        .iter()
+        .any(|b| b.role.as_deref() == Some("inbox") && postman_cache::account_of(&b.id).is_none() && list.mailbox.as_deref() == Some(b.id.as_str()))
+}
+
+const TO_LOCAL: &[Input] = &[
+    Input::Until(mail_ready),
+    Input::Run(|_, m, _, cx| {
+        m.local_folder_edit(crate::local::FolderEdit::Create { parent: None, name: LOCAL_FOLDER.to_owned() }, cx);
+        Ok(())
+    }),
+    until!(|m, cx| place_of_folder(local_folder(m, cx)).is_some()),
+    Input::Click(first_row, Held::No),
+    Input::Click(|m, _, cx| screens::row_place(m, cx, 2), Held::Shift),
+    until!(|m, cx| m.list.read(cx).selection.len() == 3),
+    Input::Drag(first_row, |m, _, cx| place_of_folder(local_folder(m, cx))),
+    until!(|m, cx| m.toasts.read(cx).latest().is_some()),
+];
+
+const LOCAL_LETTER: &[Input] = &[
+    Input::Run(|_, m, _, cx| {
+        let id = local_folder(m, cx).ok_or("no local folder")?;
+        m.open_mailbox(id, cx);
+        Ok(())
+    }),
+    until!(|m, cx| rows_loaded(m.list.read(cx)) && m.list.read(cx).count >= 3),
+    Input::Click(first_row, Held::No),
+];
+
+const MOVE_MENU: &[Input] = &[
+    Input::Until(mail_ready),
+    Input::Click(first_row, Held::No),
+    until!(|m, cx| screens::reading(m, cx).is_some()),
+    Input::Keys(&["ctrl-shift-v"]),
+    until!(|m, _| m.menu.as_ref().is_some_and(|x| x.sub() == Some(crate::menu::Sub::Move))),
+];
+
+/// «В папку ▾»: своя учётка, затем другая учётка и «На этом компьютере» подписями групп.
+fn menu_has_groups(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    let targets = m.list.read(cx).folder_targets();
+    let local = tr!("local-group");
+    let has = |group: &str| targets.iter().any(|t| t.group.as_deref() == Some(group));
+    m.menu.is_some() && has(&colleague("POSTMAN_STAND_PEER")) && has(&local)
+}
+
+const DRAG_ALL: &[Input] = &[
+    Input::Until(mail_ready),
+    until!(|m, cx| inbox_open(m, cx) && place_of_folder(target_inbox(m, cx)).is_some()),
+    Input::Click(first_row, Held::No),
+    Input::Keys(&["ctrl-a"]),
+    until!(|m, cx| m.list.read(cx).selection.len() > 1),
+    Input::Drag(first_row, |m, _, cx| place_of_folder(target_inbox(m, cx))),
+    until!(|m, cx| m.list.read(cx).count == 0),
+];
+
+const OPEN_TARGET: &[Input] = &[
+    Input::Run(|_, m, _, cx| {
+        let id = target_inbox(m, cx).ok_or("no target inbox")?;
+        m.open_mailbox(id, cx);
+        Ok(())
+    }),
+    until!(|m, cx| rows_loaded(m.list.read(cx)) && m.list.read(cx).has_marks()),
+];
+
+fn ask_shown(m: &Mailer, cx: &App) -> bool {
+    let open = m.list.read(cx).mailbox.clone();
+    matches!(m.migration.bar(open.as_deref()), Some(crate::migration::Bar::Ask(_)))
+}
+
+const ASK_AWAY_AND_BACK: &[Input] = &[
+    Input::Run(|_, m, _, cx| {
+        let id = second_folder(m, cx, "sent").ok_or("no sent folder")?;
+        m.open_mailbox(id, cx);
+        Ok(())
+    }),
+    until!(|m, cx| !ask_shown(m, cx)),
+    Input::Run(|_, m, _, cx| {
+        let id = target_inbox(m, cx).ok_or("no target inbox")?;
+        m.open_mailbox(id, cx);
+        Ok(())
+    }),
+    until!(|m, cx| ask_shown(m, cx)),
+];
+
+const ASK_KEPT: &[Input] = &[
+    Input::Until(mail_ready),
+    until!(|m, cx| target_inbox(m, cx).is_some()),
+    Input::Run(|_, m, _, cx| {
+        let id = target_inbox(m, cx).ok_or("no target inbox")?;
+        m.open_mailbox(id, cx);
+        Ok(())
+    }),
+    until!(|m, cx| ask_shown(m, cx)),
+];
+
+const UPLOAD_PAUSE: &[Input] = &[
+    Input::Press("migration-to-server"),
+    until!(|m, _| job_state(m) == Some(MigrationState::Running)),
+    Input::Press("migration-status"),
+    until!(|m, _| m.migration.open),
+    Input::Press("migration-pause"),
+    until!(|m, _| job_state(m) == Some(MigrationState::Paused)),
+];
+
+const UPLOAD_RESUME: &[Input] = &[Input::Press("migration-resume"), until!(|m, _| job_state(m) == Some(MigrationState::Running))];
+
+const STOP_NO: &[Input] = &[
+    Input::Press("migration-stop"),
+    until!(|m, _| m.migration.stopping.is_some()),
+    Input::Press("migration-stop-no"),
+    until!(|m, _| m.migration.stopping.is_none()),
+];
+
+const RESUMED: &[Input] = &[Input::Until(mail_ready), until!(|m, _| no_jobs_left(m))];
+
+const DRAG_AND_START: &[Input] = &[
+    Input::Until(mail_ready),
+    until!(|m, cx| inbox_open(m, cx) && place_of_folder(target_inbox(m, cx)).is_some()),
+    Input::Click(first_row, Held::No),
+    Input::Keys(&["ctrl-a"]),
+    until!(|m, cx| m.list.read(cx).selection.len() > 1),
+    Input::Drag(first_row, |m, _, cx| place_of_folder(target_inbox(m, cx))),
+    until!(|m, cx| m.list.read(cx).count == 0),
+    Input::Run(|_, m, _, cx| {
+        let id = target_inbox(m, cx).ok_or("no target inbox")?;
+        m.open_mailbox(id, cx);
+        Ok(())
+    }),
+    until!(|m, cx| ask_shown(m, cx)),
+    Input::Press("migration-to-server"),
+    until!(|m, _| job_state(m).is_some()),
+];
+
+const STOP_AND_RETURN: &[Input] = &[
+    Input::Press("migration-status"),
+    until!(|m, _| m.migration.open),
+    Input::Press("migration-stop"),
+    until!(|m, _| m.migration.stopping.is_some()),
+    Input::Press("migration-stop-return"),
+    until!(|m, _| no_jobs_left(m)),
+];
+
+const STOP_AND_KEEP: &[Input] = &[
+    Input::Press("migration-status"),
+    until!(|m, _| m.migration.open),
+    Input::Press("migration-stop"),
+    until!(|m, _| m.migration.stopping.is_some()),
+    Input::Press("migration-stop-keep"),
+    until!(|m, _| no_jobs_left(m)),
+];
+
+const NO_SPACE: &[Input] = &[until!(|m, _| job_state(m) == Some(MigrationState::QuotaFull))];
+
+const KEEP_LOCAL: &[Input] = &[Input::Press("migration-keep-local-short"), until!(|m, _| no_jobs_left(m))];
+
+// --- задачи на живом ящике: S6-05, шаги 3–6, S6-06, шаги 1–3, S6-07, шаги 1, 2, S6-08, шаг 1 ---
+
+const CARD_TASK: &str = "Карточка стенда"; // i18n-ok: ввод сценария
+const CARD_RENAMED: &str = "Карточка новая"; // i18n-ok: ввод сценария
+const CARD_PROJECT: &str = "Проект стенда"; // i18n-ok: ввод сценария
+const CARD_NOTE: &str = "Заметка **жирным**"; // i18n-ok: ввод сценария
+const DONE_NEXT: &str = "Выполнено · следующая"; // i18n-ok: начало тоста
+const MAIL_DUE: &str = "Письмо со сроком"; // i18n-ok: тема `peer.py`
+
+/// Клавиши — экрану: поле прошлой сцены могло уйти с экрана.
+const FOCUS: Input = Input::Run(|_, m, window, cx| {
+    window.focus(&m.focus, cx);
+    Ok(())
+});
+
+fn card_shown(m: &Mailer, cx: &App, word: &str) -> bool {
+    let title = titled(word);
+    m.tasks.read(cx).shown.iter().any(|t| t.title == title && t.due.is_some())
+}
+
+const CARD_NEW: &[Input] = &[
+    Input::Until(mail_ready),
+    OPEN_TASKS,
+    Input::Until(tasks_ready),
+    Input::Run(|_, m, _, cx| {
+        m.tasks.update(cx, |t, cx| t.set_nav(today(), cx));
+        Ok(())
+    }),
+    FOCUS,
+    Input::Keys(&["ctrl-n"]),
+    until!(|m, cx| m.tasks.read(cx).draft.is_some()),
+    Input::Typed(|| titled(CARD_TASK)),
+    Input::Keys(&["enter"]),
+    until!(|m, cx| task(m, cx, CARD_TASK).is_some()),
+    Input::Run(|_, m, _, cx| pick(m, cx, today(), CARD_TASK)),
+];
+
+fn pending(m: &Mailer, cx: &App, word: &str) -> bool {
+    task(m, cx, word).is_some_and(|t| m.tasks.read(cx).completing.is_pending(&t.uid))
+}
+
+const CARD_SPACE: &[Input] =
+    &[FOCUS, Input::Keys(&["space"]), until!(|m, cx| pending(m, cx, CARD_TASK)), Input::Keys(&["space"]), until!(|m, cx| !pending(m, cx, CARD_TASK))];
+
+const CARD_CLOSE: &[Input] = &[FOCUS, Input::Keys(&["space"]), until!(|m, cx| m.toasts.read(cx).latest().is_some())];
+
+const CARD_KEYS: &[Input] = &[
+    until!(|m, cx| m.tasks.read(cx).shown.iter().any(|t| t.title == titled(CARD_TASK))),
+    Input::Run(|_, m, _, cx| pick(m, cx, today(), CARD_TASK)),
+    FOCUS,
+    Input::Keys(&["insert"]),
+    until!(|m, cx| m.tasks.read(cx).due_open),
+    Input::Press("due-opt-1"),
+    until!(|m, cx| !m.tasks.read(cx).due_open),
+    Input::Run(|_, m, _, cx| pick(m, cx, Nav::List(List::Upcoming), CARD_TASK)),
+    FOCUS,
+    Input::Keys(&["f2"]),
+    until!(|m, cx| m.tasks.read(cx).title.is_some()),
+    Input::Keys(&["ctrl-a"]),
+    Input::Typed(|| titled(CARD_RENAMED)),
+    Input::Keys(&["enter"]),
+];
+
+const CARD_DELETE: &[Input] = &[Input::Run(|_, m, _, cx| pick(m, cx, Nav::List(List::Upcoming), CARD_RENAMED)), FOCUS, Input::Keys(&["delete"])];
+
+fn card_fields(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    task(m, cx, CARD_RENAMED).is_some_and(|t| {
+        !t.alerts.is_empty() && t.project.as_deref() == Some(titled(CARD_PROJECT).as_str()) && t.keywords.iter().any(|k| k.starts_with("pm.cat."))
+    })
+}
+
+const CARD_FIELDS: &[Input] = &[
+    until!(|m, cx| task(m, cx, CARD_RENAMED).is_some()),
+    Input::Run(|_, m, _, cx| pick(m, cx, Nav::List(List::Upcoming), CARD_RENAMED)),
+    Input::Press("card-remind"),
+    until!(|m, cx| m.tasks.read(cx).open == Some(crate::tasks::Field::Remind)),
+    Input::Press("remind-opt-1"),
+    until!(|m, cx| m.tasks.read(cx).open.is_none()),
+    Input::Press("card-project"),
+    until!(|m, cx| m.tasks.read(cx).open == Some(crate::tasks::Field::Project)),
+    Input::Press("proj-new"),
+    Input::Typed(|| titled(CARD_PROJECT)),
+    Input::Keys(&["enter"]),
+    until!(|m, cx| m.tasks.read(cx).open.is_none()),
+    Input::Press("card-category"),
+    until!(|m, cx| m.tasks.read(cx).open == Some(crate::tasks::Field::Category)),
+    Input::Press("cat-opt-1"),
+];
+
+const CARD_SUBS: &[Input] = &[
+    Input::Press("sub-new"),
+    Input::Text("Первая"), // i18n-ok: ввод сценария
+    Input::Keys(&["enter"]),
+    until!(|m, cx| task(m, cx, CARD_RENAMED).is_some_and(|t| postman_core::tasks::subtask_progress(&m.tasks.read(cx).tasks, &t.uid).1 == 1)),
+    Input::Text("Вторая"), // i18n-ok: ввод сценария
+    Input::Keys(&["enter"]),
+    until!(|m, cx| task(m, cx, CARD_RENAMED).is_some_and(|t| postman_core::tasks::subtask_progress(&m.tasks.read(cx).tasks, &t.uid).1 == 2)),
+    Input::Press("sub-1"),
+];
+
+const CARD_NOTES: &[Input] = &[
+    until!(|_, _| screens::spotted("task-notes").is_some()),
+    Input::Press("task-notes"),
+    Input::Text(CARD_NOTE),
+    until!(|m, cx| m.tasks.read(cx).notes.read(cx).value().contains("жирным")), // i18n-ok: ввод сценария
+    FOCUS,
+    Input::Keys(&["down"]),
+    Input::Run(|_, m, _, cx| pick(m, cx, Nav::List(List::Upcoming), CARD_RENAMED)),
+];
+
+fn open_copies(m: &Mailer, cx: &App) -> usize {
+    let title = titled(CARD_RENAMED);
+    m.tasks.read(cx).tasks.iter().filter(|t| t.title == title && !t.progress.is_closed()).count()
+}
+
+fn closed_copies(m: &Mailer, cx: &App) -> usize {
+    let title = titled(CARD_RENAMED);
+    m.tasks.read(cx).tasks.iter().filter(|t| t.title == title && t.progress.is_closed()).count()
+}
+
+const CARD_REPEAT: &[Input] = &[
+    Input::Press("card-repeat"),
+    until!(|m, cx| m.tasks.read(cx).open == Some(crate::tasks::Field::Repeat)),
+    until!(|_, _| screens::spotted("repeat-opt-3").is_some()),
+    Input::Press("repeat-opt-3"),
+];
+
+const CARD_NEXT: &[Input] = &[FOCUS, Input::Run(|_, m, _, cx| pick(m, cx, Nav::List(List::Upcoming), CARD_RENAMED)), Input::Keys(&["space"])];
+
+const CARD_BLOCK: &[Input] = &[
+    until!(|m, cx| task(m, cx, CARD_RENAMED).is_some()),
+    Input::Run(|_, m, _, cx| pick(m, cx, Nav::List(List::Upcoming), CARD_RENAMED)),
+    until!(|_, _| screens::spotted("block-place").is_some()),
+];
+
+fn letter_task(m: &Mailer, cx: &App) -> bool {
+    m.section == crate::Section::Tasks && m.tasks.read(cx).shown.iter().any(|t| t.title.contains(MAIL_DUE) && t.title.contains(STAMP.as_str()))
+}
+
+const FROM_MAIL: &[Input] = &[
+    Input::Until(mail_ready),
+    until!(|m, cx| placed(m, cx, MAIL_DUE).is_some()),
+    Input::Click(|m, _, cx| placed(m, cx, MAIL_DUE), Held::No),
+    until!(|m, cx| picked(m, cx, MAIL_DUE).is_some()),
+    Input::Keys(&["insert"]),
+    Input::Press("lifecycle-pick-2"),
+    until!(|m, _| m.lifecycle.picker.is_none()),
+    OPEN_TASKS,
+    Input::Until(tasks_ready),
+    Input::Run(|_, m, _, cx| {
+        m.tasks.update(cx, |t, cx| t.set_nav(Nav::List(List::FromMail), cx));
+        Ok(())
+    }),
+];
+
+const MAIL_DONE: &[Input] = &[
+    Input::Run(|_, m, _, cx| {
+        let title = m.tasks.read(cx).shown.iter().find(|t| t.title.contains(MAIL_DUE)).map(|t| t.title.clone()).ok_or("no letter task")?;
+        m.tasks.update(cx, |t, cx| t.select_title(&title, cx));
+        Ok(())
+    }),
+    FOCUS,
+    Input::Keys(&["space"]),
+];
+
+// --- S7-03а, S5-21, шаг 8, S5-22, шаг 4, T1-06: живой ящик ---
+
+const FAR_EVENT: &str = "Встреча далеко"; // i18n-ok: тема `peer.py`
+const COLLEAGUE_EVENT: &str = "Событие коллеги"; // i18n-ok: тема `peer.py`
+
+fn full_rail(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    use postman_core::model::Feature as F;
+    let features = crate::features::get(cx);
+    m.live.synced && [F::Calendar, F::Tasks, F::Contacts, F::Directory, F::Rules, F::Autoreply].into_iter().all(|f| features.has(f))
+}
+
+const SETTINGS_PAGES: &[Input] = &[
+    Input::Run(open_rules),
+    until!(|m, cx| settings_on(m, Page::Rules, cx)),
+    Input::Run(open_vacation),
+    until!(|m, cx| settings_on(m, Page::Vacation, cx)),
+    Input::Run(|_, m, window, cx| {
+        m.open_settings(Some(Page::Calendar), window, cx);
+        Ok(())
+    }),
+];
+
+const SECTIONS: &[Input] = &[
+    Input::Until(mail_ready),
+    FOCUS,
+    Input::Keys(&["ctrl-2"]),
+    until!(|m, cx| m.section == crate::Section::Calendar && m.cal.read(cx).loaded),
+    FOCUS,
+    Input::Keys(&["ctrl-3"]),
+    until!(|m, _| m.section == crate::Section::Contacts),
+    FOCUS,
+    Input::Keys(&["ctrl-4"]),
+];
+
+fn palette_found(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    m.palette.as_ref().is_some_and(|p| p.view.read(cx).shown() > 0)
+}
+
+const PALETTE_RULES: &[Input] = &[
+    Input::Until(mail_ready),
+    Input::Run(|_, m, window, cx| {
+        m.toggle_palette(window, cx);
+        Ok(())
+    }),
+    until!(|m, _| m.palette.is_some()),
+    Input::Text("автоответ"), // i18n-ok: ввод сценария
+    until!(|m, cx| palette_shown(m, cx)),
+    Input::Keys(&["ctrl-a", "backspace"]),
+    Input::Text("правила"), // i18n-ok: ввод сценария
+];
+
+fn palette_shown(m: &Mailer, cx: &App) -> bool {
+    m.palette.as_ref().is_some_and(|p| p.view.read(cx).shown() > 0)
+}
+
+const CARD_BUTTONS: &[Input] = &[
+    Input::Until(mail_ready),
+    Input::Run(|_, m, _, cx| {
+        m.set_section(crate::Section::Contacts, cx);
+        m.contacts.update(cx, |c, cx| {
+            c.set_source(crate::contacts::Source::Directory, cx);
+            c.select_first(cx);
+        });
+        Ok(())
+    }),
+    until!(|m, cx| m.contacts.read(cx).selected_email().is_some()),
+];
+
+const KEY_SCHEME: &[Input] = &[
+    Input::Until(mail_ready),
+    Input::Run(|_, m, window, cx| {
+        m.open_settings(Some(Page::Keys), window, cx);
+        Ok(())
+    }),
+    Input::Press("settings-keys-scheme-single"),
+    until!(|_, cx| crate::prefs::get(cx).key_scheme == postman_core::prefs::KeyScheme::Single),
+    Input::Press("settings-keys-scheme-outlook"),
+];
+
+const FAR_SEARCH: &[Input] = &[
+    Input::Until(mail_ready),
+    Input::Run(to_calendar),
+    until!(|m, cx| m.cal.read(cx).loaded),
+    FOCUS,
+    Input::Keys(&["ctrl-e"]),
+    Input::Typed(|| titled(FAR_EVENT)),
+    until!(|m, cx| m.cal.read(cx).results_ready()),
+];
+
+const FAR_OPEN: &[Input] = &[Input::Keys(&["down", "enter"])];
+
+fn colleague_week(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    event_shown(m, cx, &titled(COLLEAGUE_EVENT))
+}
+
+const OWN_FOLD: &[Input] = &[Input::Until(mail_ready), until!(|_, _| screens::spotted("own-account").is_some()), Input::Press("own-account")];
+
+const LEAVE_AND_BACK: &[Input] =
+    &[FOCUS, Input::Keys(&["ctrl-2"]), until!(|m, _| m.section == crate::Section::Calendar), FOCUS, Input::Keys(&["ctrl-1"])];
+
+fn branch_open(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    let f = m.folders.read(cx);
+    m.palette.is_none() && f.accounts.iter().any(|a| a.name.contains("shared-sales") && !f.is_collapsed(&a.id))
+}
+
+/// Ветка свёрнута, открытие папки из неё разворачивает (то же делает выбор папки в палитре, `folders.rs`).
+const OPEN_BRANCH: &[Input] = &[
+    Input::Run(|_, m, _, cx| {
+        let id = m.folders.read(cx).accounts.iter().find(|a| a.name.contains("shared-sales")).map(|a| a.id.clone()).ok_or("no shared account")?;
+        m.folders.update(cx, |f, cx| {
+            f.collapsed.insert(id);
+            cx.notify();
+        });
+        Ok(())
+    }),
+    Input::Run(|_, m, _, cx| open_shared(m, cx, "shared-sales")),
+];
+
+// --- S7-07б: своя встреча ---
+
+const OWN_MEETING: &str = "Своя встреча"; // i18n-ok: ввод сценария
+const OWN_EDITED: &str = "Своя встреча перенесена"; // i18n-ok: ввод сценария
+const UPDATED: &str = "Изменения отправлены"; // i18n-ok: начало тоста
+
+fn own_buttons() -> bool {
+    screens::spotted("own-edit").is_some() && screens::spotted("own-cancel").is_some()
+}
+
+fn select_event(m: &mut Mailer, cx: &mut Context<Mailer>, word: &str) -> Result<(), String> {
+    let title = titled(word);
+    m.cal.update(cx, |c, cx| c.select_titled(&title, cx));
+    if m.cal.read(cx).selected() { Ok(()) } else { Err(format!("no event {title}")) }
+}
+
+const OWN_NEW: &[Input] = &[
+    Input::Until(mail_ready),
+    Input::Run(open_meeting),
+    until!(|m, _| meeting_view(m).is_some()),
+    Input::Press("meeting-title"),
+    Input::Typed(|| titled(OWN_MEETING)),
+    Input::Keys(&["ctrl-shift-b"]),
+    Input::Typed(|| format!("{};", colleague("POSTMAN_STAND_PEER"))),
+    Input::Keys(&["ctrl-enter"]),
+    until!(|m, _| meeting_view(m).is_none()),
+    Input::Run(to_calendar),
+];
+
+const OWN_SELECT: &[Input] = &[Input::Run(|_, m, _, cx| select_event(m, cx, OWN_MEETING)), until!(|_, _| own_buttons())];
+
+const FOREIGN_SELECT: &[Input] = &[
+    Input::Until(mail_ready),
+    Input::Run(to_calendar),
+    until!(|m, cx| event_shown(m, cx, &titled(OWN_MEETING))),
+    Input::Run(|_, m, _, cx| select_event(m, cx, OWN_MEETING)),
+    // Подробности нарисованы: в панели есть свои кнопки ответа или их нет — смотрит условие сцены.
+    until!(|_, _| screens::spotted("event-details").is_some()),
+];
+
+const OWN_EDIT: &[Input] = &[
+    Input::Until(mail_ready),
+    Input::Run(to_calendar),
+    until!(|m, cx| event_shown(m, cx, &titled(OWN_MEETING))),
+    Input::Run(|_, m, _, cx| select_event(m, cx, OWN_MEETING)),
+    Input::Press("own-edit"),
+    until!(|m, _| meeting_view(m).is_some()),
+    Input::Press("meeting-title"),
+    Input::Keys(&["ctrl-a", "backspace"]),
+    Input::Typed(|| titled(OWN_EDITED)),
+    until!(|m, cx| meeting_view(m).is_some_and(|v| v.read(cx).model.title == titled(OWN_EDITED))),
+    Input::Keys(&["ctrl-enter"]),
+    until!(|m, _| meeting_view(m).is_none()),
+    Input::Run(to_calendar),
+];
+
+const OWN_CANCEL: &[Input] = &[
+    until!(|m, cx| event_shown(m, cx, &titled(OWN_EDITED))),
+    Input::Run(|_, m, _, cx| select_event(m, cx, OWN_EDITED)),
+    Input::Press("own-cancel"),
+    Input::Press("own-no"),
+    until!(|_, _| screens::spotted("own-no").is_none()),
+    Input::Press("own-cancel"),
+    Input::Press("own-yes"),
+];
+
+// --- письма с файлами: S8-23, T1-13в ---
+
+const IMAGES: &str = "Письмо с картинками"; // i18n-ok: тема `peer.py`
+const FILE_BOOK: &str = "Файл книга"; // i18n-ok: тема `peer.py`
+const FILE_SLIDES: &str = "Файл слайды"; // i18n-ok: тема `peer.py`
+const FILE_CSV: &str = "Файл таблица"; // i18n-ok: тема `peer.py`
+const FILE_EML: &str = "Файл письмо"; // i18n-ok: тема `peer.py`
+const FILE_MD: &str = "Файл разметка"; // i18n-ok: тема `peer.py`
+const FILE_DOCX: &str = "Файл документ"; // i18n-ok: тема `peer.py`
+
+const IMAGES_OPEN: &[Input] =
+    &[Input::Until(mail_ready), until!(|m, cx| placed(m, cx, IMAGES).is_some()), Input::Click(|m, _, cx| placed(m, cx, IMAGES), Held::No)];
+
+fn preview_is(m: &Mailer, cx: &App, what: impl Fn(&crate::preview::Shown) -> bool) -> bool {
+    use crate::preview::PvState;
+    screens::reading(m, cx).and_then(|r| r.preview.as_ref()).is_some_and(|p| matches!(&p.state, PvState::Ready(s) if what(s)))
+}
+
+fn preview_ready(m: &Mailer, cx: &App) -> bool {
+    preview_is(m, cx, |_| true)
+}
+
+/// Разобран разделами: листы, слайды, текст документа.
+fn sections_in(m: &Mailer, cx: &App, at_least: usize) -> bool {
+    preview_is(m, cx, |s| matches!(s, crate::preview::Shown::Sections { sections, .. } if sections.len() >= at_least))
+}
+
+// --- T1-17: переслать вложениями ---
+
+const FORWARD_A: &str = "Пересылка раз"; // i18n-ok: тема `peer.py`
+const FORWARD_B: &str = "Пересылка два"; // i18n-ok: тема `peer.py`
+const FORWARD_C: &str = "Пересылка три"; // i18n-ok: тема `peer.py`
+const FORWARDED: &str = "Три письма вложениями"; // i18n-ok: ввод сценария
+
+fn start_clock(_: &Scene, _: &mut Mailer, _: &mut Window, _: &mut Context<Mailer>) -> Result<(), String> {
+    *lock_clock() = Some(Instant::now());
+    Ok(())
+}
+
+fn clock_past(secs: u64) -> bool {
+    lock_clock().is_some_and(|t| t.elapsed() > Duration::from_secs(secs))
+}
+
+const FORWARD_MANY: &[Input] = &[
+    Input::Until(mail_ready),
+    until!(|m, cx| placed(m, cx, FORWARD_A).is_some() && placed(m, cx, FORWARD_B).is_some() && placed(m, cx, FORWARD_C).is_some()),
+    // Сверка сразу после входа ещё двигает строки: щелчок попал бы по соседней.
+    Input::Run(start_clock),
+    until!(|_, _| clock_past(2)),
+    Input::Click(|m, _, cx| placed(m, cx, FORWARD_A), Held::No),
+    until!(|m, cx| picked(m, cx, FORWARD_A).is_some()),
+    Input::Click(|m, _, cx| placed(m, cx, FORWARD_B), Held::Ctrl),
+    // Панель выделения сдвигает строки вниз: место следующей строки — после неё.
+    until!(|m, cx| m.list.read(cx).selection.len() >= 2),
+    Input::Click(|m, _, cx| placed(m, cx, FORWARD_C), Held::Ctrl),
+    until!(|m, cx| m.list.read(cx).selection.len() >= 3),
+    Input::Press("bulk-forward"),
+    until!(|m, cx| screens::compose_tab(m).is_some_and(|c| {
+        let model = &c.read(cx).model;
+        model.subject.is_empty() && model.attachments().count() == 3 && model.attachments().all(|(_, a)| a.name.ends_with(".eml"))
+    })),
+    Input::Typed(|| format!("{};", colleague("POSTMAN_USER"))),
+    Input::Keys(&["tab"]),
+    Input::Typed(|| titled(FORWARDED)),
+    until!(|m, cx| screens::compose_tab(m).is_some_and(|c| c.read(cx).model.subject == titled(FORWARDED))),
+    Input::Press("send"),
+];
+
+const FORWARD_ONE: &[Input] = &[
+    Input::Until(mail_ready),
+    until!(|m, cx| placed(m, cx, FORWARD_A).is_some()),
+    Input::Right(|m, _, cx| placed(m, cx, FORWARD_A)),
+    until!(|m, _| m.menu.is_some()),
+    Input::Keys(&["down", "down", "down", "enter"]),
+    until!(|m, _| screens::compose_tab(m).is_some()),
+];
+
+// --- S5-12 Ф4, шаг 9, T1-02б, шаг 5, T1-23, S6-11 ---
+
+fn own_no_cert(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    let me = colleague("POSTMAN_USER");
+    screens::compose_tab(m).is_some_and(|c| {
+        c.read(cx).model.checks().any(|k| matches!(k, postman_core::checks::Check::NoCertificate { addresses, .. } if addresses.contains(&me)))
+    })
+}
+
+const OWN_CERT: &[Input] = &[
+    Input::Until(mail_ready),
+    Input::Run(|_, m, _, cx| {
+        // Адресат без сертификата заслонил бы свой: замечание о себе — когда у адресатов сертификаты есть или письмо себе.
+        let draft = postman_compose::Draft { to: vec![postman_compose::Address::new("", colleague("POSTMAN_USER"))], ..Default::default() };
+        m.open_compose(draft, cx);
+        Ok(())
+    }),
+    until!(|m, _| screens::compose_tab(m).is_some()),
+    Input::Press("tb-mark"),
+    Input::Press("mark-conf"),
+];
+
+fn plain_login(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    m.settings.add.as_ref().is_some_and(|p| p.read(cx).step == crate::signin::Step::Login)
+        && screens::spotted("signin-next").is_some()
+        && screens::spotted("signin-windows").is_none()
+}
+
+const PLAIN_LOGIN: &[Input] = &[
+    Input::Until(mail_ready),
+    Input::Run(accounts_page),
+    Input::Press("settings-account-add"),
+    until!(|m, cx| add_panel(m, cx).is_some()),
+    Input::Typed(|| colleague("POSTMAN_URL")),
+    Input::Keys(&["enter"]),
+];
+
+const CONTACT_MENU: &[Input] = &[
+    Input::Until(mail_ready),
+    Input::Run(|_, m, _, cx| {
+        m.set_section(crate::Section::Contacts, cx);
+        Ok(())
+    }),
+    until!(|m, _| m.section == crate::Section::Contacts && screens::spots_numbered("contact-").len() >= 2),
+    Input::Run(|_, m, _, cx| {
+        m.contacts.update(cx, |c, cx| c.set_source(crate::contacts::Source::Directory, cx));
+        Ok(())
+    }),
+    until!(|_, _| screens::spots_numbered("contact-").len() >= 2),
+    Input::Click(|_, _, _| screens::spots_numbered("contact-").first().map(|b| b.center()), Held::No),
+    until!(|m, cx| m.contacts.read(cx).selected_email().is_some()),
+    Input::Right(|_, _, _| screens::spots_numbered("contact-").get(1).map(|b| b.center())),
+    until!(|m, cx| m.contacts.read(cx).menu_open()),
+    Input::Press("contact-menu-item-2"),
+    until!(|m, cx| !m.contacts.read(cx).menu_open() && m.toasts.read(cx).latest().is_some()),
+    Input::Right(|_, _, _| screens::spots_numbered("contact-").get(1).map(|b| b.center())),
+    until!(|m, cx| m.contacts.read(cx).menu_open()),
+    Input::Press("contact-menu-item-1"),
+];
+
+const MINE_MENU: &[Input] = &[
+    Input::Until(mail_ready),
+    Input::Run(|_, m, _, cx| {
+        m.set_section(crate::Section::Contacts, cx);
+        m.contacts.update(cx, |c, cx| c.set_source(crate::contacts::Source::Mine, cx));
+        Ok(())
+    }),
+    until!(|_, _| !screens::spots_numbered("contact-").is_empty()),
+    Input::Right(|_, _, _| screens::spots_numbered("contact-").first().map(|b| b.center())),
+    until!(|m, cx| m.contacts.read(cx).menu_open()),
+    Input::Press("contact-menu-item-3"),
+];
+
+const DELEG_BY_ME: &[Input] = &[
+    Input::Until(mail_ready),
+    OPEN_TASKS,
+    Input::Until(tasks_ready),
+    Input::Run(|_, m, _, cx| {
+        m.tasks.update(cx, |t, cx| t.set_nav(Nav::Delegations(Tab::ByMe), cx));
+        Ok(())
+    }),
+];
+
+const DELEG_TO_ME: &[Input] = &[
+    Input::Until(mail_ready),
+    OPEN_TASKS,
+    Input::Until(tasks_ready),
+    until!(|m, cx| task(m, cx, ORDER).is_some()),
+    Input::Run(|_, m, _, cx| pick(m, cx, Nav::Delegations(Tab::ToMe), ORDER)),
+];
+
+const DELEG_FOREIGN: &[Input] = &[FOCUS, Input::Keys(&["delete"])];
+
+const DELEG_DELETE: &[Input] = &[
+    Input::Until(mail_ready),
+    OPEN_TASKS,
+    Input::Until(tasks_ready),
+    Input::Run(|_, m, _, cx| pick(m, cx, Nav::Delegations(Tab::ByMe), ORDER)),
+    FOCUS,
+    Input::Keys(&["delete"]),
+    until!(|m, cx| task(m, cx, ORDER).is_none()),
+    Input::Press("notice-act"),
 ];

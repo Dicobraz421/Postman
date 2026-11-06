@@ -4,6 +4,7 @@
 //! CardDAV, EWS (у IMAP-учётки на Exchange). Новый протокол — плагин-крейт и строка здесь; `postman-core` и экраны не меняются.
 
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use postman_core::backend::Registry;
 
@@ -19,6 +20,29 @@ pub(crate) fn registry() -> &'static Registry {
             .with_area(postman_backend_ews::EwsAreaPlugin)
     })
 }
+
+/// Автоответ записан, но сервер хранит один текст всем (отказ в своём скрипте `vacation`, плагин JMAP): это не ошибка
+/// записи, а ограничение, о котором надо сказать пользователю.
+pub(crate) fn autoreply_limited(error: &str) -> bool {
+    error == postman_backend_jmap::settings::ONE_TEXT_ONLY
+}
+
+/// Выход: письма в окне «Отменить» держат потоки IMAP и Exchange: они уходят сейчас, процесс их дожидается. Окна уже нет: не
+/// дольше [`LEAVE_LIMIT`], сервер без ответа не держит процесс вечно.
+pub(crate) fn finish_sends() {
+    let left = || postman_backend_imap::holding() + postman_backend_ews::sync::holding();
+    if left() == 0 {
+        return;
+    }
+    postman_backend_imap::leave();
+    postman_backend_ews::sync::leave();
+    let start = Instant::now();
+    while left() > 0 && start.elapsed() < LEAVE_LIMIT {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+const LEAVE_LIMIT: Duration = Duration::from_secs(30);
 
 #[cfg(test)]
 mod tests {

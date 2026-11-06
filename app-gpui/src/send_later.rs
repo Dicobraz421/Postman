@@ -224,6 +224,7 @@ impl Mailer {
         let action = match offer.state {
             OfferState::Open => div()
                 .id("undo-send")
+                .children(crate::screens::spot("undo-send"))
                 .px_2()
                 .rounded_md()
                 .cursor_pointer()

@@ -579,6 +579,8 @@ impl Mailer {
         if let Some(s) = plan.status {
             if s == Status::Synced {
                 self.live.synced_at = Some(jiff::Zoned::now().strftime("%H:%M").to_string());
+                // Письма не менялись (IMAP с кэшем): `EmailsChanged` не будет, а сверка закончилась.
+                self.live.synced = true;
             }
             self.live.status = status_text(&s);
             cx.notify();

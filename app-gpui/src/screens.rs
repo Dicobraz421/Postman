@@ -209,6 +209,8 @@ enum Event {
     Key(Keystroke),
     Raw(PlatformInput),
     Resize(Size<Pixels>),
+    /// Пропустить кадр: отметки (`spot`) догонят то, что сделал прошлый шаг.
+    Frame,
 }
 
 /// Сцена снимков (ADR 0005): значение в описи своей части (`PART.scenes`), шаги — функции части.
@@ -484,6 +486,7 @@ fn feed(m: &mut Mailer, scene: &'static Scene, window: &mut Window, cx: &mut Con
                 window.dispatch_event(e, cx);
             }
             Event::Resize(size) => window.resize(size),
+            Event::Frame => {}
         });
         return true;
     }
@@ -508,6 +511,7 @@ fn feed(m: &mut Mailer, scene: &'static Scene, window: &mut Window, cx: &mut Con
         Err(e) => fail(scene, &e),
     };
     if let Some(d) = &mut m.screens {
+        tracing::debug!("scene {}: step {}", scene.name, d.input);
         d.input += 1;
         d.queue = events;
         d.moved = Instant::now();
@@ -568,6 +572,8 @@ fn events(step: Input, m: &Mailer, window: &Window, cx: &App) -> Result<VecDeque
                 modifiers: Modifiers::default(),
                 touch_phase: TouchPhase::Moved,
             })));
+            // Отметки рисуются после этого шага: `Input::Press` сразу за прокруткой щёлкнул бы по прежнему месту элемента.
+            out.extend([Event::Frame, Event::Frame]);
         }
         Input::Drag(from, to) => {
             let (a, b) = (at(from)?, at(to)?);

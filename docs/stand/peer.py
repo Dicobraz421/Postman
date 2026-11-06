@@ -15,11 +15,13 @@ import base64
 import concurrent.futures
 import copy
 import imaplib
+import io
 import json
 import os
 import re
 import secrets
 import ssl
+import struct
 import subprocess
 import sys
 import time
@@ -27,6 +29,8 @@ import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
+import zlib
 
 CONTAINER = "postman-stand"
 URL = os.environ["POSTMAN_STAND_URL"]
@@ -81,8 +85,8 @@ class Mailbox:
         got = self.call([["Mailbox/set", {"accountId": self.account, "create": {"f": {"name": name, "parentId": None}}}, "0"]])
         return got[0][1]["created"]["f"]["id"]
 
-    def send(self, to, subject, text, keep=False):
-        """Письмо через EmailSubmission; `keep` — копия в «Отправленных», иначе письмо остаётся в «Черновиках»."""
+    def send(self, to, subject, text, keep=False, rich=None):
+        """Письмо через EmailSubmission; `keep` — копия в «Отправленных», иначе письмо остаётся в «Черновиках»; `rich` — свойства письма сверх текста."""
         boxes = self.boxes()
         ident = self.call([["Identity/get", {"accountId": self.account}, "0"]])[0][1]["list"][0]["id"]
         email = {
@@ -94,6 +98,9 @@ class Mailbox:
             "bodyValues": {"t": {"value": text}},
             "textBody": [{"partId": "t", "type": "text/plain"}],
         }
+        email.update(rich or {})
+        if "bodyStructure" in email:
+            del email["textBody"]
         submission = {"identityId": ident, "emailId": "#m"}
         arg = {"accountId": self.account, "create": {"s": submission}}
         if keep:
@@ -103,6 +110,19 @@ class Mailbox:
             ["EmailSubmission/set", arg, "1"],
         ])
         assert "s" in got[1][1].get("created", {}), got
+
+    def send_rich(self, to, subject, text, html, name, data):
+        """Письмо с HTML и вложением: так его присылает другой почтовый клиент."""
+        blob = upload(self, data, "text/plain")
+        self.send(to, subject, text, rich={
+            "bodyValues": {"t": {"value": text}, "h": {"value": html}},
+            "htmlBody": [{"partId": "h", "type": "text/html"}],
+            "attachments": [{"blobId": blob, "type": "text/plain", "name": name, "disposition": "attachment"}],
+        })
+
+    def send_file(self, to, subject, name, kind, data):
+        blob = upload(self, data, kind)
+        self.send(to, subject, "Файл во вложении.", rich={"attachments": [{"blobId": blob, "type": kind, "name": name, "disposition": "attachment"}]})
 
     def text_of(self, subject):
         """Текст письма: так его видит клиент без Postman."""
@@ -168,12 +188,12 @@ class Mailbox:
         return [e.get("title") for e in got[1][1]["list"]]
 
 
-def upload(box, text):
+def upload(box, text, kind="application/sieve"):
     path = box.session["uploadUrl"].replace("{accountId}", box.account)
     path = path[path.index("/jmap"):]
-    req = urllib.request.Request(URL + path, data=text.encode(), method="POST")
+    req = urllib.request.Request(URL + path, data=text if isinstance(text, bytes) else text.encode(), method="POST")
     req.add_header("Authorization", "Basic " + base64.b64encode(f"{box.user}:{box.password}".encode()).decode())
-    req.add_header("Content-Type", "application/sieve")
+    req.add_header("Content-Type", kind)
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.loads(r.read().decode())["blobId"]
 
@@ -231,11 +251,12 @@ class Dav:
     def put(self, href, ics):
         self.request("PUT", href, ics, "text/calendar; charset=utf-8", "0")
 
-    def new_event(self, title, rule=None):
+    def new_event(self, title, rule=None, days=0):
         uid = "peer-" + secrets.token_hex(6)
         now = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-        start = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(time.time() + 3600))
-        end = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(time.time() + 5400))
+        at = time.time() + days * 86400
+        start = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(at + 3600))
+        end = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(at + 5400))
         ics = ("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//postman stand peer//RU\r\nBEGIN:VEVENT\r\n"
                f"UID:{uid}\r\nDTSTAMP:{now}\r\nDTSTART:{start}\r\nDTEND:{end}\r\nSUMMARY:{title}\r\n" + (f"RRULE:{rule}\r\n" if rule else "") + "END:VEVENT\r\nEND:VCALENDAR\r\n")
         self.put(self.path + uid + ".ics", ics)
@@ -243,6 +264,20 @@ class Dav:
 
     def delete(self, href):
         self.request("DELETE", href, None, depth="0")
+
+    def principal(self):
+        body = '<d:propfind xmlns:d="DAV:"><d:prop><d:current-user-principal/></d:prop></d:propfind>'
+        text = self.request("PROPFIND", self.path, body, depth="0")
+        return re.search(r"current-user-principal>\s*<[^>]*href>([^<]+)<", text).group(1)
+
+    def share(self, principal):
+        """Открыть календарь коллеге: на Stalwart занятость видна только с обоими правами (`docs/STALWART.md`, п. 6)."""
+        self.request("ACL", self.path, ('<d:acl xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:ace><d:principal><d:href>' + principal +
+                                        '</d:href></d:principal><d:grant><d:privilege><d:read/></d:privilege><d:privilege><c:read-free-busy/></d:privilege>'
+                                        '</d:grant></d:ace></d:acl>'), depth="0")
+
+    def unshare(self):
+        self.request("ACL", self.path, '<d:acl xmlns:d="DAV:"/>', depth="0")
 
     def new_todo(self, title):
         uid = "peer-" + secrets.token_hex(6)
@@ -294,12 +329,13 @@ class Play:
     def __init__(self, ctx, group):
         self.ctx, self.group = ctx, group
 
-    def run(self, scenes, on_scene, user, password, url=URL, data=None, lang="ru", extra=None):
+    def run(self, scenes, on_scene, user, password, url=URL, data=None, lang="ru", extra=None, hidden=()):
+        """`hidden` — сцены без снимка: окно закрывается раньше него."""
         ctx = self.ctx
         place = os.path.join(ctx.data, data or self.group)
         os.makedirs(place, exist_ok=True)
         env = {k: v for k, v in os.environ.items() if not k.startswith(("STAND_", "POSTMAN_STAND_"))}
-        env.update(LOCALAPPDATA=place, POSTMAN_SCREENS_ONLY=",".join(scenes), POSTMAN_URL=url, POSTMAN_USER=user, POSTMAN_PASSWORD=password,
+        env.update(LOCALAPPDATA=place, POSTMAN_SCREENS_ONLY=",".join([*scenes, *hidden]), POSTMAN_URL=url, POSTMAN_USER=user, POSTMAN_PASSWORD=password,
                    POSTMAN_STAND_STAMP=ctx.stamp, POSTMAN_SCREENS_SHOT_ON_FAIL="1")
         env.update(extra or {})
         app = subprocess.Popen([ctx.exe, "--screens", ctx.shots, "--live", "--lang", lang], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -311,6 +347,8 @@ class Play:
                 if line.startswith("screens:"):
                     print(" ", line.strip()[:300], flush=True)
                     broken = line.strip()
+                if "panicked" in line:
+                    print(" ", line.strip()[:300], flush=True)
                 if os.environ.get("POSTMAN_LOG") and "WARN" in line:
                     print(" ", line.strip()[:300], flush=True)
                 if not line.startswith("screen "):
@@ -521,7 +559,281 @@ def group_tasks(ctx):
             print("сервер: задачи нет")
 
     main = ["st-s605-new", "st-s605-push", "st-s606-card", "st-s608-block", "st-s608-week", "st-s608-gone", "st-s605-done", "st-s605-delete"]
-    play.run(main, on_scene, one.user, one.password)
+    with concurrent.futures.ThreadPoolExecutor(1) as pool:
+        jobs = []
+
+        def second(scene):
+            # S6-06, шаг 4: второй Postman открыт раньше правки: она приходит ему сама.
+            if scene == "st-s606-open":
+                jobs.append(pool.submit(play.run, main, on_scene, one.user, one.password))
+
+        play.run(["st-s606-open", "st-s606-seen"], second, one.user, one.password, data="tasks-second")
+        for job in jobs:
+            job.result()
+
+
+def group_card(ctx):
+    """S6-05 шаги 3–6, S6-06 шаги 1–3, S6-07 шаги 1, 2, S6-08 шаг 1: задачи user1 на живом ящике; свидетель — CalDAV."""
+    play = Play(ctx, "card")
+    one, two = Mailbox(1), Mailbox(2)
+    dav = Dav(one)
+    stamp = ctx.stamp
+    card, renamed, project, letter = f"Карточка стенда {stamp}", f"Карточка новая {stamp}", f"Проект стенда {stamp}", f"Письмо со сроком {stamp}"
+    two.send(one.user, letter, "Письмо станет задачей.")
+    one.wait(letter, one.boxes()["inbox"])
+
+    def waiting(title, good, what):
+        for _ in range(40):
+            href, body = dav.find("VTODO", title)
+            if href and good(body):
+                return body
+            time.sleep(0.5)
+        raise AssertionError(f"{what}: {body!r}")
+
+    def on_scene(scene):
+        if scene == "st-s605-today":
+            waiting(card, lambda b: "DUE" in b, "нет срока сегодня на сервере")
+            print("сервер: задача со сроком", flush=True)
+        if scene == "st-s605-closed":
+            waiting(card, lambda b: "STATUS:COMPLETED" in b, "не выполнена на сервере")
+            print("сервер: выполнена", flush=True)
+        if scene == "st-s605-undone":
+            waiting(card, lambda b: "STATUS:COMPLETED" not in b, "выполнение не снято на сервере")
+            print("сервер: снова в работе", flush=True)
+        if scene == "st-s605-keys":
+            waiting(renamed, lambda b: "DUE" in b, "нет нового названия на сервере")
+            print("сервер: срок и новое название", flush=True)
+        if scene == "st-s605-del":
+            dav.gone("VTODO", renamed)
+            print("сервер: удалена", flush=True)
+        if scene == "st-s605-undel":
+            dav.wait("VTODO", renamed)
+            print("сервер: вернулась", flush=True)
+        if scene == "st-s606-fields":
+            body = waiting(renamed, lambda b: "VALARM" in b and project in b.replace("\r\n ", "") and "pm.cat." in b, "поля не на сервере")
+            print("сервер: напоминание, проект, категория", flush=True)
+        if scene == "st-s606-subs":
+            for _ in range(40):
+                subs = [b for b in dav.items("VTODO").values() if "RELATED-TO" in b and ("Первая" in b or "Вторая" in b)]
+                if len(subs) >= 2 and any("STATUS:COMPLETED" in b for b in subs):
+                    break
+                time.sleep(0.5)
+            assert len(subs) >= 2 and any("STATUS:COMPLETED" in b for b in subs), subs
+            print("сервер: подзадачи, отмеченная выполнена", flush=True)
+        if scene == "st-s606-notes":
+            waiting(renamed, lambda b: "жирным" in b.replace("\r\n ", ""), "заметки не на сервере")
+            print("сервер: заметки", flush=True)
+        if scene == "st-s607-repeat":
+            waiting(renamed, lambda b: "FREQ=MONTHLY" in b, "нет RRULE")
+            print("сервер: повтор", flush=True)
+        if scene == "st-s607-next":
+            wait_for(lambda: len([b for b in dav.items("VTODO").values() if renamed in b.replace("\r\n ", "")]) >= 2, "нет копии на сервере")
+            print("сервер: копия со следующим сроком", flush=True)
+
+    only = ["st-s605-today", "st-s605-space", "st-s605-closed", "st-s605-undone", "st-s605-keys", "st-s605-del", "st-s605-undel", "st-s606-fields",
+            "st-s606-subs", "st-s606-notes", "st-s607-repeat", "st-s607-next", "st-s607-undo", "st-s608-card", "st-s605-mail", "st-s605-mail-done",
+            "st-s605-mail-undo"]
+    try:
+        play.run(only, on_scene, one.user, one.password)
+    finally:
+        for href, body in dav.items("VTODO").items():
+            if stamp in body or "RELATED-TO" in body:
+                dav.delete(href)
+
+
+def group_full(ctx):
+    """S7-03а шаги 1–6, S5-21 шаг 8, S5-22 шаг 4, T1-06: живой ящик полного сервера."""
+    play = Play(ctx, "full")
+    one, two, three = Mailbox(1), Mailbox(2), Mailbox(3)
+    dav, peer = Dav(one), Dav(two)
+    stamp = ctx.stamp
+    # Встреча на другой неделе: поиск идёт на сервер.
+    # Среда: рабочая неделя показывает её при любом дне запуска.
+    far = dav.new_event(f"Встреча далеко {stamp}", days=28 + (2 - time.localtime().tm_wday) % 7)
+    near = peer.new_event(f"Событие коллеги {stamp}")
+    try:
+        peer.share(dav.principal())
+        print("другой клиент: user2 открыл календарь user1", flush=True)
+        play.run(["st-s703a-rail", "st-s703a-settings", "st-s703a-sections", "st-s703a-palette", "st-s703a-contacts", "st-s703a-keys", "st-s521-found", "st-s521-open", "st-s522-week"],
+                 lambda _: None, one.user, one.password)
+    finally:
+        peer.unshare()
+        peer.delete(near)
+        dav.delete(far)
+    # Группы папок — у сотрудника общего ящика.
+    play.run(["st-t106-fold", "st-t106-kept", "st-t106-branch"], lambda _: None, three.user, three.password, data="full-three")
+
+
+def group_own(ctx):
+    """S7-07б шаги 1–3: своя встреча по JMAP (user1 → user3) и по CalDAV (user1 → user2): свидетель — календарь участника."""
+    one, two, three = Mailbox(1), Mailbox(2), Mailbox(3)
+    host = os.environ["POSTMAN_STAND_IMAP"]
+    standards = f"imaps://{host}?smtp={os.environ['POSTMAN_STAND_SMTP']}&dav=https://{host.split(':')[0]}"
+
+    def round_trip(name, url, guest):
+        play = Play(ctx, name)
+        stamp = ctx.stamp
+        extra = {"POSTMAN_STAND_PEER": guest.user}
+        first, second = f"Своя встреча {stamp}", f"Своя встреча перенесена {stamp}"
+        witness = Dav(guest)
+        boss = lambda scenes, seen=lambda _: None: play.run(scenes, seen, one.user, one.password, url=url, extra=extra)
+        boss(["st-s707-new", "st-s707-buttons"])
+        witness.wait("VEVENT", first, seconds=30)
+        print(name, "сервер: встреча в календаре участника", flush=True)
+        play.run(["st-s707-foreign"], lambda _: None, guest.user, guest.password, url=url, data=name + "-guest")
+
+        def seen(scene):
+            if scene == "st-s707-edit":
+                witness.wait("VEVENT", second, seconds=30)
+                print(name, "сервер: новая тема у участника", flush=True)
+            if scene == "st-s707-cancel":
+                for _ in range(60):
+                    _, body = witness.find("VEVENT", second)
+                    if not body or "STATUS:CANCELLED" in body:
+                        break
+                    time.sleep(0.5)
+                assert not body or "STATUS:CANCELLED" in body, body
+                print(name, "сервер: у участника встречи нет или она отменена", flush=True)
+
+        boss(["st-s707-edit", "st-s707-cancel"], seen)
+
+    round_trip("own-jmap", URL, three)
+    round_trip("own-dav", standards, two)
+
+
+def png(width, height):
+    """Картинка одного цвета."""
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    rows = (b"\0" + b"\x30\x70\xc0" * width) * height
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+def ooxml(parts):
+    """Файл Office: части ZIP-архива."""
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, text in parts.items():
+            z.writestr(name, text)
+    return out.getvalue()
+
+
+def book():
+    """Книга Excel на два листа, строки вписаны прямо в лист."""
+    types = ('<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+             '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>'
+             '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+             '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+             '<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>')
+    rels = ('<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>')
+    workbook = ('<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+                'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Январь" sheetId="1" r:id="rId1"/>'
+                '<sheet name="Февраль" sheetId="2" r:id="rId2"/></sheets></workbook>')
+    links = ('<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+             '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+             '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/></Relationships>')
+    sheet = lambda v: ('<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+                       f'<row r="1"><c r="A1" t="inlineStr"><is><t>Статья</t></is></c><c r="B1" t="inlineStr"><is><t>Сумма</t></is></c></row>'
+                       f'<row r="2"><c r="A2" t="inlineStr"><is><t>Связь</t></is></c><c r="B2"><v>{v}</v></c></row></sheetData></worksheet>')
+    return ooxml({"[Content_Types].xml": types, "_rels/.rels": rels, "xl/workbook.xml": workbook, "xl/_rels/workbook.xml.rels": links,
+                  "xl/worksheets/sheet1.xml": sheet(120), "xl/worksheets/sheet2.xml": sheet(340)})
+
+
+def slides():
+    """Презентация на два слайда."""
+    types = ('<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+             '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>'
+             '<Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>'
+             '<Override PartName="/ppt/slides/slide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>'
+             '<Override PartName="/ppt/slides/slide2.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/></Types>')
+    rels = ('<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/></Relationships>')
+    main = ('<?xml version="1.0" encoding="UTF-8"?><p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:sldIdLst><p:sldId id="256" r:id="rId1"/><p:sldId id="257" r:id="rId2"/></p:sldIdLst></p:presentation>')
+    links = ('<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+             '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>'
+             '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide2.xml"/></Relationships>')
+    slide = lambda t: ('<?xml version="1.0" encoding="UTF-8"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+                       'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:cNvPr id="1" name="Заголовок"/><p:cNvSpPr/>'
+                       f'<p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:p><a:r><a:t>{t}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>')
+    return ooxml({"[Content_Types].xml": types, "_rels/.rels": rels, "ppt/presentation.xml": main, "ppt/_rels/presentation.xml.rels": links,
+                  "ppt/slides/slide1.xml": slide("Первый слайд"), "ppt/slides/slide2.xml": slide("Второй слайд")})
+
+
+def document():
+    """Документ Word."""
+    types = ('<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+             '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>'
+             '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>')
+    rels = ('<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>')
+    body = ('<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>'
+            '<w:p><w:r><w:t>Текст документа.</w:t></w:r></w:p></w:body></w:document>')
+    return ooxml({"[Content_Types].xml": types, "_rels/.rels": rels, "word/document.xml": body})
+
+
+def group_files(ctx):
+    """S8-23 шаги 1–5, T1-13в шаг 1: письма с файлами: файлы собирает `peer.py`, в репозитории образцов нет."""
+    play = Play(ctx, "files")
+    one, two = Mailbox(1), Mailbox(2)
+    stamp = ctx.stamp
+    eml = (f"From: Коллега <peer@example.test>\r\nTo: {one.user}\r\nSubject: Вложенное письмо\r\nDate: Fri, 06 Nov 2026 10:00:00 +0300\r\n"
+           "MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nТекст вложенного письма.\r\n").encode()
+    OFFICE = "application/vnd.openxmlformats-officedocument."
+    files = [("Файл книга", "книга.xlsx", OFFICE + "spreadsheetml.sheet", book()),
+             ("Файл слайды", "слайды.pptx", OFFICE + "presentationml.presentation", slides()),
+             ("Файл таблица", "таблица.csv", "text/csv", "Статья;Сумма\r\nСвязь;120\r\n".encode()),
+             ("Файл письмо", "письмо.eml", "message/rfc822", eml),
+             ("Файл разметка", "заметка.md", "text/markdown", "# Заголовок\n\nТекст заметки.\n".encode()),
+             ("Файл документ", "документ.docx", OFFICE + "wordprocessingml.document", document())]
+    for subject, name, kind, data in files:
+        two.send_file(one.user, f"{subject} {stamp}", name, kind, data)
+    # T1-10, T1-10в: широкая, узкая и с размером из HTML.
+    pictures = {"wide": png(1800, 300), "narrow": png(120, 40), "sized": png(800, 400)}
+    parts = [{"blobId": upload(two, data, "image/png"), "type": "image/png", "cid": f"{name}@example.test", "disposition": "inline", "name": f"{name}.png"} for name, data in pictures.items()]
+    html = ('<p>Широкая:</p><img src="cid:wide@example.test"><p>Узкая:</p><img src="cid:narrow@example.test">'
+            '<p>С размером из HTML:</p><img src="cid:sized@example.test" width="200" height="100">')
+    two.send(one.user, f"Письмо с картинками {stamp}", "", rich={"bodyValues": {"h": {"value": html}},
+                                                               "bodyStructure": {"type": "multipart/related", "subParts": [{"partId": "h", "type": "text/html"}, *parts]}})
+    for subject, *_ in files:
+        one.wait(f"{subject} {stamp}", one.boxes()["inbox"], seconds=60)
+    play.run(["st-s823-book", "st-s823-slides", "st-s823-csv", "st-s823-eml", "st-s823-md", "st-t113-docx", "st-t110-images"], lambda _: None, one.user, one.password)
+
+
+def group_forward(ctx):
+    """T1-17 шаги 1–3: письма коллеги без тел в кэше; письмо с тремя вложениями уходит и читается на сервере."""
+    play = Play(ctx, "forward")
+    one, two = Mailbox(1), Mailbox(2)
+    stamp = ctx.stamp
+    for word in ("раз", "два", "три"):
+        two.send(one.user, f"Пересылка {word} {stamp}", "Письмо для пересылки.")
+        one.wait(f"Пересылка {word} {stamp}", one.boxes()["inbox"])
+
+    def on_scene(scene):
+        if scene == "st-t117-many":
+            got = one.wait(f"Три письма вложениями {stamp}", one.boxes()["inbox"], seconds=30)
+            parts = one.call([["Email/get", {"accountId": one.account, "ids": [got["id"]], "properties": ["attachments"]}, "0"]])[0][1]["list"][0]["attachments"]
+            assert len(parts) == 3 and all(p["type"] == "message/rfc822" for p in parts), parts
+            print("сервер: три вложения message/rfc822", flush=True)
+
+    play.run(["st-t117-many", "st-t117-one"], on_scene, one.user, one.password)
+
+
+def group_more(ctx):
+    """S5-12 Ф4 шаг 9, T1-02б шаг 5, T1-23 шаги 1–3 на живом ящике user1, S6-11 шаги 1–3, 6 окнами user1 и user2."""
+    play = Play(ctx, "more")
+    one, two = Mailbox(1), Mailbox(2)
+    extra = {"POSTMAN_STAND_PEER": two.user}
+    play.run(["st-s512-own", "st-t102-plain", "st-t123-menu", "st-t123-mine"], lambda _: None, one.user, one.password, extra=extra)
+    # Поручение — как в S6-09: окно user1, затем окно user2 находит его у себя.
+    boss = Play(ctx, "more-boss")
+    boss.run(["st-s609-assign", "st-s611-by-me"], lambda _: None, one.user, one.password,
+             extra={**extra, "POSTMAN_STAND_WATCHER": Mailbox(3).user})
+    two.wait(f"Поручение: Поручение стенда {ctx.stamp}", two.boxes()["inbox"], seconds=30)
+    play.run(["st-s611-to-me", "st-s611-foreign"], lambda _: None, two.user, two.password, data="more-second")
+    boss.run(["st-s611-delete"], lambda _: None, one.user, one.password, extra=extra)
 
 
 def group_deleg(ctx):
@@ -793,7 +1105,12 @@ def group_imap(ctx):
     one, two = Mailbox(1), Mailbox(2)
     stamp = ctx.stamp
     two.send(one.user, f"С вложением {stamp}", "Письмо для папок IMAP.")
+    two.send_rich(one.user, f"Письмо с оформлением {stamp}", "Письмо с оформлением: простой текст.",
+                  '<p>Письмо с <b>жирное слово</b> внутри.</p><img src="https://example.test/pixel.png" alt="внешняя картинка">', "отчёт.txt", "Вложение: строка текста.\n")
+    two.send(one.user, f"Беседа IMAP {stamp}", "Начало беседы.")
     one.wait(f"С вложением {stamp}", one.boxes()["inbox"])
+    one.wait(f"Письмо с оформлением {stamp}", one.boxes()["inbox"])
+    one.wait(f"Беседа IMAP {stamp}", one.boxes()["inbox"])
     box = Imap(one)
     host = os.environ["POSTMAN_STAND_IMAP"]
     smtp = os.environ["POSTMAN_STAND_SMTP"]
@@ -823,12 +1140,27 @@ def group_imap(ctx):
         if scene == "st-s704-draft":
             wait_for(lambda: len(box.uids("Drafts", f"Черновик IMAP {stamp}")) == 1, "в Drafts не одна копия")
             print("сервер: одна копия в Drafts")
+        if scene == "st-s704-undo":
+            # Окно «Отменить» — 10 с: отменённое письмо не должно прийти и после него.
+            time.sleep(12)
+            assert not two.by_subject(f"Отмена IMAP {stamp}"), "отменённое письмо ушло"
+            print("сервер: отменённое письмо не ушло")
+        if scene == "st-s704-resend":
+            two.wait(f"Отмена IMAP {stamp}", two.boxes()["inbox"], seconds=30)
+            print("сервер: без отмены письмо ушло")
+        if scene == "st-s704-thread":
+            two.wait(f"Беседа IMAP {stamp}", two.boxes()["inbox"], seconds=30)
+            print("сервер: ответ у user2")
 
     extra = {"POSTMAN_STAND_PEER": two.user}
     only = ["st-s704-tree", "st-s704-open", "st-s704-send", "st-s704-flags", "st-s704-flag-back", "st-s704-move", "st-s704-delete", "st-s704-purge",
-            "st-s704-draft"]
+            "st-s704-draft", "st-s704-html", "st-s704-preview", "st-s704-undo", "st-s704-resend", "st-s704-thread"]
     try:
         play.run(only, on_scene, one.user, one.password, url=url, extra=extra)
+        # Шаг 9: письмо в окне «Отменить», окно закрыто: письмо уходит при закрытии.
+        play.run(["st-s704-quit"], lambda _: None, one.user, one.password, url=url, extra=extra, hidden=["st-s704-quit-close"])
+        two.wait(f"Закрытие IMAP {stamp}", two.boxes()["inbox"], seconds=20)
+        print("сервер: письмо ушло при закрытии", flush=True)
     finally:
         box.close()
     # Шаг 8: большой ящик, письмо за первыми 500: тема — из конца ящика.
@@ -837,12 +1169,22 @@ def group_imap(ctx):
         ["Email/query", {"accountId": big.account, "sort": [{"property": "receivedAt", "isAscending": True}], "limit": 1}, "0"],
         ["Email/get", {"accountId": big.account, "#ids": {"resultOf": "0", "name": "Email/query", "path": "/ids"}, "properties": ["subject"]}, "1"],
     ])
-    word = got[1][1]["list"][0]["subject"]
+    far = got[1][1]["list"][0]
+    word = far["subject"]
     play.run(["st-s704-far"], lambda _: None, big.user, big.password, url=url, data="imap-big", extra={"POSTMAN_STAND_WORD": word})
+    # Шаг 10: фильтр «Непрочитанные» по всем папкам: письмо из конца ящика — единственное непрочитанное, которого нет в первых 500.
+    far_id = big.call([["Email/query", {"accountId": big.account, "sort": [{"property": "receivedAt", "isAscending": True}], "limit": 1}, "0"]])[0][1]["ids"][0]
+    unread = big.call([["Email/query", {"accountId": big.account, "filter": {"notKeyword": "$seen"}, "calculateTotal": True, "limit": 0}, "0"]])[0][1]["total"]
+    print("непрочитанных в большом ящике:", unread)
+    big.call([["Email/set", {"accountId": big.account, "update": {far_id: {"keywords/$seen": None}}}, "0"]])
+    try:
+        play.run(["st-s704-filter"], lambda _: None, big.user, big.password, url=url, data="imap-big", extra={"POSTMAN_STAND_WORD": word})
+    finally:
+        big.call([["Email/set", {"accountId": big.account, "update": {far_id: {"keywords/$seen": True}}}, "0"]])
 
 
 def group_dav(ctx):
-    """S7-05 шаги 1–4, 8: IMAP и CalDAV/CardDAV; свидетель — запросы CalDAV и CardDAV."""
+    """S7-05 шаги 1–4, 6–8: IMAP и CalDAV/CardDAV; свидетель — запросы CalDAV и CardDAV."""
     play = Play(ctx, "dav")
     one, two = Mailbox(1), Mailbox(2)
     stamp = ctx.stamp
@@ -852,6 +1194,7 @@ def group_dav(ctx):
     host = os.environ["POSTMAN_STAND_IMAP"]
     url = f"imaps://{host}?smtp={os.environ['POSTMAN_STAND_SMTP']}&dav=https://{host.split(':')[0]}"
     meeting = f"Встреча CalDAV {stamp}"
+    first, edited, server, order = f"Задача стенда {stamp}", f"Задача правка {stamp}", f"С сервера {stamp}", f"Поручение стенда {stamp}"
 
     def on_scene(scene):
         if scene == "st-s705-meeting":
@@ -868,11 +1211,170 @@ def group_dav(ctx):
             wait_for(lambda: card.has(f"{stamp}@example.test"), "нет карточки в CardDAV")
             print("сервер: карточка в CardDAV")
 
-    only = ["st-s705-rail", "st-s705-week", "st-s705-search", "st-s705-meeting", "st-s705-accepted", "st-s705-contact", "st-s705-suggest"]
+        if scene == "st-s705-task":
+            dav.wait("VTODO", first)
+            print("сервер: VTODO из Postman")
+        if scene == "st-s705-task-due":
+            for _ in range(20):
+                href, body = dav.wait("VTODO", first)
+                if "DUE" in body:
+                    break
+                time.sleep(0.5)
+            assert "DUE" in body, body
+            print("сервер: срок")
+            dav.put(href, body.replace(first, edited))
+            dav.new_todo(server)
+            print("другой клиент: правка и новая задача")
+        if scene == "st-s705-task-done":
+            for _ in range(30):
+                _, body = dav.wait("VTODO", edited)
+                if "STATUS:COMPLETED" in body:
+                    break
+                time.sleep(0.5)
+            assert "STATUS:COMPLETED" in body, body
+            print("сервер: STATUS:COMPLETED")
+        if scene == "st-s705-task-gone":
+            dav.gone("VTODO", server)
+            print("сервер: задачи нет")
+        if scene == "st-s705-order":
+            # Что сервер не рассылает задачу с `SCHEDULE-AGENT=CLIENT` сам, сверяет `caldav_task_round_trip`: здесь письмо уже в пути.
+            got = two.wait(f"Поручение: {order}", two.boxes()["inbox"], seconds=30)
+            assert got["from"][0]["email"] == one.user, got["from"]
+            print("сервер: письмо-поручение от user1")
+            peer.wait("VTODO", order, seconds=30)
+            print("сервер: копию у user2 положило письмо iMIP")
+            # Окно user2 — после письма: оно ждёт поручение не дольше времени шага сцены.
+            play.run(["st-s705-order-got"], lambda _: None, two.user, two.password, url=url, data="dav-second")
+
+    only = ["st-s705-rail", "st-s705-week", "st-s705-search", "st-s705-meeting", "st-s705-accepted", "st-s705-contact", "st-s705-suggest",
+            "st-s705-task", "st-s705-task-due", "st-s705-task-back", "st-s705-task-done", "st-s705-task-gone", "st-s705-order", "st-s705-order-sent"]
     try:
         play.run(only, on_scene, one.user, one.password, url=url, extra={"POSTMAN_STAND_PEER": two.user})
+        # Шаг 5: занятость user2 у user1: пока календарь не открыт — «нет данных».
+        busy = peer.new_event(f"Занятость стенда {stamp}")
+        try:
+            play.run(["st-s705-nobusy"], lambda _: None, one.user, one.password, url=url, extra={"POSTMAN_STAND_PEER": two.user})
+            print("окно: занятости user2 нет: «нет данных»")
+            peer.share(dav.principal())
+            print("другой клиент: user2 открыл календарь")
+            play.run(["st-s705-busy"], lambda _: None, one.user, one.password, url=url, extra={"POSTMAN_STAND_PEER": two.user})
+            print("окно: занятость user2 видна")
+        finally:
+            peer.unshare()
+            peer.delete(busy)
     finally:
         dav.delete(series)
+
+
+def group_access(ctx):
+    """S8-43 шаги 1–5: A — user1, B — user2. Окна идут по очереди: каждый запуск — новая сверка с сервером."""
+    play = Play(ctx, "access")
+    one, two = Mailbox(1), Mailbox(2)
+    dav = Dav(one)
+    event = dav.new_event(f"Занятость стенда {ctx.stamp}")
+    to_b, to_a = {"POSTMAN_STAND_PEER": two.user}, {"POSTMAN_STAND_PEER": one.user}
+    a = lambda scenes: play.run(scenes, lambda _: None, one.user, one.password, extra=to_b)
+    b = lambda scenes: play.run(scenes, lambda _: None, two.user, two.password, data="access-b", extra=to_a)
+    try:
+        a(["st-s843-share"])
+        b(["st-s843-busy"])
+        a(["st-s843-level"])
+        b(["st-s843-seen"])
+        a(["st-s843-again"])
+        a(["st-s843-kept", "st-s843-close"])
+        b(["st-s843-none"])
+    finally:
+        dav.delete(event)
+
+
+def fill(box, count, word):
+    """`count` писем во «Входящие» партиями `Email/import`."""
+    inbox = box.boxes()["inbox"]
+    done, part = 0, 500
+    while done < count:
+        n = min(part, count - done)
+        create, blobs = {}, {}
+        for i in range(n):
+            text = (f"From: Коллега <peer@example.test>\r\nTo: {box.user}\r\nSubject: {word} {done + i}\r\n"
+                    f"Message-ID: <{word}-{done + i}@example.test>\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nПисьмо номер {done + i}.\r\n")
+            blobs[f"b{i}"] = {"data:asText": text}
+            create[f"m{i}"] = {"blobId": f"#b{i}", "mailboxIds": {inbox: True}, "keywords": {"$seen": True}}
+        got = box.call([
+            ["Blob/upload", {"accountId": box.account, "create": {k: {"data": [v], "type": "message/rfc822"} for k, v in blobs.items()}}, "0"],
+            ["Email/import", {"accountId": box.account, "emails": create}, "1"],
+        ], [CORE, MAIL, "urn:ietf:params:jmap:blob"])
+        assert len(got[1][1].get("created") or {}) == n, str(got[1][1])[:300]
+        done += n
+
+
+def group_move(ctx):
+    """S8-15 шаги 3–5, S8-16 шаги 1–7. Обе учётные записи временные: письма уходят из ящика-источника. Цель добавляется в окне с «Не хранить»."""
+    play = Play(ctx, "move")
+    admin = Admin()
+    domain = os.environ["POSTMAN_STAND_USER1"].split("@")[1]
+    names = ["dsrc" + secrets.token_hex(2), "ddst" + secrets.token_hex(2)]
+    secret = [secrets.token_urlsafe(18), secrets.token_urlsafe(18)]
+    ids = [admin.temp_user(n, p) for n, p in zip(names, secret)]
+    source, target = [Mailbox(user=f"{n}@{domain}", password=p) for n, p in zip(names, secret)]
+    extra = {"POSTMAN_STAND_PEER": target.user, "POSTMAN_STAND_PEER_SECRET": target.password}
+    count = int(os.environ.get("POSTMAN_STAND_MOVE", "2000"))
+
+    def total(box):
+        got = box.call([["Email/query", {"accountId": box.account, "filter": {"inMailbox": box.boxes()["inbox"]}, "calculateTotal": True, "limit": 1}, "0"]])
+        return got[0][1]["total"]
+
+    def distinct(box):
+        seen, position = [], 0
+        while True:
+            got = box.call([
+                ["Email/query", {"accountId": box.account, "filter": {"inMailbox": box.boxes()["inbox"]}, "position": position, "limit": 500}, "0"],
+                ["Email/get", {"accountId": box.account, "#ids": {"resultOf": "0", "name": "Email/query", "path": "/ids"}, "properties": ["messageId"]}, "1"],
+            ])
+            rows = got[1][1]["list"]
+            seen += [m for r in rows for m in r["messageId"]]
+            position += len(rows)
+            if len(rows) < 500:
+                return len(seen), len(set(seen))
+
+    def run(scenes, on_scene=lambda _: None):
+        # Пароль цели в профиле не хранится («Не хранить»): каждый запуск добавляет её заново.
+        play.run(["st-s703-add"] + scenes, on_scene, source.user, source.password, extra=extra)
+
+    started = {}
+
+    def first(scene):
+        if scene == "st-s815-menu":
+            started["drag"] = time.time()
+        if scene == "st-s815-target":
+            print(f"список цели показал письма за {time.time() - started['drag']:.1f} с", flush=True)
+
+    def second(scene):
+        if scene == "st-s816-stop-no":
+            print("сервер цели посреди выгрузки:", total(target), flush=True)
+
+    try:
+        started["fill"] = time.time()
+        fill(source, count, "move" + ctx.stamp)
+        print(f"письма источника: {count} за {time.time() - started['fill']:.0f} с", flush=True)
+        run(["st-s816-local", "st-s815-letter", "st-s815-menu", "st-s815-drag", "st-s815-target", "st-s816-ask"], first)
+        run(["st-s816-kept", "st-s816-pause", "st-s816-resume", "st-s816-stop-no"], second)
+        run(["st-s816-done"])
+        wait_for(lambda: total(source) == 0, "у источника письма остались", 60)
+        have, unique = distinct(target)
+        assert have == unique, f"дубли на сервере цели: {have} писем, разных {unique}"
+        print(f"сервер: у цели {have} писем без дублей, у источника 0", flush=True)
+        fill(source, 600, "back" + ctx.stamp)
+        run(["st-s816-start", "st-s816-return"])
+        wait_for(lambda: total(source) == 600, "письма не вернулись к источнику", 60)
+        print("сервер: письма вернулись", flush=True)
+        run(["st-s816-start-2", "st-s816-keep"])
+        fill(source, 300, "full" + ctx.stamp)
+        used = admin.accounts()[target.user]["usedDiskQuota"]
+        admin.quota(target.user, used + 3000)
+        run(["st-s816-start-3", "st-s816-full", "st-s816-local-rest"])
+    finally:
+        for account in ids:
+            admin.destroy(account)
 
 
 def together(*runs):
@@ -904,8 +1406,8 @@ class Ctx:
         self.stamp = "r" + secrets.token_hex(3)
 
 
-GROUPS = {"live": group_live, "rules": group_rules, "vacation": group_vacation, "tasks": group_tasks, "deleg": group_deleg,
-          "shared": group_shared, "accounts": group_accounts, "box": group_box, "imap": group_imap, "dav": group_dav}
+GROUPS = {"live": group_live, "rules": group_rules, "vacation": group_vacation, "tasks": group_tasks, "card": group_card, "full": group_full, "own": group_own, "files": group_files, "forward": group_forward, "more": group_more, "deleg": group_deleg,
+          "shared": group_shared, "accounts": group_accounts, "box": group_box, "imap": group_imap, "dav": group_dav, "access": group_access, "move": group_move}
 
 
 def main():
