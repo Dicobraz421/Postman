@@ -88,6 +88,10 @@ const SCENES: &[Scene] = &[
     Scene::new("cal-41-answer", wide, answered_again).input(ANSWER).wait(new_invite).on_request(),
     // Решение владельца п. 11: поиск, Enter по встрече в субботу при «Раб. неделе»: вид «Неделя», событие видно и выбрано.
     Scene::new("cal-s521-weekend", start, weekend_shown).input(WEEKEND_SEARCH).on_request(),
+    // Решение владельца п. 9: подробности события и стопка тостов: «Написать участникам» свободна.
+    Scene::new("cal-d9-event", start, write_free).input(EVENT_TOASTS).on_request(),
+    // Решение владельца п. 9: поле поиска «Клавиатура» берёт фокус с первого щелчка при стопке тостов.
+    Scene::new("cal-d9-keys", keyboard, key_typed).input(KEYS_UNDER_TOASTS).on_request(),
 ];
 
 const OPEN: &[Input] = &[
@@ -499,6 +503,42 @@ const CAL_SEARCH: &[Input] = &[
     Input::Until(event_opened),
     Input::Keys(&["escape"]),
 ];
+
+const TOASTS: Input = Input::Run(|_, m, _, cx| {
+    crate::screens::toast_stack(m, cx);
+    Ok(())
+});
+
+const EVENT_TOASTS: &[Input] = &[
+    Input::Until(mail_ready),
+    Input::Keys(&["ctrl-2"]),
+    Input::Until(in_calendar),
+    Input::Run(|_, m, _, cx| {
+        m.cal.update(cx, |c, cx| {
+            c.go_to_demo_week(cx);
+            c.select_busiest(cx);
+        });
+        Ok(())
+    }),
+    Input::Until(|_, m, cx| m.cal.read(cx).selected()),
+    TOASTS,
+];
+
+fn write_free(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    m.toasts.read(cx).on_screen() == 3 && crate::screens::apart("notice-stack", "write-all")
+}
+
+const KEYS_UNDER_TOASTS: &[Input] = &[
+    TOASTS,
+    Input::Until(|_, m, cx| m.toasts.read(cx).on_screen() == 3 && crate::screens::apart("notice-stack", "settings-keys-search")),
+    Input::Press("settings-keys-search"),
+    Input::Text("флаг"), // i18n-ok: ввод сценария
+    Input::Until(one_key_row),
+];
+
+fn key_typed(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    m.toasts.read(cx).on_screen() == 3 && one_key_row(&SCENES[0], m, cx)
+}
 
 const WEEKEND: &str = "Встреча в субботу"; // i18n-ok: ввод сценария
 /// Суббота демо-недели, дней от понедельника.

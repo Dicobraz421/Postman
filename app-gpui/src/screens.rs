@@ -240,6 +240,21 @@ pub(crate) fn forget_spots() {
     SPOTS.with_borrow_mut(HashMap::clear);
 }
 
+/// Оба элемента на экране и не пересекаются: стопка тостов не лежит на кнопке.
+pub(crate) fn apart(a: &str, b: &str) -> bool {
+    spot_bounds(a).zip(spot_bounds(b)).is_some_and(|(a, b)| !a.intersects(&b))
+}
+
+/// Показать стопку из трёх тостов с кнопками: сцены проверяют, что под ней и рядом с ней.
+pub(crate) fn toast_stack(m: &mut Mailer, cx: &mut Context<Mailer>) {
+    m.toasts.update(cx, |t, cx| {
+        for n in 1..=3 {
+            let undo = pets_ui::ToastAction::new(pets_i18n::tr!("bulk-undo"), |_, _| {});
+            t.push_action(pets_ui::Level::Info, pets_i18n::tr!("bulk-done-archive", n = n), undo, cx);
+        }
+    });
+}
+
 /// Центр отмеченного элемента, если он внутри окна: иначе щелчок ушёл бы мимо.
 pub(crate) fn spot_center(id: &str, window: &Window) -> Option<Point<Pixels>> {
     let view = window.viewport_size();
@@ -551,13 +566,6 @@ fn feed(m: &mut Mailer, scene: &'static Scene, window: &mut Window, cx: &mut Con
         && spot_center(id, window).is_none()
     {
         return true;
-    }
-    // Живой ящик: тост прошлого шага лежит поверх кнопок (находка F3) и забрал бы щелчок. Кроме кнопки самого тоста.
-    if let Input::Press(id) = step
-        && live(m)
-        && id != "notice-act"
-    {
-        m.toasts.update(cx, |t, cx| t.hide_all(cx));
     }
     if let Input::Run(run) = step
         && let Err(e) = run(scene, m, window, cx)

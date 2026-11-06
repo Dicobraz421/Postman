@@ -609,6 +609,10 @@ fn mail_drills() {
         "mail-37-afe",
         "mail-t104-tree",
         "mail-t104-go",
+        "mail-d9-expand",
+        "mail-d9-reply",
+        "mail-d9-attachments",
+        "mail-d9-compose",
         "mail-29-thread-remind",
         "mail-29-thread-forward",
         "mail-t105-split",
@@ -712,6 +716,8 @@ fn cal_drills() {
         "cal-s521-views",
         "cal-s521-search",
         "cal-s521-weekend",
+        "cal-d9-event",
+        "cal-d9-keys",
     ];
     themed_scenes_in("cal-", DRILLS, DRILLS);
     // Настройки на диске: сцены первого запуска меняют их одна за другой, второй читает всё разом.
@@ -744,6 +750,7 @@ fn task_drills() {
         "task-s605-new",
         "task-s604-other-day",
         "task-s511-tab",
+        "task-s511-delete",
         "task-s605-keys",
         "task-s605-mail",
         "task-s606-fields",

@@ -588,6 +588,12 @@ impl Render for Mailer {
         if std::mem::take(&mut self.refocus) {
             window.focus(&self.focus, cx);
         }
+        // «Написать участникам» — внизу справа, у края подробностей события: стопка тостов над ней.
+        let details = self.section == Section::Calendar && self.tabs.is_active(crate::tabs::TabKind::Main) && self.cal.read(cx).selected();
+        let write_row = if details { crate::calendar::WRITE_ROW_H } else { 0. };
+        let cards = self.lifecycle.cards.len() + usize::from(self.undo_shown());
+        let lift = crate::notices::lift(write_row, f32::from(window.viewport_size().width), cards);
+        self.toasts.update(cx, |t, _| t.lift = lift);
         let l = crate::roles::look(cx);
         let menu = self.context_menu(window, &l, cx);
         let picker = self.lifecycle_overlay(&l, cx);

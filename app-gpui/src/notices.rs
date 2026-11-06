@@ -1,5 +1,6 @@
-//! Уведомления (S5-08, DESIGN «Действия и состояния», макет «Состояния»): стопка тостов справа сверху — видно не
-//! больше трёх, остальные — кнопкой «+N ещё»; предупреждения нейтральные, красный — только ошибки; у тоста — кнопки
+//! Уведомления (S5-08, DESIGN «Действия и состояния», макет «Состояния»): стопка тостов внизу справа, над строкой
+//! состояния (решение владельца 2026-11-06, п. 9), новый тост — внизу, прежние уходят вверх; видно не больше трёх,
+//! остальные — кнопкой «+N ещё»; предупреждения нейтральные, красный — только ошибки; у тоста — кнопки
 //! действий, «N с» до скрытия и полоса времени. История — панель справа (🔔 в строке состояния): фильтр «Все /
 //! Ошибки / Действия», группы по дням, действие можно выполнить и оттуда, пока оно не выполнено.
 //!
@@ -28,6 +29,18 @@ pub(crate) const MAX_SHOWN: usize = 3;
 pub(crate) const MAX_HISTORY: usize = 200;
 const WIDTH: f32 = 340.;
 const PANEL_W: f32 = 360.;
+
+/// Самая широкая карточка посреди низа окна («Отменить», напоминания).
+const CENTER_CARD_W: f32 = 560.;
+/// Высота строки такой карточки с зазором.
+const CENTER_CARD_H: f32 = 48.;
+
+/// На сколько поднять стопку тостов над обычным местом. `write_row` — высота кнопки внизу справа; `cards` — карточек посреди
+/// низа окна: в узком окне стопка легла бы на «Отменить» и «Открыть», поэтому встаёт над ними.
+pub(crate) fn lift(write_row: f32, width: f32, cards: usize) -> f32 {
+    let narrow = width < 2. * (WIDTH + 16.) + CENTER_CARD_W;
+    write_row.max(if narrow { cards as f32 * CENTER_CARD_H } else { 0. })
+}
 
 /// Уведомление: на экране, пока не истекло время, не закрыли и не нажали действие; в истории — всегда.
 #[derive(Debug, Clone)]
@@ -192,6 +205,8 @@ pub(crate) struct Notices {
     show: Show,
     /// Таймер «раз в секунду» стоит (один на стопку).
     ticking: bool,
+    /// Насколько поднять стопку: внизу справа кнопка, её тост не закрывает (`Mailer::render`).
+    pub(crate) lift: f32,
 }
 
 impl Notices {
@@ -573,7 +588,7 @@ impl Render for Notices {
         let more = self.stack.more(now);
         let panel = self.history_open.then(|| self.history_panel(&l, cx));
         let stack = (!shown.is_empty()).then(|| {
-            let top = crate::chrome::TITLEBAR_H + crate::bar::BAR_HEIGHT + 8.;
+            let bottom = crate::chrome::STATUS_HEIGHT + 8. + self.lift;
             let right = if self.history_open { PANEL_W + 28. } else { 16. };
             let plus = (more > 0).then(|| {
                 div()
@@ -600,7 +615,18 @@ impl Render for Notices {
                     }))
             });
             let toasts: Vec<AnyElement> = shown.iter().map(|e| self.toast(e, now, &l, cx)).collect();
-            div().absolute().top(px(top)).right(px(right)).w(px(WIDTH)).flex().flex_col().gap(px(8.)).children(toasts).children(plus)
+            // Новые первыми: снизу вверх, «+N ещё» — над стопкой.
+            div()
+                .absolute()
+                .bottom(px(bottom))
+                .right(px(right))
+                .w(px(WIDTH))
+                .flex()
+                .flex_col_reverse()
+                .gap(px(8.))
+                .children(crate::screens::spot("notice-stack"))
+                .children(toasts)
+                .children(plus)
         });
         div().absolute().top_0().left_0().size_full().children(panel).children(stack)
     }
@@ -652,9 +678,19 @@ pub(crate) mod scenes {
 
 #[cfg(test)]
 mod tests {
-    use super::{Level, MAX_HISTORY, Show, Stack};
+    use super::{Level, MAX_HISTORY, Show, Stack, lift};
     use pets_ui::ToastAction;
     use std::time::{Duration, Instant};
+
+    /// Обычное окно: стопка на своём месте; кнопка внизу справа или карточки в узком окне поднимают её.
+    #[test]
+    fn the_stack_rises_only_above_what_it_would_cover() {
+        assert_eq!(lift(0., 1280., 2), 0.);
+        assert_eq!(lift(0., 900., 0), 0.);
+        assert_eq!(lift(0., 900., 2), 96.);
+        assert_eq!(lift(48., 900., 0), 48.);
+        assert_eq!(lift(48., 900., 2), 96.);
+    }
 
     /// Видно не больше трёх, новые сверху; остальные — «+N»; закрыли верхний — снизу подтягивается следующий.
     #[test]

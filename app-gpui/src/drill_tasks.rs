@@ -85,6 +85,8 @@ const SCENES: &[Scene] = &[
     scene("task-s605-new", new_letter, NEW),
     // S6-04: «Добавить задачу» на другой день: задача создана, выбор и карточка прежние.
     scene("task-s604-other-day", kept_selection, OTHER_DAY),
+    // Решение владельца п. 9: «Да» при удалении контакта срабатывает с первого щелчка при стопке тостов.
+    scene("task-s511-delete", contact_deleted, DELETE_UNDER_TOASTS),
     // S5-11: форма контакта: Tab и Shift+Tab ходят по полям.
     scene("task-s511-tab", form_filled, FORM_TAB),
     // S6-05, шаг 5: Insert, F2, Esc, Del и «Отменить», ↑/↓, Ctrl+E, «!», подзадача.
@@ -575,6 +577,31 @@ const NEW: &[Input] = &[
     until!(|m, cx| m.section == Section::Mail && rows_loaded(m.list.read(cx))),
     Input::Keys(&["ctrl-n"]),
 ];
+
+const DELETE_UNDER_TOASTS: &[Input] = &[
+    READY_MAIL,
+    CONTACTS,
+    IN_CONTACTS,
+    Input::Run(|_, m, _, cx| {
+        my_contacts(m, cx);
+        Ok(())
+    }),
+    until!(|m, cx| people(m, cx).selected_email().is_some_and(keep)),
+    Input::Keys(&["delete"]),
+    until!(|_, _| screens::spotted("delete-yes").is_some()),
+    Input::Run(|_, m, _, cx| {
+        screens::toast_stack(m, cx);
+        Ok(())
+    }),
+    until!(|m, cx| m.toasts.read(cx).on_screen() == 3 && screens::apart("notice-stack", "delete-yes")),
+    Input::Press("delete-yes"),
+];
+
+fn contact_deleted(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    screens::spotted("delete-yes").is_none()
+        && people(m, cx).selected_email().as_deref() != Some(kept().as_str())
+        && m.toasts.read(cx).on_screen() >= 3
+}
 
 const OTHER_TASK: &str = "Дрилл другой день";
 
