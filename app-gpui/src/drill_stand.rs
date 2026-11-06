@@ -423,7 +423,7 @@ const SCENES: &[Scene] = &[
     scene("st-s816-start-2", |_, m, _| job_state(m).is_some(), DRAG_AND_START),
     more("st-s816-keep", |_, m, _| no_jobs_left(m), STOP_AND_KEEP),
     // S8-16, шаг 6: квота цели: полоса и «Перенос стоит: нет места».
-    scene("st-s816-start-3", |_, m, _| job_state(m).is_some(), DRAG_AND_START),
+    scene("st-s816-start-3", |_, m, _| job_state(m).is_some(), DRAG_AND_GO),
     more("st-s816-full", |_, m, _| job_state(m) == Some(MigrationState::QuotaFull), NO_SPACE),
     // S8-16, шаг 6: «Оставить локально».
     more("st-s816-local-rest", |_, m, _| no_jobs_left(m), KEEP_LOCAL),
@@ -2076,11 +2076,33 @@ const DRAG_AND_START: &[Input] = &[
     until!(|m, cx| ask_shown(m, cx)),
     Input::Press("migration-to-server"),
     until!(|m, _| job_state(m).is_some()),
+    // Пауза: сотни писем уходят быстрее, чем сцена дойдёт до «Остановить».
+    Input::Press("migration-status"),
+    until!(|m, _| m.migration.open),
+    Input::Press("migration-pause"),
+    until!(|m, _| job_state(m) == Some(MigrationState::Paused)),
+];
+
+/// То же без паузы: цель без места останавливает задание сама.
+const DRAG_AND_GO: &[Input] = &[
+    Input::Until(mail_ready),
+    until!(|m, cx| inbox_open(m, cx) && place_of_folder(target_inbox(m, cx)).is_some()),
+    Input::Click(first_row, Held::No),
+    Input::Keys(&["ctrl-a"]),
+    until!(|m, cx| m.list.read(cx).selection.len() > 1),
+    Input::Drag(first_row, |m, _, cx| place_of_folder(target_inbox(m, cx))),
+    until!(|m, cx| m.list.read(cx).count == 0),
+    Input::Run(|_, m, _, cx| {
+        let id = target_inbox(m, cx).ok_or("no target inbox")?;
+        m.open_mailbox(id, cx);
+        Ok(())
+    }),
+    until!(|m, cx| ask_shown(m, cx)),
+    Input::Press("migration-to-server"),
+    until!(|m, _| job_state(m).is_some()),
 ];
 
 const STOP_AND_RETURN: &[Input] = &[
-    Input::Press("migration-status"),
-    until!(|m, _| m.migration.open),
     Input::Press("migration-stop"),
     until!(|m, _| m.migration.stopping.is_some()),
     Input::Press("migration-stop-return"),
@@ -2088,8 +2110,6 @@ const STOP_AND_RETURN: &[Input] = &[
 ];
 
 const STOP_AND_KEEP: &[Input] = &[
-    Input::Press("migration-status"),
-    until!(|m, _| m.migration.open),
     Input::Press("migration-stop"),
     until!(|m, _| m.migration.stopping.is_some()),
     Input::Press("migration-stop-keep"),

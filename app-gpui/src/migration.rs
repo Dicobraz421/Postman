@@ -877,6 +877,10 @@ pub(crate) mod scenes {
 
     /// Чистое начало: заданий и строк переноса нет.
     pub(crate) fn reset(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) {
+        // Живой ящик: задания настоящие, их ведёт поток ядра.
+        if crate::screens::live(m) {
+            return;
+        }
         m.migration.jobs.clear();
         m.migration.open = false;
         m.migration.stopping = None;
