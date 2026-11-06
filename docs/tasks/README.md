@@ -70,7 +70,7 @@
 | [T1-25б](T1-25б.md) | Ядро: справочник по страницам | core | A | done | — |
 | [T1-25в](T1-25в.md) | Плагин EWS: контакты и справочник | backends | A | done | T1-25а, T1-25б |
 | [T1-25г](T1-25г.md) | Контакты Exchange в интерфейсе | app-gpui | A | done | T1-25б, T1-25в |
-| [T1-26](T1-26.md) | Разделы в заголовке, значки Fluent UI System Icons | app-gpui | A | todo | — |
+| [T1-26](T1-26.md) | Разделы в заголовке, значки Fluent UI System Icons | app-gpui | A | done | — |
 | [T1-G](T1-G.md) | Перегенерация `docs/PARITY.md` | docs-gen | A | done | T1-04д, T1-17, T1-23 |
 
 ## S8 — к 1.0 (`docs/specs/S8.md`)
