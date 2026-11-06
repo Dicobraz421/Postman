@@ -1335,7 +1335,7 @@ impl TasksView {
                                 .child(div().text_size(px(12.)).text_color(l.text3()).child(tr!("assign-form-watchers-opt"))),
                         )
                         .child(watchers)
-                        .child(div().relative().children(crate::screens::spot("assign-watcher")).child(Input::new(&self.deleg.watcher)))
+                        .child(div().relative().children(crate::screens::spot("assign-watcher-field")).child(Input::new(&self.deleg.watcher)))
                         .children(suggest(true, cx)),
                 )
             })

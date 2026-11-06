@@ -1293,6 +1293,16 @@ impl MeetingView {
     }
 
     /// Ссылка занятости не принята, строка открыта.
+    /// Номер адреса в меню «От».
+    pub(crate) fn sender_position(&self, email: &str) -> Option<usize> {
+        self.senders.iter().position(|(e, _)| e.eq_ignore_ascii_case(email))
+    }
+
+    /// Подписи чипов обязательных участников.
+    pub(crate) fn chip_names(&self) -> Vec<String> {
+        self.chips[0].iter().map(|c| c.display().to_string()).collect()
+    }
+
     pub(crate) fn link_refused(&self) -> bool {
         self.link_for.is_some() && self.link_bad
     }

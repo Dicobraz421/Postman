@@ -31,6 +31,7 @@ mod drill_cal;
 mod drill_live;
 mod drill_mail;
 mod drill_tasks;
+mod drill_stand;
 mod export;
 mod features;
 mod filters;

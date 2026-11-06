@@ -365,6 +365,7 @@ impl Mailer {
         Some(
             div()
                 .id("quota")
+                .children(crate::screens::spot("quota"))
                 .h(px(22.))
                 .px(px(6.))
                 .mr(px(-6.))

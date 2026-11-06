@@ -933,6 +933,22 @@ impl CalendarView {
     // --- выбор ---
 
     /// Подробности события с самым большим числом участников в показанном периоде (снимок `event`).
+    /// Сколько экземпляров события в открытом диапазоне.
+    pub(crate) fn title_count(&self, title: &str) -> usize {
+        self.events.iter().filter(|e| e.title == title).count()
+    }
+
+    /// Участник события (не организатор) принял приглашение.
+    pub(crate) fn attendee_accepted(&self, title: &str) -> bool {
+        let accepted = |p: &postman_calendar::Participant| p.attendee && !p.owner && p.status == postman_calendar::Partstat::Accepted;
+        self.events.iter().any(|e| e.title == title && e.participants.iter().any(accepted))
+    }
+
+    /// В открытом диапазоне есть событие с таким названием.
+    pub(crate) fn has_title(&self, title: &str) -> bool {
+        self.events.iter().any(|e| e.title == title)
+    }
+
     pub(crate) fn select_busiest(&mut self, cx: &mut Context<Self>) {
         let me = self.me.clone();
         let (from, to) = self.range();

@@ -986,6 +986,11 @@ impl Composers {
     }
 
     /// Ответ в области чтения.
+    /// Адреса «От»: свои учётные записи и общие ящики.
+    pub(crate) fn senders(&self) -> &[Sender] {
+        &self.senders
+    }
+
     pub(crate) fn inline_view(&self) -> Option<&Entity<Composer>> {
         self.inline.as_ref().and_then(|i| self.get(i.id))
     }
