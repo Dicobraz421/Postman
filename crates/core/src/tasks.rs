@@ -454,7 +454,11 @@ async fn flush(store: &impl TaskStore, cache: &Cache, notify: &impl Fn(Reply)) -
                 cache.put_tasks(std::slice::from_ref(&fresh)).map_err(db)?;
                 notify(Reply::Changed(from_row(&fresh).into_iter().collect()));
             }
-            Ok(None) => cache.remove_tasks(std::slice::from_ref(&row.uid)).map_err(db)?,
+            Ok(None) => {
+                cache.remove_tasks(std::slice::from_ref(&row.uid)).map_err(db)?;
+                // Ответ на правку перед удалением мог вернуть задачу на экран: удаление — последнее слово.
+                notify(Reply::Removed(vec![row.uid.clone()]));
+            }
             Err(e) if is_network(&e) => return Err(e),
             Err(e) => {
                 tracing::warn!(uid = %row.uid, "task rejected by server: {e}");
