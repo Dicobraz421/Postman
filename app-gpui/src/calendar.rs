@@ -423,6 +423,12 @@ pub(crate) struct CalendarView {
 
 impl EventEmitter<CalendarAction> for CalendarView {}
 
+/// Высота события в сетке, px: не меньше подписи, до конца дня (`room`). Событие в конце дня места не имеет: остаётся
+/// подпись, иначе `clamp` с нижней границей больше верхней роняет окно.
+fn event_height(px: f32, room: f32) -> f32 {
+    px.clamp(18., room.max(18.))
+}
+
 impl CalendarView {
     /// Демо-события; живой ящик переключает [`CalendarView::go_live`].
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -2122,7 +2128,7 @@ impl CalendarView {
                     let i = timed[p.index];
                     let e = &self.events[i];
                     let top = ((e.span.start - day0) as f32 / 3600. * HOUR_PX).clamp(0., height - 18.) + 1.;
-                    let h = (e.span.len() as f32 / 3600. * HOUR_PX).clamp(18., height - top) - 3.;
+                    let h = event_height(e.span.len() as f32 / 3600. * HOUR_PX, height - top) - 3.;
                     div()
                         .absolute()
                         .top(px(top))
@@ -3326,6 +3332,14 @@ pub(crate) mod scenes {
 
 #[cfg(test)]
 mod tests {
+
+    /// Событие в последние минуты дня: места меньше подписи, окно не падает.
+    #[test]
+    fn event_at_the_end_of_day_keeps_its_label() {
+        assert_eq!(super::event_height(60., 17.), 18.);
+        assert_eq!(super::event_height(60., 40.), 40.);
+        assert_eq!(super::event_height(5., 40.), 18.);
+    }
     /// Сетка суток (T1-09): координата от 00:00, начальная прокрутка — начало рабочего дня из настроек.
     #[test]
     fn day_grid_covers_the_whole_day() {
