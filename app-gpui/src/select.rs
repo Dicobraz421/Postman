@@ -4,8 +4,25 @@
 //! Выделение — по id писем, а не по номерам строк: список перечитывается (синхронизация, сортировка, фильтры), а
 //! выделенные письма остаются выделенными, где бы они ни оказались; исчезнувшие из списка уходят и из выделения
 //! ([`Selection::retain`], проверка — в фоне по кэшу). Другая папка или поиск — выделение снимается. Без gpui — тесты.
+//!
+//! Ctrl+A в папке, где загружена только часть писем, — не список id, а состояние [`Whole`]: «выбрано всё», письма
+//! определит сервер в момент действия (`postman_core::sweep`). Строки в окне при этом тоже в `ids`: сводка и подсветка
+//! работают как обычно, но действие идёт над всей выборкой.
 
 use std::collections::HashSet;
+
+use postman_core::model::{Filter, Selector};
+
+/// Выбрано всё по условию на сервере: список id не нужен.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Whole {
+    pub(crate) mailbox: String,
+    pub(crate) filter: Option<Filter>,
+    /// Снятые с выделения письма.
+    pub(crate) except: HashSet<String>,
+    /// Всего писем по условию на сервере; `None` — ответа ещё нет.
+    pub(crate) total: Option<u64>,
+}
 
 /// Выделенные письма и якорь диапазона.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -17,19 +34,65 @@ pub(crate) struct Selection {
     anchor: Option<(String, usize)>,
     /// Что выделено до Shift-диапазона: диапазон заменяет только свою часть (Ctrl+щелчок, затем Shift+щелчок).
     base: Vec<String>,
+    /// Выбрано всё на сервере.
+    whole: Option<Whole>,
+    /// Выбрано только загруженное: условие на сервере невыразимо, полоса говорит об этом.
+    partial: bool,
 }
 
 impl Selection {
     pub(crate) fn is_empty(&self) -> bool {
-        self.ids.is_empty()
+        self.ids.is_empty() && self.whole.is_none()
     }
 
+    /// Выбрано писем: при «выбрано всё» — по ответу сервера, без снятых вручную.
     pub(crate) fn len(&self) -> usize {
-        self.ids.len()
+        match self.whole.as_ref().and_then(|w| w.total.map(|t| (t, w.except.len()))) {
+            Some((total, except)) => usize::try_from(total).unwrap_or(usize::MAX).saturating_sub(except),
+            None => self.ids.len(),
+        }
     }
 
     pub(crate) fn contains(&self, id: &str) -> bool {
-        self.set.contains(id)
+        match &self.whole {
+            Some(w) => !w.except.contains(id),
+            None => self.set.contains(id),
+        }
+    }
+
+    pub(crate) fn whole(&self) -> Option<&Whole> {
+        self.whole.as_ref()
+    }
+
+    pub(crate) fn partial(&self) -> bool {
+        self.partial
+    }
+
+    /// Выборка для ядра; `None` — выделен список id.
+    pub(crate) fn selector(&self) -> Option<Selector> {
+        self.whole.as_ref().map(|w| Selector { mailbox: w.mailbox.clone(), filter: w.filter.clone(), except: w.except.iter().cloned().collect() })
+    }
+
+    /// К списку id ([`Selection::select_all`]) — «выбрано всё» на сервере.
+    pub(crate) fn set_whole(&mut self, mailbox: String, filter: Option<Filter>, total: Option<u64>) {
+        self.whole = Some(Whole { mailbox, filter, except: HashSet::new(), total });
+    }
+
+    /// Ответ сервера: сколько писем по условию.
+    pub(crate) fn set_total(&mut self, total: u64) {
+        if let Some(w) = &mut self.whole {
+            w.total = Some(total);
+        }
+    }
+
+    /// Сервер условие не выразил: «выбрано всё» — обратно к загруженному, полоса говорит об этом.
+    pub(crate) fn fall_back(&mut self) {
+        self.whole = None;
+        self.partial = true;
+    }
+
+    pub(crate) fn set_partial(&mut self) {
+        self.partial = true;
     }
 
     pub(crate) fn ids(&self) -> &[String] {
@@ -41,12 +104,18 @@ impl Selection {
     }
 
     fn add(&mut self, id: &str) {
+        if let Some(w) = &mut self.whole {
+            w.except.remove(id);
+        }
         if self.set.insert(id.to_owned()) {
             self.ids.push(id.to_owned());
         }
     }
 
     fn remove(&mut self, id: &str) {
+        if let Some(w) = &mut self.whole {
+            w.except.insert(id.to_owned());
+        }
         if self.set.remove(id) {
             self.ids.retain(|x| x != id);
         }
@@ -92,8 +161,12 @@ impl Selection {
     }
 
     /// Shift: диапазон от якоря до письма `to` — `range` — id строк диапазона по порядку списка (от меньшего номера
-    /// к большему). Выделенное до диапазона Ctrl+щелчками остаётся; прежний Shift-диапазон заменяется.
+    /// к большему). Выделенное до диапазона Ctrl+щелчками остаётся; прежний Shift-диапазон заменяется. При «выбрано
+    /// всё» диапазон ничего не добавляет: всё уже выбрано.
     pub(crate) fn set_range(&mut self, range: &[String]) {
+        if self.whole.is_some() {
+            return;
+        }
         let base = std::mem::take(&mut self.base);
         let anchor = self.anchor.take();
         self.ids.clear();
@@ -166,6 +239,42 @@ mod tests {
         // Ctrl+щелчок по выделенному — снять.
         s.toggle("c", 2);
         assert!(!s.contains("c") && s.len() == 3);
+    }
+
+    /// «Выбрано всё»: число — с сервера, письмо за окном считается выбранным, снятое вручную — идёт в выборку `except` и
+    /// возвращается повторным щелчком; снять всё — состояния нет.
+    #[test]
+    fn whole_selection_is_a_state_not_a_list() {
+        let mut s = Selection::default();
+        s.select_all(ids(&["a", "b"]));
+        s.set_whole("in".into(), None, Some(1997));
+        assert_eq!(s.len(), 1997);
+        assert!(s.contains("за окном"));
+        s.toggle("a", 0);
+        assert_eq!((s.len(), s.contains("a")), (1996, false));
+        assert_eq!(s.selector().unwrap().except, ids(&["a"]));
+        s.toggle("a", 0);
+        assert_eq!((s.len(), s.contains("a")), (1997, true));
+        assert!(s.selector().unwrap().except.is_empty());
+        s.set_range(&ids(&["b"]));
+        assert_eq!(s.len(), 1997, "диапазон не сужает «выбрано всё»");
+        s.clear();
+        assert!(s.is_empty() && s.selector().is_none());
+    }
+
+    /// Ответа сервера ещё нет: число — загруженное. Сервер условие не выразил — обратно к загруженному с пометкой.
+    #[test]
+    fn whole_selection_waits_for_the_count_and_falls_back() {
+        let mut s = Selection::default();
+        s.select_all(ids(&["a", "b"]));
+        s.set_whole("in".into(), Some(postman_core::model::Filter::HasAttachment(true)), None);
+        assert_eq!(s.len(), 2);
+        assert!(s.whole().is_some_and(|w| w.total.is_none()));
+        s.set_total(300);
+        assert_eq!(s.len(), 300);
+        s.fall_back();
+        assert_eq!((s.len(), s.partial(), s.selector()), (2, true, None));
+        assert!(s.contains("a") && !s.contains("c"));
     }
 
     /// Строка беседы — все её письма: щелчок добавляет недостающие, повторный снимает все.

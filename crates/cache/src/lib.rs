@@ -1226,6 +1226,13 @@ impl Cache {
         Ok(())
     }
 
+    pub fn remove_state(&self, kind: &str) -> Result<()> {
+        let tx = self.db.begin_write()?;
+        tx.open_table(STATE)?.remove(kind)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Итог проверки подписи S/MIME письма (S5-12): запись ядра в своём формате.
     pub fn smime<T: DeserializeOwned>(&self, id: &str) -> Result<Option<T>> {
         let tx = self.db.begin_read()?;

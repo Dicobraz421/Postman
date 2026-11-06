@@ -256,6 +256,14 @@ pub fn move_letters(engine: &mut Engine<CacheStore>, ids: &[LetterId], to: Folde
     Ok(ticket)
 }
 
+/// Страница выборки на сервере в уже открытое задание `job`: тот же перенос в базе, письма приходят в одно задание.
+pub fn move_into(engine: &mut Engine<CacheStore>, ids: &[LetterId], to: FolderId, job: JobId) -> Result<MoveTicket> {
+    let ids: Vec<postman_cache::LetterId> = ids.iter().map(|id| cache_id(*id)).collect();
+    let ticket = engine.store().cache.move_letters_into(&ids, cache_folder(to), cache_job(job))?;
+    engine.moved(None)?;
+    Ok(ticket)
+}
+
 /// `Command::FetchRaw` письма «На этом компьютере» (маршрут — ядро): письмо целиком из базы, без сети.
 pub fn local_raw(cache: &Cache, letter: LetterId) -> Event {
     let data = match cache.letter_content(cache_id(letter)) {
@@ -335,6 +343,10 @@ impl migrate::Store for CacheStore {
 
     fn save_job(&mut self, job: &JobRow) -> Result<()> {
         Ok(self.cache.save_job(&job_to(job))?)
+    }
+
+    fn new_job(&mut self) -> Result<JobId> {
+        Ok(JobId(self.cache.new_job()?.0))
     }
 
     fn drop_job(&mut self, job: JobId) -> Result<()> {
@@ -563,6 +575,7 @@ Content-Disposition: attachment; filename=r.pdf\r\n\r\n{}\r\n--b--\r\n",
         assert_eq!(route(Command::FetchRaw { letter: b }), [Route::Sync(Target::Profile(None))]);
         assert_eq!(homes.folder(FolderId(local.0)), Home::Local);
         let mut engine = Engine::open(CacheStore::new(cache.clone(), splitter())).unwrap();
+        engine.online(None);
         let ticket = move_letters(&mut engine, &[a, b], FolderId(local.0)).unwrap();
         assert_eq!((ticket.moved, ticket.outbound), (2, 2));
         let now = Instant::now();

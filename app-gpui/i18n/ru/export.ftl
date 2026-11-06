@@ -46,3 +46,4 @@ export-failed-fetch = { $n ->
 export-stopped = Экспорт остановлен: записано { $done } из { $total }
 export-stopped-detail = Готовые файлы целы, недописанный удалён
 export-open = Открыть папку
+export-loaded-only = · только загруженные на компьютер: { $loaded } из { $total }

@@ -9,11 +9,17 @@
 //! `Event::SourceKept`. Режим «локальный архив» — содержимое (хэш сверен), затем удаление у источника, `Local`.
 //! Каждый шаг записан в хранилище до команды и после ответа: после перезапуска задание идёт с того же шага.
 //!
+//! Выборка на сервере (`sweep.rs`) приносит письма в задание страницами: задание заводится заранее ([`Engine::begin`]),
+//! ждёт ещё не пришедшие письма ([`Engine::expect`]) и кончается, только когда ждать некого.
+//!
+//! Команды уходят только учётке, которая в этом запуске вошла на сервер ([`Engine::online`], `Status::SignedIn`): иначе
+//! команда пропала бы в пути. После перезапуска задание идёт дальше, когда учётка вошла.
+//!
 //! Движок без I/O и без потоков: поток ядра отдаёт ему ответы путей ([`Engine::event`], [`Engine::quota`]) и
 //! просьбы пользователя ([`Engine::request`]), забирает команды путям и события интерфейсу ([`Engine::poll`]) и будит
 //! его к сроку ([`Engine::wake_at`]). Хранилище — [`Store`] (формат 6, `postman_cache`; в тестах — в памяти).
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use crate::model::{Feature, Features, FolderId, ImportError, JobId, LetterId, MigrationMode, MigrationRequest, MigrationState, Remote, Result};
@@ -98,6 +104,8 @@ pub trait Store: Homes {
     /// Все задания с письмами в `outbound`.
     fn jobs(&self) -> Result<Vec<JobRow>>;
     fn save_job(&mut self, job: &JobRow) -> Result<()>;
+    /// Номер нового задания ([`Engine::begin`]).
+    fn new_job(&mut self) -> Result<JobId>;
     /// Задание кончилось: его строки больше не нужны.
     fn drop_job(&mut self, job: JobId) -> Result<()>;
     fn outbound(&self, job: JobId) -> Result<Vec<(LetterId, Outbound)>>;
@@ -189,6 +197,8 @@ struct Job {
     returned: u64,
     /// Вышли из задания с пометкой «не удалено у источника» — итог в конце.
     kept: u64,
+    /// Писем ещё придёт (выборка на сервере, [`Engine::expect`]): пока не пришли, задание не кончается.
+    expected: u64,
     dirty: bool,
     /// Смена состояния — показать сразу.
     forced: bool,
@@ -210,6 +220,7 @@ impl Job {
             cancel: None,
             returned: 0,
             kept: 0,
+            expected: 0,
             dirty: true,
             forced: true,
             shown: None,
@@ -307,6 +318,8 @@ impl Job {
 #[derive(Default)]
 struct Net {
     features: HashMap<Profile, Features>,
+    /// Учётные записи, вошедшие на сервер в этом запуске.
+    online: HashSet<Profile>,
     limits: HashMap<Profile, Limits>,
     throttled: HashMap<Profile, Instant>,
     /// Выгрузок в пути по учётной записи цели.
@@ -320,6 +333,11 @@ struct Net {
 impl Net {
     fn limits(&self, p: &Profile) -> Limits {
         self.limits.get(p).copied().unwrap_or(Limits::DEFAULT)
+    }
+
+    /// Учётная запись вошла на сервер в этом запуске: команда до неё дойдёт.
+    fn online(&self, p: &Profile) -> bool {
+        self.online.contains(p)
     }
 
     fn open_slot(&mut self, p: &Profile, letters: usize) -> u64 {
@@ -358,9 +376,15 @@ pub struct Engine<S: Store> {
 impl<S: Store> Engine<S> {
     /// Задания из хранилища — с того шага, где их застал выход (или сбой).
     pub fn open(store: S) -> Result<Self> {
+        Self::open_held(store, &[])
+    }
+
+    /// [`Engine::open`] с заданиями незаконченных выборок (`sweep.rs`): задание, папка цели, сколько писем ещё придёт.
+    /// Такое задание живёт и без писем.
+    pub fn open_held(store: S, held: &[(JobId, FolderId, u64)]) -> Result<Self> {
         let mut e = Self { store, jobs: BTreeMap::new(), net: Net::default() };
         for row in e.store.jobs()? {
-            e.load(row)?;
+            e.load(row, held.iter().find(|h| h.0 == row.id))?;
         }
         Ok(e)
     }
@@ -380,17 +404,25 @@ impl<S: Store> Engine<S> {
         self.net.features.insert(profile.map(str::to_owned), f);
     }
 
+    /// Учётная запись профиля `profile` вошла на сервер (`Status::SignedIn`): команды до неё дойдут. Дополнительные
+    /// учётные записи JMAP умений не сообщают, поэтому вход — отдельно от них.
+    pub fn online(&mut self, profile: Option<&str>) {
+        self.net.online.insert(profile.map(str::to_owned));
+    }
+
     /// Пределы пути учётной записи профиля `profile`; не сказаны — [`Limits::DEFAULT`].
     pub fn limits(&mut self, profile: Option<&str>, l: Limits) {
         self.net.limits.insert(profile.map(str::to_owned), l);
     }
 
-    fn load(&mut self, row: JobRow) -> Result<()> {
+    fn load(&mut self, row: JobRow, held: Option<&(JobId, FolderId, u64)>) -> Result<()> {
         let rows = self.store.outbound(row.id)?;
-        let Some((_, first)) = rows.first() else {
+        let to = rows.first().map(|(_, first)| first.to).or(held.map(|h| h.1));
+        let Some(to) = to else {
             return self.store.drop_job(row.id);
         };
-        let mut job = Job::new(row, self.store.folder(first.to));
+        let mut job = Job::new(row, self.store.folder(to));
+        job.expected = held.map_or(0, |h| h.2);
         if row.state == MigrationState::Cancelled {
             job.cancel = Some(row.mode == MigrationMode::LocalArchive);
         }
@@ -435,7 +467,37 @@ impl<S: Store> Engine<S> {
         };
         let row = JobRow { id, mode, state, total: rows.len() as u64, bytes: 0 };
         self.store.save_job(&row)?;
-        self.load(row)
+        self.load(row, None)
+    }
+
+    /// Новое задание выборки на сервере: в папку `to`, письма придут страницами, `expected` из них ещё нет. Режим — как
+    /// в [`Engine::moved`].
+    pub fn begin(&mut self, to: FolderId, expected: u64) -> Result<JobId> {
+        let id = self.store.new_job()?;
+        let target = self.store.folder(to);
+        let (mode, state) = match target {
+            Home::Local => (MigrationMode::LocalArchive, MigrationState::Running),
+            Home::Account(_) => (MigrationMode::Ask, MigrationState::Asking),
+        };
+        let row = JobRow { id, mode, state, total: 0, bytes: 0 };
+        self.store.save_job(&row)?;
+        let mut job = Job::new(row, target);
+        job.expected = expected;
+        self.jobs.insert(id, job);
+        Ok(id)
+    }
+
+    /// Сколько писем выборки ещё придёт в задание; 0 — выборка кончилась.
+    pub fn expect(&mut self, job: JobId, expected: u64) {
+        if let Some(j) = self.jobs.get_mut(&job) {
+            j.expected = expected;
+            j.dirty = true;
+        }
+    }
+
+    /// Где задание; `None` — его больше нет.
+    pub fn job_state(&self, job: JobId) -> Option<MigrationState> {
+        self.jobs.get(&job).map(|j| j.row.state)
     }
 
     /// Просьба пользователя: ответ на вопрос, пауза, продолжение, отмена.
@@ -474,6 +536,7 @@ impl<S: Store> Engine<S> {
             }
             MigrationRequest::Cancel { keep_local, .. } => {
                 j.cancel = Some(keep_local);
+                j.expected = 0;
                 // «Оставить локально» — режим локального архива: так отмена переживает перезапуск ([`Engine::load`]).
                 if keep_local {
                     j.row.mode = MigrationMode::LocalArchive;
@@ -621,7 +684,7 @@ impl<S: Store> Engine<S> {
         for id in ids {
             let Some(j) = self.jobs.get_mut(&id) else { continue };
             pump(j, &mut self.store, &mut self.net, now)?;
-            let end = j.letters.is_empty();
+            let end = j.letters.is_empty() && j.expected == 0;
             if end {
                 let state = if j.cancel.is_some() { MigrationState::Cancelled } else { MigrationState::Done };
                 j.set_state(state, &mut self.store)?;
@@ -676,7 +739,8 @@ impl<S: Store> Engine<S> {
 }
 
 fn show(j: &mut Job, out: &mut Output, now: Instant) {
-    out.events.push(Event::Migration { job: j.row.id, done: j.done(), total: j.row.total, bytes: j.row.bytes, state: j.row.state });
+    let total = j.row.total + j.expected;
+    out.events.push(Event::Migration { job: j.row.id, done: j.done(), total, bytes: j.row.bytes, state: j.row.state });
     j.shown = Some(now);
     j.dirty = false;
     j.forced = false;
@@ -740,7 +804,8 @@ fn fetch(j: &mut Job, store: &mut dyn Store, net: &mut Net) -> Result<()> {
             j.returned += 1;
             continue;
         };
-        if j.fetching >= FETCHES {
+        // Источник не вошёл на сервер или загрузок уже хватит: письмо ждёт в очереди.
+        if j.fetching >= FETCHES || !net.online(&profile_of(&source.account)) {
             j.content.push_front(id);
             break;
         }
@@ -779,7 +844,7 @@ fn upload(j: &mut Job, store: &mut dyn Store, net: &mut Net, now: Instant) -> Re
     if net.throttled.get(&p).is_some_and(|t| now >= *t) {
         net.throttled.remove(&p);
     }
-    if j.upload.is_empty() || net.throttled.contains_key(&p) || !quota_ready(j, &p, net, now) {
+    if j.upload.is_empty() || !net.online(&p) || net.throttled.contains_key(&p) || !quota_ready(j, &p, net, now) {
         return Ok(());
     }
     let limits = net.limits(&p);
@@ -885,7 +950,7 @@ fn delete(j: &mut Job, store: &mut dyn Store, net: &mut Net) -> Result<()> {
 mod tests {
     use super::*;
     use crate::sync::Target;
-    use std::collections::{BTreeSet, HashSet};
+    use std::collections::BTreeSet;
 
     /// Где письмо в подменном хранилище.
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -979,6 +1044,9 @@ mod tests {
         fn save_job(&mut self, job: &JobRow) -> Result<()> {
             self.jobs.insert(job.id, *job);
             Ok(())
+        }
+        fn new_job(&mut self) -> Result<JobId> {
+            Ok(JobId(self.jobs.keys().last().map_or(1, |j| j.0 + 1)))
         }
         fn drop_job(&mut self, job: JobId) -> Result<()> {
             self.jobs.remove(&job);
@@ -1209,7 +1277,10 @@ mod tests {
             w
         }
 
+        /// Обе учётки вошли; умения — цели.
         fn features(&mut self, f: Features) {
+            self.engine.online(None);
+            self.engine.online(Some("@2"));
             let p = profile_of(&self.target);
             self.engine.features(p.as_deref(), f);
         }
@@ -1466,6 +1537,39 @@ mod tests {
             assert_eq!(local, if keep_local { 4 } else { 0 });
             assert_eq!(w.path.source.len(), if keep_local { 0 } else { 4 });
         }
+    }
+
+    /// Цель не вошла на сервер в этом запуске: команды ей не уходят (пропали бы), задание ждёт в очереди; вошла — идёт
+    /// с того же места, без повтора команд.
+    #[test]
+    fn nothing_goes_to_an_account_that_is_not_signed_in() {
+        let mut engine = Engine::open(Mem::moved("", Home::Account("@2".into()), 3, |_| true)).unwrap();
+        engine.moved(Some(JOB)).unwrap();
+        engine.request(MigrationRequest::Answer { job: JOB, mode: MigrationMode::Upload }).unwrap();
+        let now = Instant::now();
+        let sent = |e: &mut Engine<Mem>| e.poll(now).unwrap().commands.into_iter().filter(|(_, c)| matches!(c, Command::Import { .. })).count();
+        assert_eq!(sent(&mut engine), 0);
+        assert_eq!(engine.wake_at(), None, "ждать нечего: разбудит вход");
+        engine.online(Some("@2"));
+        assert_eq!(sent(&mut engine), Limits::DEFAULT.imports);
+    }
+
+    /// Задание выборки на сервере: всего — вместе с письмами, которые ещё придут; пока они не пришли, задание не кончается;
+    /// отмена ждать перестаёт.
+    #[test]
+    fn job_waits_for_expected_letters() {
+        let mut m = Mem::default();
+        m.folders.insert(SOURCE, Home::Local);
+        let mut engine = Engine::open(m).unwrap();
+        let job = engine.begin(SOURCE, 10).unwrap();
+        let now = Instant::now();
+        let shown =
+            |o: Output| o.events.iter().find_map(|e| if let Event::Migration { total, state, .. } = e { Some((*total, *state)) } else { None });
+        assert_eq!(shown(engine.poll(now).unwrap()), Some((10, MigrationState::Running)));
+        assert_eq!(engine.job_state(job), Some(MigrationState::Running), "писем нет, но они ещё придут");
+        engine.request(MigrationRequest::Cancel { job, keep_local: false }).unwrap();
+        assert_eq!(shown(engine.poll(now).unwrap()).map(|s| s.1), Some(MigrationState::Cancelled));
+        assert_eq!(engine.job_state(job), None);
     }
 
     /// В «На этом компьютере» — локальный архив без вопроса: содержимое (нет — у источника), затем удаление у

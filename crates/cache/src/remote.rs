@@ -122,6 +122,14 @@ impl Cache {
         Ok((!refs.iter().any(|r| r.account == account && r.id == id && r.detached)).then_some(letter))
     }
 
+    /// Письмо по связи и `detached` ли она: второе — письмо уже перенесено, у источника оно только ждёт удаления.
+    pub fn find_letter(&self, account: &str, id: &str) -> Result<Option<(LetterId, bool)>> {
+        let tx = self.db.begin_read()?;
+        let Some(letter) = tx.open_table(REMOTE)?.get((account, id))?.map(|v| LetterId(v.value())) else { return Ok(None) };
+        let refs: Vec<RemoteRef> = tx.open_table(LETTER_REMOTE)?.get(letter.0)?.map(|v| dec(v.value())).transpose()?.unwrap_or_default();
+        Ok(Some((letter, refs.iter().any(|r| r.account == account && r.id == id && r.detached))))
+    }
+
     /// Все связи письма, и `detached`.
     pub fn remotes(&self, letter: LetterId) -> Result<Vec<RemoteRef>> {
         let tx = self.db.begin_read()?;

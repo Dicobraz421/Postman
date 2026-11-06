@@ -29,7 +29,7 @@ IMAP4 и приём SMTP от клиентов выключены. Плагин 
 | Дерево папок | `SyncFolderHierarchy` с `folder:ParentFolderId` и `folder:FolderClass`, дальше — с прошлого состояния; запасной — `FindFolder` (Deep) под `msgfolderroot` | роли — по стандартным папкам (`GetFolder`: inbox, drafts, sentitems, deleteditems, junkemail, outbox); создать, переименовать, перенести — `CreateFolder`, `UpdateFolder`, `MoveFolder` (T1-04) |
 | Письма папки | `FindItem` (новые 500 по дате) + `SyncFolderItems` (изменения, «прочитано») | по событиям сервера (`Subscribe`: streaming, запасной — pull) — сверка только изменённой папки; без подписки — опрос раз в 2 мин, дерево — не чаще раза в 15 мин; «снова на связи» — сразу (T1-21) |
 | Список | `GetItem` (`Default` + `item:Flag`) | тема, отправитель, дата, размер, вложения, прочитано, флаг |
-| Письмо | `GetItem` `MimeContent` | разбор MIME — воркер-песочница; цепочка — по `References` из MIME |
+| Письмо | `GetItem` `MimeContent` | разбор MIME — воркер-песочница; беседа — по `References` из MIME |
 | Прочитано, флаг | `UpdateItem` (`message:IsRead`, `item:Flag`) | других ключевых слов EWS не хранит |
 | Перенос, удаление | `MoveItem`, `DeleteItem` | у перенесённого письма — новый id |
 | Отправка, черновик | `CreateItem` из MIME: `SendAndSaveCopy`, `SaveOnly` | копию в «Отправленные» кладёт сервер; «Отменить» держит синхронизация; «Отправить позже» нет |

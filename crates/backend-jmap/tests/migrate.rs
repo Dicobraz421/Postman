@@ -343,6 +343,8 @@ fn drive(engine: &mut Engine<CacheStore>, live: &Live, other: &mut dyn FnMut(Com
 fn engine_on(cache: &Cache, features: Features) -> Engine<CacheStore> {
     let mut e = Engine::open(CacheStore::new(cache.clone(), Box::new(|_| Ok(Default::default())))).unwrap();
     e.features(None, features);
+    e.online(None);
+    e.online(Some("@2"));
     e
 }
 

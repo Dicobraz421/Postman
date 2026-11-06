@@ -123,3 +123,11 @@ menu-on-selection = { $n ->
     [one] { $n } message selected
    *[other] { $n } messages selected
 }
+bulk-selected-counting = All selected · counting…
+bulk-loaded-only = loaded messages only: the server cannot select everything by this condition
+bulk-whole-unsupported = This action works on messages selected by hand: clear “all selected” and pick the messages you need.
+bulk-whole-no-report = The messages will be marked but not sent to the phishing report address: the selection is too large.
+bulk-done-mark = { $n ->
+    [one] Date set · { $n } message
+   *[other] Date set · { $n } messages
+}

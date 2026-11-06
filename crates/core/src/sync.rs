@@ -18,11 +18,14 @@ use crate::export;
 use crate::invite::Delivery;
 use crate::lifecycle;
 use crate::link::{Connection, Link};
-use crate::model::{Auth, ContactCard, Filter, FolderId, ImportError, JobId, LetterId, MigrationRequest, MigrationState, Principal, Remote};
+use crate::model::{
+    Auth, ContactCard, Filter, FolderId, ImportError, JobId, LetterId, MigrationRequest, MigrationState, Principal, Remote, Selector, SweepId,
+};
 pub use crate::model::{Error, ErrorKind, Release};
 use crate::schedule::Meeting;
 use crate::send_later::Scheduled;
 use crate::settings;
+use crate::sweep;
 use crate::tasks;
 use postman_cache::MailboxRow;
 use postman_search::SearchIndex;
@@ -352,6 +355,30 @@ pub enum Command {
     },
     /// Ответ, пауза, продолжение, отмена задания переноса — в поток ядра → `Event::Migration`.
     Migration(MigrationRequest),
+    /// Действие над всей выборкой на сервере («выбрано всё») — в поток ядра: письма ядро получает с сервера
+    /// постранично, задание переживает перезапуск (`sweep.rs`) → `Event::Sweep`.
+    Sweep {
+        selector: Selector,
+        action: sweep::Action,
+    },
+    /// «Остановить» действие над выборкой — в поток ядра: уже сделанное остаётся, остальное письма не трогает.
+    StopSweep {
+        sweep: SweepId,
+    },
+    /// Страница ключей выборки: до `limit` писем с `position` по порядку сервера. Только ключи, строк писем не надо →
+    /// `Event::LettersListed` или `Event::ListFailed`.
+    ListLetters {
+        sweep: SweepId,
+        selector: Selector,
+        position: u64,
+        limit: u32,
+    },
+    /// Строки писем выборки (ключи кэша) папки `mailbox` — в кэш → `Event::LettersStored` или `Event::ListFailed`.
+    StoreLetters {
+        sweep: SweepId,
+        mailbox: String,
+        ids: Vec<String>,
+    },
     /// Экспорт писем в файлы в каталог `dir` (S8-31) — в поток ядра: новое задание ([`export::Exporter::start`]) →
     /// `Event::Export`; письма без содержимого — `FetchRaw` у их учёток.
     Export {
@@ -453,7 +480,12 @@ impl Command {
             Command::Import { folder, .. } => homes.folder(*folder).route(),
             Command::ServerCopy { to, .. } => homes.folder(*to).route(),
             Command::DestroyLetters { account, .. } => Home::Account(account.clone()).route(),
-            Command::MoveLetters { .. } | Command::Migration(_) | Command::Export { .. } | Command::StopExport { .. } => Route::Core,
+            Command::MoveLetters { .. }
+            | Command::Migration(_)
+            | Command::Sweep { .. }
+            | Command::StopSweep { .. }
+            | Command::Export { .. }
+            | Command::StopExport { .. } => Route::Core,
             _ => return self.routes().into_iter().map(|(t, c)| (Route::Sync(t), c)).collect(),
         };
         vec![(route, self)]
@@ -473,6 +505,8 @@ impl Command {
             Command::DirectoryPage { account, .. } => Target::Profile(account.clone()),
             Command::Blob { blob_id, .. } => one(blob_id),
             Command::LoadMore { mailbox } => one(mailbox),
+            Command::ListLetters { selector, .. } => one(&selector.mailbox),
+            Command::StoreLetters { mailbox, .. } => one(mailbox),
             Command::Unsend { scheduled, .. } => one(&scheduled.submission),
             Command::Withhold { scheduled, .. } => scheduled.first().map_or(Target::Profile(None), |s| one(&s.submission)),
             Command::Query { mailbox, .. } | Command::Counts { mailbox, .. } | Command::Search { mailbox, .. } => scope(mailbox),
@@ -877,6 +911,26 @@ pub enum Event {
         done: u64,
         total: u64,
     },
+    /// Страница ключей выборки (`Command::ListLetters`): `total` — всего писем по условию у сервера, `end` — страниц
+    /// больше нет.
+    LettersListed {
+        sweep: SweepId,
+        ids: Vec<String>,
+        total: u64,
+        end: bool,
+    },
+    /// Строки писем в кэше (`Command::StoreLetters`); `gone` — ключи писем, которых на сервере уже нет.
+    LettersStored {
+        sweep: SweepId,
+        gone: Vec<String>,
+    },
+    /// Страница не получена: ответ сервера или сети как есть. [`FOLDER_UNSUPPORTED`] — путь не умеет, повторять незачем.
+    ListFailed {
+        sweep: SweepId,
+        error: String,
+    },
+    /// Ход действия над выборкой — не чаще 4 раз в секунду, смена состояния — сразу.
+    Sweep(sweep::Progress),
     /// Ход задания переноса: писем готово из `total`, байт выгружено, состояние.
     Migration {
         job: JobId,
@@ -927,6 +981,9 @@ impl Command {
             Command::ServerCopy { job, letters, .. } => return letters.iter().map(|l| failed(*job, *l)).collect(),
             Command::DestroyLetters { job, letters, .. } => {
                 return letters.iter().map(|l| Event::DestroyFailed { job: *job, letter: *l, error: not() }).collect();
+            }
+            Command::ListLetters { sweep, .. } | Command::StoreLetters { sweep, .. } => {
+                return vec![Event::ListFailed { sweep: *sweep, error: not() }];
             }
             _ => return Vec::new(),
         };
@@ -1073,6 +1130,10 @@ async fn wait_offline(rx: &mut UnboundedReceiver<Command>, link: &mut Link<Comma
                         link.queue(c);
                         let left = until.saturating_duration_since(tokio::time::Instant::now());
                         notify(Event::Connection(link.connection(left)));
+                    }
+                    // Страница выборки ждёт ответа: без него выборка встала бы молча.
+                    if let Command::ListLetters { sweep, .. } | Command::StoreLetters { sweep, .. } = cmd {
+                        notify(Event::ListFailed { sweep, error: "no connection".into() });
                     }
                 }
             },

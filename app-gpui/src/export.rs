@@ -48,6 +48,8 @@ pub(crate) fn format_name(f: Format) -> &'static str {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum What {
     Letters(Vec<String>),
+    /// «Выбрано всё»: письма определит сервер, файлы — как у выделенных.
+    Whole(postman_core::model::Selector, u64),
     Folder(String),
     Account(String),
     All,
@@ -61,6 +63,8 @@ pub(crate) struct Choose {
     pub(crate) n: u64,
     /// Подпапок у папки (флажок «С подпапками (N)» — только когда они есть).
     pub(crate) subfolders: usize,
+    /// Папка с подпапками, учётка, все: экспорт пишет загруженное в базу; писем на этом компьютере и всего, если меньше.
+    pub(crate) loaded: Option<(u64, u64)>,
     pub(crate) with_subfolders: bool,
     pub(crate) format: Format,
     /// Список форматов открыт у этой точки.
@@ -114,6 +118,7 @@ fn home_of(account: &str) -> Home {
 fn scope(cache: &postman_cache::Cache, what: &What, subfolders: bool, names: &[(String, String)]) -> Option<Scope> {
     Some(match what {
         What::Letters(ids) => Scope::Letters(ids.iter().filter_map(|k| postman_core::store::letter_of_key(cache, k).ok().flatten()).collect()),
+        What::Whole(..) => return None,
         What::Folder(key) => Scope::Folder { id: postman_core::model::FolderId(crate::local::folder_id(cache, key)?.0), subfolders },
         What::Account(a) => Scope::Account(home_of(a)),
         What::All => Scope::All(names.iter().map(|(h, n)| (home_of(h), n.clone())).collect()),
@@ -126,6 +131,7 @@ impl Mailer {
         let mailboxes = self.folders.read(cx).mailboxes.clone();
         let (n, subfolders) = match &what {
             What::Letters(ids) => (ids.len() as u64, 0),
+            What::Whole(_, n) => (*n, 0),
             What::Folder(key) => {
                 let total = mailboxes.iter().find(|m| &m.id == key).map_or(0, |m| u64::from(m.total));
                 (total, descendants(&mailboxes, key).len())
@@ -137,13 +143,31 @@ impl Mailer {
             return self.toast(pets_ui::Level::Info, tr!("actions-select-letter"), cx);
         }
         let format = self.export.last.filter(|f| f.available()).unwrap_or(Format::Eml);
-        self.export.choose = Some(Choose { what, n, subfolders, with_subfolders: subfolders > 0, format, menu_at: None });
+        let loaded = self.export_loaded(&what, &mailboxes);
+        self.export.choose = Some(Choose { what, n, subfolders, loaded, with_subfolders: subfolders > 0, format, menu_at: None });
         cx.notify();
+    }
+
+    /// Сколько писем `what` в базе и всего: дерево папок, учётку и всё экспорт берёт только из базы.
+    fn export_loaded(&self, what: &What, mailboxes: &[postman_cache::MailboxRow]) -> Option<(u64, u64)> {
+        let tree = match what {
+            What::Folder(key) => Some(key.clone()).into_iter().chain(descendants(mailboxes, key)).collect(),
+            What::Account(a) => mailboxes.iter().filter(|m| home(&m.id) == a).map(|m| m.id.clone()).collect(),
+            What::All => mailboxes.iter().map(|m| m.id.clone()).collect(),
+            What::Letters(_) | What::Whole(..) => Vec::new(),
+        };
+        let total: u64 = mailboxes.iter().filter(|m| tree.contains(&m.id)).map(|m| u64::from(m.total)).sum();
+        let loaded: u64 = tree.iter().map(|k| crate::local::count(&self.cache, k) as u64).sum();
+        (loaded < total).then_some((loaded, total))
     }
 
     /// `mail.export`: выделение, иначе открытое письмо; ничего — открытая папка.
     fn export_mail(&mut self, cx: &mut Context<Self>) {
         let ids = self.targets(cx);
+        if let Some(selector) = self.whole_for(&ids, cx) {
+            let n = self.list.read(cx).selection.len() as u64;
+            return self.export_ask(What::Whole(selector, n), cx);
+        }
         match (ids.is_empty(), self.list.read(cx).mailbox.clone()) {
             (false, _) => self.export_ask(What::Letters(ids), cx),
             (true, Some(f)) => self.export_ask(What::Folder(f), cx),
@@ -153,9 +177,21 @@ impl Mailer {
 
     /// Подпись полосы: «Экспорт «Учётка · Папка» · N писем».
     fn export_title(&self, c: &Choose, cx: &App) -> String {
+        // Папка без подпапок выгружается вся (выборкой на сервере), остальное — только из базы: число — то, что выйдет.
+        let partial = c.loaded.filter(|_| !matches!(c.what, What::Folder(_)) || c.with_subfolders);
+        let n = partial.map_or(c.n, |l| l.0);
+        let c = Choose { n, ..c.clone() };
+        let title = self.export_named(&c, cx);
+        match partial {
+            Some((loaded, total)) => format!("{title} {}", tr!("export-loaded-only", loaded = count_text(loaded), total = count_text(total))),
+            None => title,
+        }
+    }
+
+    fn export_named(&self, c: &Choose, cx: &App) -> String {
         let n = c.n as i64;
         match &c.what {
-            What::Letters(_) => tr!("export-what-selection", n = n, count = count_text(c.n)),
+            What::Letters(_) | What::Whole(..) => tr!("export-what-selection", n = n, count = count_text(c.n)),
             What::Folder(key) => tr!("export-what-folder", folder = self.place_name(key, cx), n = n, count = count_text(c.n)),
             What::Account(a) => tr!("export-what-account", account = self.account_name(a, cx), n = n, count = count_text(c.n)),
             What::All => tr!("export-what-all", n = n, count = count_text(c.n)),
@@ -178,6 +214,20 @@ impl Mailer {
     /// Каталог выбран: задание ядру.
     pub(crate) fn export_to(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
         let Some(c) = self.export.choose.clone() else { return };
+        // «Выбрано всё» и папка, загруженная не вся: письма определит сервер, задание экспорта начнёт ядро.
+        let whole = match &c.what {
+            What::Whole(selector, _) => Some(selector.clone()),
+            What::Folder(key) if !c.with_subfolders && c.loaded.is_some() && self.backend.is_live() && home(key) != LOCAL => {
+                Some(postman_core::model::Selector { mailbox: key.clone(), filter: None, except: Vec::new() })
+            }
+            _ => None,
+        };
+        if let Some(selector) = whole {
+            self.export.choose = None;
+            self.export.last = Some(c.format);
+            let action = postman_core::sweep::Action::Export { format: c.format, dir };
+            return self.core_send(Command::Sweep { selector, action }, cx);
+        }
         let names: Vec<(String, String)> = {
             let mut homes: Vec<String> = Vec::new();
             for m in &self.folders.read(cx).mailboxes {

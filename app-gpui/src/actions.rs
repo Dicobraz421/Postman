@@ -42,7 +42,7 @@ pub(crate) fn handlers(root: Div, cx: &mut Context<Mailer>) -> Div {
         .on_action(cx.listener(|this, _: &mail::Forward, _, cx| this.respond(Mode::Forward, cx)))
         .on_action(cx.listener(|this, _: &mail::ForwardAttached, _, cx| {
             let ids = this.targets(cx);
-            this.forward_attached(ids, cx);
+            this.ask(ids, crate::bulk::Ask::ForwardAttached, cx);
         }))
         .on_action(cx.listener(|this, _: &mail::Delete, _, cx| this.delete_selected(cx)))
         .on_action(cx.listener(|this, _: &mail::Next, _, cx| this.step(|_| 1, cx)))
@@ -259,7 +259,7 @@ impl Mailer {
     /// Esc: снять строку «Удалить навсегда?». `true` — она была.
     pub(crate) fn cancel_purge(&mut self, cx: &mut Context<Self>) -> bool {
         let list = self.list.read(cx);
-        if list.confirm.is_none() && list.confirm_many.is_none() {
+        if list.confirm.is_none() && list.confirm_many.is_none() && list.confirm_whole.is_none() {
             return false;
         }
         self.list.update(cx, |l, cx| l.answer_purge(false, cx));

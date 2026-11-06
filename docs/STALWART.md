@@ -65,7 +65,7 @@ cargo test -p postman-dav --test stand -- --ignored --test-threads=1
 | `stand_send_later::held_submission_is_canceled_and_not_delivered` | S5-06: user1 → user3 с `HOLDFOR` 30 → `pending`, `sendAt` через 30 с, в списке ждущих → `canceled` → письмо в «Черновиках» с `$draft`, повторная отмена — `cannotUnsend` → после срока у user3 ничего → убрано |
 | `stand_send_later::held_submission_is_delivered_after_the_delay` | S5-06: `HOLDUNTIL` через 20 с → `sendAt` тот же; через 8 с у user3 ничего, затем письмо приходит, `receivedAt` ≥ `sendAt`; отмена после выпуска — `cannotUnsend` → убрано |
 | `stand_send_later::send_later_through_sync` | S5-06, через поток синхронизации: `Scheduled` при входе (`max_delay` 7 дней) → `Send` с `Release::At` (+2 мин) → `Sent` со сроком → `Scheduled` с ним → `Unsend` → `Unsent`, в `Scheduled` его нет → убрано |
-| `stand_threads::reply_chain_is_one_thread_with_new_text_only` | S5-05: user1 → user3 → user1 цепочкой ответов (In-Reply-To, цитата Postman) → у user3 `Command::Thread` (`Thread/get` + `Email/get`) — одна беседа из трёх писем, своё — из «Отправленных», по времени; «только новый текст» — в каждом письме только его строки → письма убраны |
+| `stand_threads::reply_chain_is_one_thread_with_new_text_only` | S5-05: user1 → user3 → user1 беседой ответов (In-Reply-To, цитата Postman) → у user3 `Command::Thread` (`Thread/get` + `Email/get`) — одна беседа из трёх писем, своё — из «Отправленных», по времени; «только новый текст» — в каждом письме только его строки → письма убраны |
 | `stand_tasks::tasks_capability_and_vtodo_in_calendar` | S6-01: `urn:ietf:params:jmap:tasks` не объявлен; у JMAP `Calendar` нет признака компонентов; календарь по умолчанию в CalDAV — VEVENT и VTODO (п. 37) |
 | `stand_tasks::jmap_task_fields_round_trip` | S6-01: `CalendarEvent` `@type: Task` со всеми полями карточки → `get` как есть → тот же VTODO в CalDAV (`X-POSTMAN-*` из `iCalendar.properties`) → выполнение патчем → `CalendarEvent/changes` у второго клиента (создание, правка, удаление); `recurrenceRules`, `progressUpdated`, свойство поставщика — `invalidProperties` (п. 38) |
 | `stand_tasks::task_query_by_due_and_status` | S6-01: три задачи → `after`/`before` по сроку, `title`; условий `progress`/`status`/`type` нет (`unsupportedFilter`), сортировки `due` — тоже (`unsupportedSort`); CalDAV `time-range` и `prop-filter STATUS` (и `negate-condition`) — на сервере (п. 39) |
@@ -167,7 +167,7 @@ cargo test -p postman-dav --test stand -- --ignored --test-threads=1
    где запись разрешена, Postman пишет свой скрипт: коллегам — `address :domain :is "from"`, внешним — `address :is "from"
    [контакты]` или все, `:days`, `:addresses`, `:mime` (текст и HTML), период — `currentdate`.
 
-14б. **Индекс поиска.** Stalwart не находит начало темы в `[скобках]` (оно уходит из имени цепочки) и длинные числа, а
+14б. **Индекс поиска.** Stalwart не находит начало темы в `[скобках]` (оно уходит из имени беседы) и длинные числа, а
    `SEARCH HEADER Message-ID` с индексом заголовков ищет по словам, поэтому Postman сверяет `Message-ID` точно.
 
 15. **Квота** (RFC 9425): у пользователей стенда `Quota/get` — пустой список (ограничений нет), строка состояния без
@@ -217,7 +217,7 @@ cargo test -p postman-dav --test stand -- --ignored --test-threads=1
     в кэш за ~1 с (тест). Для папки, открытой другим пользователем, — тоже по аккаунту владельца [проверить]. Клиент
     сверяет только названные аккаунты (`sync::MailChange`), опрос раз в 2 минуты — все.
 22. **Беседы** (S5-05, тест `stand_threads`). Ответ с `In-Reply-To`/`References` и темой «RE: …» Stalwart кладёт в ту же
-    цепочку, что и исходное письмо, у обоих пользователей (`threadId` — свой в каждом аккаунте), вместе с копией в
+    беседу, что и исходное письмо, у обоих пользователей (`threadId` — свой в каждом аккаунте), вместе с копией в
     «Отправленных». `Thread/get` отдаёт `emailIds` из всех папок; `Email/get` со ссылкой
     `#ids: /list/*/emailIds` — одним запросом. `receivedAt` — с точностью до секунды: письма одной секунды идут в
     порядке id. Поиск `Email/query` `text: "RE: …"` не находит ничего — искать без «RE:» и сверять тему на клиенте.

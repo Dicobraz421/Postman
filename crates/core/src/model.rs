@@ -13,8 +13,8 @@ pub enum Auth {
     Bearer(String),
 }
 
-/// Условие отбора писем на сервере — для фильтров панели и «Все папки».
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Условие отбора писем на сервере — для фильтров панели, «Все папки» и выборки «выбрано всё» ([`Selector`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Filter {
     InMailbox(String),
     HasKeyword(String),
@@ -255,6 +255,22 @@ pub struct FolderId(pub u64);
 /// Задание переноса писем в другую учётку (ADR 0006 п. 4). Тот же номер, что у `postman_cache::JobId`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct JobId(pub u64);
+
+/// Действие над всей выборкой на сервере (`sweep`): номер живёт в базе, задание переживает перезапуск.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct SweepId(pub u64);
+
+/// «Выбрано всё»: не список id, а условие на сервере. Письма определяет сервер в момент действия, поэтому выборка не
+/// зависит от того, сколько страниц папки в кэше.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Selector {
+    /// Папка — ключ кэша.
+    pub mailbox: String,
+    /// Условие фильтров или поиска; `None` — вся папка.
+    pub filter: Option<Filter>,
+    /// Ключи писем, снятых с выделения вручную.
+    pub except: Vec<String>,
+}
 
 /// Режим задания переноса — ответ строки над списком папки (ADR 0006 п. 5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

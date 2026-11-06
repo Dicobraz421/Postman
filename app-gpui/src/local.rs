@@ -370,6 +370,9 @@ impl Mailer {
         if !across(&ids, &to) {
             return self.run_bulk(ids, crate::bulk::Ask::Move(to), cx);
         }
+        if !self.target_ready(&to, cx) {
+            return;
+        }
         // Письмо уходит из папки (S8-15, шаг 6): открытое — закрыть, а не ждать конца задания.
         let open = crate::screens::reading_id(self, cx);
         if open.is_some_and(|id| ids.contains(&id)) {
@@ -395,7 +398,28 @@ impl Mailer {
         if here.as_deref() == Some(to.as_str()) {
             return;
         }
+        if d.picked
+            && let Some(selector) = self.list.read(cx).selection.selector()
+        {
+            return self.move_whole(selector, to, cx);
+        }
         self.move_letters(ids, to, cx);
+    }
+
+    /// Цель переноса вошла на сервер (решение владельца, пункт 4 `docs/manual-tests/OWNER.md`): иначе предупреждение, а
+    /// задания нет. Выделение остаётся: после входа перенос запускается обычным путём.
+    pub(crate) fn target_ready(&mut self, to: &str, cx: &mut Context<Self>) -> bool {
+        let target = home(to);
+        if target == LOCAL || !self.backend.is_live() {
+            return true;
+        }
+        let profile = postman_cache::profile_of(Some(target).filter(|a| !a.is_empty()));
+        if self.live.profile.signed_in(profile) {
+            return true;
+        }
+        let server = self.account_name(target, cx);
+        self.toast(pets_ui::Level::Warning, tr!("migration-not-signed-in", server = server), cx);
+        false
     }
 
     /// Имя учётки по ключу (основная — пустая строка): своя — логин (в демо — адрес владельца ящика), другие — имя

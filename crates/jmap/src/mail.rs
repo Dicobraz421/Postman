@@ -652,6 +652,23 @@ impl Client {
         Ok(q.ids)
     }
 
+    /// Страница id по фильтру с позиции `position`, новые сверху, и сколько всего: выборка на сервере, без строк писем.
+    pub async fn query_page_ids(&self, filter: &Filter, position: u64, limit: u64) -> Result<(Vec<String>, u64)> {
+        let acc = self.mail_account()?;
+        let args = json!({
+            "accountId": acc,
+            "filter": filter.to_json(),
+            "sort": [{ "property": "receivedAt", "isAscending": false }],
+            "position": position,
+            "limit": limit,
+            "calculateTotal": true,
+        });
+        let mut r = self.call(USING, &[inv("Email/query", args, "q")]).await?;
+        let q: QueryResponse = take(&mut r, "q")?;
+        let total = q.total.unwrap_or(position + q.ids.len() as u64);
+        Ok((q.ids, total))
+    }
+
     /// Письма по фильтру, новые сверху (фильтры панели, «Все папки» — без `inMailbox`).
     pub async fn filtered(&self, filter: &Filter, limit: u64) -> Result<EmailPage> {
         self.query_page(filter.to_json(), Some(0), None, limit).await

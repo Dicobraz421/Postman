@@ -9,7 +9,7 @@
 //! `Email/copy` с `onSuccessDestroyOriginal`), удаление у источника (`DestroyLetters` — `Email/set` `destroy`, ответ по
 //! письму).
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -21,7 +21,7 @@ use postman_core::backend::BoxFuture;
 use postman_core::invite::Delivery;
 use postman_core::lifecycle;
 use postman_core::link::{Connection, Link};
-use postman_core::model::{ContactCard, Filter, FolderId, ImportError, JobId, LetterId, Principal, Release, Remote};
+use postman_core::model::{ContactCard, Filter, FolderId, ImportError, JobId, LetterId, Principal, Release, Remote, Selector};
 use postman_core::send_later::{self, Scheduled};
 use postman_core::sync::{
     Account, Command, Debounce, ErrorKind, Event, Index, Sender, Session, Stage, Status, SyncError, UnboundedSender, owned_by, retry_at, supervise,
@@ -49,6 +49,8 @@ const PREFETCH_MAX_BYTES: u64 = 256 * 1024;
 const PREFETCH_LIMIT: usize = 20_000;
 /// Догрузка при прокрутке.
 const PAGE: u64 = 500;
+/// Писем в одном `Email/get` строк выборки: не больше `maxObjectsInGet`.
+const GET_CHUNK: usize = 500;
 const SEARCH_LIMIT: u64 = 1000;
 /// Изменения календаря приходят пачкой (событие, уведомление, ответ участника): неделя — одним запросом.
 const CALENDAR_DEBOUNCE: Duration = Duration::from_millis(1500);
@@ -986,6 +988,25 @@ async fn handle(
             notify(Event::EmailsChanged);
             added?;
         }
+        Command::ListLetters { sweep, selector, position, limit } => {
+            let page = list_letters(accounts, &selector, position, limit).await;
+            match &page {
+                Ok((ids, total)) => {
+                    let end = position + ids.len() as u64 >= *total || ids.is_empty();
+                    notify(Event::LettersListed { sweep, ids: ids.clone(), total: *total, end });
+                }
+                Err(e) => notify(Event::ListFailed { sweep, error: e.to_string() }),
+            }
+            page?;
+        }
+        Command::StoreLetters { sweep, mailbox, ids } => {
+            let stored = store_letters(accounts, cache, index, &mailbox, &ids, notify).await;
+            match &stored {
+                Ok(gone) => notify(Event::LettersStored { sweep, gone: gone.clone() }),
+                Err(e) => notify(Event::ListFailed { sweep, error: e.to_string() }),
+            }
+            stored?;
+        }
         Command::Search { query, mailbox, ticket } => {
             // В папке — в её аккаунте; во всех папках — в своём (общие ящики ищутся по своему кэшу).
             let (acc, mb) = match &mailbox {
@@ -1229,9 +1250,12 @@ async fn handle(
             destroy_letters(accounts, cache, job, &account, &letters).await.into_iter().for_each(notify);
         }
         // Перенос в базе, задания и экспорт — в потоке ядра (`Command::routes_by`), сюда не приходят.
-        cmd @ (Command::MoveLetters { .. } | Command::Migration(_) | Command::Export { .. } | Command::StopExport { .. }) => {
-            cmd.unsupported().into_iter().for_each(notify)
-        }
+        cmd @ (Command::MoveLetters { .. }
+        | Command::Migration(_)
+        | Command::Sweep { .. }
+        | Command::StopSweep { .. }
+        | Command::Export { .. }
+        | Command::StopExport { .. }) => cmd.unsupported().into_iter().for_each(notify),
     }
     Ok(())
 }
@@ -1628,6 +1652,37 @@ fn in_mailbox(mailbox: Option<&str>, filter: Filter) -> Filter {
         Some(id) => Filter::And(vec![Filter::InMailbox(id.to_owned()), filter]),
         None => filter,
     }
+}
+
+/// Страница ключей выборки: только `Email/query`, строки писем — по `Command::StoreLetters`.
+async fn list_letters(accounts: &Accounts, s: &Selector, position: u64, limit: u32) -> postman_jmap::Result<(Vec<String>, u64)> {
+    let (acc, mb) = accounts.locate(&s.mailbox)?;
+    let filter = match s.filter.clone() {
+        Some(f) => in_mailbox(Some(mb), f),
+        None => Filter::InMailbox(mb.to_owned()),
+    };
+    let (ids, total) = acc.client.query_page_ids(&filter.to_jmap(), position, u64::from(limit)).await?;
+    Ok((ids.iter().map(|id| acc.key(id)).collect(), total))
+}
+
+/// Строки писем выборки — в кэш; ответ — ключи писем, которых на сервере уже нет.
+async fn store_letters(
+    accounts: &Accounts,
+    cache: &mut Cache,
+    index: &Index,
+    mailbox: &str,
+    keys: &[String],
+    notify: &impl Fn(Event),
+) -> postman_jmap::Result<Vec<String>> {
+    let (acc, _) = accounts.locate(mailbox)?;
+    let mut found = HashSet::new();
+    for chunk in keys.chunks(GET_CHUNK) {
+        let ids: Vec<String> = chunk.iter().map(|k| unscoped(k).1.to_owned()).collect();
+        let (emails, _) = acc.client.email_get(&ids).await?;
+        found.extend(emails.iter().map(|e| acc.key(&e.id)));
+        save_summaries(cache, index, &emails, acc.scope(), notify)?;
+    }
+    Ok(keys.iter().filter(|k| !found.contains(*k)).cloned().collect())
 }
 
 /// Беседа с сервера: `Thread/get` и краткие записи писем (из всех папок, в том числе «Отправленных» за пределами

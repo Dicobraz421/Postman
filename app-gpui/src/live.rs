@@ -6,6 +6,7 @@
 //! в простое процессор не занят, кадры — только когда что-то изменилось. Проснувшись, задача забирает все
 //! накопившиеся события разом: каждая часть экрана получает своё (`Mailer::on_sync`), общее — здесь (`plan`).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -73,6 +74,8 @@ pub(crate) struct Live {
     labels_early: Vec<categories::Reply>,
     /// Запрос фильтров «Все папки» на сервере (S5-03, `Command::Query`): номер последнего.
     pub(crate) filter_ticket: Option<u64>,
+    /// Сколько писем в «выбрано всё» с условием (`Command::Counts`): номер запроса.
+    pub(crate) whole_ticket: Option<u64>,
     /// Учётные записи профиля вместе (S7-03б, `fold`): отправители и отложенные отправки каждой, ответы на поиск.
     pub(crate) profile: Profile,
 }
@@ -92,12 +95,19 @@ pub(crate) struct Profile {
     pub(crate) names: Vec<(String, Settings)>,
     /// Добавляется со строки «Добавить аккаунт» (`@<n>`): ждём первого ответа её сервера.
     pub(crate) adding: Option<String>,
+    /// Учётные записи, которые в этом запуске вошли на сервер (`Status::SignedIn`): перенос только в них.
+    signed_in: HashSet<Option<String>>,
 }
 
 /// Ответов на поиск — помнить не больше (старые запросы уже не показываются).
 const RESULTS_KEPT: usize = 8;
 
 impl Profile {
+    /// Учётная запись вошла на сервер и вход не отозван.
+    pub(crate) fn signed_in(&self, profile: Option<&str>) -> bool {
+        self.signed_in.contains(&profile.map(str::to_owned))
+    }
+
     /// Пачка событий учётной записи `profile` → общий вид. Отправители и отложенные отправки — всех учётных записей
     /// вместе; ответы на один поиск — вместе. У дополнительной (`Some`) — только почта, календарь и итоги её команд:
     /// кто я, контакты, справочник, настройки, категории, задачи, связь и состояние — у основной. Её ошибки —
@@ -107,6 +117,15 @@ impl Profile {
         let mut errors = Vec::new();
         let key = profile.map(str::to_owned);
         for ev in batch {
+            match &ev {
+                Event::Status(Status::SignedIn { .. }) => {
+                    self.signed_in.insert(key.clone());
+                }
+                Event::Error(e) if e.kind == ErrorKind::Auth => {
+                    self.signed_in.remove(&key);
+                }
+                _ => {}
+            }
             match ev {
                 Event::Senders(list) => {
                     put(&mut self.senders, key.clone(), list);
@@ -189,6 +208,7 @@ impl Profile {
         self.senders.retain(|(p, _)| p.as_deref() != Some(profile));
         self.scheduled.retain(|(p, _)| p.as_deref() != Some(profile));
         self.names.retain(|(p, _)| p != profile);
+        self.signed_in.remove(&Some(profile.to_owned()));
     }
 
     /// Всё, что знает список «От» сейчас (после удаления учётной записи — заново всем частям экрана).
@@ -240,6 +260,8 @@ pub(crate) struct Plan {
     /// Догрузка папок: (папка, сколько писем пришло).
     pub(crate) more: Vec<(String, usize)>,
     pub(crate) results: Vec<(u64, Vec<String>)>,
+    /// Ответы `Command::Counts`: номер запроса и числа.
+    pub(crate) counts: Vec<(u64, Option<Vec<u64>>)>,
     /// Тела, пришедшие по запросу (`BodyReady`).
     pub(crate) bodies: Vec<String>,
     /// Письма с телом — в полнотекстовый индекс.
@@ -266,6 +288,7 @@ pub(crate) fn plan(events: &[Event]) -> Plan {
             Event::CalendarChanged => p.calendar = true,
             Event::LoadedMore { mailbox, added } => p.more.push((mailbox.clone(), *added)),
             Event::SearchResults { ticket, ids, .. } => p.results.push((*ticket, ids.clone())),
+            Event::Counts { ticket, counts } => p.counts.push((*ticket, counts.clone())),
             Event::BodyReady(id) => {
                 p.bodies.push(id.clone());
                 p.index.push(id.clone());
@@ -616,6 +639,13 @@ impl Mailer {
             // Письма со сроком — задачи «Из почты» (S6-03).
             if self.section == crate::Section::Tasks {
                 self.tasks.update(cx, |t, cx| t.letters_changed(cx));
+            }
+        }
+        for (ticket, counts) in plan.counts {
+            if self.live.whole_ticket == Some(ticket) {
+                self.live.whole_ticket = None;
+                let n = counts.and_then(|c| c.first().copied());
+                self.list.update(cx, |l, cx| l.whole_counted(n, cx));
             }
         }
         for (ticket, ids) in plan.results {
@@ -1343,6 +1373,7 @@ mod tests {
                 calendar: true,
                 more: vec![("in".into(), 500)],
                 results: vec![(7, ids(&["x"]))],
+                counts: Vec::new(),
                 bodies: ids(&["a"]),
                 index: ids(&["a", "b", "c"]),
             }
