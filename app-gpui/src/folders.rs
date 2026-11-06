@@ -645,7 +645,7 @@ impl Folders {
     }
 
     /// Открытая папка — в свёрнутой группе `account` (`OWN` — своей): подпись группы показана выбранной.
-    fn holds_current(&self, account: &str) -> bool {
+    pub(crate) fn holds_current(&self, account: &str) -> bool {
         self.results.is_none()
             && self.collapsed.contains(account)
             && self.current.as_deref().is_some_and(|id| account_of(id).unwrap_or(OWN) == account)

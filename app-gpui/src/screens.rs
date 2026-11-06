@@ -174,6 +174,11 @@ pub(crate) fn spots_numbered(prefix: &str) -> Vec<Bounds<Pixels>> {
     spots
 }
 
+/// Показанная ширина картинки письма с такой шириной кадра (`preview::picture`).
+pub(crate) fn picture_width(frame: u32) -> Option<f32> {
+    spot_bounds(&format!("picture-{frame}")).map(|b| f32::from(b.size.width))
+}
+
 /// Середина отмеченного элемента: отметки живут один кадр, так что элемент виден сейчас.
 pub(crate) fn spotted(id: &str) -> Option<Point<Pixels>> {
     spot_bounds(id).map(|b| b.center())
@@ -191,9 +196,12 @@ pub(crate) fn spot_center(id: &str, window: &Window) -> Option<Point<Pixels>> {
 }
 
 /// Точка строки `i` списка с учётом заголовков групп: их число зависит от времени суток, строки демо считаются от «сейчас».
+/// Строка за краем списка — `None`: щелчок попал бы в другую.
 pub(crate) fn row_place(m: &Mailer, cx: &App, i: usize) -> Option<Point<Pixels>> {
     let list = m.list.read(cx);
-    (list.bounds.get().size.width > px(0.)).then(|| list.row_point(i)).flatten()
+    let b = list.bounds.get();
+    // `row_point` прижимает точку к краю списка: на краю — уже не эта строка.
+    (b.size.width > px(0.)).then(|| list.row_point(i)).flatten().filter(|p| p.y > b.origin.y && p.y < b.origin.y + b.size.height)
 }
 
 /// Событие очереди: по одному на кадр, чтобы окно успело перестроиться.
@@ -608,6 +616,7 @@ fn clean_slate(m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) {
         m.search.update(cx, |s, cx| s.set_value("", window, cx));
         m.run_search("", cx);
     }
+    m.bar.update(cx, |b, _| b.scope = crate::bar::Scope::default());
     m.reset_filters(cx);
     m.filters.update(cx, |f, cx| {
         f.set(cx, |f| {
@@ -623,6 +632,8 @@ fn clean_slate(m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) {
     if let Some(inbox) = crate::live::inbox(&m.folders.read(cx).mailboxes) {
         m.open_mailbox(inbox, cx);
     }
+    // Список помнит прокрутку папки: строки считаются от начала, и сцена не зависит от прошлой.
+    m.list.update(cx, |l, _| l.scroll.set_offset(Point::default()));
 }
 
 fn set_phase(m: &mut Mailer, phase: Phase) {

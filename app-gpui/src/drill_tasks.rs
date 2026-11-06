@@ -159,9 +159,9 @@ const SCENES: &[Scene] = &[
     tree_scene("task-s815-group", group_open, GROUP),
     // S8-15, шаг 2: новая, вложенная, переименование, удаление, перетаскивание локальных папок.
     tree_scene("task-s815-edit", back_to_root, LOCAL_EDIT),
-    // S8-15, шаги 5, 6 (без открытия из новой папки и поиска): письма в «На этом компьютере» без вопроса, письмо закрыто, выделение снято.
-    tree_scene("task-s815-move", moved_away, TO_LOCAL),
-    // S8-32, шаг 1 (без меню письма и палитры): полоса экспорта, «С подпапками», «Отмена», Esc, меню папки, группа «На этом компьютере».
+    // S8-15, шаги 5, 6 (без тела из базы и поиска), S8-16, шаг 1: письма в «На этом компьютере» без вопроса, письмо закрыто, выделение снято.
+    tree_scene("task-s815-move", local_opened, TO_LOCAL),
+    // S8-32, шаг 1: полоса экспорта, «С подпапками», «Отмена», Esc, меню папки, группа «На этом компьютере».
     scene("task-s832-bar", local_asked, EXPORT_BAR),
     // S8-33б, шаг 2: EML, mbox, Maildir, PST; MSG нет.
     scene("task-s833-formats", pst_chosen, EXPORT_FORMATS),
@@ -171,10 +171,14 @@ const SCENES: &[Scene] = &[
     scene("task-s833-pst", pst_files, EXPORT_PST),
     // S8-32, шаг 6, S8-33б, шаг 6 (каталог — без диалога Windows): «Остановить», недописанного нет.
     scene("task-s832-stop", export_stopped, EXPORT_STOP),
+    // D4: элемент с фокусом ушёл с экрана — клавиши разделов и Ctrl+Shift+Q всё равно доходят.
+    scene("task-t1-focus-lost", meeting_tab, FOCUS_LOST),
     // T1-06: своя группа и ветка сворачиваются, смена раздела их не разворачивает, переход к папке — разворачивает.
     scene("task-t106-groups", branch_opened, GROUPS),
     // T1-09: открытие на начале рабочего дня, 00:00…24:00, событие в 07:00, Home.
     scene("task-t109-day", back_at_work, WHOLE_DAY),
+    // T1-10, шаги 1, 2 и T1-10в, шаги 1, 3 (в демо, вид — по снимку): логотип в размере из HTML, большая картинка по колонке.
+    scene("task-t110-images", images_fit, IMAGES),
     // T1-22, шаги 1–3 в демо: «Отправленные»: открыть, ↑/↓, выделение, флажок, «В папку».
     scene("task-t122-sent", sent_done, SENT),
     // T1-23, шаги 1, 2: меню на другой строке, «Копировать адрес», «Написать», «Встреча».
@@ -183,6 +187,8 @@ const SCENES: &[Scene] = &[
     scene("task-t123-keys", delete_asked, CONTACT_KEYS),
     // S5-21, шаги 5, 6: приглашение выбрано (контур, пунктир, кнопки — по снимку), подсказка значка ответов.
     scene("task-s521-event", legend_hint, WEEK),
+    // S5-22, шаг 1: у коллег свой цвет, события — подложкой цвета календаря и с именем владельца, свои — синие, категория — полосой.
+    scene("task-s522-owners", owners_shown, OWNERS),
     // S5-22, шаги 1, 2: цвета календарей коллег; выбор сохраняется.
     scene("task-s522-colors", color_saved, COLORS),
     // S5-22, шаг 2, второй запуск: выбранный цвет на месте.
@@ -197,6 +203,8 @@ const SCENES: &[Scene] = &[
     scene("task-s823-sections", odt_shown, SHEETS),
     // T1-13в, шаги 1–3 в демо: `.docx` текстом, Esc, `.docm` — карточка проверки.
     scene("task-t113-word", macro_card, WORD),
+    // T1-13в, шаг 3 настоящим путём: щелчок по карточке `.xlsm` — проверка в воркере, карточка с макросами.
+    scene("task-t113-xlsm", xlsm_card, XLSM),
     // S8-27, шаг 1 (без Проводника): раздел «Просмотр вложений», кнопка папки модулей.
     scene("task-s827-viewers", viewers_page, VIEWERS),
     // T1-18, шаг 3 (без перетаскивания ОС): короткий щелчок по карточке — просмотр.
@@ -1555,6 +1563,12 @@ fn back_to_root(_: &Scene, m: &Mailer, cx: &App) -> bool {
 /// Сцены почты берут первые строки «Входящих», перенос — дальние.
 const MOVED_ROW: usize = 6;
 
+/// Письма сцены: первым — тема, дальше — номера писем.
+fn moved_letters() -> Vec<postman_core::model::LetterId> {
+    let kept = KEPT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    kept.iter().skip(1).filter_map(|n| n.parse().ok()).map(postman_core::model::LetterId).collect()
+}
+
 const TO_LOCAL: &[Input] = &[
     READY_MAIL,
     Input::Click(|m, _, cx| screens::row_place(m, cx, MOVED_ROW), Held::No),
@@ -1563,20 +1577,56 @@ const TO_LOCAL: &[Input] = &[
     until!(|m, cx| m.list.read(cx).selection.len() >= 2),
     GROUP_SHOWN,
     until!(|m, cx| local_spot(m, cx, ARCHIVE).is_some()),
-    // Демо не хранит письма целиком: выделенным — содержимое, как после загрузки с сервера.
+    // Демо не хранит письма целиком: выделенным — содержимое, как после загрузки.
     Input::Run(|_, m, _, cx| {
         let keys = m.list.read(cx).selection.ids().to_vec();
-        seed(m, &keys)
+        seed(m, &keys)?;
+        let mut letters = vec![kept()];
+        for key in &keys {
+            let id = postman_core::store::letter_of_key(&m.cache, key).map_err(|e| e.to_string())?.ok_or("no letter")?;
+            letters.push(id.0.to_string());
+        }
+        *KEPT.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = letters;
+        Ok(())
     }),
     Input::Drag(|m, _, cx| screens::row_place(m, cx, MOVED_ROW), |m, _, cx| local_spot(m, cx, ARCHIVE)),
     // S8-15, шаг 6: письмо закрыто, выделение снято.
     until!(|m, cx| m.list.read(cx).selection.is_empty() && screens::reading(m, cx).is_none()),
+    until!(|m, cx| {
+        let subject = kept();
+        !m.list.read(cx).rows.1.iter().any(|r| r.subject == subject)
+    }),
+    // S8-16, шаг 1: вопроса нет, ход — в строке состояния: задание ждёт «удалено у источника», а сервера у демо нет.
+    until!(|m, _| m
+        .migration
+        .active()
+        .is_some_and(|j| { j.mode == postman_core::model::MigrationMode::LocalArchive && j.done == 0 && j.total == moved_letters().len() as u64 })),
+    until!(|_, _| screens::spotted("migration-status").is_some()),
+    until!(|_, _| pause(500)),
+    Input::Run(|_, m, _, _| {
+        let job = m.migration.active().ok_or("no active job")?.id;
+        let answers: Vec<_> = moved_letters().into_iter().map(|letter| postman_core::sync::Event::Destroyed { job, letter }).collect();
+        m.core_events(None, &answers);
+        Ok(())
+    }),
+    until!(|m, cx| {
+        let n = moved_letters().len() as u64;
+        toast_starts(m, cx, &tr!("migration-done-local", n = n as i64, count = crate::migration::count_text(n))) && m.migration.active().is_none()
+    }),
+    // S8-15, шаг 5: письмо открывается; тело демо берёт по ключу письма, так что «из базы» здесь не проверяется.
+    Input::Click(|m, _, cx| local_spot(m, cx, ARCHIVE), Held::No),
+    until!(|m, cx| on_folder(m, cx, local_named(m, cx, ARCHIVE).map(|f| f.id))),
+    Input::Click(
+        |m, _, cx| {
+            let list = m.list.read(cx);
+            screens::row_place(m, cx, list.rows.1.iter().position(|r| r.subject == kept())? + list.rows.0)
+        },
+        Held::No,
+    ),
 ];
 
-fn moved_away(_: &Scene, m: &Mailer, cx: &App) -> bool {
-    let subject = kept();
-    let list = m.list.read(cx);
-    list.selection.is_empty() && screens::reading(m, cx).is_none() && !list.rows.1.iter().any(|r| r.subject == subject)
+fn local_opened(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    screens::reading(m, cx).is_some_and(|r| r.row.subject == kept() && r.doc.is_some())
 }
 
 // S8-32, S8-33б: диалог выбора каталога заменён шагом `Input::Run` (`export_to`), сам диалог здесь не проверяется.
@@ -1611,6 +1661,22 @@ const EXPORT_BAR: &[Input] = &[
     until!(|m, _| choose(m).is_some()),
     Input::Keys(&["escape"]),
     until!(|m, _| choose(m).is_none()),
+    ROW_0,
+    until!(|m, cx| opened_row(m, cx, 0)),
+    Input::Right(|m, _, cx| screens::row_place(m, cx, 0)),
+    until!(|m, _| m.menu.is_some()),
+    Input::Press("menu-item-14"),
+    until!(|m, _| asked(m, |w| matches!(w, What::Letters(_)))),
+    Input::Keys(&["escape"]),
+    until!(|m, _| choose(m).is_none()),
+    Input::Keys(&["ctrl-k"]),
+    until!(|m, cx| m.palette.as_ref().is_some_and(|p| p.view.read(cx).shown() > 0)),
+    Input::Text("экспорт"), // i18n-ok: ввод сценария
+    until!(|m, cx| m.palette.as_ref().is_some_and(|p| p.view.read(cx).shown() >= 3)),
+    ENTER,
+    until!(|m, _| asked(m, |w| matches!(w, What::Letters(_)))),
+    Input::Keys(&["escape"]),
+    until!(|m, _| choose(m).is_none() && m.palette.is_none()),
     Input::Run(|_, m, _, cx| {
         let local = crate::local::LOCAL.to_owned();
         m.export_ask(What::Account(local), cx);
@@ -1761,7 +1827,11 @@ const GROUPS: &[Input] = &[
     }),
     until!(|_, _| screens::spotted("own-account").is_some()),
     Input::Click(OWN_GROUP, Held::No),
-    until!(|m, cx| folders(m, cx).is_collapsed("") && folder_row(own_inbox(m, cx)).is_none()),
+    // Шаг 2: открытая папка в свёрнутой группе: подпись группы — выбранная.
+    until!(|m, cx| {
+        let tree = folders(m, cx);
+        tree.is_collapsed("") && folder_row(own_inbox(m, cx)).is_none() && tree.current == own_inbox(m, cx) && tree.holds_current(crate::folders::OWN)
+    }),
     Input::Click(OWN_GROUP, Held::No),
     until!(|m, cx| !folders(m, cx).is_collapsed("") && folder_row(own_inbox(m, cx)).is_some()),
     until!(|m, cx| shared_key(m, cx, SALES).is_some_and(|a| screens::spotted(&format!("acc-{a}")).is_some())),
@@ -2005,6 +2075,36 @@ fn color_saved(_: &Scene, m: &Mailer, cx: &App) -> bool {
     m.section == Section::Calendar && !colors.is_empty()
 }
 
+const OWNERS: &[Input] = &[
+    READY_MAIL,
+    Input::Keys(&["ctrl-2"]),
+    until!(|m, cx| m.section == Section::Calendar && calendar(m, cx).colleagues.len() >= 2),
+    until!(|_, _| screens::spotted("cal-colleague-0").is_some()),
+];
+
+fn owners_shown(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    let c = calendar(m, cx);
+    let l = crate::roles::look(cx);
+    let color_of = |name: &str| c.colleagues.iter().find(|o| o.name == name).map(|o| c.calendar_color(&o.key()));
+    let (Some(first), Some(second)) = (color_of("Иванова Мария"), color_of("Петров Алексей")) else { return false }; // i18n-ok: имена демо
+    let mine = c.calendar_color("");
+    let tinted = |e: &postman_calendar::Event| {
+        let (_, bg, text) = c.colors(e, &l);
+        let cal = l.cat(c.calendar_color(&e.owner.as_ref().map(postman_calendar::Owner::key).unwrap_or_default()));
+        bg == cal.bg && text == cal.text
+    };
+    let striped = |e: &postman_calendar::Event| c.colors(e, &l).0 != l.cat(mine).dot;
+    let theirs = c.events.iter().filter(|e| e.owner.is_some()).count();
+    mine == postman_core::palette::BLUE
+        && first != second
+        && first != mine
+        && second != mine
+        && c.owner_names
+        && theirs > 0
+        && c.events.iter().all(tinted)
+        && c.events.iter().any(|e| e.owner.is_none() && striped(e))
+}
+
 /// Второй запуск: выбранный цвет на месте (`POSTMAN_SCREENS_PREFS`).
 const COLORS_KEPT: &[Input] = &[READY_MAIL, Input::Keys(&["ctrl-2"])];
 
@@ -2053,6 +2153,49 @@ const FIRST_RUN: &[Input] = &[
 
 fn refused(_: &Scene, m: &Mailer, cx: &App) -> bool {
     on_step(m, cx, Step::Password) && signin(m, cx).is_some_and(|p| p.error.is_some())
+}
+
+// T1-10, T1-10в: письмо Outlook демо: логотип с размером из HTML и большая картинка без него.
+
+/// Ширина логотипа подписи в HTML письма.
+const LOGO_WIDTH: f32 = 180.;
+/// Кадр большой картинки: воркер уменьшает её до предела стороны.
+const CHART_FRAME: u32 = postman_core::render::MAX_IMAGE_SIDE;
+
+/// Логотип в размере из HTML, большая картинка шире логотипа и не шире колонки.
+fn pictures_fit(m: &Mailer, cx: &App) -> Option<f32> {
+    let chart = screens::picture_width(CHART_FRAME)?;
+    let logo = screens::picture_width(postman_demo::SIGN_LOGO_SIZE.0)?;
+    let col = f32::from(m.reading.read(cx).column.get());
+    (logo == LOGO_WIDTH && chart > LOGO_WIDTH && chart <= col).then_some(chart)
+}
+
+const IMAGES: &[Input] = &[
+    READY_MAIL,
+    Input::Run(|_, m, _, cx| screens::select_demo(m, |b| screens::has(b, "chart"), cx)),
+    OPENED,
+    until!(|m, cx| pictures_fit(m, cx).is_some_and(|w| keep(w.to_string()))),
+    // Окно уже: большая картинка — по колонке, логотип тот же.
+    Input::Resize(1100., 800.),
+    until!(|m, cx| pictures_fit(m, cx).is_some_and(|w| w < kept().parse().unwrap_or(0.))),
+    Input::Resize(1280., 800.),
+];
+
+fn images_fit(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    pictures_fit(m, cx).is_some_and(|w| w == kept().parse().unwrap_or(0.))
+}
+
+/// Фокус на элементе, которого нет в окне: так бывает, когда поле с фокусом уходит с экрана.
+const LOSE_FOCUS: Input = Input::Run(|_, _, window, cx| {
+    let lost = cx.focus_handle();
+    window.focus(&lost, cx);
+    Ok(())
+});
+
+const FOCUS_LOST: &[Input] = &[READY_MAIL, LOSE_FOCUS, TASKS, IN_TASKS, LOSE_FOCUS, Input::Keys(&["ctrl-shift-q"])];
+
+fn meeting_tab(_: &Scene, m: &Mailer, _: &App) -> bool {
+    m.tabs.active().kind == TabKind::Meeting
 }
 
 // Подсказки при наведении: разделы 38 (шаг 2), 41 (шаг 3).
@@ -2115,6 +2258,11 @@ fn docx(paragraphs: usize) -> Result<Vec<u8>, String> {
         ("_rels/.rels", rels(&[("rId1", "officeDocument", "word/document.xml")])),
         ("word/document.xml", format!(r#"<w:document xmlns:w="{W}"><w:body>{body}</w:body></w:document>"#)),
     ])
+}
+
+/// Проект VBA: для проверки важно имя части, содержимое не исполняется.
+fn docm() -> Result<Vec<u8>, String> {
+    package(&[("[Content_Types].xml", "<Types/>".to_owned()), ("word/vbaProject.bin", "VBA".to_owned())])
 }
 
 fn xlsx() -> Result<Vec<u8>, String> {
@@ -2240,16 +2388,33 @@ const WORD: &[Input] = &[
     Input::Keys(&["escape"]),
     until!(|m, cx| screens::reading(m, cx).is_some_and(|r| r.preview.is_none())),
     Input::Run(|_, m, _, cx| {
-        show(m, "договор.docm", docx(1)?, cx);
+        show(m, "договор.docm", docm()?, cx);
         Ok(())
     }),
 ];
 
 /// Файл с макросами идёт в карточку проверки, а не в текст; сама карточка — у вложения письма, сцена `mail-27-zip` и соседние.
 fn macro_card(_: &Scene, m: &Mailer, cx: &App) -> bool {
-    screens::reading(m, cx)
-        .and_then(|r| r.preview.as_ref())
-        .is_some_and(|p| p.name == "договор.docm" && p.viewer == postman_core::attach::Viewer::Office)
+    screens::reading(m, cx).and_then(|r| r.preview.as_ref()).is_some_and(|p| {
+        p.name == "договор.docm"
+            && p.viewer == postman_core::attach::Viewer::Office
+            && p.risk == postman_core::attach::Risk::Macros
+            && matches!(&p.state, PvState::Ready(Shown::Office(s)) if s.macros)
+    })
+}
+
+const XLSM: &[Input] = &[
+    READY_MAIL,
+    Input::Click(|m, _, cx| screens::row_place(m, cx, screens::demo_row(m.list.read(cx), screens::outlook_letter)?), Held::No),
+    OPENED,
+    until!(|_, _| screens::spotted("att-card-2").is_some()),
+    Input::Press("att-card-2"),
+];
+
+fn xlsm_card(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    screens::reading(m, cx).and_then(|r| r.preview.as_ref()).is_some_and(|p| {
+        p.name == "Бюджет.xlsm" && p.risk == postman_core::attach::Risk::Macros && matches!(&p.state, PvState::Ready(Shown::Office(s)) if s.macros)
+    })
 }
 
 const VIEWERS: &[Input] = &[

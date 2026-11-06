@@ -389,7 +389,7 @@ pub(crate) struct CalendarView {
     /// Скрытые календари коллег и «Цвета по владельцу», «Имя владельца» — «Настройки → Календарь».
     hidden: Vec<String>,
     owner_colors: bool,
-    owner_names: bool,
+    pub(crate) owner_names: bool,
     /// Ответ ушёл, итога нет: (uid, ответ).
     answering: Option<(String, Partstat)>,
     /// Своя встреча (S7-07б): что спрашиваем одной строкой у подробностей — серию или подтверждение отмены.
@@ -1242,7 +1242,7 @@ impl CalendarView {
     }
 
     /// Цвет календаря владельца `key` (`""` — мой).
-    fn calendar_color(&self, key: &str) -> &str {
+    pub(crate) fn calendar_color(&self, key: &str) -> &str {
         self.colors.get(key).map_or(postman_core::palette::BLUE, String::as_str)
     }
 
@@ -1254,7 +1254,7 @@ impl CalendarView {
     /// Цвета события: (полоса, подложка, текст). Подложка и текст — цвет календаря владельца (S5-22, DESIGN
     /// «Календарь»), полоса — категория события, как в строке письма; без категории — цвет календаря. «Цвета по
     /// владельцу» выключены — событие коллеги цветом категории, как своё до S5-22.
-    fn colors(&self, e: &Event, l: &Look) -> (Hsla, Hsla, Hsla) {
+    pub(crate) fn colors(&self, e: &Event, l: &Look) -> (Hsla, Hsla, Hsla) {
         let key = e.owner.as_ref().map(Owner::key).unwrap_or_default();
         let cal = l.cat(self.calendar_color(&key));
         let cat = self.categories.for_event(&e.keywords).map(|c| l.cat(c.shown_color()));

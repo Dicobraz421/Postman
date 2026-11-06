@@ -427,8 +427,13 @@ impl ReadingPane {
 
     /// Снимки просмотра (S8-23, S8-27): файл `name` из байтов (собран сценой) — тем же путём, что вложение.
     pub(crate) fn screen_preview(&mut self, name: &str, viewer: Viewer, bytes: Vec<u8>, cx: &mut Context<Self>) {
+        // Документ с макросами не разбирается, а проверяется, как после загрузки байтов (`attachment_ready`).
+        let scan = (viewer == Viewer::Office).then(|| Arc::new(bytes.clone()));
         self.screen_pv(name, viewer, Some(bytes));
-        self.run_preview(cx);
+        match scan {
+            Some(data) => self.run_scan(format!("screen-{name}"), data, cx),
+            None => self.run_preview(cx),
+        }
         cx.notify();
     }
 
@@ -448,7 +453,7 @@ impl ReadingPane {
             name: row.name.clone(),
             row,
             viewer,
-            risk: Risk::Safe,
+            risk: attach::risk(name),
             page: 0,
             data: (!bytes.is_empty()).then(|| Arc::new(bytes)),
             state: PvState::Loading,
@@ -1052,7 +1057,8 @@ fn pv_canvas(scroll: &ScrollHandle, id: &'static str, l: &Look) -> Stateful<Div>
 pub(crate) fn picture(image: &Arc<RenderImage>, max_w: impl Into<Length> + Clone) -> Div {
     let size = image.size(0);
     let ratio = size.width.0.max(1) as f32 / size.height.0.max(1) as f32;
-    let frame = div().flex_1().min_w_0().max_w(max_w).aspect_ratio(ratio).child(img(image.clone()).size_full());
+    let spot = crate::screens::spot(("picture", size.width.0 as u64));
+    let frame = div().flex_1().min_w_0().max_w(max_w).aspect_ratio(ratio).child(img(image.clone()).size_full()).children(spot);
     div().flex_none().w_full().flex().child(frame)
 }
 

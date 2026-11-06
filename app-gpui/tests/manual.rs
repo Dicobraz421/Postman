@@ -654,6 +654,21 @@ fn has_tones(png_file: &Path, tones: &[u32]) {
     }
 }
 
+/// Точек подложки нерабочих часов на снимке дня: полоса шире 100 × 100 точек.
+const OFF_HOURS_AREA: usize = 10_000;
+
+/// Подложка T1-09, шаг 2: на снимке занимает заметную площадь, а не случайные пиксели.
+fn has_area(png_file: &Path, tone: u32, least: usize) {
+    let file = std::fs::File::open(png_file).unwrap();
+    let mut reader = png::Decoder::new(std::io::BufReader::new(file)).read_info().unwrap();
+    let mut rgba = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut rgba).unwrap();
+    let (px, _) = rgba[..info.buffer_size()].as_chunks::<4>();
+    let want = [(tone >> 16) as u8, (tone >> 8) as u8, tone as u8];
+    let n = px.iter().filter(|p| (0..3).all(|i| p[i].abs_diff(want[i]) <= 2)).count();
+    assert!(n >= least, "{}: цвета #{tone:06X} только {n} точек", png_file.display());
+}
+
 /// Перезапуск: первый процесс меняет вид и ширины, второй — на том же каталоге данных — видит их (`mail-restart-check`).
 fn restart_keeps_choices() {
     let data = tempfile::tempdir().unwrap();
@@ -768,17 +783,21 @@ fn task_drills() {
         "task-s832-mbox",
         "task-s833-pst",
         "task-s832-stop",
+        "task-t1-focus-lost",
+        "task-t110-images",
         "task-t106-groups",
         "task-t109-day",
         "task-t122-sent",
         "task-t123-menu",
         "task-t123-keys",
         "task-s521-event",
+        "task-s522-owners",
         "task-24-firstrun",
         "task-38-tip",
         "task-41-tip",
         "task-s823-sections",
         "task-t113-word",
+        "task-t113-xlsm",
         "task-s827-viewers",
         "task-t118-click",
     ];
@@ -801,6 +820,13 @@ fn task_drills() {
     pass(DARK, &["--lang", "ru", "--theme", "dark"], "task-dark", fresh().path());
     pass(&["task-t109-day"], &["--lang", "ru", "--theme", "gray"], "task-gray", fresh().path());
     pass(&["task-s604-en"], &["--lang", "en", "--theme", "light"], "task-en", fresh().path());
+    // T1-09, шаг 2: нерабочие часы и выходные — своя подложка (`app.cal.off`) в трёх темах.
+    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("manual-screens");
+    for (file, tone) in
+        [("task-light/task-t109-day.png", 0xF6F6F6), ("task-dark/task-t109-day-dark.png", 0x232323), ("task-gray/task-t109-day-gray.png", 0xE2E2E2)]
+    {
+        has_area(&root.join(file), tone, OFF_HOURS_AREA);
+    }
     // S5-22, шаг 2: цвет календаря после перезапуска.
     let data = fresh();
     pass(&["task-s522-colors"], &["--lang", "ru", "--theme", "light"], "task-colors", data.path());
