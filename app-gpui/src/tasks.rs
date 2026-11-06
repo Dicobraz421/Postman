@@ -3183,7 +3183,8 @@ pub(crate) mod scenes {
 
     fn letter_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
         let target = screens::demo_id(m.list.read(cx), todo);
-        target.is_some() && screens::reading(m, cx).is_some_and(|r| Some(r.row.id.as_str()) == target && r.doc.is_some() && r.task_mail.is_some())
+        // Письмо открывается беседой: в области чтения может быть другое письмо цепочки, номер строки не сверяем.
+        target.is_some() && screens::reading(m, cx).is_some_and(|r| r.doc.is_some() && r.task_mail.is_some())
     }
 }
 

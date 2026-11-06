@@ -70,7 +70,7 @@ pub(crate) const PART: Part = Part { name: "tasks", texts: TEXTS, commands: COMM
 - обработчики — `PARTS.iter().fold(div(), |d, p| (p.handlers)(d, cx))` в `Mailer::render`;
 - сцены — `PARTS.iter().flat_map(|p| p.scenes)` с фильтром по `set` (вместо `SCENES`, `LIVE_SCENES`, `SIGNIN_SCENES`).
 
-Общий код, который не часть (рамка, вкладки, рейл, `mailer.rs`, двигатель снимков, `commands::bind`), остаётся где
+Общий код, который не часть (рамка, вкладки, разделы, `mailer.rs`, двигатель снимков, `commands::bind`), остаётся где
 есть. Новая часть правит: свой модуль, свои `.ftl`, две строки в `parts/mod.rs`. Такая правка конфликтует редко и
 сливается механически.
 
