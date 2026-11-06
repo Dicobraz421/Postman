@@ -31,7 +31,7 @@ use crate::calendar::{add_days, avatar, chip_outline, day_start, g, hm};
 use crate::chrome::icon;
 use crate::roles::{Look, Pm};
 
-const NAV_W: f32 = 236.;
+const NAV_W: f32 = 288.;
 const LIST_W: f32 = 452.;
 const ROW_H: f32 = 52.;
 const HEAD_H: f32 = 26.;
@@ -1404,7 +1404,7 @@ impl ContactsView {
             .gap(px(2.))
             .pt(px(4.))
             .pr(px(8.))
-            .pl(px(4.))
+            .pl(px(8.))
             .text_size(px(13.))
             .child(div().text_size(px(12.)).text_color(l.text2()).px(px(8.)).pt(px(8.)).pb(px(4.)).child(tr!("contacts-favorites")))
             .child(item("src-freq", "contacts-frequent", self.frequent.len(), Source::Frequent, cx))
@@ -2152,7 +2152,7 @@ impl Render for ContactsBar {
         let features = crate::features::get(cx);
         let personal = crate::features::available("contacts.new", features);
         let meet = crate::features::available("contacts.meeting", features);
-        let search = Input::new(&search_state).prefix(icon(g::SEARCH, 14.).text_color(l.text3()));
+        let search = Input::new(&search_state).prefix(crate::icons::icon(crate::icons::SEARCH, 18., l.text3()));
         div()
             .size_full()
             .flex()

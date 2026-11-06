@@ -41,7 +41,7 @@ mod delegation;
 pub(crate) use delegation::Edit;
 pub(crate) use delegation::mail_card;
 
-const NAV_W: f32 = 236.;
+const NAV_W: f32 = 288.;
 const CARD_W: f32 = 440.;
 const ROW_H: f32 = 44.;
 const ROW_TWO: f32 = 54.;
@@ -70,7 +70,6 @@ pub(crate) mod g {
     pub(crate) const NOTES: char = '\u{E70B}';
     pub(crate) const EDIT: char = '\u{E70F}';
     pub(crate) const DELETE: char = '\u{E74D}';
-    pub(crate) const SEARCH: char = '\u{E721}';
     /// Поручения (S6-10): «Поручить», «Забрать», «в работе», «отклонил».
     pub(crate) const DELEGATE: char = '\u{E8FA}';
     pub(crate) const REVOKE: char = '\u{E7A7}';
@@ -1459,7 +1458,7 @@ impl TasksView {
             .gap(px(2.))
             .pt(px(10.))
             .pr(px(8.))
-            .pl(px(4.))
+            .pl(px(8.))
             .text_size(px(13.));
         for (i, (which, gl, key)) in lists.into_iter().enumerate() {
             let badge = if which == List::Today { overdue } else { 0 };
@@ -2761,7 +2760,7 @@ impl Render for TasksBar {
             .child(tr!("tasks-new"))
             .on_click(|_, window, cx| window.dispatch_action(Box::new(cmd::New), cx));
         let new = crate::keytips::command(new, "task.new", Some(tr!("tasks-new")), &l, cx);
-        let search = Input::new(&search_state).prefix(icon(g::SEARCH, 14.).text_color(l.text3()));
+        let search = Input::new(&search_state).prefix(crate::icons::icon(crate::icons::SEARCH, 18., l.text3()));
         div()
             .size_full()
             .flex()

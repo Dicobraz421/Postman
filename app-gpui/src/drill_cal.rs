@@ -90,7 +90,7 @@ const SCENES: &[Scene] = &[
 
 const OPEN: &[Input] = &[
     Input::Until(mail_ready),
-    Input::Press("rail-settings"),
+    Input::Press("nav-settings"),
     Input::Until(settings_open),
     Input::Keys(&["ctrl-w"]),
     Input::Until(settings_closed),

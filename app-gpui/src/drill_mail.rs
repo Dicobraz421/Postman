@@ -1898,7 +1898,7 @@ fn tree_open(_: &Scene, m: &Mailer, cx: &App) -> bool {
 const SPLIT_Y: f32 = 400.;
 
 fn split_folders(m: &Mailer, _: &Window, _: &App) -> Option<Point<Pixels>> {
-    Some(point(px(crate::chrome::W_RAIL + m.panes.0 + 4.), px(SPLIT_Y)))
+    Some(point(px(m.panes.0 + 4.), px(SPLIT_Y)))
 }
 
 fn split_list(m: &Mailer, _: &Window, cx: &App) -> Option<Point<Pixels>> {
@@ -1908,7 +1908,7 @@ fn split_list(m: &Mailer, _: &Window, cx: &App) -> Option<Point<Pixels>> {
 
 /// Левее любого минимума.
 fn far_left(_: &Mailer, _: &Window, _: &App) -> Option<Point<Pixels>> {
-    Some(point(px(crate::chrome::W_RAIL + 8.), px(SPLIT_Y)))
+    Some(point(px(8.), px(SPLIT_Y)))
 }
 
 fn split_list_left(m: &Mailer, w: &Window, cx: &App) -> Option<Point<Pixels>> {

@@ -175,6 +175,7 @@ pub(crate) fn badge<E: ParentElement + Styled>(el: E, key: Option<String>, l: &L
                 .rounded(px(3.))
                 .bg(l.accent())
                 .text_color(l.on_accent())
+                .whitespace_nowrap()
                 .text_size(px(11.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(k),

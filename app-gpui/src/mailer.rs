@@ -29,7 +29,7 @@ pub(crate) enum Section {
 }
 
 impl Section {
-    /// Команда рейла этого модуля.
+    /// Команда раздела в заголовке окна.
     pub(crate) fn command(self) -> &'static str {
         match self {
             Section::Mail => "view.mail",
@@ -511,7 +511,7 @@ impl Mailer {
     }
 
     pub(crate) fn set_section(&mut self, section: Section, cx: &mut Context<Self>) {
-        // Модуль рейла — во вкладке «Почта» (вкладка настроек остаётся открытой); «Почта» во вкладке почты (S5-16) —
+        // Раздел — во вкладке «Почта» (вкладка настроек остаётся открытой); «Почта» во вкладке почты (S5-16) —
         // там же.
         if section == Section::Mail {
             self.show_mail_tab(cx);
@@ -591,10 +591,10 @@ impl Render for Mailer {
         let l = crate::roles::look(cx);
         let menu = self.context_menu(window, &l, cx);
         let picker = self.lifecycle_overlay(&l, cx);
-        // Вкладка «Настройки» (S5-09) — на месте рейла и модуля.
+        // Вкладка «Настройки» (S5-09) — на месте модуля.
         let settings_tab = self.tabs.is_active(crate::tabs::TabKind::Settings);
         let settings: Option<AnyView> = self.settings.view.clone().filter(|_| settings_tab).map(Into::into);
-        // Вкладка письма (S5-06б): письмо на всю ширину, без командной строки и рейла (макет «Новое письмо»).
+        // Вкладка письма (S5-06б): письмо на всю ширину, без командной строки (макет «Новое письмо»).
         let letter = match self.tabs.active().kind {
             crate::tabs::TabKind::Compose(id) => self.compose.get(id).cloned(),
             _ => None,
@@ -676,7 +676,7 @@ impl Render for Mailer {
     }
 }
 
-// --- раскладка (DESIGN «Главное окно»): рейл | папки | список | чтение ---
+// --- раскладка (DESIGN «Главное окно»): папки | список | чтение ---
 
 impl Mailer {
     /// Выделение без фокуса (T1-D): окно не активно или фокус в поле ввода, письме — строки списков нейтральные.
@@ -748,9 +748,9 @@ impl SplitDrag {
     }
 }
 
-/// Место трёх панелей (px при 100 %): окно без рейла, отступов и разделителей.
+/// Место трёх панелей (px при 100 %): окно без отступа справа и разделителей.
 fn panes_room(viewport: f32) -> u16 {
-    (viewport - crate::chrome::W_RAIL - 8. - 16.).clamp(0., f32::from(u16::MAX)) as u16
+    (viewport - 8. - 16.).clamp(0., f32::from(u16::MAX)) as u16
 }
 
 /// Двойной щелчок по разделителю: ширина макета.
@@ -807,8 +807,8 @@ impl Mailer {
 }
 
 /// Ширина панели папок и карточки списка (макет главного окна).
-pub(crate) const W_FOLDERS: f32 = 236.0;
-pub(crate) const W_LIST: f32 = 452.0;
+pub(crate) const W_FOLDERS: f32 = postman_core::prefs::Layout::FOLDERS as f32;
+pub(crate) const W_LIST: f32 = postman_core::prefs::Layout::LIST as f32;
 /// Доля высоты области чтения под ответом (остальное — письмо, на которое отвечают).
 const INLINE_SHARE: f32 = 0.6;
 
@@ -837,7 +837,7 @@ impl Mailer {
         use postman_core::prefs::Pane;
         let full = || StyleRefinement::default().size_full();
         let mail = free && self.section == Section::Mail;
-        // Вкладка «Настройки» — на всю ширину: своя навигация вместо рейла (макет «Настройки»).
+        // Вкладка «Настройки» — на всю ширину: своя навигация слева (макет «Настройки»).
         if let Some(p) = settings {
             return div().flex().flex_1().min_h_0().px(px(8.)).child(p.cached(full()));
         }
@@ -845,12 +845,13 @@ impl Mailer {
         if mail && let Some(s) = self.live.signin.clone() {
             return div().flex().flex_1().min_h_0().px(px(8.)).child(card(l).flex_1().child(s));
         }
-        let mut body = div().flex().flex_1().min_h_0().pr(px(8.)).child(self.rail(l, cx));
+        let mut body = div().flex().flex_1().min_h_0().pr(px(8.));
         if mail {
             let (w_folders, w_list) = self.panes;
-            let folders = self.folders.clone().cached(StyleRefinement::default().w(px(w_folders)).h_full().flex_none());
-            // «Серая» (T1-D): панель папок — карточкой, как список и чтение.
-            body = if l.gray() { body.child(card(l).w(px(w_folders)).flex_none().child(folders)) } else { body.child(folders) };
+            // «Серая» (T1-D): панель папок — карточкой, как список и чтение, в 8 px от края окна; список на том же месте.
+            let inset = if l.gray() { 8. } else { 0. };
+            let folders = self.folders.clone().cached(StyleRefinement::default().w(px(w_folders - inset)).h_full().flex_none());
+            body = if l.gray() { body.child(card(l).ml(px(inset)).w(px(w_folders - inset)).flex_none().child(folders)) } else { body.child(folders) };
             body = body.child(self.splitter(Split::Folders, l, cx));
             let list_split = self.splitter(Split::List, l, cx);
             // Обновление хранилища (S8-16): строка вместо списка.

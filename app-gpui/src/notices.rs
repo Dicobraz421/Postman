@@ -507,7 +507,7 @@ impl Notices {
             list = list.child(div().p(px(16.)).text_color(l.text2()).child(tr!("notices-empty")));
         }
         // Под командной строкой, справа (макет «Состояния»).
-        let top = l.m(Metric::HTitlebar) + crate::bar::BAR_HEIGHT + 4.;
+        let top = crate::chrome::TITLEBAR_H + crate::bar::BAR_HEIGHT + 4.;
         div()
             .id("notices-panel")
             .occlude()
@@ -573,7 +573,7 @@ impl Render for Notices {
         let more = self.stack.more(now);
         let panel = self.history_open.then(|| self.history_panel(&l, cx));
         let stack = (!shown.is_empty()).then(|| {
-            let top = l.m(Metric::HTitlebar) + crate::bar::BAR_HEIGHT + 8.;
+            let top = crate::chrome::TITLEBAR_H + crate::bar::BAR_HEIGHT + 8.;
             let right = if self.history_open { PANEL_W + 28. } else { 16. };
             let plus = (more > 0).then(|| {
                 div()

@@ -11,20 +11,21 @@ use pets_ui::theme::Metric;
 
 use crate::actions::mail;
 use crate::chrome::{self, glyph};
+use crate::icons::{self, Ico};
 use crate::keytips;
-use crate::roles::{Look, look};
+use crate::roles::{Look, Pm, look};
 
 /// Действие кнопки (новое на каждое нажатие).
 type MakeAction = fn() -> Box<dyn Action>;
 
-/// Тихие кнопки: значок Segoe Fluent Icons, текст, действие команды.
-/// Кнопки командной строки: значок, подпись, команда (подсказка и KeyTips, S5-18), действие.
-const BUTTONS: [(char, &str, &str, MakeAction); 5] = [
-    (glyph::REPLY, "frame-reply", "mail.reply", || Box::new(mail::Reply)),
-    (glyph::REPLY_ALL, "frame-reply-all", "mail.reply_all", || Box::new(mail::ReplyAll)),
-    (glyph::FORWARD, "frame-forward", "mail.forward", || Box::new(mail::Forward)),
-    (glyph::DELETE, "frame-delete", "mail.delete", || Box::new(mail::Delete)),
-    (glyph::FLAG, "frame-flag", "mail.toggle_flag", || Box::new(mail::ToggleFlag)),
+/// Тихие кнопки командной строки: значок Fluent и его токен (без токена — цветом текста, DESIGN «Значки»), подпись,
+/// команда (подсказка и KeyTips, S5-18), действие.
+pub(crate) const BUTTONS: [(Ico, Option<Pm>, &str, &str, MakeAction); 5] = [
+    (icons::REPLY, Some(Pm::IconBlue), "frame-reply", "mail.reply", || Box::new(mail::Reply)),
+    (icons::REPLY_ALL, Some(Pm::IconBlue), "frame-reply-all", "mail.reply_all", || Box::new(mail::ReplyAll)),
+    (icons::FORWARD, Some(Pm::IconBlue), "frame-forward", "mail.forward", || Box::new(mail::Forward)),
+    (icons::DELETE, None, "frame-delete", "mail.delete", || Box::new(mail::Delete)),
+    (icons::FLAG, Some(Pm::IconAmber), "frame-flag", "mail.toggle_flag", || Box::new(mail::ToggleFlag)),
 ];
 
 /// Высота командной строки: кэшированное view не измеряется по содержимому, размер задаётся явно.
@@ -121,7 +122,7 @@ impl Render for CommandBar {
             .text_color(l.on_accent())
             .cursor_pointer()
             .hover(|d| d.bg(l.accent_hover()))
-            .child(chrome::icon(glyph::NEW_MAIL, 16.))
+            .child(icons::icon(icons::COMPOSE, 20., l.on_accent()))
             .child(tr!("frame-new"))
             .on_click(|_, window, cx| window.dispatch_action(Box::new(mail::New), cx));
         // Подсказка «Название (клавиша)» и плашка KeyTips (S5-18); клавиш в подписях нет.
@@ -132,15 +133,15 @@ impl Render for CommandBar {
             let hint = tr!(if t == crate::shared::Act::Release { "shared-release-hint" } else { "shared-take-hint" });
             let b = crate::buttons::secondary("bar-take", &l)
                 .mr(px(8.))
-                .child(chrome::icon(glyph::CONTACTS, 16.))
+                .child(icons::icon(icons::PEOPLE, 20., l.pm(Pm::SecondaryFg)))
                 // Как в макете: у письма коллеги — тоже «Взять в работу» (в шапке письма — «Забрать себе»).
                 .child(if t == crate::shared::Act::Release { t.label() } else { crate::shared::Act::Take.label() })
                 .on_click(|_, window, cx| window.dispatch_action(Box::new(mail::Take), cx));
             keytips::command(b, "mail.take", Some(hint), &l, cx)
         });
-        let buttons = BUTTONS.map(|(g, key, cmd, action)| {
+        let buttons = BUTTONS.map(|(ico, tint, key, cmd, action)| {
             let b = chrome::quiet_button(key, &l)
-                .child(chrome::icon(g, 16.))
+                .child(icons::icon(ico, 20., tint.map_or(l.text(), |t| l.pm(t))))
                 .child(tr!(key))
                 // Действие уходит в фокус окна (экран почты), как от клавиши.
                 .on_click(move |_, window, cx| window.dispatch_action(action(), cx));
@@ -148,7 +149,7 @@ impl Render for CommandBar {
         });
         // Во время поиска — шире, охват внутри поля. Клавиша поиска — плашкой KeyTips, не в поле.
         let active = self.focused || !self.search.read(cx).value().trim().is_empty();
-        let search = Input::new(&self.search).prefix(chrome::icon(glyph::SEARCH, 14.).text_color(l.text3()));
+        let search = Input::new(&self.search).prefix(icons::icon(icons::SEARCH, 18., l.text3()));
         let search = if active { search.suffix(self.scope_switch(&l, cx)) } else { search };
         let search_key = keytips::key("search.focus", cx);
         let more = chrome::quiet_button("bar-more", &l)
