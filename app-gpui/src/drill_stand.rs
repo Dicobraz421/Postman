@@ -1196,7 +1196,8 @@ const SECOND_LETTER: &[Input] = &[
     Input::Until(mail_ready),
     until!(|m, cx| second_folder(m, cx, "inbox").is_some()),
     Input::Run(|_, m, _, cx| open_second(m, cx, "inbox")),
-    until!(|m, cx| placed(m, cx, TO_SECOND).is_some()),
+    // `peer.py` шлёт два письма подряд: второе сдвинуло бы строку между расчётом точки и щелчком.
+    until!(|m, cx| placed(m, cx, TO_SECOND).is_some() && placed(m, cx, DELETE_SECOND).is_some()),
     Input::Click(|m, _, cx| placed(m, cx, TO_SECOND), Held::No),
     until!(|m, cx| picked(m, cx, TO_SECOND).is_some_and(|r| r.seen)),
 ];
@@ -1210,7 +1211,8 @@ const SECOND_REPLY: &[Input] = &[
 const SECOND_MOVE: &[Input] = &[
     Input::Until(mail_ready),
     Input::Run(|_, m, _, cx| open_second(m, cx, "inbox")),
-    until!(|m, cx| placed(m, cx, TO_SECOND).is_some()),
+    // `peer.py` шлёт два письма подряд: второе сдвинуло бы строку между расчётом точки и щелчком.
+    until!(|m, cx| placed(m, cx, TO_SECOND).is_some() && placed(m, cx, DELETE_SECOND).is_some()),
     Input::Click(|m, _, cx| placed(m, cx, TO_SECOND), Held::No),
     until!(|m, cx| picked(m, cx, TO_SECOND).is_some()),
     Input::Keys(&["ctrl-shift-v"]),
@@ -1312,7 +1314,7 @@ const MEETING_FROM_SECOND: &[Input] = &[
     until!(|m, cx| m.meetings.last().is_some_and(|v| v.read(cx).model.from.as_deref() == Some(colleague("POSTMAN_STAND_PEER").as_str()))),
     Input::Keys(&["ctrl-enter"]),
     until!(|m, _| m.meetings.last().is_none()),
-    Input::Run(to_calendar),
+    Input::Run(to_meeting_week),
 ];
 
 const REMOVE_SECOND: &[Input] = &[
@@ -1385,6 +1387,14 @@ const DIRECTORY_NAMES: &[Input] =
 /// Календарь после закрытой вкладки встречи: фокуса в окне нет, клавиша не дойдёт.
 fn to_calendar(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
     m.set_section(crate::Section::Calendar, cx);
+    Ok(())
+}
+
+/// Календарь на неделе новой встречи: в пятницу вечером она уходит на понедельник (`default_start`).
+fn to_meeting_week(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+    m.set_section(crate::Section::Calendar, cx);
+    let date = crate::meeting::default_start(&jiff::Zoned::now()).date();
+    m.cal.update(cx, |c, cx| c.go_to(date, cx));
     Ok(())
 }
 
@@ -1593,7 +1603,7 @@ const DAV_NEW_MEETING: &[Input] = &[
     Input::Typed(|| format!("{};", colleague("POSTMAN_STAND_PEER"))),
     Input::Keys(&["ctrl-enter"]),
     until!(|m, _| meeting_view(m).is_none()),
-    Input::Run(to_calendar),
+    Input::Run(to_meeting_week),
 ];
 
 fn dav_answered(_: &Scene, m: &Mailer, cx: &App) -> bool {
@@ -1605,7 +1615,7 @@ fn synced_line(m: &Mailer) -> bool {
     m.live.status == tr!("sync-synced")
 }
 
-const DAV_ANSWER: &[Input] = &[Input::Until(mail_ready), Input::Run(to_calendar)];
+const DAV_ANSWER: &[Input] = &[Input::Until(mail_ready), Input::Run(to_meeting_week)];
 
 const DAV_CONTACT_NEW: &[Input] = &[
     Input::Until(mail_ready),
@@ -2437,14 +2447,14 @@ const OWN_NEW: &[Input] = &[
     Input::Typed(|| format!("{};", colleague("POSTMAN_STAND_PEER"))),
     Input::Keys(&["ctrl-enter"]),
     until!(|m, _| meeting_view(m).is_none()),
-    Input::Run(to_calendar),
+    Input::Run(to_meeting_week),
 ];
 
 const OWN_SELECT: &[Input] = &[Input::Run(|_, m, _, cx| select_event(m, cx, OWN_MEETING)), until!(|_, _| own_buttons())];
 
 const FOREIGN_SELECT: &[Input] = &[
     Input::Until(mail_ready),
-    Input::Run(to_calendar),
+    Input::Run(to_meeting_week),
     until!(|m, cx| event_shown(m, cx, &titled(OWN_MEETING))),
     Input::Run(|_, m, _, cx| select_event(m, cx, OWN_MEETING)),
     // Подробности нарисованы: в панели есть свои кнопки ответа или их нет — смотрит условие сцены.
@@ -2453,7 +2463,7 @@ const FOREIGN_SELECT: &[Input] = &[
 
 const OWN_EDIT: &[Input] = &[
     Input::Until(mail_ready),
-    Input::Run(to_calendar),
+    Input::Run(to_meeting_week),
     until!(|m, cx| event_shown(m, cx, &titled(OWN_MEETING))),
     Input::Run(|_, m, _, cx| select_event(m, cx, OWN_MEETING)),
     Input::Press("own-edit"),
@@ -2464,7 +2474,7 @@ const OWN_EDIT: &[Input] = &[
     until!(|m, cx| meeting_view(m).is_some_and(|v| v.read(cx).model.title == titled(OWN_EDITED))),
     Input::Keys(&["ctrl-enter"]),
     until!(|m, _| meeting_view(m).is_none()),
-    Input::Run(to_calendar),
+    Input::Run(to_meeting_week),
 ];
 
 const OWN_CANCEL: &[Input] = &[

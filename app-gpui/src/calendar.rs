@@ -668,7 +668,7 @@ impl CalendarView {
         cx.notify();
     }
 
-    fn go_to(&mut self, date: Date, cx: &mut Context<Self>) {
+    pub(crate) fn go_to(&mut self, date: Date, cx: &mut Context<Self>) {
         let before = self.range();
         self.anchor = date;
         self.month = date.first_of_month();
