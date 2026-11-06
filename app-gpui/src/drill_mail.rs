@@ -197,6 +197,14 @@ const SCENES: &[Scene] = &[
         |_, m, cx| model(m, cx).is_some_and(|c| c.subject.starts_with("FW:") && c.attachments().count() == 1),
         THREAD_FORWARD,
     ),
+    // Решение владельца п. 9: при стопке тостов в ответе «Развернуть» срабатывает с первого щелчка, тосты на месте.
+    scene("mail-d9-expand", |_, m, cx| screens::compose_tab(m).is_some() && m.toasts.read(cx).on_screen() == 3, EXPAND_UNDER_TOASTS),
+    // Решение владельца п. 9: ответ с вложениями и стопка тостов (вид — по снимку).
+    scene("mail-d9-reply", |_, m, cx| m.toasts.read(cx).on_screen() == 3 && screens::spotted("notice-stack").is_some(), REPLY_TOASTS),
+    // Решение владельца п. 9: письмо с вложениями без ответа: карточки вложений свободны.
+    scene("mail-d9-attachments", |_, m, cx| m.toasts.read(cx).on_screen() == 3 && cards_free(), ATTACHMENTS_TOASTS),
+    // Решение владельца п. 9: вкладка письма и стопка тостов (вид — по снимку).
+    scene("mail-d9-compose", |_, m, cx| m.toasts.read(cx).on_screen() == 3 && screens::spotted("notice-stack").is_some(), COMPOSE_TOASTS),
     // T1-05б, шаги 1, 2: разделители тянутся до минимума; двойной щелчок — ширина макета.
     scene("mail-t105-split", |_, m, cx| m.panes == (W_FOLDERS, W_LIST) && crate::prefs::get(cx).layout == Layout::default(), SPLITS),
     // T1-05б, шаг 3: узкое окно: сначала чтение, затем список, затем папки.
@@ -1907,6 +1915,34 @@ const TREE: &[Input] = &[
     FORGET,
     SETTLE,
 ];
+
+const TOASTS: Input = Input::Run(|_, m, _, cx| {
+    screens::toast_stack(m, cx);
+    Ok(())
+});
+const TOASTS_SHOWN: Input = until!(|m, cx| m.toasts.read(cx).on_screen() == 3 && screens::spotted("notice-stack").is_some());
+
+const EXPAND_UNDER_TOASTS: &[Input] = &[
+    READY,
+    LEFT,
+    OPENED,
+    Input::Keys(&["ctrl-r"]),
+    INLINE,
+    TOASTS,
+    TOASTS_SHOWN,
+    until!(|_, _| screens::apart("notice-stack", "expand")),
+    Input::Press("expand"),
+];
+
+fn cards_free() -> bool {
+    screens::apart("notice-stack", "att-card-0") && screens::apart("notice-stack", "att-card-1")
+}
+
+const ATTACHMENTS_TOASTS: &[Input] = &[READY, Input::Click(outlook_row, Held::No), OPENED, TOASTS];
+
+const REPLY_TOASTS: &[Input] = &[READY, Input::Click(outlook_row, Held::No), OPENED, Input::Keys(&["ctrl-r"]), INLINE, TOASTS, TOASTS_SHOWN];
+
+const COMPOSE_TOASTS: &[Input] = &[READY, NEW, COMPOSE, TOASTS, TOASTS_SHOWN];
 
 const REDO_TEXT: &str = "abc";
 
