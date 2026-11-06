@@ -100,6 +100,10 @@ const SCENES: &[Scene] = &[
     scene("net-series-outlook", week, outlook_series, OUTLOOK),
     // S8-42, шаг 4: тот же файл по ссылке занятости.
     scene("net-series-busy", meeting, outlook_busy, LINK_SERIES),
+    // S8-44, шаг 3: пояса без имени в базе, время по правилам файла: с переводом часов, южное полушарие, постоянное смещение.
+    scene("net-series-zone", week, zone_series, ZONES),
+    // Серии дороже предела работы: остальные на месте, запись в журнале сверяет `net.py`.
+    scene("net-series-limit", week, all_series, OVER_LIMIT),
     // S5-12.5, шаги 1, 6: `ldaps://`, имя и пароль: «Сохранён…», запись в Диспетчере; «Проверить» — отвечает.
     scene("net-s5125-ldaps", password_login, |_, m, cx| check_ok(m, cx, 1) && password_kept(LDAPS), LDAPS_CHECK),
     // S5-12.5, шаг 7: имя и пароль по `ldap://` без StartTLS: «Каталог недоступен», входа на сервере нет (сверяет `net.py`).
@@ -127,6 +131,8 @@ const SUBSCRIPTION: &str = "https://cal.example.test/public/basic.ics";
 const MANY_ICS: &str = "https://cal.example.test/public/many.ics";
 const UNTIL_ICS: &str = "https://cal.example.test/public/until.ics";
 const OUTLOOK_ICS: &str = "https://cal.example.test/public/outlook.ics";
+const ZONES_ICS: &str = "https://cal.example.test/public/zones.ics";
+const LIMIT_ICS: &str = "https://cal.example.test/public/limit.ics";
 const LINK_OUTLOOK: &str = "https://cal.example.test/free-busy/outlook.ics";
 const SECOND_WEBCAL: &str = "webcal://cal.example.test/public/second.ics";
 const LINK_ICS: &str = "https://cal.example.test/free-busy/guest.ics";
@@ -555,6 +561,20 @@ fn outlook(tz: &jiff::tz::TimeZone, monday: Date) -> Option<Vec<Shown>> {
     Some(out)
 }
 
+/// Что должно быть в неделе от `ICS_FILE_ZONES` в `net.py`: правила файла те же, что у этих поясов, неделя любая.
+fn file_zones(monday: Date) -> Option<Vec<Shown>> {
+    let timed = |title: &str, day: i64, hour: i8, zone: &str| {
+        at(add_days(monday, day), hour, 0, zone).map(|s| (title.to_owned(), s, s + 3600, false, false, true))
+    };
+    let mut out = vec![
+        timed("Пояс файла север", 0, 9, "America/New_York")?,      // i18n-ok: данные источника
+        timed("Пояс файла юг", 1, 10, "Australia/Sydney")?,        // i18n-ok: данные источника
+        timed("Пояс файла без перехода", 2, 12, "Europe/Moscow")?, // i18n-ok: данные источника
+    ];
+    out.sort();
+    Some(out)
+}
+
 /// События подписок в неделе совпали с ожидаемыми.
 fn week_is(c: &CalendarView, want: Option<Vec<Shown>>) -> bool {
     let mut got: Vec<Shown> = c
@@ -601,6 +621,8 @@ macro_rules! subscribe {
 const MANY: &[Input] = subscribe!(MANY_ICS);
 const UNTIL: &[Input] = subscribe!(UNTIL_ICS);
 const OUTLOOK: &[Input] = subscribe!(OUTLOOK_ICS);
+const ZONES: &[Input] = subscribe!(ZONES_ICS);
+const OVER_LIMIT: &[Input] = subscribe!(LIMIT_ICS);
 
 /// Все серии `ICS_EVENTS`, не только первая, и каждая в свой час.
 fn all_series(_: &Scene, m: &Mailer, cx: &App) -> bool {
@@ -611,6 +633,11 @@ fn all_series(_: &Scene, m: &Mailer, cx: &App) -> bool {
 fn outlook_series(_: &Scene, m: &Mailer, cx: &App) -> bool {
     let c = m.cal.read(cx);
     c.days().first().is_some_and(|monday| week_is(c, outlook(c.time_zone(), *monday)))
+}
+
+fn zone_series(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    let c = m.cal.read(cx);
+    c.days().first().is_some_and(|monday| week_is(c, file_zones(*monday)))
 }
 
 /// Занятость того же файла по ссылке: неделя встречи, все события заняты, весь день — сутки пояса показа.

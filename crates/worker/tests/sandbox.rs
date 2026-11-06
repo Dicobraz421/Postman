@@ -206,6 +206,28 @@ fn ics_at_the_size_limit() {
     assert!(c.ics(b"not a calendar", from, to, "UTC").is_err());
 }
 
+/// Пределы доходят до клиента только в ответе: журнала в песочнице нет. Обычный файл ничего не оставляет, забранное не повторяется.
+#[test]
+fn cut_reaches_the_client() {
+    let mut c = client();
+    let (from, to) = (1_793_577_600, 1_793_577_600 + 7 * 86_400);
+    let event = |uid: &str, rule: &str| {
+        format!("BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTART:20261101T000000Z\r\nDURATION:PT1S\r\nRRULE:FREQ={rule}\r\nEND:VEVENT\r\n")
+    };
+    let calendar = |body: String| format!("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//T//T//EN\r\n{body}END:VCALENDAR\r\n").into_bytes();
+    let hostile = calendar((0..8).map(|i| event(&format!("h{i}"), "SECONDLY")).collect());
+    let ordinary = calendar(event("a", "WEEKLY"));
+    c.ics(&ordinary, from, to, "UTC").unwrap();
+    assert_eq!(c.take_cut(), None);
+    c.ics(&hostile, from, to, "UTC").unwrap();
+    let cut = c.take_cut().unwrap();
+    assert_eq!(cut.series, 8);
+    assert!(cut.series_skipped > 0, "{cut:?}");
+    assert_eq!(c.take_cut(), None);
+    c.free_busy(&hostile, from, to, "UTC").unwrap();
+    assert!(c.take_cut().is_some());
+}
+
 #[test]
 fn parses_invitation_under_seccomp() {
     let mut c = client();

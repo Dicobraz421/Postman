@@ -7,17 +7,26 @@
 //!   перевода часов дата остаётся без пояса, `DTSTART` в них роняет всю серию: здесь все даты приведены к местному времени
 //!   серии без пояса, а в UTC их переводит [`instant`] по RFC 5545 §3.3.5;
 //! - переопределение ищется по `SEQUENCE` без `UID`: здесь серия — компоненты одного `UID`, `SEQUENCE` убран;
-//! - событие без `DTEND` тянется до конца суток; RFC 5545 §3.6.1 — нулевой длины.
+//! - событие без `DTEND` тянется до конца суток; RFC 5545 §3.6.1 — нулевой длины;
+//! - `TZID` не из базы, без `X-LIC-LOCATION`, для него — пояс показа: здесь время считается по правилам файла ([`zone`]).
 //!
 //! Серии обрезаны концом периода, старые — передвинуты к его началу ([`plan`]): цена не зависит от истории файла. Всё — в
 //! песочнице воркера; `chrono` в зависимостях воркера нет, поэтому время здесь — секунды, местное или UTC.
+//!
+//! Что не вошло из-за пределов, считает [`Cut`]: только числа, журнала в песочнице нет, запись делает приложение.
 
-use std::collections::HashMap;
+mod zone;
+
+use std::collections::{HashMap, HashSet};
+use std::fmt;
 
 use calcard::common::PartialDateTime;
 use calcard::common::timezone::Tz;
 use calcard::icalendar::dates::TimeOrDelta;
 use calcard::icalendar::timezone::TzResolver;
+use serde::{Deserialize, Serialize};
+use zone::{MAX_ZONE_WORK, Refused, Rules};
+
 use calcard::icalendar::{
     ICalendar, ICalendarComponent, ICalendarComponentType as Kind, ICalendarEntry, ICalendarFrequency as Freq, ICalendarParameterName as Param,
     ICalendarPeriod as Period, ICalendarProperty as Prop, ICalendarRecurrenceRule as Rule, ICalendarValue as Value,
@@ -43,6 +52,46 @@ pub(crate) struct Instance {
     pub all_day: bool,
 }
 
+/// Что отсекли пределы: числа для журнала приложения. Названий, адресов и другого содержимого здесь нет.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cut {
+    /// Серий с правилом в файле и сколько из них не развёрнуто: кончилась работа [`MAX_WORK`] или место [`MAX_INSTANCES`].
+    pub series: u32,
+    pub series_skipped: u32,
+    /// Серий, развёрнутых не до конца: предел дат [`MAX_DATES`].
+    pub series_truncated: u32,
+    /// Экземпляров за пределом [`MAX_INSTANCES`].
+    pub instances_dropped: u32,
+    /// Событий за пределом числа событий подписки.
+    pub events_dropped: u32,
+    /// Интервалов за пределом занятости.
+    pub busy_dropped: u32,
+    /// Поясов файла и сколько из них не построено: кончилась работа [`MAX_ZONE_WORK`]; такие идут в поясе показа.
+    pub zones: u32,
+    pub zones_skipped: u32,
+}
+
+impl Cut {
+    pub fn is_empty(&self) -> bool {
+        let Cut { series: _, zones: _, series_skipped, series_truncated, instances_dropped, events_dropped, busy_dropped, zones_skipped } = *self;
+        series_skipped == 0 && series_truncated == 0 && instances_dropped == 0 && events_dropped == 0 && busy_dropped == 0 && zones_skipped == 0
+    }
+}
+
+impl fmt::Display for Cut {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let parts = [
+            (self.series_skipped > 0).then(|| format!("{} of {} series not expanded (work or instance limit)", self.series_skipped, self.series)),
+            (self.series_truncated > 0).then(|| format!("{} series truncated (date limit)", self.series_truncated)),
+            (self.instances_dropped > 0).then(|| format!("{} instances dropped (instance limit)", self.instances_dropped)),
+            (self.events_dropped > 0).then(|| format!("{} events dropped (event limit)", self.events_dropped)),
+            (self.busy_dropped > 0).then(|| format!("{} busy spans dropped (busy limit)", self.busy_dropped)),
+            (self.zones_skipped > 0).then(|| format!("{} of {} file time zones not built (zone work limit)", self.zones_skipped, self.zones)),
+        ];
+        f.write_str(&parts.into_iter().flatten().collect::<Vec<_>>().join("; "))
+    }
+}
+
 /// Местное время `local` пояса `zone` → UTC. Часов нет («дыра») — смещение до перевода; два раза («складка») — первый:
 /// смещение до перевода в обоих случаях (RFC 5545 §3.3.5). Двух переводов за двое суток не бывает.
 fn instant(local: i64, zone: Tz) -> i64 {
@@ -50,28 +99,102 @@ fn instant(local: i64, zone: Tz) -> i64 {
     at(local).or_else(|| at(local - MARGIN).map(|t| t + MARGIN)).unwrap_or(local)
 }
 
+/// Пояс времени: из базы или по правилам файла (номер в [`Zones::files`]).
+#[derive(Clone, Copy, PartialEq)]
+enum Zone {
+    Named(Tz),
+    File(usize),
+}
+
 struct Zones<'a> {
     resolver: TzResolver<&'a str>,
     /// Пояс показа: события на весь день и без пояса.
     shown: Tz,
+    /// `TZID` с правилами файла.
+    by_name: HashMap<&'a str, usize>,
+    files: Vec<Rules>,
 }
 
-impl Zones<'_> {
-    /// Пояс даты: `Z` важнее `TZID`, непонятный `TZID` — пояс показа.
-    fn own(&self, entry: &ICalendarEntry, date: &PartialDateTime) -> Tz {
-        if !date.has_time() {
-            return self.shown;
+impl<'a> Zones<'a> {
+    /// Пояса, которых нет в базе: только те, на что ссылаются события. `VTIMEZONE` без дела работы не стоит.
+    fn new(ical: &'a ICalendar, shown: Tz, from: i64, to: i64, cut: &mut Cut) -> Self {
+        let mut zones = Zones { resolver: ical.build_tz_resolver().with_default(shown), shown, by_name: HashMap::new(), files: Vec::new() };
+        let mut defined: HashMap<&str, &ICalendarComponent> = HashMap::new();
+        for comp in ical.timezones() {
+            if let Some(Value::Text(name)) = comp.entries.iter().find(|e| e.name == Prop::Tzid).and_then(|e| e.values.first()) {
+                defined.entry(name.as_str()).or_insert(comp);
+            }
         }
-        date.to_date_time().and_then(|d| d.tz()).unwrap_or_else(|| self.resolver.resolve_or_default(entry.tz_id()))
+        if defined.is_empty() {
+            return zones;
+        }
+        // Год вокруг периода: перевод в начале и конце окна нужен целиком, а в период попадают и соседние сутки.
+        let window = (from - 400 * DAY, to + 400 * DAY);
+        let mut work = MAX_ZONE_WORK;
+        let mut seen = HashSet::new();
+        let events = ical.components.iter().filter(|c| c.component_type == Kind::VEvent);
+        let used = events
+            .flat_map(|c| &c.entries)
+            .filter(|e| matches!(e.name, Prop::Dtstart | Prop::Dtend | Prop::Exdate | Prop::Rdate | Prop::RecurrenceId));
+        for name in used.filter_map(ICalendarEntry::tz_id) {
+            if !seen.insert(name) || zones.resolver.resolve(name).is_some() {
+                continue;
+            }
+            let Some(definition) = defined.get(name) else { continue };
+            cut.zones += 1;
+            match zone::rules(ical, definition, window, &mut work) {
+                Ok(rules) => {
+                    zones.by_name.insert(name, zones.files.len());
+                    zones.files.push(rules);
+                }
+                Err(Refused::Work) => cut.zones_skipped += 1,
+                Err(Refused::Broken) => {}
+            }
+        }
+        zones
+    }
+
+    /// Пояс по имени: непонятный `TZID` — пояс показа.
+    fn named(&self, tzid: Option<&str>) -> Zone {
+        match tzid.and_then(|name| self.by_name.get(name)) {
+            Some(&index) => Zone::File(index),
+            None => Zone::Named(self.resolver.resolve_or_default(tzid)),
+        }
+    }
+
+    /// Пояс даты: `Z` важнее `TZID`.
+    fn own(&self, entry: &ICalendarEntry, date: &PartialDateTime) -> Zone {
+        if !date.has_time() {
+            return Zone::Named(self.shown);
+        }
+        date.to_date_time().and_then(|d| d.tz()).map_or_else(|| self.named(entry.tz_id()), Zone::Named)
+    }
+
+    /// Местное время пояса → UTC.
+    fn instant(&self, local: i64, zone: Zone) -> i64 {
+        match zone {
+            Zone::Named(tz) => instant(local, tz),
+            Zone::File(index) => self.files.get(index).map_or(local, |rules| rules.instant(local)),
+        }
+    }
+
+    /// UTC → местное время пояса.
+    fn at(&self, utc: i64, zone: Zone) -> i64 {
+        match zone {
+            Zone::Named(tz) => PartialDateTime::from_utc_timestamp(utc)
+                .to_date_time_with_tz(tz)
+                .map_or(utc, |t| t.with_timezone(&tz).naive_local().and_utc().timestamp()),
+            Zone::File(index) => self.files.get(index).map_or(utc, |rules| utc + rules.offset_at(utc)),
+        }
     }
 
     /// Дата → местное время пояса `to`.
-    fn local(&self, date: &PartialDateTime, tzid: Option<&str>, to: Tz) -> Option<i64> {
+    fn local(&self, date: &PartialDateTime, tzid: Option<&str>, to: Zone) -> Option<i64> {
         let dt = date.to_date_time()?;
         let naive = dt.date_time.and_utc().timestamp();
-        let own = dt.tz().or_else(|| tzid.map(|_| self.resolver.resolve_or_default(tzid)));
+        let own = dt.tz().map(Zone::Named).or_else(|| tzid.map(|_| self.named(tzid)));
         Some(match own {
-            Some(own) if own != to => dt.to_date_time_with_tz(own).map_or(naive, |t| t.with_timezone(&to).naive_local().and_utc().timestamp()),
+            Some(own) if own != to => self.at(self.instant(naive, own), to),
             _ => naive,
         })
     }
@@ -103,7 +226,7 @@ fn uid_of(comp: &ICalendarComponent) -> Option<&str> {
 }
 
 /// Длительность события по его свойствам, секунды; нет — ноль.
-fn length_of(comp: &ICalendarComponent, zones: &Zones, zone: Tz, start: i64) -> i64 {
+fn length_of(comp: &ICalendarComponent, zones: &Zones, zone: Zone, start: i64) -> i64 {
     let to_end = stamp(comp, &Prop::Dtend).and_then(|(e, date)| zones.local(date, e.tz_id(), zone)).map(|end| end - start);
     let duration = comp.entries.iter().find(|e| e.name == Prop::Duration).and_then(|e| match e.values.first() {
         Some(Value::Duration(d)) => Some(d.as_seconds()),
@@ -115,7 +238,7 @@ fn length_of(comp: &ICalendarComponent, zones: &Zones, zone: Tz, start: i64) -> 
 /// Серия: компоненты одного `UID`, среди них правило.
 struct Series {
     /// Пояс начала серии.
-    zone: Tz,
+    zone: Zone,
     /// Начало в местном времени.
     start: i64,
     all_day: bool,
@@ -142,6 +265,28 @@ impl Series {
     }
 }
 
+/// Шаг правила в секундах: для месяца и года — приблизительно. Сколько дат даёт один шаг: только если времён суток несколько.
+fn step_of(rule: &Rule) -> (i64, i64, i64) {
+    let (unit, days) = match rule.freq {
+        Freq::Secondly => (1, 1),
+        Freq::Minutely => (60, 1),
+        Freq::Hourly => (3600, 1),
+        Freq::Daily => (DAY, 1),
+        Freq::Weekly => (7 * DAY, 7),
+        Freq::Monthly => (30 * DAY, 31),
+        Freq::Yearly => (365 * DAY, 366),
+    };
+    // Все времена суток правила: одно обычное, а произведение `BYHOUR`, `BYMINUTE`, `BYSECOND` раздувает каждый шаг.
+    let times = [&rule.byhour, &rule.byminute, &rule.bysecond].iter().map(|by| by.len().max(1) as i64).product::<i64>();
+    (unit, unit * i64::from(rule.interval.unwrap_or(1).max(1)), if times > 1 { times.saturating_mul(days) } else { 1 })
+}
+
+/// Оценка работы правила на `span` секунд.
+fn steps_of(rule: &Rule, span: i64) -> i64 {
+    let (_, step, width) = step_of(rule);
+    (span.max(0) / step + 1).saturating_mul(width)
+}
+
 /// План развёртки компонентов одного `UID`, если среди них есть правило. Старое начало правила без `COUNT` с шагом постоянной
 /// длины передвигается к периоду: фаза `INTERVAL` и день недели те же, экземпляры до периода никому не нужны, а бесконечная
 /// ежедневная серия с 2010 года стоит как новая. `COUNT` считается от начала, `RANGE=THISANDFUTURE` — от своего экземпляра:
@@ -152,17 +297,7 @@ fn plan(comps: &[usize], ical: &ICalendar, zones: &Zones, from: i64, to: i64) ->
     let (entry, date) = start_of(master)?;
     let zone = zones.own(entry, date);
     let start = zones.local(date, entry.tz_id(), zone)?;
-    let interval = i64::from(rule.interval.unwrap_or(1).max(1));
-    let (unit, days) = match rule.freq {
-        Freq::Secondly => (1, 1),
-        Freq::Minutely => (60, 1),
-        Freq::Hourly => (3600, 1),
-        Freq::Daily => (DAY, 1),
-        Freq::Weekly => (7 * DAY, 7),
-        Freq::Monthly => (30 * DAY, 31),
-        Freq::Yearly => (365 * DAY, 366),
-    };
-    let step = unit * interval;
+    let (unit, step, _) = step_of(rule);
     let future_ranges = comps
         .iter()
         .filter_map(|&i| ical.components.get(i))
@@ -178,11 +313,7 @@ fn plan(comps: &[usize], ical: &ICalendar, zones: &Zones, from: i64, to: i64) ->
         Some(if until.has_time() { at } else { at + DAY - 1 })
     });
     let last = until.map_or(to + MARGIN, |until| until.min(to + MARGIN));
-    // Все времена суток правила: одно обычное, а произведение `BYHOUR`, `BYMINUTE`, `BYSECOND` раздувает каждый шаг.
-    let times = [&rule.byhour, &rule.byminute, &rule.bysecond].iter().map(|by| by.len().max(1) as i64).product::<i64>();
-    let width = if times > 1 { times.saturating_mul(days) } else { 1 };
-    let steps = (last - start - moved).max(0) / step + 1;
-    Some(Series { zone, start, all_day: !date.has_time(), moved, last, work: steps.saturating_mul(width) })
+    Some(Series { zone, start, all_day: !date.has_time(), moved, last, work: steps_of(rule, last - start - moved) })
 }
 
 fn date_value(at: i64, all_day: bool) -> PartialDateTime {
@@ -200,7 +331,7 @@ fn value(at: i64, all_day: bool) -> Value {
 /// Откуда экземпляр подготовленного календаря.
 struct Source {
     comp: usize,
-    zone: Tz,
+    zone: Zone,
     all_day: bool,
 }
 
@@ -281,7 +412,7 @@ impl Lean {
     }
 
     /// Развернуть, экземпляры `[from, to)` — в `out`. Ответ — сколько дат вышло.
-    fn expand(self, limit: usize, from: i64, to: i64, out: &mut Vec<Instance>) -> usize {
+    fn expand(self, limit: usize, zones: &Zones, (from, to): (i64, i64), out: &mut Vec<Instance>, cut: &mut Cut) -> usize {
         let events = self.calendar.expand_dates(Tz::Floating, limit).events;
         let count = events.len();
         for event in events {
@@ -289,15 +420,19 @@ impl Lean {
             let (zone, all_day) = (source.zone, source.all_day);
             // Пояса нет, поэтому секунды — местное время.
             let local = event.start.timestamp();
-            let start = instant(local, zone);
+            let start = zones.instant(local, zone);
             let end = match event.end {
-                TimeOrDelta::Time(end) => instant(end.timestamp(), zone),
-                TimeOrDelta::Delta(length) if all_day => instant(local.saturating_add(length.num_seconds()), zone),
+                TimeOrDelta::Time(end) => zones.instant(end.timestamp(), zone),
+                TimeOrDelta::Delta(length) if all_day => zones.instant(local.saturating_add(length.num_seconds()), zone),
                 TimeOrDelta::Delta(length) => start.saturating_add(length.num_seconds()),
             };
-            let end = if all_day && end <= start { instant(local + DAY, zone) } else { end.max(start) };
-            if start < to && end >= from && !(end == from && end > start) && out.len() < MAX_INSTANCES {
-                out.push(Instance { comp: source.comp, start, end, all_day });
+            let end = if all_day && end <= start { zones.instant(local + DAY, zone) } else { end.max(start) };
+            if start < to && end >= from && !(end == from && end > start) {
+                if out.len() < MAX_INSTANCES {
+                    out.push(Instance { comp: source.comp, start, end, all_day });
+                } else {
+                    cut.instances_dropped = cut.instances_dropped.saturating_add(1);
+                }
             }
         }
         count
@@ -305,9 +440,10 @@ impl Lean {
 }
 
 /// Экземпляры событий в `[from, to)` по времени начала: отменённые здесь ещё есть, переопределение заменяет свой экземпляр.
-/// `shown` — пояс показа: в нём события на весь день и без пояса.
-pub(crate) fn instances(ical: &ICalendar, shown: Tz, from: i64, to: i64) -> Vec<Instance> {
-    let zones = Zones { resolver: ical.build_tz_resolver().with_default(shown), shown };
+/// `shown` — пояс показа: в нём события на весь день и без пояса. Второе значение — что отсекли пределы.
+pub(crate) fn instances(ical: &ICalendar, shown: Tz, from: i64, to: i64) -> (Vec<Instance>, Cut) {
+    let mut cut = Cut::default();
+    let zones = Zones::new(ical, shown, from, to, &mut cut);
     // Группы по `UID`. Второе правило с тем же `UID` файл писать не должен: это своя серия, переопределения — первой.
     let mut groups: Vec<(Vec<usize>, bool)> = Vec::new();
     let mut by_uid: HashMap<&str, usize> = HashMap::new();
@@ -340,12 +476,14 @@ pub(crate) fn instances(ical: &ICalendar, shown: Tz, from: i64, to: i64) -> Vec<
             }
         }
     }
-    single.expand(0, from, to, &mut out);
+    single.expand(0, &zones, (from, to), &mut out, &mut cut);
     // Первым — дешёвое: дорогая серия чужого файла не вытесняет обычные. Работа не зависит от порядка в файле.
     series.sort_by_key(|(plan, _)| plan.work);
     let mut budget = MAX_WORK;
-    for (plan, group) in &series {
+    cut.series = u32::try_from(series.len()).unwrap_or(u32::MAX);
+    for (done, (plan, group)) in series.iter().enumerate() {
         if plan.work > budget || out.len() >= MAX_INSTANCES {
+            cut.series_skipped = u32::try_from(series.len() - done).unwrap_or(u32::MAX);
             break;
         }
         let mut lean = Lean::default();
@@ -353,11 +491,14 @@ pub(crate) fn instances(ical: &ICalendar, shown: Tz, from: i64, to: i64) -> Vec<
             lean.add(ical, index, &zones, Some(plan));
         }
         let limit = usize::try_from(budget).unwrap_or(MAX_DATES).min(MAX_DATES);
-        let count = lean.expand(limit, from, to, &mut out);
+        let count = lean.expand(limit, &zones, (from, to), &mut out, &mut cut);
+        if count >= limit {
+            cut.series_truncated = cut.series_truncated.saturating_add(1);
+        }
         budget -= plan.work.max(i64::try_from(count).unwrap_or(i64::MAX)).max(1);
     }
     out.sort_by_key(|i| (i.start, i.comp));
-    out
+    (out, cut)
 }
 
 #[cfg(test)]
@@ -810,5 +951,235 @@ mod tests {
         body += &hostile("FREQ=SECONDLY;BYMONTH=1");
         let got = parse_ics(&file(&body), from, to, "UTC").unwrap().events;
         assert_eq!(got.iter().map(|e| e.uid.as_str()).collect::<Vec<_>>(), ["weekly", "plain"]);
+    }
+
+    /// Как у Outlook: `TZID` без имени в базе, правила с 1601 года, начало не совпадает с правилом. Те же переводы, что в Нью-Йорке.
+    const CUSTOM_NORTH: &str = "BEGIN:VTIMEZONE\nTZID:Customized Time Zone\nBEGIN:STANDARD\nDTSTART:16010101T020000\nTZOFFSETFROM:-0400\nTZOFFSETTO:-0500\nRRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=1SU;BYMONTH=11\nEND:STANDARD\nBEGIN:DAYLIGHT\nDTSTART:16010101T020000\nTZOFFSETFROM:-0500\nTZOFFSETTO:-0400\nRRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=2SU;BYMONTH=3\nEND:DAYLIGHT\nEND:VTIMEZONE\n";
+    /// Южное полушарие: лето на стыке лет. Те же переводы, что в Сиднее.
+    const CUSTOM_SOUTH: &str = "BEGIN:VTIMEZONE\nTZID:Customized South\nBEGIN:STANDARD\nDTSTART:19700405T030000\nTZOFFSETFROM:+1100\nTZOFFSETTO:+1000\nRRULE:FREQ=YEARLY;BYMONTH=4;BYDAY=1SU\nEND:STANDARD\nBEGIN:DAYLIGHT\nDTSTART:19701004T020000\nTZOFFSETFROM:+1000\nTZOFFSETTO:+1100\nRRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=1SU\nEND:DAYLIGHT\nEND:VTIMEZONE\n";
+
+    fn zoned(zone: &str, lines: &str) -> String {
+        format!("{zone}{}", event("a", lines))
+    }
+
+    /// Серия в поясе файла и в поясе базы: одно и то же на каждой неделе `weeks` начиная с понедельника `monday`.
+    fn same_as_named(zone: &str, custom: &str, named: &str, lines: &str, monday: i64, weeks: i64) {
+        for week in 0..weeks {
+            let (from, to) = (monday + week * 7 * DAY, monday + (week + 1) * 7 * DAY);
+            let times = |body: &str| events_in(body, from, to, "Europe/Moscow").into_iter().map(|e| (e.start, e.end)).collect::<Vec<_>>();
+            let got = times(&zoned(zone, &lines.replace("@", custom)));
+            let want = times(&event("a", &lines.replace("@", named)));
+            assert!(!want.is_empty(), "неделя {week}");
+            assert_eq!(got, want, "{custom}, {lines}, неделя {week}");
+        }
+    }
+
+    /// Серия через переходы весь год, в том числе час «дыры» и час «складки»: как пояс базы с теми же правилами.
+    #[test]
+    fn file_zone_is_the_same_as_named_one() {
+        let series = |time: &str| format!("DTSTART;TZID=@:20250105T{time}\nDURATION:PT1H\nRRULE:FREQ=WEEKLY;BYDAY=SU");
+        let monday = date(2026, 1, 5, 0, 0);
+        for time in ["090000", "023000", "013000"] {
+            same_as_named(CUSTOM_NORTH, "Customized Time Zone", "America/New_York", &series(time), monday, 60);
+        }
+        for time in ["090000", "023000"] {
+            same_as_named(CUSTOM_SOUTH, "Customized South", "Australia/Sydney", &series(time), monday, 60);
+        }
+    }
+
+    /// Сутки перехода: абсолютные значения, без сравнения с поясом базы.
+    #[test]
+    fn file_zone_on_transition_days() {
+        let one = |zone: &str, tzid: &str, start: &str, end: &str, day: (u16, u8, u8)| {
+            let lines = format!("DTSTART;TZID={tzid}:{start}\nDTEND;TZID={tzid}:{end}");
+            let from = date(day.0, day.1, day.2, 0, 0) - 2 * DAY;
+            let got = events_in(&zoned(zone, &lines), from, from + 5 * DAY, "UTC");
+            (got[0].start, got[0].end)
+        };
+        let north = |start, end, day| one(CUSTOM_NORTH, "Customized Time Zone", start, end, day);
+        // Весна, 8 марта: 01:30 ещё UTC−5, 03:30 уже UTC−4, между ними — час, которого нет.
+        assert_eq!(north("20260308T013000", "20260308T033000", (2026, 3, 8)), (date(2026, 3, 8, 6, 30), date(2026, 3, 8, 7, 30)));
+        // «Дыра»: 02:30 по смещению до перевода — 07:30 UTC.
+        assert_eq!(north("20260308T023000", "20260308T033000", (2026, 3, 8)).0, date(2026, 3, 8, 7, 30));
+        // Осень, 1 ноября: «складка», 01:30 — первый раз, UTC−4; 03:00 — уже UTC−5.
+        assert_eq!(north("20261101T013000", "20261101T030000", (2026, 11, 1)), (date(2026, 11, 1, 5, 30), date(2026, 11, 1, 8, 0)));
+        let south = |start, end, day| one(CUSTOM_SOUTH, "Customized South", start, end, day);
+        // Сидней, весна 4 октября: 02:30 нет, по UTC+10 это 16:30 UTC прошлых суток.
+        assert_eq!(south("20261004T023000", "20261004T040000", (2026, 10, 4)), (date(2026, 10, 3, 16, 30), date(2026, 10, 3, 17, 0)));
+        // Сидней, осень 5 апреля: 02:30 дважды, первый раз по UTC+11.
+        assert_eq!(south("20260405T023000", "20260405T040000", (2026, 4, 5)).0, date(2026, 4, 4, 15, 30));
+        // Сидней, лето на стыке лет: 12:00 — UTC+11, зима — UTC+10.
+        assert_eq!(south("20261231T120000", "20261231T130000", (2026, 12, 31)).0, date(2026, 12, 31, 1, 0));
+        assert_eq!(south("20270101T120000", "20270101T130000", (2027, 1, 1)).0, date(2027, 1, 1, 1, 0));
+        assert_eq!(south("20260701T120000", "20260701T130000", (2026, 7, 1)).0, date(2026, 7, 1, 2, 0));
+    }
+
+    /// Смена правил: старые правила с `UNTIL`, новые со своего года, как у часовых поясов США в 2007-м.
+    #[test]
+    fn file_zone_with_changed_rules() {
+        let zone = "BEGIN:VTIMEZONE\nTZID:Customized History\nBEGIN:STANDARD\nDTSTART:19671029T020000\nTZOFFSETFROM:-0400\nTZOFFSETTO:-0500\nRRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU;UNTIL=20061029T060000Z\nEND:STANDARD\nBEGIN:STANDARD\nDTSTART:20071104T020000\nTZOFFSETFROM:-0400\nTZOFFSETTO:-0500\nRRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU\nEND:STANDARD\nBEGIN:DAYLIGHT\nDTSTART:19870405T020000\nTZOFFSETFROM:-0500\nTZOFFSETTO:-0400\nRRULE:FREQ=YEARLY;BYMONTH=4;BYDAY=1SU;UNTIL=20060402T070000Z\nEND:DAYLIGHT\nBEGIN:DAYLIGHT\nDTSTART:20070311T020000\nTZOFFSETFROM:-0500\nTZOFFSETTO:-0400\nRRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU\nEND:DAYLIGHT\nEND:VTIMEZONE\n";
+        let lines = "DTSTART;TZID=@:20000102T090000\nDURATION:PT1H\nRRULE:FREQ=WEEKLY;BYDAY=SU";
+        same_as_named(zone, "Customized History", "America/New_York", lines, date(2005, 1, 3, 0, 0), 110);
+        same_as_named(zone, "Customized History", "America/New_York", lines, date(2026, 1, 5, 0, 0), 60);
+        // Правила кончились годы назад: действует их последний перевод, сентябрь 2026 — UTC+3.
+        let zone = "BEGIN:VTIMEZONE\nTZID:Customized Ended\nBEGIN:STANDARD\nDTSTART:19961027T030000\nTZOFFSETFROM:+0400\nTZOFFSETTO:+0300\nRRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU;UNTIL=20101030T230000Z\nEND:STANDARD\nBEGIN:DAYLIGHT\nDTSTART:19930328T020000\nTZOFFSETFROM:+0300\nTZOFFSETTO:+0400\nRRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU;UNTIL=20100327T230000Z\nEND:DAYLIGHT\nEND:VTIMEZONE\n";
+        let body = zoned(zone, "DTSTART;TZID=Customized Ended:20260907T120000\nDURATION:PT1H");
+        assert_eq!(starts(&body, date(2026, 9, 7, 0, 0), date(2026, 9, 8, 0, 0), "UTC"), pairs(&[("a", date(2026, 9, 7, 9, 0))]));
+        // Переводы только по `RDATE`, как в файлах по таблицам поясов: те же, что в Хельсинки в 2026.
+        let zone = "BEGIN:VTIMEZONE\nTZID:Customized Dates\nBEGIN:STANDARD\nDTSTART:20251026T040000\nRDATE:20261025T040000\nTZOFFSETFROM:+0300\nTZOFFSETTO:+0200\nEND:STANDARD\nBEGIN:DAYLIGHT\nDTSTART:20250330T030000\nRDATE:20260329T030000\nTZOFFSETFROM:+0200\nTZOFFSETTO:+0300\nEND:DAYLIGHT\nEND:VTIMEZONE\n";
+        let lines = "DTSTART;TZID=@:20250105T090000\nDURATION:PT1H\nRRULE:FREQ=WEEKLY;BYDAY=SU";
+        same_as_named(zone, "Customized Dates", "Europe/Helsinki", lines, date(2026, 1, 5, 0, 0), 50);
+    }
+
+    /// Постоянное смещение (`Customized Time Zone` с одним `STANDARD`): серия, исключения и перенос в поясе файла, `Z` и `TZID`.
+    #[test]
+    fn file_zone_in_series_parts() {
+        let zone = "BEGIN:VTIMEZONE\nTZID:Customized Time Zone\nBEGIN:STANDARD\nDTSTART:16010101T000000\nTZOFFSETFROM:+0300\nTZOFFSETTO:+0300\nEND:STANDARD\nEND:VTIMEZONE\n";
+        let tzid = "TZID=Customized Time Zone";
+        let series = format!("DTSTART;{tzid}:20240101T120000\nDTEND;{tzid}:20240101T130000\nRRULE:FREQ=WEEKLY;BYDAY=MO");
+        let (from, to) = week();
+        let shown = date(2026, 11, 2, 9, 0);
+        assert_eq!(starts(&zoned(zone, &series), from, to, "America/New_York"), pairs(&[("a", shown)]));
+        for exdate in [format!("EXDATE;{tzid}:20261102T120000"), "EXDATE:20261102T090000Z".to_owned(), "EXDATE;VALUE=DATE:20261102".to_owned()] {
+            assert!(starts(&zoned(zone, &format!("{series}\n{exdate}")), from, to, "America/New_York").is_empty(), "{exdate}");
+        }
+        for rid in [format!("RECURRENCE-ID;{tzid}:20261102T120000"), "RECURRENCE-ID:20261102T090000Z".to_owned()] {
+            let moved = format!("{rid}\nDTSTART;{tzid}:20261103T150000\nDURATION:PT1H\nSEQUENCE:2");
+            let body = format!("{zone}{}{}", event("a", &series), event("a", &moved));
+            assert_eq!(starts(&body, from, to, "America/New_York"), pairs(&[("a", date(2026, 11, 3, 12, 0))]), "{rid}");
+        }
+        // `UNTIL` в UTC на последнем экземпляре.
+        let last = format!("DTSTART;{tzid}:20261012T120000\nDURATION:PT1H\nRRULE:FREQ=WEEKLY;UNTIL=20261102T090000Z");
+        assert_eq!(starts(&zoned(zone, &last), from, to, "UTC"), pairs(&[("a", shown)]));
+        assert!(starts(&zoned(zone, &last), from + 7 * DAY, to + 7 * DAY, "UTC").is_empty());
+        // Конец в другом поясе и событие на весь день пояс файла не задевает.
+        let body = zoned(zone, &format!("DTSTART;{tzid}:20261102T120000\nDTEND;TZID=Asia/Tokyo:20261102T200000"));
+        let got = events_in(&body, from, to, "UTC");
+        assert_eq!((got[0].start, got[0].end), (shown, date(2026, 11, 2, 11, 0)));
+        // Занятость по ссылке — тот же разбор.
+        let got = parse_free_busy(&file(&zoned(zone, &series)), from, to, "UTC").unwrap();
+        assert_eq!(got, [BusySpan { start: shown, end: shown + HOUR, kind: BusyType::Busy }]);
+    }
+
+    /// Битый `VTIMEZONE`: как без него, пояс показа. Одно разборчивое правило из двух работает.
+    #[test]
+    fn broken_file_zone() {
+        let lines = "DTSTART;TZID=Customized Time Zone:20261103T120000\nDURATION:PT1H";
+        let (from, to) = week();
+        let shown = pairs(&[("a", date(2026, 11, 3, 9, 0))]);
+        assert_eq!(starts(&event("a", lines), from, to, "Europe/Moscow"), shown, "без VTIMEZONE");
+        let wrap = |inner: &str| format!("BEGIN:VTIMEZONE\nTZID:Customized Time Zone\n{inner}END:VTIMEZONE\n");
+        let broken = [
+            wrap(""),
+            wrap("BEGIN:STANDARD\nDTSTART:16010101T000000\nTZOFFSETFROM:+0900\nEND:STANDARD\n"),
+            wrap("BEGIN:STANDARD\nDTSTART:16010101T000000\nTZOFFSETTO:+0900\nEND:STANDARD\n"),
+            wrap("BEGIN:STANDARD\nTZOFFSETFROM:+0900\nTZOFFSETTO:+0900\nEND:STANDARD\n"),
+            wrap("BEGIN:STANDARD\nDTSTART:нет\nTZOFFSETFROM:+0900\nTZOFFSETTO:+0900\nEND:STANDARD\n"),
+            wrap("BEGIN:STANDARD\nDTSTART:16010101T000000\nTZOFFSETFROM:нет\nTZOFFSETTO:+0900\nEND:STANDARD\n"),
+            wrap("BEGIN:STANDARD\nDTSTART:16010101T000000\nTZOFFSETFROM:+0900\nTZOFFSETTO:+9900\nEND:STANDARD\n"),
+            wrap("BEGIN:X-OTHER\nDTSTART:16010101T000000\nTZOFFSETFROM:+0900\nTZOFFSETTO:+0900\nEND:X-OTHER\n"),
+            "BEGIN:VTIMEZONE\nBEGIN:STANDARD\nDTSTART:16010101T000000\nTZOFFSETFROM:+0900\nTZOFFSETTO:+0900\nEND:STANDARD\nEND:VTIMEZONE\n"
+                .to_owned(),
+        ];
+        for zone in &broken {
+            assert_eq!(starts(&zoned(zone, lines), from, to, "Europe/Moscow"), shown, "{zone}");
+        }
+        // Правило с непонятным `RRULE` и правило без конца: `RRULE` не разобран — остаётся начало, смещение всё равно есть.
+        let odd = wrap("BEGIN:STANDARD\nDTSTART:16010101T000000\nTZOFFSETFROM:+0900\nTZOFFSETTO:+0900\nRRULE:FREQ=НЕТ\nEND:STANDARD\n");
+        let _ = starts(&zoned(&odd, lines), from, to, "Europe/Moscow");
+        let half = wrap(
+            "BEGIN:STANDARD\nDTSTART:16010101T000000\nTZOFFSETFROM:+0900\nTZOFFSETTO:+0900\nEND:STANDARD\nBEGIN:DAYLIGHT\nDTSTART:нет\nTZOFFSETFROM:+0900\nTZOFFSETTO:+1000\nEND:DAYLIGHT\n",
+        );
+        assert_eq!(starts(&zoned(&half, lines), from, to, "Europe/Moscow"), pairs(&[("a", date(2026, 11, 3, 3, 0))]));
+        // У пояса из базы и с `X-LIC-LOCATION` правила файла не читаются.
+        let lying = "BEGIN:VTIMEZONE\nTZID:Customized Time Zone\nX-LIC-LOCATION:Asia/Tokyo\nBEGIN:STANDARD\nDTSTART:16010101T000000\nTZOFFSETFROM:+0100\nTZOFFSETTO:+0100\nEND:STANDARD\nEND:VTIMEZONE\n";
+        assert_eq!(starts(&zoned(lying, lines), from, to, "Europe/Moscow"), pairs(&[("a", date(2026, 11, 3, 3, 0))]));
+        let lying = "BEGIN:VTIMEZONE\nTZID:Asia/Tokyo\nBEGIN:STANDARD\nDTSTART:16010101T000000\nTZOFFSETFROM:+0100\nTZOFFSETTO:+0100\nEND:STANDARD\nEND:VTIMEZONE\n";
+        let body = zoned(lying, "DTSTART;TZID=Asia/Tokyo:20261103T120000\nDURATION:PT1H");
+        assert_eq!(starts(&body, from, to, "Europe/Moscow"), pairs(&[("a", date(2026, 11, 3, 3, 0))]));
+    }
+
+    /// Тысячи поясов и правил на пределе размера: воркер укладывается, дальше — пояс показа, обычные события на месте.
+    #[test]
+    fn hostile_file_zones_are_bounded() {
+        let (from, to) = week();
+        type Maker = fn(usize) -> String;
+        let cases: [(&str, Maker); 4] = [
+            ("обычные годовые", |i| {
+                format!(
+                    "BEGIN:VTIMEZONE\nTZID:Z{i}\nBEGIN:STANDARD\nDTSTART:16010101T030000\nTZOFFSETFROM:+0400\nTZOFFSETTO:+0300\nRRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=10\nEND:STANDARD\nBEGIN:DAYLIGHT\nDTSTART:16010101T020000\nTZOFFSETFROM:+0300\nTZOFFSETTO:+0400\nRRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=3\nEND:DAYLIGHT\nEND:VTIMEZONE\n"
+                )
+            }),
+            ("секундные", |i| {
+                format!(
+                    "BEGIN:VTIMEZONE\nTZID:Z{i}\nBEGIN:STANDARD\nDTSTART:16010101T030000\nTZOFFSETFROM:+0400\nTZOFFSETTO:+0300\nRRULE:FREQ=SECONDLY\nEND:STANDARD\nEND:VTIMEZONE\n"
+                )
+            }),
+            ("годовые COUNT", |i| {
+                format!(
+                    "BEGIN:VTIMEZONE\nTZID:Z{i}\nBEGIN:STANDARD\nDTSTART:16010101T030000\nTZOFFSETFROM:+0400\nTZOFFSETTO:+0300\nRRULE:FREQ=YEARLY;COUNT=4000000\nEND:STANDARD\nEND:VTIMEZONE\n"
+                )
+            }),
+            ("много RDATE", |i| {
+                let list = (0..500).map(|d| format!("RDATE:2026{:02}{:02}T030000\n", d % 12 + 1, d % 28 + 1)).collect::<String>();
+                format!(
+                    "BEGIN:VTIMEZONE\nTZID:Z{i}\nBEGIN:STANDARD\nDTSTART:16010101T030000\n{list}TZOFFSETFROM:+0400\nTZOFFSETTO:+0300\nEND:STANDARD\nEND:VTIMEZONE\n"
+                )
+            }),
+        ];
+        for (name, zone) in cases {
+            let mut body = event("plain", "DTSTART;TZID=Asia/Tokyo:20261103T120000\nDURATION:PT1H");
+            let mut i = 0;
+            // Размер считается с переводами строк файла: в нём их по два байта.
+            let mut size = body.len() + 1024;
+            while size < crate::MAX_ICS - 16_384 {
+                let chunk = zone(i) + &event(&format!("e{i}"), &format!("DTSTART;TZID=Z{i}:20261104T120000\nDURATION:PT1H"));
+                size += chunk.len() + chunk.matches('\n').count();
+                body += &chunk;
+                i += 1;
+            }
+            let bytes = file(&body);
+            let clock = Instant::now();
+            let (got, cut) = crate::ics_of(&bytes, from, to, "UTC").unwrap();
+            println!("{name}: {} байт, {i} поясов, {} событий, {cut:?}: {:?}", bytes.len(), got.events.len(), clock.elapsed());
+            assert!(clock.elapsed() < TIME_LIMIT, "{name}");
+            assert!(got.events.iter().any(|e| e.uid == "plain"), "{name}");
+            assert!(cut.zones_skipped > 0, "{name}: {cut:?}");
+        }
+    }
+
+    /// Пределы считаются, а в тексте для журнала только числа и название предела.
+    #[test]
+    fn cut_counts_limits() {
+        let (from, to) = week();
+        let quiet = crate::ics_of(&file(&event("a", "DTSTART:20261103T090000Z\nDURATION:PT1H\nRRULE:FREQ=WEEKLY")), from, to, "UTC").unwrap().1;
+        assert!(quiet.is_empty(), "{quiet:?}");
+        assert_eq!(quiet.to_string(), "");
+        // Работа: секундные серии по миллиону с лишним шагов. Название и UID — приметные: в журнал не попадают.
+        let series = |i: usize| {
+            format!(
+                "BEGIN:VEVENT\nUID:secret-{i}@example.test\nDTSTART:20260101T000000Z\nDURATION:PT1S\nRRULE:FREQ=SECONDLY\nSUMMARY:Тайное совещание\nEND:VEVENT\n"
+            )
+        };
+        let body = (0..30).map(series).collect::<String>();
+        let cut = crate::ics_of(&file(&body), from, to, "UTC").unwrap().1;
+        assert_eq!((cut.series, cut.series_skipped > 0), (30, true), "{cut:?}");
+        let text = cut.to_string();
+        assert!(text.contains("series not expanded (work or instance limit)"), "{text}");
+        assert!(text.is_ascii() && !text.contains("secret") && !text.contains("example"), "{text}");
+        // Событий подписки: 6000 в неделе, показано 5000.
+        let body = (0..6000).map(|i| event(&format!("e{i}"), "DTSTART:20261103T090000Z\nDURATION:PT1H")).collect::<String>();
+        let (got, cut) = crate::ics_of(&file(&body), from, to, "UTC").unwrap();
+        assert_eq!((got.events.len(), cut.events_dropped), (crate::MAX_ICS_EVENTS, 1000), "{cut:?}");
+        assert!(cut.to_string().contains("1000 events dropped (event limit)"));
+        // Занятость: интервалов VFREEBUSY больше предела.
+        let lines = (0..20_100).map(|i| format!("FREEBUSY:20261103T{:02}{:02}{:02}Z/PT1S\n", i / 3600, i / 60 % 60, i % 60)).collect::<String>();
+        let body = format!("BEGIN:VFREEBUSY\n{lines}END:VFREEBUSY\n");
+        let (got, cut) = crate::free_busy_of(&file(&body), from, to, "UTC").unwrap();
+        assert_eq!((got.len(), cut.busy_dropped), (20_000, 100), "{cut:?}");
+        // Экземпляров: каждая секунда недели в файле, сверх предела места нет.
+        let body = event("a", "DTSTART:20261102T000000Z\nDURATION:PT1S\nRRULE:FREQ=SECONDLY");
+        let cut = crate::ics_of(&file(&body), from, to, "UTC").unwrap().1;
+        assert!(cut.instances_dropped > 0 && cut.events_dropped > 0, "{cut:?}");
     }
 }
