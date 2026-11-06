@@ -975,7 +975,13 @@ const REVOKE: &[Input] = &[
         *lock_clock() = Some(Instant::now());
         Ok(())
     }),
-    until!(|_, _| clock_past(30)),
+    until!(|_, _| clock_past(16)),
+    // Тосты столбиком доходят до кнопок карточки (находка F3).
+    Input::Run(|_, m, _, cx| {
+        m.toasts.update(cx, |t, cx| t.hide_all(cx));
+        Ok(())
+    }),
+    until!(|m, cx| m.toasts.read(cx).on_screen() == 0),
     Input::Press("assign-revoke"),
 ];
 
@@ -2141,7 +2147,7 @@ fn card_shown(m: &Mailer, cx: &App, word: &str) -> bool {
 }
 
 /// `peer.py` сверяет прошлую сцену с сервером уже во время этой: «Отменить» — когда он успел.
-const UNDO_LATER: &[Input] = &[Input::Run(start_clock), until!(|_, _| clock_past(3)), Input::Press("notice-act")];
+const UNDO_LATER: &[Input] = &[Input::Run(start_clock), until!(|_, _| clock_past(7)), Input::Press("notice-act")];
 
 const CARD_NEW: &[Input] = &[
     Input::Until(mail_ready),
@@ -2280,7 +2286,14 @@ const FROM_MAIL: &[Input] = &[
 
 const MAIL_DONE: &[Input] = &[
     Input::Run(|_, m, _, cx| {
-        let title = m.tasks.read(cx).shown.iter().find(|t| t.title.contains(MAIL_DUE)).map(|t| t.title.clone()).ok_or("no letter task")?;
+        let title = m
+            .tasks
+            .read(cx)
+            .shown
+            .iter()
+            .find(|t| t.title.contains(MAIL_DUE) && t.title.contains(STAMP.as_str()))
+            .map(|t| t.title.clone())
+            .ok_or("no letter task")?;
         m.tasks.update(cx, |t, cx| t.select_title(&title, cx));
         Ok(())
     }),
@@ -2483,8 +2496,14 @@ const FILE_EML: &str = "Файл письмо"; // i18n-ok: тема `peer.py`
 const FILE_MD: &str = "Файл разметка"; // i18n-ok: тема `peer.py`
 const FILE_DOCX: &str = "Файл документ"; // i18n-ok: тема `peer.py`
 
-const IMAGES_OPEN: &[Input] =
-    &[Input::Until(mail_ready), until!(|m, cx| placed(m, cx, IMAGES).is_some()), Input::Click(|m, _, cx| placed(m, cx, IMAGES), Held::No)];
+const IMAGES_OPEN: &[Input] = &[
+    Input::Until(mail_ready),
+    until!(|m, cx| placed(m, cx, IMAGES).is_some()),
+    // Сверка после входа ещё двигает строки: щелчок попал бы по соседней.
+    Input::Run(start_clock),
+    until!(|_, _| clock_past(2)),
+    Input::Click(|m, _, cx| placed(m, cx, IMAGES), Held::No),
+];
 
 fn preview_is(m: &Mailer, cx: &App, what: impl Fn(&crate::preview::Shown) -> bool) -> bool {
     use crate::preview::PvState;

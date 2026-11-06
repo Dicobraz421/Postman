@@ -1420,6 +1420,8 @@ def main():
     failed = []
     for name in names:
         print("== группа", name, flush=True)
+        # Своя метка: задачи и поручения с теми же названиями у групп — в одном ящике.
+        ctx.stamp = "r" + secrets.token_hex(3)
         try:
             GROUPS[name](ctx)
             print("== готово", name, flush=True)
