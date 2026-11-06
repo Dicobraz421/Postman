@@ -2137,7 +2137,24 @@ const STOP_NO: &[Input] = &[
     until!(|m, _| m.migration.stopping.is_none()),
 ];
 
-const RESUMED: &[Input] = &[Input::Until(mail_ready), until!(|m, _| no_jobs_left(m))];
+/// Срок сцены — на шаг: 10 000 писем идут дольше одного шага, поэтому шаги — по десятым долям задания.
+fn resumed(m: &Mailer, tenths: u64) -> bool {
+    no_jobs_left(m) || m.migration.active().is_some_and(|j| j.done * 10 >= j.total * tenths)
+}
+
+const RESUMED: &[Input] = &[
+    Input::Until(mail_ready),
+    until!(|m, _| resumed(m, 1)),
+    until!(|m, _| resumed(m, 2)),
+    until!(|m, _| resumed(m, 3)),
+    until!(|m, _| resumed(m, 4)),
+    until!(|m, _| resumed(m, 5)),
+    until!(|m, _| resumed(m, 6)),
+    until!(|m, _| resumed(m, 7)),
+    until!(|m, _| resumed(m, 8)),
+    until!(|m, _| resumed(m, 9)),
+    until!(|m, _| no_jobs_left(m)),
+];
 
 const DRAG_AND_START: &[Input] = &[
     Input::Until(mail_ready),
