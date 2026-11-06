@@ -1307,6 +1307,60 @@ impl MeetingView {
         self.link_for.is_some() && self.link_bad
     }
 
+    /// Строка ссылки открыта (сцены).
+    pub(crate) fn link_open(&self) -> bool {
+        self.link_for.is_some()
+    }
+
+    fn link_state(&self, email: &str) -> Option<Link> {
+        self.busy.links.get(&email.to_lowercase()).copied()
+    }
+
+    /// Занятость адреса загружается по ссылке (сцены).
+    pub(crate) fn link_loading(&self, email: &str) -> bool {
+        self.link_state(email) == Some(Link::Loading)
+    }
+
+    /// Занятость адреса показана по ссылке (сцены).
+    pub(crate) fn link_shown(&self, email: &str) -> bool {
+        self.link_state(email) == Some(Link::Shown)
+    }
+
+    /// Ссылка не ответила (сцены).
+    pub(crate) fn link_failed(&self, email: &str) -> bool {
+        self.link_state(email) == Some(Link::Failed)
+    }
+
+    /// Занятость участника (сцены).
+    pub(crate) fn busy_list(&self, email: &str) -> Option<Vec<Busy>> {
+        self.busy_of(email)
+    }
+
+    /// Моя занятость недели (сцены).
+    pub(crate) fn my_busy(&self) -> Option<&[Busy]> {
+        self.busy.me.as_deref()
+    }
+
+    /// Понедельник недели встречи (сцены).
+    pub(crate) fn shown_monday(&self) -> Date {
+        self.monday()
+    }
+
+    /// Строк помощника без данных: счётчик «Все участники» (сцены).
+    pub(crate) fn without_data(&self) -> usize {
+        self.rows().iter().filter(|r| r.busy.is_none()).count()
+    }
+
+    /// Подписи строк помощника (сцены).
+    pub(crate) fn row_subtitles(&self) -> Vec<String> {
+        self.rows().into_iter().map(|r| r.sub).collect()
+    }
+
+    /// Общие окна дня встречи (сцены).
+    pub(crate) fn free_windows(&self) -> Vec<Span> {
+        self.windows().1
+    }
+
     /// Текст поля «Тема».
     pub(crate) fn title_text(&self, cx: &App) -> String {
         self.title.read(cx).value().to_string()
@@ -2064,8 +2118,11 @@ impl MeetingView {
             match busy {
                 Some(list) => row.children(list.iter().filter_map(|b| block(b, None))),
                 None => row.bg(if external { external_fill } else { unknown_fill }).child(
+                    // Плашка лежит над общими окнами и сеткой: без `occlude` щелчок по «Указать ссылку» уходил и им, фокус
+                    // оставался у вкладки, а не у строки ссылки.
                     div()
                         .absolute()
+                        .occlude()
                         .left(px(8.))
                         .top(px(6.))
                         .h(px(24.))
@@ -2225,7 +2282,15 @@ impl MeetingView {
         let l = crate::roles::look(cx);
         let stored = crate::prefs::get(cx).calendar.free_busy_links.contains_key(&email.to_lowercase());
         let action = |id: &'static str, text: String| {
-            div().id(id).flex_none().cursor_pointer().text_color(l.accent_text()).hover(|d| d.underline()).child(text)
+            div()
+                .id(id)
+                .relative()
+                .children(crate::screens::spot(id))
+                .flex_none()
+                .cursor_pointer()
+                .text_color(l.accent_text())
+                .hover(|d| d.underline())
+                .child(text)
         };
         Some(
             div()
@@ -2262,6 +2327,8 @@ impl MeetingView {
         let change = shown.into_iter().map(|e| {
             div()
                 .id(SharedString::from(format!("link-change-{e}")))
+                .relative()
+                .children(crate::screens::spot(SharedString::from(format!("link-change-{e}"))))
                 .flex_none()
                 .cursor_pointer()
                 .text_size(px(12.))

@@ -39,6 +39,7 @@ use crate::chrome::icon;
 use crate::roles::{Look, Pm};
 
 mod subscriptions;
+pub(crate) use subscriptions::name_of_key;
 
 pub(crate) const FIRST_HOUR: i64 = 8;
 pub(crate) const HOURS: i64 = 11;
@@ -67,6 +68,8 @@ const DETAILS_W: f32 = 344.;
 const MONTH_NUM_H: f32 = 26.;
 const MONTH_ITEM_H: f32 = 20.;
 const MONTH_LANES: usize = 3;
+/// Строка события на весь день над сеткой: 22 пикселя и зазор.
+const ALL_DAY_LANE: f32 = 24.;
 /// Поиск на сервере — когда запрос перестал меняться; на год назад и вперёд.
 const SEARCH_DELAY: Duration = Duration::from_millis(400);
 const SEARCH_DAYS: i64 = 365;
@@ -574,6 +577,7 @@ impl CalendarView {
         self.me = None;
         self.anchor = self.now_zoned().date();
         self.month = self.anchor.first_of_month();
+        self.subs_go_live(cx);
         cx.notify();
     }
 
@@ -862,6 +866,26 @@ impl CalendarView {
         self.sub_bad
     }
 
+    /// Живой ящик: подписки читаются из своего каталога (сцены).
+    pub(crate) fn subs_ready(&self) -> bool {
+        self.live
+    }
+
+    /// Номер события с таким названием (точка щелчка сцены).
+    pub(crate) fn event_index(&self, title: &str) -> Option<usize> {
+        self.events.iter().position(|e| e.title == title)
+    }
+
+    /// Подпись открытого события, если это подписка (сцены).
+    pub(crate) fn selected_chip(&self) -> Option<String> {
+        self.selected.and_then(|i| self.events.get(i)).filter(|e| subscriptions::is_subscription(e)).map(|_| tr!("cal-chip-subscription"))
+    }
+
+    /// Пояс показанной недели.
+    pub(crate) fn time_zone(&self) -> &TimeZone {
+        &self.tz
+    }
+
     /// Список найденного: сколько строк (закрыт — 0) и строка под курсором.
     pub(crate) fn result_state(&self) -> (usize, usize) {
         (if self.results_open { self.results().len() } else { 0 }, self.cursor)
@@ -1011,8 +1035,11 @@ impl CalendarView {
         let Some(today) = zoned(now, &self.tz).map(|z| z.date()) else { return Vec::new() };
         let (from, to) = (day_start(today, &self.tz), day_start(add_days(today, 8), &self.tz));
         let day = Span::new(from, to);
+        let mine = &self.colleagues[..self.mine.min(self.colleagues.len())];
         self.events
             .iter()
+            // Коллеги и подписки — чужое время, не моё.
+            .filter(|e| e.owner.as_ref().is_none_or(|o| mine.iter().any(|m| m.key() == o.key())))
             .filter(|e| e.span.overlaps(&day) && !e.all_day)
             .filter(|e| e.free_busy == postman_calendar::FreeBusy::Busy && e.status != postman_calendar::EventStatus::Cancelled)
             .map(|e| Busy {
@@ -1680,6 +1707,8 @@ impl CalendarView {
             let toggle = key.clone();
             let check = div()
                 .id(("cal-sub-check", n))
+                .relative()
+                .children(crate::screens::spot(("cal-sub-check", n)))
                 .size(px(16.))
                 .flex_none()
                 .rounded(px(4.))
@@ -1699,7 +1728,15 @@ impl CalendarView {
             if self.color_menu.as_deref() == Some(key.as_str()) {
                 let id = s.id.clone();
                 let action = |name: (&'static str, usize), text: String| {
-                    div().id(name).cursor_pointer().text_size(px(12.)).text_color(l.accent_text()).hover(|d| d.underline()).child(text)
+                    div()
+                        .id(name)
+                        .relative()
+                        .children(crate::screens::spot(name))
+                        .cursor_pointer()
+                        .text_size(px(12.))
+                        .text_color(l.accent_text())
+                        .hover(|d| d.underline())
+                        .child(text)
                 };
                 rows.push(
                     div()
@@ -1867,8 +1904,8 @@ impl CalendarView {
                             .child(if days.len() == 1 { tr!("cal-weekday", d = date.weekday().to_monday_zero_offset()) } else { weekday_name(date) }),
                     )
             }));
-        // Весь день: событие от дня начала до дня конца — по показанным столбцам.
-        let all_day: Vec<AnyElement> = self
+        // Весь день: событие от дня начала до дня конца — по показанным столбцам; пересекающиеся — друг под другом.
+        let mut placed: Vec<(usize, &Event, usize, usize)> = self
             .events
             .iter()
             .enumerate()
@@ -1876,42 +1913,54 @@ impl CalendarView {
             .filter_map(|(i, e)| {
                 let (a, b) = model::dates(e, tz);
                 let (c0, c1) = model::columns(days, a, b)?;
+                Some((i, e, c0, c1))
+            })
+            .collect();
+        placed.sort_by_key(|&(i, _, c0, c1)| (c0, usize::MAX - c1, i));
+        let mut lanes: Vec<usize> = Vec::new();
+        let all_day: Vec<AnyElement> = placed
+            .into_iter()
+            .map(|(i, e, c0, c1)| {
+                let lane = lanes.iter().position(|&end| end < c0).unwrap_or_else(|| {
+                    lanes.push(0);
+                    lanes.len() - 1
+                });
+                lanes[lane] = c1;
                 let (bar, bg, fg) = self.colors(e, &l);
                 let selected = self.selected == Some(i);
-                Some(
-                    div()
-                        .id(("all-day", i))
-                        .absolute()
-                        .top(px(3.))
-                        .h(px(22.))
-                        .left(relative(c0 as f32 / n as f32))
-                        .w(relative((c1 - c0 + 1) as f32 / n as f32))
-                        .px(px(2.))
-                        .child(
-                            div()
-                                .size_full()
-                                .flex()
-                                .items_center()
-                                .gap(px(6.))
-                                .pl(px(3.))
-                                .pr(px(8.))
-                                .bg(bg)
-                                .text_color(fg)
-                                .text_size(px(12.))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .overflow_hidden()
-                                .child(div().w(px(3.)).h_full().flex_none().bg(bar))
-                                .child(div().truncate().child(e.title.clone()))
-                                .when(selected, |d| d.shadow(glow(bar))),
-                        )
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |this, _, _, cx| this.select(i, cx)))
-                        .into_any_element(),
-                )
+                div()
+                    .id(("all-day", i))
+                    .children(crate::screens::spot(("all-day", i)))
+                    .absolute()
+                    .top(px(3. + lane as f32 * ALL_DAY_LANE))
+                    .h(px(22.))
+                    .left(relative(c0 as f32 / n as f32))
+                    .w(relative((c1 - c0 + 1) as f32 / n as f32))
+                    .px(px(2.))
+                    .child(
+                        div()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .pl(px(3.))
+                            .pr(px(8.))
+                            .bg(bg)
+                            .text_color(fg)
+                            .text_size(px(12.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .overflow_hidden()
+                            .child(div().w(px(3.)).h_full().flex_none().bg(bar))
+                            .child(div().truncate().child(e.title.clone()))
+                            .when(selected, |d| d.shadow(glow(bar))),
+                    )
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| this.select(i, cx)))
+                    .into_any_element()
             })
             .collect();
         let all_day_row = div()
-            .h(px(30.))
+            .h(px(6. + lanes.len().max(1) as f32 * ALL_DAY_LANE))
             .flex_none()
             .flex()
             .border_b_1()

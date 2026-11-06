@@ -210,7 +210,7 @@ impl SettingsView {
             .keys()
             .enumerate()
             .map(|(n, key)| {
-                let name = if key.is_empty() { tr!("cal-my-calendar") } else { key.clone() };
+                let name = if key.is_empty() { tr!("cal-my-calendar") } else { crate::calendar::name_of_key(c, key).unwrap_or_else(|| key.clone()) };
                 let current = c.calendar_colors.get(key).cloned().unwrap_or_default();
                 let swatches = postman_core::palette::CALENDAR.iter().enumerate().map(|(m, color)| {
                     let (k, col) = (key.clone(), (*color).to_owned());

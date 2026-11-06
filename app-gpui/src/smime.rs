@@ -75,6 +75,26 @@ pub(crate) fn demo_context() -> Env {
     demo_env()
 }
 
+/// Чему верить в сертификатах адресатов: живой ящик — хранилища Windows, демо — якоря демо.
+pub(crate) fn recipients_context(live: bool) -> Env {
+    if !live {
+        return demo_context();
+    }
+    #[cfg(debug_assertions)]
+    if let Some(env) = stand_context() {
+        return env;
+    }
+    Env::system()
+}
+
+/// Только отладочная сборка, сцены `drill_net`: корень стенда (DER, файл `POSTMAN_TEST_CA`) вместо хранилищ Windows. Цепочку
+/// проверяет воркер как обычно; в выпуске этого кода нет, хранилище ОС не трогается (`docs/DEV.md`, «Стенд сети»).
+#[cfg(debug_assertions)]
+fn stand_context() -> Option<Env> {
+    let der = std::fs::read(std::env::var_os("POSTMAN_TEST_CA")?).ok()?;
+    Some(Env::fixed(postman_smime::Trust { roots: vec![postman_smime::Anchor { der, corporate: false }], ..Default::default() }))
+}
+
 /// Якоря демо-ящика (корни демо-УЦ): без Windows и без СКЗИ.
 fn demo_env() -> Env {
     static ENV: OnceLock<Env> = OnceLock::new();

@@ -63,6 +63,11 @@ impl CertBook {
         Some(out)
     }
 
+    /// В каталоге спрашивали обо всех этих адресах: без этого итог прошлого поиска к ним не относится.
+    pub(crate) fn directory_asked(&self, addrs: &[String]) -> bool {
+        self.not_asked(addrs).is_empty()
+    }
+
     /// Адреса, которых ещё не искали.
     pub(crate) fn unknown<'a>(&self, addrs: impl Iterator<Item = &'a str>) -> Vec<String> {
         addrs
@@ -126,7 +131,7 @@ impl Mailer {
         }
         let live = self.backend.is_live();
         let (cache, worker) = (self.cache.clone(), self.reading.read(cx).worker.clone());
-        let env = if live { postman_core::smime::Context::system() } else { crate::smime::demo_context() };
+        let env = crate::smime::recipients_context(live);
         let book = certs.clone();
         let task = cx.background_spawn(async move {
             let now = jiff::Timestamp::now().as_second();
@@ -191,7 +196,7 @@ impl Mailer {
         let live = self.backend.is_live();
         let prefs = crate::prefs::get(cx).security.directory.clone();
         let (cache, worker) = (self.cache.clone(), self.reading.read(cx).worker.clone());
-        let env = if live { postman_core::smime::Context::system() } else { crate::smime::demo_context() };
+        let env = crate::smime::recipients_context(live);
         let book = certs.clone();
         let task = cx.background_spawn(async move {
             let now = jiff::Timestamp::now().as_second();

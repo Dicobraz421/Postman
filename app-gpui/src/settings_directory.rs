@@ -60,10 +60,11 @@ impl DirState {
                 }
             }));
         }
-        subscriptions.push(cx.subscribe_in(&password, window, |this: &mut SettingsView, state, ev: &InputEvent, _, cx| {
+        subscriptions.push(cx.subscribe_in(&password, window, |this: &mut SettingsView, state, ev: &InputEvent, window, cx| {
             if matches!(ev, InputEvent::PressEnter { .. } | InputEvent::Blur) {
                 let secret = state.read(cx).value().to_string();
                 if !secret.is_empty() {
+                    state.update(cx, |s, cx| s.set_value("", window, cx));
                     this.save_directory_password(secret, cx);
                 }
             }
@@ -101,9 +102,9 @@ impl SettingsView {
         .detach();
     }
 
-    /// Контроллер домена — в фоне, один раз за открытие настроек; демо — «не в домене».
-    fn ask_domain_controller(&mut self, cx: &mut Context<Self>) {
-        if self.dir.dc_asked {
+    /// Контроллер домена — в фоне, один раз за открытие настроек; демо — «не в домене». Сервер указан — подсказке он не нужен.
+    fn ask_domain_controller(&mut self, server: &str, cx: &mut Context<Self>) {
+        if self.dir.dc_asked || !server.is_empty() {
             return;
         }
         self.dir.dc_asked = true;
@@ -147,10 +148,20 @@ impl SettingsView {
         .detach();
     }
 
+    /// Итог «Проверить»: `None` — ещё идёт или не нажимали.
+    pub(crate) fn directory_check(&self) -> Option<&str> {
+        self.dir.check.as_ref().and_then(|c| c.as_deref())
+    }
+
+    /// Подсказка поля пароля: «Сохранён в Диспетчере учётных данных»; в поле пароля не осталось.
+    pub(crate) fn directory_password_saved(&self, cx: &App) -> bool {
+        self.dir.saved && self.dir.password.read(cx).value().is_empty()
+    }
+
     /// Группа «Каталог сертификатов».
     pub(crate) fn directory_rows(&mut self, l: &Look, cx: &mut Context<Self>) -> Div {
-        self.ask_domain_controller(cx);
         let p = crate::prefs::get(cx).security.directory;
+        self.ask_domain_controller(&p.server, cx);
         let server_hint = match &self.dir.dc {
             _ if !p.server.is_empty() => tr!("settings-directory-server-hint"),
             Some(Some(dc)) => tr!("settings-directory-server-dc", dc = dc.clone()),
@@ -177,13 +188,14 @@ impl SettingsView {
             Some(Some(t)) => t.clone(),
             None => tr!("settings-directory-check-hint"),
         };
-        let field = |state: &Entity<InputState>| div().w(px(280.)).child(Input::new(state));
+        let field =
+            |id: &'static str, state: &Entity<InputState>| div().relative().children(crate::screens::spot(id)).w(px(280.)).child(Input::new(state));
         div()
             .flex()
             .flex_col()
             .child(group(tr!("settings-directory-group"), l))
-            .child(row(tr!("settings-directory-server"), Some(server_hint), field(&self.dir.server), l))
-            .child(row(tr!("settings-directory-base"), Some(tr!("settings-directory-base-hint")), field(&self.dir.base), l))
+            .child(row(tr!("settings-directory-server"), Some(server_hint), field("directory-server", &self.dir.server), l))
+            .child(row(tr!("settings-directory-base"), Some(tr!("settings-directory-base-hint")), field("directory-base", &self.dir.base), l))
             .child(row(
                 tr!("settings-directory-login"),
                 Some(tr!(match p.login {
@@ -195,10 +207,10 @@ impl SettingsView {
                 l,
             ))
             .when(p.login == DirectoryLogin::Password, |d| {
-                d.child(row(tr!("settings-directory-user"), None, field(&self.dir.user), l)).child(row(
+                d.child(row(tr!("settings-directory-user"), None, field("directory-user", &self.dir.user), l)).child(row(
                     tr!("settings-directory-password"),
                     Some(tr!(if self.dir.saved { "settings-directory-password-saved" } else { "settings-directory-password-hint" })),
-                    field(&self.dir.password),
+                    field("directory-password", &self.dir.password),
                     l,
                 ))
             })

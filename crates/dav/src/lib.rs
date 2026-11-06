@@ -401,18 +401,30 @@ pub async fn fetch_public_if(text: &str, max: usize, etag: Option<&str>) -> Resu
     let policy = reqwest::redirect::Policy::custom(|a| {
         if a.previous().len() >= MAX_REDIRECTS || public_url(a.url().as_str()).is_none() { a.stop() } else { a.follow() }
     });
-    let http = reqwest::Client::builder()
+    let builder = reqwest::Client::builder()
         .user_agent(concat!("Postman/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(PUBLIC_TIMEOUT)
         .timeout(PUBLIC_TIMEOUT)
-        .redirect(policy)
-        .build()
-        .map_err(|e| Error::Http(e.without_url()))?;
+        .redirect(policy);
+    #[cfg(debug_assertions)]
+    let builder = stand_root(builder);
+    let http = builder.build().map_err(|e| Error::Http(e.without_url()))?;
     let mut request = http.get(url);
     if let Some(tag) = etag {
         request = request.header(reqwest::header::IF_NONE_MATCH, tag);
     }
     read_limited(request, max).await
+}
+
+/// Только отладочная сборка, сцены `drill_net`: корень стенда (DER, файл `POSTMAN_TEST_CA`) рядом с корнями Windows. Цепочку и
+/// имя сервера по-прежнему проверяет Windows; в выпуске этого кода нет, хранилище ОС не трогается (`docs/DEV.md`, «Стенд сети»).
+#[cfg(debug_assertions)]
+fn stand_root(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+    let der = std::env::var_os("POSTMAN_TEST_CA").and_then(|f| std::fs::read(f).ok());
+    match der.map(|d| reqwest::Certificate::from_der(&d)) {
+        Some(Ok(root)) => builder.tls_certs_merge([root]),
+        _ => builder,
+    }
 }
 
 /// Тело ответа не больше `max` байт: `Content-Length` врать может, поэтому счёт — по пришедшему.

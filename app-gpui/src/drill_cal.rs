@@ -743,7 +743,8 @@ fn tab_close(m: &Mailer, w: &Window, _: &App) -> Option<Point<Pixels>> {
 /// Пустое место сетки встречи: под строками участников.
 fn grid_gap(_: &Mailer, _: &Window, _: &App) -> Option<Point<Pixels>> {
     let b = spot_bounds("assistant")?;
-    Some(point(b.center().x, b.origin.y + b.size.height - px(6.)))
+    // Правее середины: нижнюю строку слева занимает плашка «Указать ссылку», она щелчок не пропускает.
+    Some(point(b.center().x + px(30.), b.origin.y + b.size.height - px(6.)))
 }
 
 /// Сколько точек на секунду сетки встречи.
