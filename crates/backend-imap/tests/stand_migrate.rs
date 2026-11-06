@@ -191,7 +191,9 @@ fn twenty_letters_jmap_to_imap_and_back() {
     let mailbox = cache.mailboxes().unwrap().into_iter().find(|m| m.role.as_deref() == Some("inbox") && m.id.starts_with("@2")).unwrap().id;
     let selector = Selector { mailbox: mailbox.clone(), filter: None, except: Vec::new() };
     let listed = imap.answers(Command::ListLetters { sweep: SweepId(1), selector, position: 0, limit: 7 });
-    let [Event::LettersListed { ids, total, end, .. }] = &listed[..] else { panic!("страница ключей: {} событий", listed.len()) };
+    let [Event::LettersListed { ids, total, end, .. }] = &listed[..] else {
+        panic!("страница ключей: {} событий", listed.len())
+    };
     assert!(ids.len() == 7 && *total >= u64::from(LETTERS) && !*end, "{} из {total}", ids.len());
     let alive = postman_core::store::key_of(&cache, letters[0]).unwrap().unwrap();
     let mut asked = vec![alive.clone()];

@@ -2081,11 +2081,8 @@ const SELECT_ALL: &[Input] = &[
     until!(|m, cx| whole_counted(m, cx)),
 ];
 
-const FLAG_ALL: &[Input] = &[
-    Input::Press("bulk-flag"),
-    until!(|m, cx| m.list.read(cx).selection.is_empty()),
-    until!(|m, _| m.migration.sweeps.is_empty()),
-];
+const FLAG_ALL: &[Input] =
+    &[Input::Press("bulk-flag"), until!(|m, cx| m.list.read(cx).selection.is_empty()), until!(|m, _| m.migration.sweeps.is_empty())];
 
 fn counting(m: &Mailer, cx: &App) -> bool {
     m.list.read(cx).selection.whole().is_some_and(|w| w.total.is_none())

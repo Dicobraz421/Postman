@@ -1345,7 +1345,9 @@ def group_move(ctx):
         if scene == "st-s815-flag":
             flagged = source.call([["Email/query", {"accountId": source.account, "filter": {"operator": "AND", "conditions": [
                 {"inMailbox": source.boxes()["inbox"]}, {"hasKeyword": "$flagged"}]}, "calculateTotal": True, "limit": 1}, "0"]])[0][1]["total"]
-            print(f"сервер: флаг у {flagged} писем из {total(source)}", flush=True)
+            have = total(source)
+            assert flagged == have, f"флаг у {flagged} писем из {have}: выборка прошла не все письма"
+            print(f"сервер: флаг у всех {flagged} писем", flush=True)
         if scene == "st-s815-menu":
             started["drag"] = time.time()
         if scene == "st-s815-target":

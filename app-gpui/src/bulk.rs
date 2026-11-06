@@ -671,7 +671,7 @@ impl MailList {
 fn settled(want: Want, total: Option<usize>, cache: &postman_cache::Cache) -> Want {
     match (&want, total) {
         (Want::Whole { mailbox, .. }, Some(total)) if cache.count(mailbox).is_ok_and(|n| n >= total) => Want::Loaded,
-        (Want::Partial, Some(total)) if total == 0 => Want::Loaded,
+        (Want::Partial, Some(0)) => Want::Loaded,
         _ => want,
     }
 }
