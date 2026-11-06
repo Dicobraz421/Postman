@@ -478,11 +478,24 @@ impl Cache {
     /// задания убирается; у письма без связей перенос в «На этом компьютере» — сразу `Local`. Писем, которых нет,
     /// и уже лежащих только в `to` — в итоге нет.
     pub fn move_letters(&self, ids: &[LetterId], to: FolderId) -> Result<MoveTicket> {
-        self.move_in_batches(ids, to, MOVE_BATCH)
+        self.move_in_batches(ids, to, MOVE_BATCH, None)
     }
 
-    fn move_in_batches(&self, ids: &[LetterId], to: FolderId, batch_len: usize) -> Result<MoveTicket> {
-        let mut ticket = MoveTicket::default();
+    /// [`Cache::move_letters`] в уже открытое задание: выборка на сервере приходит страницами, задание у них одно.
+    pub fn move_letters_into(&self, ids: &[LetterId], to: FolderId, job: JobId) -> Result<MoveTicket> {
+        self.move_in_batches(ids, to, MOVE_BATCH, Some(job))
+    }
+
+    /// Номер нового задания: строку задания пишет его владелец.
+    pub fn new_job(&self) -> Result<JobId> {
+        let tx = self.db.begin_write()?;
+        let job = JobId(next_id(&tx, NEXT_JOB)?);
+        tx.commit()?;
+        Ok(job)
+    }
+
+    fn move_in_batches(&self, ids: &[LetterId], to: FolderId, batch_len: usize, job: Option<JobId>) -> Result<MoveTicket> {
+        let mut ticket = MoveTicket { job, ..MoveTicket::default() };
         for batch in ids.chunks(batch_len) {
             let tx = self.db.begin_write()?;
             {
@@ -717,7 +730,7 @@ mod tests {
         let (a_in, b_in) = (account_folder(&c, "a", "in"), account_folder(&c, "b", "in"));
         let rows: Vec<(String, LetterRow)> = (0..5).map(|i| (format!("m{i}"), row(i, &[a_in], &["k"]))).collect();
         let ids = c.upsert_remotes("a", &rows).unwrap();
-        let t = c.move_in_batches(&ids, b_in, 2).unwrap();
+        let t = c.move_in_batches(&ids, b_in, 2, None).unwrap();
         assert_eq!((t.moved, t.outbound), (5, 5));
         assert_eq!(c.outbound(t.job.unwrap()).unwrap().len(), 5);
         assert_eq!(c.job(t.job.unwrap()).unwrap().unwrap().total, 5, "задание одно на все пачки");

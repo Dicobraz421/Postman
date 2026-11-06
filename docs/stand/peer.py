@@ -1305,7 +1305,9 @@ def fill(box, count, word):
 
 
 def group_move(ctx):
-    """S8-15 шаги 3–5, S8-16 шаги 1–3, 5–7. Обе учётные записи временные: письма уходят из ящика-источника. Цель добавляется в окне с «Не хранить»."""
+    """S8-15 шаги 3–5, S8-16 шаги 1–7, решение 4 (цель не вошла на сервер). Обе учётные записи временные: письма уходят из ящика-источника. Цель добавляется в окне с «Не хранить».
+
+    Источник больше страницы загрузки: выбрано всё на сервере, `POSTMAN_STAND_MOVE` — сколько писем (S8-15 шаг 3 — 10 000)."""
     play = Play(ctx, "move")
     admin = Admin()
     domain = os.environ["POSTMAN_STAND_USER1"].split("@")[1]
@@ -1314,8 +1316,7 @@ def group_move(ctx):
     ids = [admin.temp_user(n, p) for n, p in zip(names, secret)]
     source, target = [Mailbox(user=f"{n}@{domain}", password=p) for n, p in zip(names, secret)]
     extra = {"POSTMAN_STAND_PEER": target.user, "POSTMAN_STAND_PEER_SECRET": target.password}
-    # Меньше страницы загрузки: Ctrl+A выделяет то, что в кэше, письма за ней остались бы у источника.
-    count = int(os.environ.get("POSTMAN_STAND_MOVE", "400"))
+    count = int(os.environ.get("POSTMAN_STAND_MOVE", "2000"))
 
     def total(box):
         got = box.call([["Email/query", {"accountId": box.account, "filter": {"inMailbox": box.boxes()["inbox"]}, "calculateTotal": True, "limit": 1}, "0"]])
@@ -1334,13 +1335,17 @@ def group_move(ctx):
             if len(rows) < 500:
                 return len(seen), len(set(seen))
 
-    def run(scenes, on_scene=lambda _: None):
+    def run(scenes, on_scene=lambda _: None, data=None):
         # Пароль цели в профиле не хранится («Не хранить»): каждый запуск добавляет её заново.
-        play.run(["st-s703-add"] + scenes, on_scene, source.user, source.password, extra=extra)
+        play.run(["st-s703-add"] + scenes, on_scene, source.user, source.password, data=data, extra=extra)
 
     started = {}
 
     def first(scene):
+        if scene == "st-s815-flag":
+            flagged = source.call([["Email/query", {"accountId": source.account, "filter": {"operator": "AND", "conditions": [
+                {"inMailbox": source.boxes()["inbox"]}, {"hasKeyword": "$flagged"}]}, "calculateTotal": True, "limit": 1}, "0"]])[0][1]["total"]
+            print(f"сервер: флаг у {flagged} писем из {total(source)}", flush=True)
         if scene == "st-s815-menu":
             started["drag"] = time.time()
         if scene == "st-s815-target":
@@ -1348,32 +1353,49 @@ def group_move(ctx):
 
     def second(scene):
         if scene == "st-s816-stop-no":
-            print("сервер цели посреди выгрузки:", total(target), flush=True)
+            print("сервер цели перед выходом:", total(target), flush=True)
 
     try:
+        # Решение 4: цель в профиле, но не вошла: перенос не начат, письмо на месте; вход — перенос обычным путём.
+        # Свой каталог данных: новые письма приходят в кэш по `Email/changes` целиком, большой папке нужен новый кэш.
+        fill(source, 2, "warm" + ctx.stamp)
+        run(["st-s816-target-ready"], data="move-login")
+        play.run(["st-s816-no-login"], lambda _: None, source.user, source.password, data="move-login", extra=extra)
+        assert total(target) == 0 and total(source) == 2, "без входа письма не должны двигаться"
+        run(["st-s816-after-login"], data="move-login")
+        wait_for(lambda: total(target) == 1 and total(source) == 1, "письмо не дошло после входа", 60)
+        print("решение 4: без входа перенос не начат, после входа письмо у цели", flush=True)
         started["fill"] = time.time()
         fill(source, count, "move" + ctx.stamp)
-        print(f"письма источника: {count} за {time.time() - started['fill']:.0f} с", flush=True)
-        run(["st-s816-local", "st-s815-letter", "st-s815-menu", "st-s815-drag", "st-s815-target", "st-s816-ask"], first)
-        # Сцены начинаются со строк списка: у источника всегда есть письмо.
+        print(f"письма источника: {count + 1} за {time.time() - started['fill']:.0f} с", flush=True)
+        run(["st-s815-count", "st-s815-flag", "st-s816-local", "st-s815-letter", "st-s815-menu", "st-s815-drag", "st-s815-target", "st-s816-ask"], first)
+        # Письмо пришло после снимка выборки: оно остаётся у источника. Сцены начинаются со строк списка.
         fill(source, 1, "keep" + ctx.stamp)
-        # Шаг 4, выход посреди выгрузки, не здесь: цель без сохранённого пароля появляется уже после старта задания, команды
-        # ядра к ней не доходят, и задание стоит. Шаг 7 — в том же запуске.
-        run(["st-s816-kept", "st-s816-pause", "st-s816-resume", "st-s816-stop-no", "st-s816-done"], second)
-        wait_for(lambda: total(source) == 1, "у источника письма остались", 60)
+        run(["st-s816-kept", "st-s816-pause", "st-s816-resume", "st-s816-stop-no"], second)
+        # Шаг 4: окно закрыто посреди выгрузки, новый запуск идёт дальше; шаг 7 — в нём.
+        at_exit = total(target)
+        run(["st-s816-done"])
+        wait_for(lambda: total(source) == 1, "у источника письма остались", 120)
         have, unique = distinct(target)
+        assert at_exit < have, f"выход не посреди выгрузки: при выходе {at_exit}, в конце {have}"
         assert have == unique, f"дубли на сервере цели: {have} писем, разных {unique}"
-        print(f"сервер: у цели {have} писем без дублей, у источника только новое письмо", flush=True)
-        fill(source, 300, "back" + ctx.stamp)
-        run(["st-s816-start", "st-s816-return"])
-        # Уже выгруженные до остановки остаются у цели, остальные — снова у источника, ни одно не потеряно.
-        wait_for(lambda: total(source) + total(target) == have + 301, "письма потерялись при возврате", 60)
+        moved = have - 1 + 3  # минус письмо решения 4, плюс три письма «На этом компьютере»
+        assert moved == count + 1, f"перенесено {moved}, ждали {count + 1}"
+        print(f"сервер: у цели {have} писем без дублей (при выходе было {at_exit}), у источника только новое письмо", flush=True)
+        back = 1500
+        fill(source, back, "back" + ctx.stamp)
+        # Новый кэш: иначе письма источника уже все в нём и выборке на сервере нечего делать.
+        run(["st-s816-start", "st-s816-return"], data="move-cancel")
+        # Уже выгруженные до остановки остаются у цели, остальные — снова у источника или и не уходили, ни одно не потеряно.
+        wait_for(lambda: total(source) + total(target) == have + back + 1, "письма потерялись при возврате", 120)
+        have, unique = distinct(target)
+        assert have == unique, f"дубли на сервере цели после отмены: {have} писем, разных {unique}"
         print(f"сервер: у источника {total(source)}, у цели {total(target)}: письма на месте", flush=True)
-        run(["st-s816-start-2", "st-s816-keep"])
+        run(["st-s816-start-2", "st-s816-keep"], data="move-cancel")
         fill(source, 300, "full" + ctx.stamp)
         used = admin.accounts()[target.user]["usedDiskQuota"]
         admin.quota(target.user, used + 3000)
-        run(["st-s816-start-3", "st-s816-full", "st-s816-local-rest"])
+        run(["st-s816-start-3", "st-s816-full", "st-s816-local-rest"], data="move-cancel")
     finally:
         for account in ids:
             admin.destroy(account)

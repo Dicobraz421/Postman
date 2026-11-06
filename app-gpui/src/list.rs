@@ -125,6 +125,8 @@ pub(crate) struct MailList {
     pub(crate) confirm: Option<(usize, EmailRow)>,
     /// То же для выделения (S5-08): письма из «Удалённых» — насовсем.
     pub(crate) confirm_many: Option<Vec<String>>,
+    /// То же для «выбрано всё»: выборка и сколько в ней писем.
+    pub(crate) confirm_whole: Option<(postman_core::model::Selector, usize)>,
     /// Догрузка с сервера при прокрутке (живой ящик, S4-03).
     pub(crate) more: More,
     /// Папки с урезанными правами (общие ящики, S4-06): id → права. Своих папок здесь нет.
@@ -383,6 +385,19 @@ pub(crate) struct PurgeMany(pub(crate) Vec<String>);
 
 impl EventEmitter<PurgeMany> for MailList {}
 
+/// «Да» в «Удалить навсегда N писем?» при «выбрано всё».
+pub(crate) struct PurgeWhole(pub(crate) postman_core::model::Selector);
+
+impl EventEmitter<PurgeWhole> for MailList {}
+
+/// «Выбрано всё» с условием: сколько писем, скажет сервер.
+pub(crate) struct CountWhole {
+    pub(crate) mailbox: String,
+    pub(crate) filter: postman_core::model::Filter,
+}
+
+impl EventEmitter<CountWhole> for MailList {}
+
 /// Письмо открыто (строка уже помечена прочитанной).
 pub(crate) struct OpenRow(pub(crate) EmailRow);
 
@@ -477,6 +492,7 @@ impl MailList {
             positions: Positions::default(),
             confirm: None,
             confirm_many: None,
+            confirm_whole: None,
             more: More::default(),
             rights: HashMap::new(),
             labels: crate::labels::default_book(),
@@ -831,6 +847,7 @@ impl MailList {
         self.search_ids = search;
         self.confirm = None;
         self.confirm_many = None;
+        self.confirm_whole = None;
         self.set_offset_y(y);
         self.visible = rows_at(y, self.visible.len(), self.row_h);
     }
@@ -859,6 +876,11 @@ impl MailList {
             && yes
         {
             cx.emit(PurgeMany(ids));
+        }
+        if let Some((selector, _)) = self.confirm_whole.take()
+            && yes
+        {
+            cx.emit(PurgeWhole(selector));
         }
         if let Some((index, row)) = self.confirm.take()
             && yes
@@ -1263,7 +1285,7 @@ impl Render for MailList {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let l = look(cx);
         self.row_h = row_height(l.density());
-        let confirm = (self.confirm.is_some() || self.confirm_many.is_some()).then(|| {
+        let confirm = (self.confirm.is_some() || self.confirm_many.is_some() || self.confirm_whole.is_some()).then(|| {
             // Цвет кнопки — роль, не смысл (DESIGN «Цвет»): «да» — главная, «нет» — тонированная.
             let button = |id: &'static str, text: String, yes: bool| {
                 crate::buttons::button(id, text, yes, &l).on_click(cx.listener(move |this, _, _, cx| this.answer_purge(yes, cx)))
@@ -1278,9 +1300,10 @@ impl Render for MailList {
                 .bg(l.warning_bg())
                 .border_b_1()
                 .border_color(l.border())
-                .child(div().flex_1().child(match &self.confirm_many {
-                    Some(ids) => tr!("bulk-purge-confirm", n = ids.len()),
-                    None => tr!("actions-purge-confirm"),
+                .child(div().flex_1().child(match (&self.confirm_whole, &self.confirm_many) {
+                    (Some((_, n)), _) => tr!("bulk-purge-confirm", n = *n),
+                    (None, Some(ids)) => tr!("bulk-purge-confirm", n = ids.len()),
+                    _ => tr!("actions-purge-confirm"),
                 }))
                 .child(button("purge-yes", tr!("actions-purge-yes"), true))
                 .child(button("purge-no", tr!("actions-purge-no"), false))

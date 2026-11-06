@@ -270,6 +270,15 @@ pub fn set(row: &EmailRow, kind: Kind, when: Option<When>) -> Patch {
     Patch { id: row.id.clone(), keywords: kw, mailboxes: Vec::new() }
 }
 
+/// Вариант панели выбора срока — правка письма: напоминание, «никогда» или срок.
+pub fn mark(row: &EmailRow, kind: Kind, when: Option<When>, roles: &Roles) -> Patch {
+    match (kind, when) {
+        (Kind::Remind, Some(w)) => snooze(row, w, roles),
+        (Kind::Expire, None) => keep(row),
+        (kind, w) => set(row, kind, w),
+    }
+}
+
 /// «Исчезнет… → Никогда»: снять срок и поставить [`KEEP`] (коды подтверждения больше не помечаются).
 pub fn keep(row: &EmailRow) -> Patch {
     Patch { id: row.id.clone(), keywords: keywords(vec![KEEP.to_owned()], marks::clearing(&row.keywords, Kind::Expire)), mailboxes: Vec::new() }

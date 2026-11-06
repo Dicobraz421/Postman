@@ -40,3 +40,4 @@ export-failed-fetch = { $n ->
 export-stopped = Export stopped: { $done } of { $total } written
 export-stopped-detail = Finished files are intact, the unfinished one was removed
 export-open = Open folder
+export-loaded-only = · only those loaded on this computer: { $loaded } of { $total }

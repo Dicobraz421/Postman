@@ -19,7 +19,7 @@ pub const JUNK: &str = "$junk";
 pub const NOT_JUNK: &str = "$notjunk";
 
 /// Что сделать с выделенными письмами.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Act {
     /// Прочитано (`true`) или не прочитано.
     Seen(bool),
@@ -47,7 +47,7 @@ pub enum Need {
 }
 
 impl Act {
-    fn needs(&self) -> &'static [Need] {
+    pub fn needs(&self) -> &'static [Need] {
         match self {
             Act::Seen(_) => &[Need::Seen],
             Act::Flag(_) | Act::Keywords { .. } => &[Need::Keywords],

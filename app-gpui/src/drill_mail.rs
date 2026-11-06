@@ -2236,7 +2236,7 @@ fn only_main(_: &Scene, m: &Mailer, _: &App) -> bool {
 }
 
 /// Последний тост начинается так (сцены — на `--lang ru`).
-fn toast_starts(m: &Mailer, cx: &App, text: &str) -> bool {
+pub(crate) fn toast_starts(m: &Mailer, cx: &App, text: &str) -> bool {
     m.toasts.read(cx).latest().is_some_and(|t| t.starts_with(text))
 }
 

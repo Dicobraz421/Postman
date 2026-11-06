@@ -292,6 +292,19 @@ impl Criteria {
         self.checks.iter().all(|c| f.check(*c)) && self.categories_pass(keywords) && self.quick_pass(f)
     }
 
+    /// Условие на сервере — то же, что видит список ([`Criteria::server_filter`] ничего не опустил): по нему можно
+    /// выбрать письма для действия. Иначе сервер выбрал бы больше, чем видит пользователь.
+    pub fn server_exact(&self, me: &Me) -> bool {
+        let checks = self.checks.iter().all(|c| match c {
+            Check::Mentions => !me.handles.is_empty(),
+            Check::External => !me.domains.is_empty(),
+            _ => true,
+        });
+        checks
+            && (!self.quick.contains(&Quick::ToMe) || !me.addresses.is_empty())
+            && (!self.quick.contains(&Quick::Waiting) || me.waiting.len() <= WAITING_MAX)
+    }
+
     /// Условие `Email/query` для сервера («Все папки», живой ящик); пусто — `None`. Чего сервер не умеет
     /// (внешние без моих доменов, «Мне» без адреса) — не ставится: такие письма отсеет проверка в кэше.
     pub fn server_filter(&self, me: &Me) -> Option<Filter> {

@@ -21,9 +21,10 @@ use pets_ui::theme::{Metric, Role};
 use postman_cache::Cache;
 use postman_core::export::Exporter;
 use postman_core::migrate::Engine;
-use postman_core::model::{JobId, MigrationMode, MigrationRequest, MigrationState};
+use postman_core::model::{JobId, MigrationMode, MigrationRequest, MigrationState, SweepId};
 use postman_core::store::{CacheStore, move_letters, worker_splitter};
-use postman_core::sync::{Command, Event, Route, Target};
+use postman_core::sweep::{self, Action, Progress, Sweeper};
+use postman_core::sync::{Command, Event, Route, Status, Target};
 
 use crate::Mailer;
 use crate::chrome::{glyph, icon};
@@ -95,7 +96,11 @@ fn wanted(e: &Event) -> Option<Event> {
         Event::Destroyed { job, letter } => Event::Destroyed { job: *job, letter: *letter },
         Event::DestroyFailed { job, letter, error } => Event::DestroyFailed { job: *job, letter: *letter, error: error.clone() },
         Event::Features(f) => Event::Features(*f),
+        Event::Status(Status::SignedIn { user }) => Event::Status(Status::SignedIn { user: user.clone() }),
         Event::Settings(Reply::Quota(u)) => Event::Settings(Reply::Quota(*u)),
+        Event::LettersListed { sweep, ids, total, end } => Event::LettersListed { sweep: *sweep, ids: ids.clone(), total: *total, end: *end },
+        Event::LettersStored { sweep, gone } => Event::LettersStored { sweep: *sweep, gone: gone.clone() },
+        Event::ListFailed { sweep, error } => Event::ListFailed { sweep: *sweep, error: error.clone() },
         _ => return None,
     })
 }
@@ -104,31 +109,35 @@ fn run(cache: Cache, rx: mpsc::Receiver<In>, out: impl Fn(Out)) {
     // Экспорт (S8-32) — в том же потоке: письма без содержимого — `FetchRaw` у их учёток.
     let mut exporter = Exporter::new(jiff::tz::TimeZone::system());
     let client = postman_worker::Client::new(postman_worker::Client::default_exe(), WORKER_TIMEOUT);
-    let mut engine = match Engine::open(CacheStore::new(cache, worker_splitter(client))) {
-        Ok(e) => e,
+    let opened = Sweeper::open(cache.clone()).and_then(|s| {
+        let held = s.held();
+        Ok((s, Engine::open_held(CacheStore::new(cache, worker_splitter(client)), &held)?))
+    });
+    let (mut sweeper, mut engine) = match opened {
+        Ok(o) => o,
         Err(e) => {
             tracing::warn!("migration engine: {e}");
             return;
         }
     };
     loop {
-        let wake = [engine.wake_at(), exporter.wake_at()].into_iter().flatten().min();
+        let wake = [engine.wake_at(), exporter.wake_at(), sweeper.wake_at(Instant::now())].into_iter().flatten().min();
         let wait = wake.map_or(IDLE, |t| t.saturating_duration_since(Instant::now()));
         let mut moved = false;
         match rx.recv_timeout(wait) {
-            Ok(msg) => moved |= handle(&mut engine, &mut exporter, msg),
+            Ok(msg) => moved |= handle(&mut engine, &mut exporter, &mut sweeper, msg),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
         while let Ok(msg) = rx.try_recv() {
-            moved |= handle(&mut engine, &mut exporter, msg);
+            moved |= handle(&mut engine, &mut exporter, &mut sweeper, msg);
         }
-        pump(&mut engine, &mut exporter, moved, &out);
+        pump(&mut engine, &mut exporter, &mut sweeper, moved, &out);
     }
 }
 
 /// Весть потоку ядра; `true` — перенос в базе прошёл.
-fn handle(engine: &mut Engine<CacheStore>, exporter: &mut Exporter, msg: In) -> bool {
+fn handle(engine: &mut Engine<CacheStore>, exporter: &mut Exporter, sweeper: &mut Sweeper, msg: In) -> bool {
     let now = Instant::now();
     let r = match msg {
         In::Command(Command::Export { scope, format, dir }) => {
@@ -147,6 +156,8 @@ fn handle(engine: &mut Engine<CacheStore>, exporter: &mut Exporter, msg: In) -> 
             Err(e) => Err(e),
         },
         In::Command(Command::Migration(r)) => engine.request(r),
+        In::Command(Command::Sweep { selector, action }) => sweeper.start(selector, action).map(|_| ()),
+        In::Command(Command::StopSweep { sweep }) => sweeper.stop(sweep, engine),
         In::Command(c) => {
             tracing::warn!("core thread: unexpected command ({} routes)", c.routes().len());
             Ok(())
@@ -155,7 +166,13 @@ fn handle(engine: &mut Engine<CacheStore>, exporter: &mut Exporter, msg: In) -> 
             engine.features(profile.as_deref(), f);
             Ok(())
         }
+        In::Event(profile, Event::Status(_)) => {
+            engine.online(profile.as_deref());
+            sweeper.online(profile.as_deref());
+            Ok(())
+        }
         In::Event(profile, Event::Settings(postman_core::settings::Reply::Quota(u))) => engine.quota(profile.as_deref(), u),
+        In::Event(_, e @ (Event::LettersListed { .. } | Event::LettersStored { .. } | Event::ListFailed { .. })) => sweeper.event(&e, now),
         In::Event(_, e) => {
             exporter.event(&e);
             engine.event(&e, now)
@@ -168,11 +185,20 @@ fn handle(engine: &mut Engine<CacheStore>, exporter: &mut Exporter, msg: In) -> 
 }
 
 /// Шаги движка: письмо «На этом компьютере» целиком — здесь же (без сети), прочие команды и события — экрану.
-fn pump(engine: &mut Engine<CacheStore>, exporter: &mut Exporter, moved: bool, out: &impl Fn(Out)) {
+fn pump(engine: &mut Engine<CacheStore>, exporter: &mut Exporter, sweeper: &mut Sweeper, moved: bool, out: &impl Fn(Out)) {
+    let mut moved = moved;
     let mut events = Vec::new();
     let mut commands = Vec::new();
     // Ответы, которые даёт сама база, — сразу движку; кругов не больше, чем писем в пачке.
     for _ in 0..64 {
+        let swept = match sweeper.poll(engine, Instant::now()) {
+            Ok(o) => o,
+            Err(e) => {
+                tracing::warn!("sweep poll: {e}");
+                postman_core::migrate::Output::default()
+            }
+        };
+        moved |= sweeper.take_moved();
         let mut o = match engine.poll(Instant::now()) {
             Ok(o) => o,
             Err(e) => {
@@ -180,6 +206,8 @@ fn pump(engine: &mut Engine<CacheStore>, exporter: &mut Exporter, moved: bool, o
                 break;
             }
         };
+        o.events.extend(swept.events);
+        o.commands.extend(swept.commands);
         let x = exporter.poll(engine.store().cache(), Instant::now());
         o.events.extend(x.events);
         o.commands.extend(x.commands);
@@ -193,6 +221,10 @@ fn pump(engine: &mut Engine<CacheStore>, exporter: &mut Exporter, moved: bool, o
                     if let Err(e) = engine.event(&e, Instant::now()) {
                         tracing::warn!("migration: {e}");
                     }
+                    local = true;
+                }
+                (Route::Core, Command::Export { scope, format, dir }) => {
+                    exporter.start(scope, format, dir);
                     local = true;
                 }
                 (Route::Core, _) => tracing::warn!("core thread: unexpected engine command"),
@@ -263,6 +295,8 @@ pub(crate) fn job_view(cache: &Cache, id: JobId) -> Option<JobView> {
     let to = letters.first().and_then(|(_, o)| key(o.to))?;
     let mut from: Vec<String> = Vec::new();
     let mut left_bytes = 0u64;
+    // Письма выборки на сервере, которые ещё не пришли.
+    let expected = Sweeper::expected(cache, id);
     for (id, o) in &letters {
         for f in &o.from {
             if let Some(k) = key(*f).filter(|k| !from.contains(k)) {
@@ -276,7 +310,7 @@ pub(crate) fn job_view(cache: &Cache, id: JobId) -> Option<JobView> {
         state: state_of(row.state),
         mode: mode_of(row.mode),
         done: row.total.saturating_sub(letters.len() as u64),
-        total: row.total,
+        total: row.total + expected,
         bytes: row.bytes,
         total_bytes: row.bytes + left_bytes,
         to,
@@ -317,6 +351,8 @@ pub(crate) struct Migrations {
     pub(crate) stopping: Option<JobId>,
     /// Обновление хранилища (формат 5 → 6): проценты — строкой вместо списка.
     pub(crate) upgrade: Option<u64>,
+    /// Действия над выборками на сервере, идущие сейчас (`sweep`).
+    pub(crate) sweeps: BTreeMap<SweepId, Progress>,
 }
 
 /// Что показать полосой над списком.
@@ -328,6 +364,8 @@ pub(crate) enum Bar {
     Paused(JobId),
     NoSpace(JobId),
     Stop(JobId),
+    /// Действие над выборкой на сервере: ход и «Остановить».
+    Sweep(SweepId),
 }
 
 impl Migrations {
@@ -345,6 +383,11 @@ impl Migrations {
         {
             return Some(if j.state == MigrationState::Paused { Bar::Paused(j.id) } else { Bar::Running(j.id) });
         }
+        if self.open
+            && let Some(p) = self.sweep()
+        {
+            return Some(Bar::Sweep(p.sweep));
+        }
         let asking: Vec<JobId> =
             self.jobs.values().filter(|j| j.state == MigrationState::Asking && Some(j.to.as_str()) == open).map(|j| j.id).collect();
         (!asking.is_empty()).then_some(Bar::Ask(asking))
@@ -354,6 +397,11 @@ impl Migrations {
     pub(crate) fn active(&self) -> Option<&JobView> {
         let shown = |s: MigrationState| matches!(s, MigrationState::Running | MigrationState::Paused | MigrationState::QuotaFull);
         self.jobs.values().find(|j| j.state == MigrationState::Running).or_else(|| self.jobs.values().find(|j| shown(j.state)))
+    }
+
+    /// Выборка в строке состояния: перенос показывает своё задание, пока идёт снимок задания ещё нет.
+    pub(crate) fn sweep(&self) -> Option<&Progress> {
+        self.sweeps.values().find(|p| p.state == sweep::State::Listing || !matches!(p.action, Action::Transfer { .. }))
     }
 
     /// Ход задания: новое состояние и числа; задание кончилось — убрать и вернуть, чем кончилось (для тоста).
@@ -403,6 +451,15 @@ pub(crate) fn count_text(n: u64) -> String {
 fn eta_text(d: Duration) -> String {
     let min = d.as_secs().div_ceil(60).max(1);
     if min < 60 { tr!("migration-eta-min", n = min as i64) } else { tr!("migration-eta-hours", h = (min / 60) as i64, m = (min % 60) as i64) }
+}
+
+/// Ход выборки: сначала снимок на сервере, затем действие.
+fn sweep_text(p: &Progress) -> String {
+    let (done, total) = (count_text(p.done), count_text(p.total));
+    match p.state {
+        sweep::State::Listing => tr!("sweep-listing", done = done, total = total),
+        _ => tr!("sweep-working", done = done, total = total),
+    }
 }
 
 /// Цель переноса — путём сервера Exchange: метки Postman там не сохранятся (вопрос №9 S8).
@@ -498,6 +555,10 @@ impl Mailer {
                             }
                         }
                         Event::Export { job, done, total, state, .. } => self.on_export(job, done, total, state, cx),
+                        Event::Sweep(p) => {
+                            refresh = true;
+                            self.on_sweep(p, cx);
+                        }
                         Event::SourceKept { letters, .. } => {
                             self.toast(pets_ui::Level::Warning, tr!("migration-source-kept", n = letters as i64), cx);
                         }
@@ -513,6 +574,38 @@ impl Mailer {
                 }
                 cx.notify();
             }
+        }
+    }
+
+    /// Ход и конец действия над выборкой: итог — тостом, «Отменить» нет: письма могло быть сколько угодно.
+    fn on_sweep(&mut self, p: Progress, cx: &mut Context<Self>) {
+        use pets_ui::Level;
+        let (done, total) = (count_text(p.done), count_text(p.total));
+        match &p.state {
+            sweep::State::Listing | sweep::State::Working => {
+                self.migration.sweeps.insert(p.sweep, p);
+                return;
+            }
+            sweep::State::Done => match &p.action {
+                Action::Patch { act, .. } => {
+                    let text = self.done_text(act, p.done as usize, true, cx);
+                    self.toast(Level::Success, text, cx);
+                }
+                Action::Purge => self.toast(Level::Success, tr!("bulk-done-purge", n = p.done as i64), cx),
+                Action::Mark { .. } => self.toast(Level::Success, tr!("bulk-done-mark", n = p.done as i64), cx),
+                Action::Export { format, dir } => self.export.pending.push((*format, dir.clone())),
+                Action::Transfer { .. } => {}
+            },
+            sweep::State::Stopped if p.job.is_some() => {}
+            sweep::State::Stopped => self.toast(Level::Info, tr!("sweep-stopped", done = done, total = total), cx),
+            sweep::State::Failed(error) => {
+                tracing::warn!(sweep = p.sweep.0, "sweep failed: {error}");
+                self.toast(Level::Error, tr!("sweep-failed"), cx);
+            }
+        }
+        self.migration.sweeps.remove(&p.sweep);
+        if self.migration.active().is_none() && self.migration.sweep().is_none() {
+            self.migration.open = false;
         }
     }
 
@@ -719,6 +812,15 @@ impl Mailer {
                     .child(link("migration-keep-local-short", tr!("migration-keep-local-short"), l, cx, move |m, cx| m.keep_local(id, cx)))
                     .into_any_element()
             }
+            Bar::Sweep(id) => {
+                let p = self.migration.sweeps.get(&id)?;
+                strip("sweep-bar", glyph::INFO, l)
+                    .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child(sweep_text(p)))
+                    .child(meter(p.done, p.total, 120., false, l))
+                    .child(div().flex_1())
+                    .child(link("sweep-stop", tr!("migration-stop"), l, cx, move |m, cx| m.core_send(Command::StopSweep { sweep: id }, cx)))
+                    .into_any_element()
+            }
             Bar::Stop(id) => {
                 let j = job(&id)?;
                 strip("migration-stop-bar", glyph::INFO, l)
@@ -738,6 +840,30 @@ impl Mailer {
 
     /// Ход в строке состояния (как квота): «Перенос: 3 120 из 12 480 · 1,2 ГБ»; щелчок — полоса задания.
     pub(crate) fn migration_status(&self, l: &Look, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
+        if self.migration.active().is_none() {
+            let p = self.migration.sweep()?;
+            return Some(
+                div()
+                    .id("sweep-status")
+                    .children(crate::screens::spot("sweep-status"))
+                    .h(px(22.))
+                    .px(px(6.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .rounded(l.px(Metric::RadiusControl))
+                    .cursor_pointer()
+                    .hover(|d| d.bg(l.hover()))
+                    .when(self.migration.open, |d| d.bg(l.pressed()))
+                    .child(icon(glyph::INFO, 12.))
+                    .child(sweep_text(p))
+                    .child(meter(p.done, p.total, 64., false, l))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.migration.open = !this.migration.open;
+                        cx.notify();
+                    })),
+            );
+        }
         let j = self.migration.active()?;
         let (glyph_, text, full) = match j.state {
             MigrationState::Paused => (PAUSE, tr!("migration-status-paused", done = count_text(j.done), total = count_text(j.total)), false),

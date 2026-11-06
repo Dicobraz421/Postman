@@ -836,6 +836,17 @@ impl Client {
         Ok(parse::page(&self.call("FindItem", &req::find_message_id(folder, message_id)).await?)?.0)
     }
 
+    /// Страница поиска по строке AQS с `offset`: id по порядку и есть ли ещё. Выборка на сервере: без предела поиска.
+    pub async fn search_page(&mut self, folder: &FolderRef, query: &str, offset: u32, max: u32) -> Result<(Vec<ItemId>, bool)> {
+        let body = format!(
+            r#"<m:FindItem Traversal="Shallow"><m:ItemShape><t:BaseShape>IdOnly</t:BaseShape></m:ItemShape><m:IndexedPageItemView MaxEntriesReturned="{}" Offset="{offset}" BasePoint="Beginning"/><m:ParentFolderIds>{}</m:ParentFolderIds><m:QueryString>{}</m:QueryString></m:FindItem>"#,
+            max.max(1),
+            folder.xml(),
+            esc(query)
+        );
+        parse::page(&self.call("FindItem", &body).await?)
+    }
+
     /// Поиск писем в папке по строке AQS (`QueryString`, Exchange 2013+): id, не больше `max`.
     pub async fn search_mail(&mut self, folder: &FolderRef, query: &str, max: u32) -> Result<Vec<ItemId>> {
         let body = format!(

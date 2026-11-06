@@ -54,6 +54,8 @@ pub(crate) struct Picker {
     pub(crate) row: EmailRow,
     /// Остальные письма выделения (S5-08): срок ставится всем.
     pub(crate) rest: Vec<EmailRow>,
+    /// «Выбрано всё»: срок ставится всей выборке на сервере.
+    pub(crate) whole: Option<postman_core::model::Selector>,
     /// «Выбрать дату…»: поле ввода и ошибка разбора.
     pub(crate) input: Option<Entity<InputState>>,
     pub(crate) error: Option<Bad>,
@@ -62,7 +64,7 @@ pub(crate) struct Picker {
 
 impl Picker {
     pub(crate) fn new(kind: Kind, row: EmailRow) -> Picker {
-        Picker { kind, row, rest: Vec::new(), input: None, error: None, _enter: None }
+        Picker { kind, row, rest: Vec::new(), whole: None, input: None, error: None, _enter: None }
     }
 }
 
@@ -304,7 +306,7 @@ impl Mailer {
         // Выделено несколько писем — срок всем (S5-08).
         if self.picking(cx) {
             let ids = self.targets(cx);
-            return self.open_picker_for(kind, ids, cx);
+            return self.ask(ids, crate::bulk::Ask::Lifecycle(kind), cx);
         }
         let Some(row) = self.lifecycle_target(cx) else {
             self.toasts.update(cx, |t, cx| t.push(Toast::Info, tr!("actions-select-letter"), cx));
@@ -341,19 +343,18 @@ impl Mailer {
     fn choose(&mut self, when: Option<When>, cx: &mut Context<Self>) {
         let Some(p) = self.lifecycle.picker.take() else { return };
         self.refocus |= p.input.is_some();
-        let roles = self.roles(cx);
-        let patches: Vec<Patch> = std::iter::once(&p.row)
-            .chain(&p.rest)
-            .map(|row| match (p.kind, when) {
-                (Kind::Remind, Some(w)) => lifecycle::snooze(row, w, &roles),
-                (Kind::Expire, None) => lifecycle::keep(row),
-                (kind, w) => lifecycle::set(row, kind, w),
-            })
-            .collect();
         if let (Kind::Remind, Some(w)) = (p.kind, when) {
             let text = tr!("lifecycle-snoozed", when = when_hint(&w));
             self.toasts.update(cx, |t, cx| t.push(Toast::Success, text, cx));
         }
+        if let Some(selector) = p.whole {
+            let when = when.map(postman_core::sweep::when_text);
+            let action = postman_core::sweep::Action::Mark { kind: p.kind, when, archive_name: tr!("lifecycle-archive-folder") };
+            self.start_sweep(selector, action, p.kind == Kind::Remind, cx);
+            return cx.notify();
+        }
+        let roles = self.roles(cx);
+        let patches: Vec<Patch> = std::iter::once(&p.row).chain(&p.rest).map(|row| lifecycle::mark(row, p.kind, when, &roles)).collect();
         self.apply_patches(patches, cx);
         cx.notify();
     }

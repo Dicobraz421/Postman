@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use postman_backend_imap::{self as imap, ImapAccount};
 use postman_cache::{Cache, FolderRow, LetterRow, Owner};
 use postman_core::migrate::Engine;
-use postman_core::model::{Auth, Features, FolderId, JobId, LetterId, MigrationMode, MigrationRequest, MigrationState};
+use postman_core::model::{Auth, Features, FolderId, JobId, LetterId, MigrationMode, MigrationRequest, MigrationState, Selector, SweepId};
 use postman_core::store::CacheStore;
 use postman_core::sync::{Account, Command, Event, Route, Status, Target, UnboundedSender};
 
@@ -69,6 +69,8 @@ impl Live {
                             | Event::ImportFailed { .. }
                             | Event::Destroyed { .. }
                             | Event::DestroyFailed { .. }
+                            | Event::LettersListed { .. }
+                            | Event::LettersStored { .. }
                     )
                 })
             })
@@ -174,6 +176,9 @@ fn twenty_letters_jmap_to_imap_and_back() {
     .unwrap();
     engine.features(None, Features::NONE.with_import(true));
     engine.features(Some("@2"), Features::NONE.with_import(true));
+    engine.online(None);
+    engine.online(Some("@2"));
+    engine.online(Some("@9"));
     let letters = seed(&cache, stamp);
     migrate(&mut engine, &letters, inbox(&cache, ""), &jmap, &imap);
     migrate(&mut engine, &letters, inbox(&cache, "@2"), &jmap, &imap);
@@ -182,6 +187,18 @@ fn twenty_letters_jmap_to_imap_and_back() {
         assert!(refs.len() == 1 && refs[0].account == "@2" && !refs[0].detached, "в IMAP: {refs:?}");
         assert!(cache.letter(postman_cache::LetterId(l.0)).unwrap().unwrap().folders == [inbox(&cache, "@2")]);
     }
+    // Выборка на сервере: ключи — `UID SEARCH`, новые сверху; строки — заголовки, письма нет — `gone`.
+    let mailbox = cache.mailboxes().unwrap().into_iter().find(|m| m.role.as_deref() == Some("inbox") && m.id.starts_with("@2")).unwrap().id;
+    let selector = Selector { mailbox: mailbox.clone(), filter: None, except: Vec::new() };
+    let listed = imap.answers(Command::ListLetters { sweep: SweepId(1), selector, position: 0, limit: 7 });
+    let [Event::LettersListed { ids, total, end, .. }] = &listed[..] else { panic!("страница ключей: {} событий", listed.len()) };
+    assert!(ids.len() == 7 && *total >= u64::from(LETTERS) && !*end, "{} из {total}", ids.len());
+    let alive = postman_core::store::key_of(&cache, letters[0]).unwrap().unwrap();
+    let mut asked = vec![alive.clone()];
+    let missing = alive.rsplit_once('.').map(|(k, _)| format!("{k}.4000000000")).unwrap();
+    asked.push(missing.clone());
+    let stored = imap.answers(Command::StoreLetters { sweep: SweepId(1), mailbox, ids: asked });
+    assert!(matches!(&stored[..], [Event::LettersStored { gone, .. }] if *gone == [missing]), "письма нет на сервере");
     migrate(&mut engine, &letters, inbox(&cache, ""), &jmap, &imap);
     let keys: Vec<String> = letters.iter().map(|l| postman_core::store::key_of(&cache, *l).unwrap().expect("связь с JMAP")).collect();
     assert!(keys.iter().all(|k| postman_cache::account_of(k).is_none()), "обратно — в JMAP основной учётки");

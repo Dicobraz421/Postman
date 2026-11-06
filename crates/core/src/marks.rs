@@ -37,7 +37,7 @@ pub const WAIT_DAYS: [u8; 5] = [1, 2, 3, 5, 7];
 pub const WAIT_DEFAULT: u8 = 3;
 
 /// Срок жизненного цикла письма.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum Kind {
     /// Срок: «До чт», «Просрочено 1 д».
     Due,

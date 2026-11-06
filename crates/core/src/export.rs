@@ -60,7 +60,7 @@ pub enum Scope {
 }
 
 /// Формат файлов (S8-D, `export.ftl`: `export-eml`, `export-mbox`, `export-maildir`, `export-msg`, `export-pst`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Format {
     /// Файл на письмо, каталог на папку.
     Eml,

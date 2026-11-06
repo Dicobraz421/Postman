@@ -50,6 +50,8 @@ pub(crate) struct Find {
     ticket: Option<u64>,
     /// «Везде» (иначе — текущая папка).
     all: bool,
+    /// Те же условия на сервере: Ctrl+A в найденном — выборка на сервере.
+    filter: Option<postman_core::model::Filter>,
 }
 
 impl Find {
@@ -70,6 +72,8 @@ pub(crate) struct Found {
     pub(crate) folder: String,
     /// Сервер ещё ищет.
     pub(crate) waiting: bool,
+    /// Условие поиска на сервере; `None` — невыразимо.
+    pub(crate) filter: Option<postman_core::model::Filter>,
 }
 
 /// Щелчок по чипу «Уточнить» (список → экран почты: строка поиска — у него).
@@ -202,6 +206,7 @@ impl Mailer {
         if self.backend.is_live()
             && let Some(filter) = query.server_filter(&env)
         {
+            find.filter = Some(filter.clone());
             let ticket = self.live.ticket();
             if self.backend.send(postman_core::sync::Command::Query { filter, mailbox: mailbox.clone(), ticket }) {
                 find.ticket = Some(ticket);
@@ -257,8 +262,15 @@ impl Mailer {
             me: list.me.addresses().to_vec(),
         };
         let folder = list.mailbox.as_ref().and_then(|mb| list.names.get(mb)).cloned().unwrap_or_default();
-        let found =
-            Found { text: self.find.text.clone(), marks: Arc::new(self.find.query.marks()), chips: Vec::new(), all: self.find.all, folder, waiting };
+        let found = Found {
+            text: self.find.text.clone(),
+            marks: Arc::new(self.find.query.marks()),
+            chips: Vec::new(),
+            all: self.find.all,
+            folder,
+            waiting,
+            filter: self.find.filter.clone(),
+        };
         let task = cx.background_spawn(async move { job.run() });
         cx.spawn(async move |this, cx| {
             let out = task.await;

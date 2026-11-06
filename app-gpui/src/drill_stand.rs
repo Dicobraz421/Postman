@@ -394,14 +394,24 @@ const SCENES: &[Scene] = &[
     scene("st-s611-delete", |_, m, cx| task(m, cx, ORDER).is_some(), DELEG_DELETE),
     // T1-10, шаг 1, T1-10в, шаги 1, 4: картинки `cid:` письма разобраны; ширина — по снимку.
     scene("st-t110-images", |_, m, cx| picked(m, cx, IMAGES).is_some() && screens::reading(m, cx).is_some_and(|r| r.images.len() >= 3), IMAGES_OPEN),
+    // Папки цели в кэше: следующий запуск видит их и без входа.
+    more("st-s816-target-ready", |_, m, cx| target_inbox(m, cx).is_some(), TARGET_READY),
+    // Решение 4: цель не вошла на сервер: перенос не начат, предупреждение видно, письмо на месте.
+    scene("st-s816-no-login", |_, m, cx| not_signed_in_shown(m, cx), NO_LOGIN),
+    // Решение 4: вход — и перенос запускается обычным путём.
+    scene("st-s816-after-login", |_, m, _| no_jobs_left(m), AFTER_LOGIN),
+    // Полоса выделения: «выбрано всё» — число с сервера, а не загруженное.
+    scene("st-s815-count", |_, m, cx| whole_counted(m, cx), SELECT_ALL),
+    // Массовое действие над всей выборкой: флаг у писем за загруженной страницей (сверка — запросом к серверу).
+    more("st-s815-flag", |_, m, cx| m.migration.sweeps.is_empty() && m.list.read(cx).selection.is_empty(), FLAG_ALL),
     // S8-16, шаг 1, и S8-15, шаг 5: перенос в «На этом компьютере» без вопроса.
     scene("st-s816-local", |_, m, cx| m.list.read(cx).selection.is_empty() && m.toasts.read(cx).latest().is_some(), TO_LOCAL),
     // S8-15, шаг 5: письмо открывается: тело — из базы.
     more("st-s815-letter", |_, m, cx| screens::reading(m, cx).is_some_and(|r| r.doc.is_some()), LOCAL_LETTER),
     // S8-15, шаг 4: «В папку ▾»: другие учётки и «На этом компьютере».
     scene("st-s815-menu", menu_has_groups, MOVE_MENU),
-    // S8-15, шаг 3: Ctrl+A, перетащить на папку другой учётной записи: источник пуст.
-    scene("st-s815-drag", |_, m, cx| m.list.read(cx).count == 0, DRAG_ALL),
+    // S8-15, шаг 3: Ctrl+A, перетащить на папку другой учётной записи: выбрано всё на сервере, письма уходят.
+    scene("st-s815-drag", |_, m, cx| dragged(m, cx), DRAG_ALL),
     // S8-15, шаг 3: список цели — письма со значком «ждёт переноса»; S8-16, шаг 2: полоса вопроса.
     more("st-s815-target", |_, m, cx| ask_shown(m, cx) && m.list.read(cx).has_marks(), OPEN_TARGET),
     // S8-16, шаг 2: другая папка — полосы нет, вернуться — есть.
@@ -1943,10 +1953,32 @@ fn job_state(m: &Mailer) -> Option<MigrationState> {
 }
 
 fn no_jobs_left(m: &Mailer) -> bool {
-    m.migration
-        .jobs
-        .values()
-        .all(|j| !matches!(j.state, MigrationState::Running | MigrationState::Paused | MigrationState::QuotaFull | MigrationState::Asking))
+    m.migration.sweeps.is_empty()
+        && m.migration
+            .jobs
+            .values()
+            .all(|j| !matches!(j.state, MigrationState::Running | MigrationState::Paused | MigrationState::QuotaFull | MigrationState::Asking))
+}
+
+/// Письма ушли из списка источника: выделение снято, перенос пошёл. Выборка на сервере ещё может догружать папку:
+/// пустой список — не условие.
+fn dragged(m: &Mailer, cx: &App) -> bool {
+    let list = m.list.read(cx);
+    list.selection.is_empty() && (list.count == 0 || !m.migration.jobs.is_empty())
+}
+
+/// Выбрано всё: число в полосе — с сервера, больше загруженной страницы.
+fn whole_counted(m: &Mailer, cx: &App) -> bool {
+    let list = m.list.read(cx);
+    list.selection.whole().is_some_and(|w| w.total.is_some()) && list.selection.len() > list.count
+}
+
+/// Предупреждение «не вошла на сервер», заданий нет, письмо на месте.
+fn not_signed_in_shown(m: &Mailer, cx: &App) -> bool {
+    let Some(target) = target_inbox(m, cx) else { return false };
+    let server = m.account_name(crate::local::home(&target), cx);
+    let list = m.list.read(cx);
+    crate::drill_mail::toast_starts(m, cx, &tr!("migration-not-signed-in", server = server)) && m.migration.jobs.is_empty() && list.count > 0
 }
 
 fn inbox_open(m: &Mailer, cx: &App) -> bool {
@@ -2002,9 +2034,9 @@ const DRAG_ALL: &[Input] = &[
     until!(|m, cx| inbox_open(m, cx) && place_of_folder(target_inbox(m, cx)).is_some()),
     Input::Click(first_row, Held::No),
     Input::Keys(&["ctrl-a"]),
-    until!(|m, cx| m.list.read(cx).selection.len() > 1),
+    until!(|m, cx| m.list.read(cx).selection.len() > 1 && !counting(m, cx)),
     Input::Drag(first_row, |m, _, cx| place_of_folder(target_inbox(m, cx))),
-    until!(|m, cx| m.list.read(cx).count == 0),
+    until!(|m, cx| dragged(m, cx)),
 ];
 
 const OPEN_TARGET: &[Input] = &[
@@ -2014,7 +2046,50 @@ const OPEN_TARGET: &[Input] = &[
         Ok(())
     }),
     until!(|m, cx| rows_loaded(m.list.read(cx)) && m.list.read(cx).has_marks()),
+    // Снимок выборки сервера: письмо, пришедшее после него, в перенос не попадёт.
+    until!(|m, _| m.migration.sweep().is_none()),
 ];
+
+const TARGET_READY: &[Input] = &[until!(|m, cx| target_inbox(m, cx).is_some())];
+
+const NO_LOGIN: &[Input] = &[
+    Input::Until(mail_ready),
+    until!(|m, cx| inbox_open(m, cx) && place_of_folder(target_inbox(m, cx)).is_some()),
+    Input::Drag(first_row, |m, _, cx| place_of_folder(target_inbox(m, cx))),
+];
+
+const AFTER_LOGIN: &[Input] = &[
+    Input::Until(mail_ready),
+    until!(|m, cx| inbox_open(m, cx) && place_of_folder(target_inbox(m, cx)).is_some()),
+    Input::Drag(first_row, |m, _, cx| place_of_folder(target_inbox(m, cx))),
+    until!(|m, _| !m.migration.jobs.is_empty()),
+    Input::Run(|_, m, _, cx| {
+        let id = target_inbox(m, cx).ok_or("no target inbox")?;
+        m.open_mailbox(id, cx);
+        Ok(())
+    }),
+    until!(|m, cx| ask_shown(m, cx)),
+    Input::Press("migration-to-server"),
+    until!(|m, _| no_jobs_left(m)),
+];
+
+const SELECT_ALL: &[Input] = &[
+    Input::Until(mail_ready),
+    until!(|m, cx| inbox_open(m, cx)),
+    Input::Click(first_row, Held::No),
+    Input::Keys(&["ctrl-a"]),
+    until!(|m, cx| whole_counted(m, cx)),
+];
+
+const FLAG_ALL: &[Input] = &[
+    Input::Press("bulk-flag"),
+    until!(|m, cx| m.list.read(cx).selection.is_empty()),
+    until!(|m, _| m.migration.sweeps.is_empty()),
+];
+
+fn counting(m: &Mailer, cx: &App) -> bool {
+    m.list.read(cx).selection.whole().is_some_and(|w| w.total.is_none())
+}
 
 fn ask_shown(m: &Mailer, cx: &App) -> bool {
     let open = m.list.read(cx).mailbox.clone();
@@ -2072,9 +2147,9 @@ const DRAG_AND_START: &[Input] = &[
     until!(|m, cx| inbox_open(m, cx) && place_of_folder(target_inbox(m, cx)).is_some()),
     Input::Click(first_row, Held::No),
     Input::Keys(&["ctrl-a"]),
-    until!(|m, cx| m.list.read(cx).selection.len() > 1),
+    until!(|m, cx| m.list.read(cx).selection.len() > 1 && !counting(m, cx)),
     Input::Drag(first_row, |m, _, cx| place_of_folder(target_inbox(m, cx))),
-    until!(|m, cx| m.list.read(cx).count == 0),
+    until!(|m, cx| dragged(m, cx)),
     Input::Run(|_, m, _, cx| {
         let id = target_inbox(m, cx).ok_or("no target inbox")?;
         m.open_mailbox(id, cx);
@@ -2096,9 +2171,9 @@ const DRAG_AND_GO: &[Input] = &[
     until!(|m, cx| inbox_open(m, cx) && place_of_folder(target_inbox(m, cx)).is_some()),
     Input::Click(first_row, Held::No),
     Input::Keys(&["ctrl-a"]),
-    until!(|m, cx| m.list.read(cx).selection.len() > 1),
+    until!(|m, cx| m.list.read(cx).selection.len() > 1 && !counting(m, cx)),
     Input::Drag(first_row, |m, _, cx| place_of_folder(target_inbox(m, cx))),
-    until!(|m, cx| m.list.read(cx).count == 0),
+    until!(|m, cx| dragged(m, cx)),
     Input::Run(|_, m, _, cx| {
         let id = target_inbox(m, cx).ok_or("no target inbox")?;
         m.open_mailbox(id, cx);

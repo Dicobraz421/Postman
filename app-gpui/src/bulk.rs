@@ -17,6 +17,9 @@ use pets_ui::{Level as Toast, ToastAction};
 use postman_cache::EmailRow;
 use postman_core::bulk::{self, Act, Need, Plan, Summary};
 use postman_core::marks::Kind;
+use postman_core::model::{Filter, Selector};
+use postman_core::sweep::Action;
+use postman_core::sync::Command;
 
 use crate::Mailer;
 use crate::chrome::{glyph, icon};
@@ -99,9 +102,42 @@ fn selected_of(rows: &[EmailRow], book: &postman_core::labels::Book) -> Selected
     Selected { summary: bulk::summary(rows), first }
 }
 
+/// Что выделяет Ctrl+A: загруженное или всё на сервере.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Want {
+    /// Всё уже в кэше или сервера нет.
+    Loaded,
+    /// Выбрать можно только загруженное: условие на сервере невыразимо или «Везде», полоса говорит об этом.
+    Partial,
+    /// Выборка на сервере.
+    Whole { mailbox: String, filter: Option<Filter> },
+}
+
 // --- выделение в списке ---
 
 impl MailList {
+    /// Что значит Ctrl+A сейчас (без чтения кэша). Папка загружена целиком — решает [`settled`] в фоне.
+    fn want(&self) -> Want {
+        if self.more.total.is_none() {
+            return Want::Loaded;
+        }
+        if self.query.scope == crate::filters::Where::All || self.found.as_ref().is_some_and(|f| f.all) {
+            return Want::Partial;
+        }
+        let Some(mailbox) = self.mailbox.clone() else { return Want::Loaded };
+        if let Some(f) = &self.found {
+            return f.filter.clone().map_or(Want::Partial, |filter| Want::Whole { mailbox, filter: Some(filter) });
+        }
+        let criteria = &self.query.criteria;
+        if criteria.is_empty() {
+            return Want::Whole { mailbox, filter: None };
+        }
+        match criteria.server_filter(&self.me).filter(|_| criteria.server_exact(&self.me)) {
+            Some(filter) => Want::Whole { mailbox, filter: Some(filter) },
+            None => Want::Partial,
+        }
+    }
+
     /// Ctrl+щелчок (`seed` — открытое письмо тоже в выделение, как в Outlook) или флажок: письмо — в выделение или
     /// из него; строка беседы (вид «как Outlook», S5-05б) — все письма беседы.
     pub(crate) fn pick(&mut self, i: usize, seed: bool, cx: &mut Context<Self>) {
@@ -181,27 +217,47 @@ impl MailList {
         self.extend_to(to, cx);
     }
 
-    /// Ctrl+A: все письма списка (id — в фоне: в большом ящике их десятки тысяч).
+    /// Ctrl+A: все письма списка (id — в фоне: в большом ящике их десятки тысяч). Папка на сервере больше загруженного
+    /// — «выбрано всё» состоянием, письма определит сервер при действии (`select.rs`).
     pub(crate) fn select_all(&mut self, cx: &mut Context<Self>) {
-        // Беседы (S5-05б): и письма свёрнутых бесед; их id уже в памяти.
-        if let Some(o) = self.threads() {
-            let ids: Vec<String> = o.all_ids().cloned().collect();
-            self.selection.select_all(ids);
-            return self.picked_changed(cx);
-        }
         let (source, cache, count) = (self.page_source(), self.cache.clone(), self.count);
-        if count == 0 {
+        let (want, total) = (self.want(), self.more.total);
+        // Беседы (S5-05б): и письма свёрнутых бесед; их id уже в памяти.
+        let threads: Option<Vec<String>> = self.threads().map(|o| o.all_ids().cloned().collect());
+        if count == 0 && threads.is_none() && want == Want::Loaded {
             return;
         }
-        let task = cx.background_spawn(async move { ids_of(&source, &cache, 0, count) });
+        let task = cx.background_spawn(async move {
+            let want = settled(want, total, &cache);
+            (threads.unwrap_or_else(|| ids_of(&source, &cache, 0, count)), want)
+        });
         cx.spawn(async move |this, cx| {
-            let ids = task.await;
+            let (ids, want) = task.await;
             let _ = this.update(cx, |l, cx| {
                 l.selection.select_all(ids);
+                match want {
+                    Want::Loaded => {}
+                    Want::Partial => l.selection.set_partial(),
+                    Want::Whole { mailbox, filter: None } => l.selection.set_whole(mailbox, None, total.map(|t| t as u64)),
+                    Want::Whole { mailbox, filter: Some(filter) } => {
+                        l.selection.set_whole(mailbox.clone(), Some(filter.clone()), None);
+                        cx.emit(crate::list::CountWhole { mailbox, filter });
+                    }
+                }
                 l.picked_changed(cx);
             });
         })
         .detach();
+    }
+
+    /// Ответ сервера: сколько писем по условию «выбрано всё». Сервер условие не выразил (0 при непустом списке) —
+    /// выбрано только загруженное, полоса говорит об этом.
+    pub(crate) fn whole_counted(&mut self, n: Option<u64>, cx: &mut Context<Self>) {
+        match n {
+            Some(n) if n > 0 || self.selection.ids().is_empty() => self.selection.set_total(n),
+            _ => self.selection.fall_back(),
+        }
+        self.picked_changed(cx);
     }
 
     /// Снять выделение; `true` — было что снимать (Esc идёт дальше, если нет).
@@ -311,9 +367,12 @@ impl MailList {
     /// Панель массовых действий (макет «Выделение»): «Выделить все», «Выбрано: N из M», «×»; ниже — кнопки.
     pub(crate) fn bulk_header(&self, l: &Look, cx: &mut Context<Self>) -> Div {
         let n = self.selection.len();
+        let whole = self.selection.whole();
+        let counting = whole.is_some_and(|w| w.total.is_none());
         // Выделение — письма, а строк в списке меньше: беседа идёт одной строкой (T1-15).
-        let total = self.threads().map_or(self.count, |o| o.total());
-        let all = n >= total && total > 0;
+        let loaded = self.threads().map_or(self.count, |o| o.total());
+        let total = whole.and_then(|w| w.total).map_or(loaded, |t| t as usize);
+        let all = whole.map_or(n >= total && total > 0, |w| w.except.is_empty());
         let s = self.summary.as_deref();
         let unread = s.is_none_or(|s| s.summary.unread > 0);
         let unflagged = s.is_none_or(|s| s.summary.flagged < s.summary.count);
@@ -352,8 +411,18 @@ impl MailList {
             .pl(px(4.))
             .pr(px(6.))
             .child(all_box)
-            .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child(tr!("bulk-selected", n = n)))
-            .child(div().flex_none().text_size(l.px(Metric::TypeCaption)).text_color(l.text2()).child(tr!("bulk-of", total = total)))
+            .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child(if counting {
+                tr!("bulk-selected-counting")
+            } else {
+                tr!("bulk-selected", n = n)
+            }))
+            .child(div().flex_none().text_size(l.px(Metric::TypeCaption)).text_color(l.text2()).child(if self.selection.partial() {
+                tr!("bulk-loaded-only")
+            } else if counting {
+                String::new()
+            } else {
+                tr!("bulk-of", total = total)
+            }))
             .child(div().flex_1())
             .child(
                 div()
@@ -430,7 +499,7 @@ impl MailList {
                     .child(button("bulk-due", glyph::CLOCK, tr!("bulk-due-plain"), false, true).on_click(ask(Ask::Lifecycle(Kind::Due))))
             })
             // Переслать вложениями (T1-17) — от двух писем; одно — меню строки.
-            .when(n >= 2, |d| {
+            .when(n >= 2 && self.selection.whole().is_none(), |d| {
                 d.child(button("bulk-forward", glyph::FORWARD, tr!("bulk-forward-attached"), false, false).on_click(ask(Ask::ForwardAttached)))
             })
             .child(button("bulk-move", glyph::MOVE, tr!("bulk-move-plain"), open == Some(Drop::Folder), true).on_click(drop(Drop::Folder)))
@@ -598,6 +667,15 @@ impl MailList {
     }
 }
 
+/// Папка уже вся в кэше — выборка на сервере не нужна.
+fn settled(want: Want, total: Option<usize>, cache: &postman_cache::Cache) -> Want {
+    match (&want, total) {
+        (Want::Whole { mailbox, .. }, Some(total)) if cache.count(mailbox).is_ok_and(|n| n >= total) => Want::Loaded,
+        (Want::Partial, Some(total)) if total == 0 => Want::Loaded,
+        _ => want,
+    }
+}
+
 /// id писем строк `start..start+len` источника списка (в фоне).
 fn ids_of(source: &PageSource, cache: &postman_cache::Cache, start: usize, len: usize) -> Vec<String> {
     match source {
@@ -689,8 +767,112 @@ impl Mailer {
         !self.list.read(cx).selection.is_empty()
     }
 
+    /// Выделено «всё на сервере», и действие — над выделением (а не над строкой меню).
+    pub(crate) fn whole_for(&self, ids: &[String], cx: &App) -> Option<Selector> {
+        let selection = &self.list.read(cx).selection;
+        (ids == selection.ids()).then(|| selection.selector()).flatten()
+    }
+
+    /// Выборка на сервере — действие ядра: отказ здесь же, тост — вместо выборки только загруженных писем.
+    fn ask_whole(&mut self, selector: Selector, a: Ask, cx: &mut Context<Self>) {
+        let list = self.list.read(cx);
+        let s = list.summary.as_ref().map(|s| s.summary.clone()).unwrap_or_default();
+        let cats: Vec<String> = list.category_items().into_iter().map(|c| c.0).collect();
+        let rights = list.rights.get(&selector.mailbox).copied();
+        let trash = self.folders.read(cx).mailboxes.iter().any(|m| m.id == selector.mailbox && m.role.as_deref() == Some("trash"));
+        let act = match a {
+            Ask::Clear => {
+                return self.list.update(cx, |l, cx| {
+                    l.clear_selection(cx);
+                });
+            }
+            Ask::Seen(on) => Act::Seen(on.unwrap_or(s.unread > 0)),
+            Ask::Flag(on) => Act::Flag(on.unwrap_or(s.flagged < s.count)),
+            // «Стоит у всех — снять» по загруженным строкам сказать нельзя: категория ставится.
+            Ask::Category(k) => Act::Keywords { add: vec![k], remove: Vec::new() },
+            Ask::Uncategorize => Act::Keywords { add: Vec::new(), remove: cats },
+            Ask::Move(to) => return self.move_whole(selector, to, cx),
+            Ask::Archive => Act::Archive,
+            Ask::Trash if trash => {
+                let n = list.selection.len();
+                return self.list.update(cx, |l, cx| {
+                    l.confirm_whole = Some((selector, n));
+                    cx.notify();
+                });
+            }
+            Ask::Trash => Act::Trash,
+            Ask::Phishing => {
+                // Письма выборки размечаются; пересылать их вложениями некуда: письмо вышло бы без предела.
+                if crate::prefs::get(cx).general.phishing_report.is_some_and(|a| !a.trim().is_empty()) {
+                    self.toast(Toast::Info, tr!("bulk-whole-no-report"), cx);
+                }
+                Act::Phishing
+            }
+            Ask::Lifecycle(kind) => {
+                if rights.is_some_and(|r| !r.keywords) {
+                    return self.toast(Toast::Info, tr!("lifecycle-read-only"), cx);
+                }
+                let ids = self.list.read(cx).selection.ids().to_vec();
+                if ids.is_empty() {
+                    return self.toast(Toast::Info, tr!("bulk-whole-unsupported"), cx);
+                }
+                return self.open_picker_for(kind, ids, Some(selector), cx);
+            }
+            Ask::ForwardAttached => return self.toast(Toast::Info, tr!("bulk-whole-unsupported"), cx),
+        };
+        let allowed = act.needs().iter().all(|n| {
+            rights.is_none_or(|r| match n {
+                Need::Seen => r.seen,
+                Need::Keywords => r.keywords,
+                Need::Remove => r.remove,
+            })
+        });
+        if !allowed {
+            return self.toast(Toast::Info, tr!("bulk-read-only"), cx);
+        }
+        let leaves = matches!(act, Act::Archive | Act::Trash | Act::Phishing);
+        let action = Action::Patch { act, archive_name: tr!("lifecycle-archive-folder") };
+        self.start_sweep(selector, action, leaves, cx);
+    }
+
+    /// Вся выборка — в папку `to`: между учётками — заданием переноса, внутри учётки — правкой папки.
+    pub(crate) fn move_whole(&mut self, selector: Selector, to: String, cx: &mut Context<Self>) {
+        let target = crate::local::home(&to);
+        if target != crate::local::LOCAL && target == crate::local::home(&selector.mailbox) {
+            let action = Action::Patch { act: Act::Move { to }, archive_name: tr!("lifecycle-archive-folder") };
+            return self.start_sweep(selector, action, true, cx);
+        }
+        if !self.target_ready(&to, cx) {
+            return;
+        }
+        let cache = self.cache.clone();
+        let task = cx.background_spawn(async move { crate::local::folder_id(&cache, &to) });
+        cx.spawn(async move |this, cx| {
+            let Some(to) = task.await else { return };
+            let _ = this.update(cx, |m, cx| {
+                let action = Action::Transfer { to: postman_core::model::FolderId(to.0) };
+                m.start_sweep(selector, action, true, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Выборка — ядру; выделение снято, письмо в области чтения закрыто, если выборка уводит письма из папки.
+    pub(crate) fn start_sweep(&mut self, selector: Selector, action: Action, leaves: bool, cx: &mut Context<Self>) {
+        if leaves {
+            self.reading.update(cx, |r, cx| r.clear(cx));
+        }
+        self.list.update(cx, |l, cx| {
+            l.clear_selection(cx);
+        });
+        self.core_send(Command::Sweep { selector, action }, cx);
+    }
+
     /// Кнопка панели, сводки или меню над письмами `ids`.
     pub(crate) fn ask(&mut self, ids: Vec<String>, a: Ask, cx: &mut Context<Self>) {
+        if let Some(selector) = self.whole_for(&ids, cx) {
+            return self.ask_whole(selector, a, cx);
+        }
         if ids.is_empty() && a != Ask::Clear {
             return self.toast(Toast::Info, tr!("actions-select-letter"), cx);
         }
@@ -700,7 +882,7 @@ impl Mailer {
                     l.clear_selection(cx);
                 });
             }
-            Ask::Lifecycle(kind) => self.open_picker_for(kind, ids, cx),
+            Ask::Lifecycle(kind) => self.open_picker_for(kind, ids, None, cx),
             Ask::Phishing => self.report_phishing(ids, cx),
             Ask::ForwardAttached => self.forward_attached(ids, cx),
             // Между учётками и в «На этом компьютере» — ядром (S8-15), внутри учётки — правкой папки.
@@ -790,7 +972,7 @@ impl Mailer {
     }
 
     /// Текст тоста «Сделано · N писем».
-    fn done_text(&self, act: &Act, n: usize, moved: bool, cx: &App) -> String {
+    pub(crate) fn done_text(&self, act: &Act, n: usize, moved: bool, cx: &App) -> String {
         let n64 = plural_n(n);
         match act {
             Act::Seen(true) => tr!("bulk-done-read", n = n64),
@@ -813,6 +995,17 @@ impl Mailer {
             // Папки «Нежелательные» нет — письма только помечены.
             Act::Phishing if moved => tr!("bulk-done-phishing", n = n64),
             Act::Phishing => tr!("bulk-done-phishing-marked", n = n64),
+        }
+    }
+
+    /// «Выбрано всё» с условием: число — у сервера. Команда не ушла — выбрано только загруженное.
+    fn count_whole(&mut self, c: &crate::list::CountWhole, cx: &mut Context<Self>) {
+        let ticket = self.live.ticket();
+        let filters = vec![c.filter.clone()];
+        if self.backend.send(Command::Counts { filters, mailbox: Some(c.mailbox.clone()), ticket }) {
+            self.live.whole_ticket = Some(ticket);
+        } else {
+            self.list.update(cx, |l, cx| l.whole_counted(None, cx));
         }
     }
 
@@ -895,6 +1088,8 @@ impl Mailer {
             cx.subscribe(list, |this, _, m: &OpenMenu, cx| this.open_menu_at_row(m.index, m.at, cx)),
             cx.subscribe(list, |this, _, _: &RetryNow, cx| this.retry_now(cx)),
             cx.subscribe(list, |this, _, p: &crate::list::PurgeMany, cx| this.purge_many(p.0.clone(), cx)),
+            cx.subscribe(list, |this, _, p: &crate::list::PurgeWhole, cx| this.start_sweep(p.0.clone(), Action::Purge, true, cx)),
+            cx.subscribe(list, |this, _, c: &crate::list::CountWhole, cx| this.count_whole(c, cx)),
         ]
     }
 }
@@ -952,12 +1147,17 @@ impl Mailer {
     }
 
     /// Панель выбора срока (S5-04) над письмами `ids` (строки — из кэша в фоне).
-    pub(crate) fn open_picker_for(&mut self, kind: Kind, ids: Vec<String>, cx: &mut Context<Self>) {
+    pub(crate) fn open_picker_for(&mut self, kind: Kind, ids: Vec<String>, whole: Option<Selector>, cx: &mut Context<Self>) {
         let cache = self.cache.clone();
         let task = cx.background_spawn(async move { cache.rows_by_ids(&ids).unwrap_or_default() });
         cx.spawn(async move |this, cx| {
             let rows = task.await;
-            let _ = this.update(cx, |m, cx| m.picker_on(kind, rows, cx));
+            let _ = this.update(cx, |m, cx| {
+                m.picker_on(kind, rows, cx);
+                if let Some(p) = &mut m.lifecycle.picker {
+                    p.whole = whole;
+                }
+            });
         })
         .detach();
     }
@@ -1037,7 +1237,8 @@ impl Render for SummaryView {
                 .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child(tr!("bulk-summary-title", n = plural_n(n))))
                 .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("bulk-summary-hint"))),
         );
-        let facts = (s.count > 0).then(|| {
+        // «Выбрано всё»: числа сводки — только по загруженным строкам, показывать их как итог нельзя.
+        let facts = (s.count > 0 && s.count == n).then(|| {
             let mut parts = vec![tr!("bulk-summary-from", who = senders_text(s)), size_text(s.size)];
             if s.unread > 0 {
                 parts.push(tr!("bulk-summary-unread", n = plural_n(s.unread)));

@@ -216,6 +216,8 @@ fn twenty_letters_to_another_account_and_back() {
     let mut engine = Engine::open(CacheStore::new(cache.clone(), Box::new(|_| Ok(Default::default())))).unwrap();
     engine.features(None, Features::NONE.with_import(true));
     engine.features(Some("@2"), Features::NONE.with_import(true));
+    engine.online(None);
+    engine.online(Some("@2"));
     migrate(&mut engine, &letters, inbox(&cache, "@2"), &first, &second);
     assert_eq!(counts(&rt, &word, (0, LETTERS as usize)), (0, LETTERS as usize), "перенесено");
     for l in &letters {

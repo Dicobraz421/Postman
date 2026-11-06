@@ -41,9 +41,9 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use postman_core::backend::Login;
 use postman_core::backend::{AreaCtx, AreaPlugin, Areas, BoxFuture, MailPlugin, Spawn};
-use postman_core::model::{Auth, Feature, Features, ImportError, JobId, Remote};
+use postman_core::model::{Auth, Feature, Features, ImportError, JobId, Remote, Selector};
 use postman_core::settings;
-use postman_core::sync::{Account, Command, ErrorKind, Event, Index, Sender, Stage, Status, SyncError};
+use postman_core::sync::{Account, Command, ErrorKind, Event, FOLDER_UNSUPPORTED, Index, Sender, Stage, Status, SyncError};
 
 /// Писем папки при первом входе — не больше (дальше — «Загрузить ещё»).
 pub const INITIAL: usize = 500;
@@ -1109,6 +1109,38 @@ impl Imap {
         Ok(rows.len())
     }
 
+    /// Страница ключей выборки, новые сверху, и сколько всего: `UID SEARCH` по условию, все письма папки — `ALL`.
+    /// Условие, которого IMAP не выразит, — отказ: выборка не подменяется всей папкой.
+    async fn list_letters(&mut self, s: &Selector, position: u64, limit: usize) -> postman_imap::Result<(Vec<String>, u64)> {
+        let f = self.folder_by_key(&s.mailbox).cloned().ok_or_else(|| postman_imap::Error::Protocol(format!("no folder {}", s.mailbox)))?;
+        let query = match &s.filter {
+            None => "ALL".to_owned(),
+            Some(filter) => imap_query(filter).ok_or_else(|| postman_imap::Error::Protocol(FOLDER_UNSUPPORTED.to_owned()))?.0,
+        };
+        let scope = self.scope.clone();
+        let session = self.session().await?;
+        let sel = session.select(&f.raw).await?;
+        let uids = session.search(&query).await?;
+        let skip = usize::try_from(position).unwrap_or(usize::MAX);
+        let keys = uids.iter().rev().skip(skip).take(limit).map(|&u| email_key(scope.as_deref(), &f.id, sel.state.uid_validity, u));
+        Ok((keys.collect(), uids.len() as u64))
+    }
+
+    /// Строки писем выборки — в кэш; ответ — ключи писем, которых на сервере уже нет.
+    async fn store_letters(&mut self, mailbox: &str, keys: &[String]) -> postman_imap::Result<Vec<String>> {
+        let f = self.folder_by_key(mailbox).cloned().ok_or_else(|| postman_imap::Error::Protocol(format!("no folder {mailbox}")))?;
+        let uids: Vec<u32> = keys.iter().filter_map(|k| parse_key(k).map(|(_, _, u)| u)).collect();
+        let scope = self.scope.clone();
+        let session = self.session().await?;
+        let sel = session.select(&f.raw).await?;
+        let headers = session.headers(&uid_set(&uids)).await?;
+        let headers = self.threads(headers).await;
+        let rows: Vec<EmailRow> = headers.iter().map(|h| row(scope.as_deref(), &f, sel.state.uid_validity, h)).collect();
+        self.cache.upsert_emails(&rows).map_err(db)?;
+        let found: HashSet<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+        Ok(keys.iter().filter(|k| !found.contains(k.as_str())).cloned().collect())
+    }
+
     /// Отправить удержанные письма, срок которых вышел (`all` — все).
     async fn release_held(&mut self, all: bool, notify: &impl Fn(Event)) {
         let now = tokio::time::Instant::now();
@@ -1272,6 +1304,25 @@ impl Imap {
                 let added = self.load_more(&mailbox).await?;
                 notify(Event::LoadedMore { mailbox, added });
                 notify(Event::EmailsChanged);
+            }
+            Command::ListLetters { sweep, selector, position, limit } => {
+                let page = self.list_letters(&selector, position, limit as usize).await;
+                match &page {
+                    Ok((ids, total)) => {
+                        let end = position + ids.len() as u64 >= *total;
+                        notify(Event::LettersListed { sweep, ids: ids.clone(), total: *total, end });
+                    }
+                    Err(e) => notify(Event::ListFailed { sweep, error: e.to_string() }),
+                }
+                page?;
+            }
+            Command::StoreLetters { sweep, mailbox, ids } => {
+                let stored = self.store_letters(&mailbox, &ids).await;
+                match &stored {
+                    Ok(gone) => notify(Event::LettersStored { sweep, gone: gone.clone() }),
+                    Err(e) => notify(Event::ListFailed { sweep, error: e.to_string() }),
+                }
+                stored?;
             }
             Command::Search { query, mailbox, ticket } => {
                 let ids = self.search(&query, mailbox.as_deref()).await?;

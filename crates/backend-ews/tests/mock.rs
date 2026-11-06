@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use postman_cache::Cache;
 use postman_core::backend::{MailPlugin, Spawn};
-use postman_core::model::{Auth, Feature};
+use postman_core::model::{Auth, Feature, Filter, Selector, SweepId};
 use postman_core::sync::{Account, Command, Event, Status, UnboundedSender};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
@@ -176,6 +176,36 @@ fn start_as(url: &str, user: &str, password: &str) -> Live {
         areas: Vec::new(),
     });
     Live { commands, events, cache }
+}
+
+/// Выборка на сервере: страница ключей — `FindItem` с позиции, с условием — `QueryString`; строки — `GetItem`, письма без
+/// ответа сервера — в `gone`.
+#[test]
+fn selection_is_listed_and_stored_by_the_server() {
+    let (url, log) = server();
+    let live = ready(&url);
+    let inbox = live.cache.mailboxes().unwrap().into_iter().find(|b| b.role.as_deref() == Some("inbox")).unwrap().id;
+    let sweep = SweepId(1);
+    let selector = Selector { mailbox: inbox.clone(), filter: None, except: Vec::new() };
+    live.commands.send(Command::ListLetters { sweep, selector: selector.clone(), position: 500, limit: 500 }).unwrap();
+    let Event::LettersListed { ids, end, total, .. } = live.wait("LettersListed", |e| matches!(e, Event::LettersListed { .. })) else { unreachable!() };
+    assert!(!ids.is_empty() && end, "страница корпуса — последняя: {ids:?}");
+    assert_eq!(total, 500 + ids.len() as u64);
+    assert!(log.lock().unwrap().iter().any(|b| b.contains("<m:FindItem") && b.contains(r#"Offset="500""#)), "страница — с позиции");
+
+    let filter = Some(Filter::HasAttachment(true));
+    live.commands.send(Command::ListLetters { sweep, selector: Selector { filter, ..selector }, position: 0, limit: 500 }).unwrap();
+    live.wait("LettersListed", |e| matches!(e, Event::LettersListed { .. }));
+    assert!(log.lock().unwrap().iter().any(|b| b.contains("<m:QueryString>hasattachment:true")), "условие — AQS");
+
+    let gone_key = postman_cache::scoped(None, "mbm90ZXhpc3Rz");
+    let mut keys = ids.clone();
+    keys.push(gone_key.clone());
+    live.cache.delete_emails(&ids).unwrap();
+    live.commands.send(Command::StoreLetters { sweep, mailbox: inbox, ids: keys }).unwrap();
+    let Event::LettersStored { gone, .. } = live.wait("LettersStored", |e| matches!(e, Event::LettersStored { .. })) else { unreachable!() };
+    assert_eq!(gone, [gone_key], "письма, которых сервер не вернул");
+    assert_eq!(live.cache.rows_by_ids(&ids).unwrap().len(), ids.len(), "строки — в кэше");
 }
 
 #[test]

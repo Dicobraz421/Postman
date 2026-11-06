@@ -39,8 +39,8 @@ use postman_cache::{
 };
 use postman_compose::{Address, Draft};
 use postman_core::backend::{AreaCtx, Spawn};
-use postman_core::model::{ImportError, JobId, Remote};
-use postman_core::sync::{Command, ErrorKind, Event, Sender, Stage, Status, SyncError};
+use postman_core::model::{ImportError, JobId, Remote, Selector};
+use postman_core::sync::{Command, ErrorKind, Event, FOLDER_UNSUPPORTED, Sender, Stage, Status, SyncError};
 use postman_ews::{
     Change, Client, DeleteMode, FolderId, FolderRef, ItemId, MailFolder, MailHeader, MailRole, Mode, Subscription, SyncState, Upload, UploadError,
     WellKnown,
@@ -1388,6 +1388,33 @@ impl Ews {
         self.headers_into(&missing, &f.key).await
     }
 
+    /// Страница ключей выборки, новые сверху: `FindItem` по позиции, с условием — AQS. Ответ: ключи, сколько всего
+    /// известно (у `FindItem` с `IdOnly` числа нет — позиция и признак «есть ещё»), есть ли ещё. Условие, которого AQS
+    /// не выразит, — отказ: выборка не подменяется всей папкой.
+    async fn list_letters(&mut self, s: &Selector, position: u64, limit: u32) -> postman_ews::Result<(Vec<String>, u64, bool)> {
+        let f = self.folder_by_key(&s.mailbox).cloned().ok_or_else(|| postman_ews::Error::Xml(format!("no folder {}", s.mailbox)))?;
+        let offset = u32::try_from(position).unwrap_or(u32::MAX);
+        let (ids, more) = match &s.filter {
+            None => self.client.mail_page(&f.at(), offset, limit).await?,
+            Some(filter) => {
+                let (q, _) = aqs(filter).ok_or_else(|| postman_ews::Error::Xml(FOLDER_UNSUPPORTED.to_owned()))?;
+                self.client.search_page(&f.at(), &q, offset, limit).await?
+            }
+        };
+        let scope = self.scope.clone();
+        let keys: Vec<String> = ids.iter().map(|i| email_key(scope.as_deref(), i)).collect();
+        let total = position + keys.len() as u64 + u64::from(more);
+        Ok((keys, total, more))
+    }
+
+    /// Строки писем выборки — в кэш; ответ — ключи писем, которых на сервере уже нет.
+    async fn store_letters(&mut self, mailbox: &str, keys: &[String]) -> postman_ews::Result<Vec<String>> {
+        let ids: Vec<ItemId> = keys.iter().filter_map(|k| parse_key(k)).collect();
+        self.headers_into(&ids, mailbox).await?;
+        let found: HashSet<String> = self.cache.rows_by_ids(keys).map_err(db)?.into_iter().map(|r| r.id).collect();
+        Ok(keys.iter().filter(|k| !found.contains(*k)).cloned().collect())
+    }
+
     /// Отправить удержанные письма, срок которых вышел (`all` — все).
     async fn release_held(&mut self, all: bool, notify: &impl Fn(Event)) {
         let now = tokio::time::Instant::now();
@@ -1492,6 +1519,24 @@ impl Ews {
                 let added = self.load_more(&mailbox).await?;
                 notify(Event::LoadedMore { mailbox, added });
                 notify(Event::EmailsChanged);
+            }
+            Command::ListLetters { sweep, selector, position, limit } => {
+                let page = self.list_letters(&selector, position, limit).await;
+                match &page {
+                    Ok((ids, total, more)) => {
+                        notify(Event::LettersListed { sweep, ids: ids.clone(), total: *total, end: !more });
+                    }
+                    Err(e) => notify(Event::ListFailed { sweep, error: e.to_string() }),
+                }
+                page?;
+            }
+            Command::StoreLetters { sweep, mailbox, ids } => {
+                let stored = self.store_letters(&mailbox, &ids).await;
+                match &stored {
+                    Ok(gone) => notify(Event::LettersStored { sweep, gone: gone.clone() }),
+                    Err(e) => notify(Event::ListFailed { sweep, error: e.to_string() }),
+                }
+                stored?;
             }
             Command::Search { query, mailbox, ticket } => {
                 let q = format!("\"{}\"", query.replace('"', " "));
