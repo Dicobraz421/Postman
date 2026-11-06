@@ -280,7 +280,7 @@ impl MailList {
             self.summary = None;
         } else {
             let (ids, cache, book) = (self.selection.ids().to_vec(), self.cache.clone(), self.labels.clone());
-            let task = cx.background_spawn(async move { selected_of(&cache.rows_by_ids(&ids).unwrap_or_default(), &book) });
+            let task = cx.background_spawn(async move { selected_of(&crate::local::rows(&cache, &ids), &book) });
             cx.spawn(async move |this, cx| {
                 let s = task.await;
                 let _ = this.update(cx, |l, cx| {
@@ -307,7 +307,7 @@ impl MailList {
         let generation = self.summary_gen;
         let (ids, cache, book, source) = (self.selection.ids().to_vec(), self.cache.clone(), self.labels.clone(), self.alive_source());
         let task = cx.background_spawn(async move {
-            let rows = cache.rows_by_ids(&ids).unwrap_or_default();
+            let rows = crate::local::rows(&cache, &ids);
             let rows: Vec<EmailRow> = match &source {
                 PageSource::Ids(list) => {
                     let set: HashSet<&str> = list.iter().map(String::as_str).collect();

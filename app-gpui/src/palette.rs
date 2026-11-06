@@ -281,7 +281,7 @@ impl Palette {
                     ids = crate::live::local_search(&index, &cache, &other, None);
                 }
                 let ids: Vec<String> = ids.into_iter().take(limit).collect();
-                cache.rows_by_ids(&ids).unwrap_or_default()
+                crate::local::rows(&cache, &ids)
             });
             let rows = task.await;
             let _ = this.update(cx, |p, cx| {

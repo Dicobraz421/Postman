@@ -437,6 +437,20 @@ const SCENES: &[Scene] = &[
     more("st-s816-full", |_, m, _| job_state(m) == Some(MigrationState::QuotaFull), NO_SPACE),
     // S8-16, шаг 6: «Оставить локально».
     more("st-s816-local-rest", |_, m, _| no_jobs_left(m), KEEP_LOCAL),
+    // S8-09, решение 5: письмо перенесено в «На этом компьютере», источник подтвердил удаление (сверяет `peer.py`).
+    scene("st-s809-local", moved_away, MOVE_ONE),
+    // «Везде» находит его по теме: одна строка, только в базе, ждать сервер больше нечего.
+    more("st-s809-find", found_moved, FIND_MOVED),
+    // Письмо открывается из результатов: тело из базы, подсветка на месте.
+    more("st-s809-open", |_, m, cx| found_opened(m, cx), OPEN_MOVED),
+    // Своё и ответ сервера сведены: письма источника и перенесённое, группами по папкам.
+    more("st-s809-groups", |_, m, cx| found_all(m, cx) && m.list.read(cx).found_groups() == 2, FIND_ALL),
+    // Только условия, без слов: то же, обходом базы.
+    more("st-s809-from", |_, m, cx| found_all(m, cx), FIND_FROM),
+    // Новый запуск: индекс на диске, письмо находится.
+    scene("st-s809-again", found_moved, FIND_MOVED),
+    // Индекс стёрт: пересборка в фоне, и письмо находится по индексу.
+    scene("st-s809-rebuilt", found_moved, REBUILT),
 ];
 
 fn start(_: &Scene, _: &mut Mailer, _: &mut Window, _: &mut Context<Mailer>) -> Result<(), String> {
@@ -1993,6 +2007,96 @@ fn inbox_open(m: &Mailer, cx: &App) -> bool {
         .iter()
         .any(|b| b.role.as_deref() == Some("inbox") && postman_cache::account_of(&b.id).is_none() && list.mailbox.as_deref() == Some(b.id.as_str()))
 }
+
+// --- поиск перенесённого письма (S8-09) ---
+
+/// Письмо стендовой локальной папки.
+fn moved_letter(m: &Mailer, cx: &App) -> Option<(postman_cache::LetterId, postman_cache::LetterRow)> {
+    let folder = crate::local::local_folder(&local_folder(m, cx)?)?;
+    m.cache.folder_page(folder, 0, 1).ok()?.pop()
+}
+
+/// Письмо в локальной папке, связей с сервером не осталось: источник подтвердил удаление.
+fn moved_away(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    moved_letter(m, cx).is_some_and(|(id, _)| m.cache.remotes(id).is_ok_and(|links| links.is_empty()))
+}
+
+/// Искать «Везде», как ввод с Enter.
+fn search_all(m: &mut Mailer, text: &str, window: &mut Window, cx: &mut Context<Mailer>) {
+    m.bar.update(cx, |b, _| b.scope = crate::bar::Scope::All);
+    m.search.update(cx, |s, cx| s.set_value(text.to_owned(), window, cx));
+    m.run_search(text, cx);
+}
+
+fn moved_ref(m: &Mailer, cx: &App) -> Option<String> {
+    moved_letter(m, cx).map(|(id, _)| postman_core::store::letter_ref(postman_core::model::LetterId(id.0)))
+}
+
+/// Поиск закончен (сервер ответил), строки прочитаны.
+fn found_settled(m: &Mailer, cx: &App) -> bool {
+    let list = m.list.read(cx);
+    list.found.as_ref().is_some_and(|f| !f.waiting) && rows_loaded(list)
+}
+
+/// Нашлось одно письмо, и это перенесённое.
+fn found_moved(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    let list = m.list.read(cx);
+    found_settled(m, cx) && moved_ref(m, cx).is_some_and(|id| list.search_ids.as_deref() == Some(std::slice::from_ref(&id)))
+}
+
+fn found_opened(m: &Mailer, cx: &App) -> bool {
+    let opened = screens::reading(m, cx).is_some_and(|r| r.doc.is_some() && Some(&r.row.id) == moved_ref(m, cx).as_ref());
+    opened && m.reading.read(cx).marks.is_some()
+}
+
+/// Найдены все три письма стенда, с перенесённым.
+fn found_all(m: &Mailer, cx: &App) -> bool {
+    let list = m.list.read(cx);
+    let ids = list.search_ids.as_deref().unwrap_or_default();
+    found_settled(m, cx) && ids.len() == 3 && moved_ref(m, cx).is_some_and(|id| ids.contains(&id))
+}
+
+const MOVE_ONE: &[Input] = &[
+    Input::Until(mail_ready),
+    Input::Run(|_, m, _, cx| {
+        m.local_folder_edit(crate::local::FolderEdit::Create { parent: None, name: LOCAL_FOLDER.to_owned() }, cx);
+        Ok(())
+    }),
+    until!(|m, cx| place_of_folder(local_folder(m, cx)).is_some()),
+    Input::Drag(first_row, |m, _, cx| place_of_folder(local_folder(m, cx))),
+];
+
+const FIND_MOVED: &[Input] = &[
+    Input::Until(mail_ready),
+    until!(|m, cx| moved_letter(m, cx).is_some()),
+    Input::Run(|_, m, window, cx| {
+        let (_, row) = moved_letter(m, cx).ok_or("no moved letter")?;
+        search_all(m, &row.subject, window, cx);
+        Ok(())
+    }),
+];
+
+const OPEN_MOVED: &[Input] = &[Input::Click(first_row, Held::No)];
+
+const FIND_ALL: &[Input] = &[Input::Run(|_, m, window, cx| {
+    search_all(m, &format!("find{}", *STAMP), window, cx);
+    Ok(())
+})];
+
+const FIND_FROM: &[Input] = &[Input::Run(|_, m, window, cx| {
+    search_all(m, "from:peer@example.test", window, cx);
+    Ok(())
+})];
+
+const REBUILT: &[Input] = &[
+    Input::Until(mail_ready),
+    until!(|m, cx| moved_letter(m, cx).is_some() && m.live.index().is_some_and(|i| !i.is_empty()) && postman_core::indexer::ready(&m.cache)),
+    Input::Run(|_, m, window, cx| {
+        let (_, row) = moved_letter(m, cx).ok_or("no moved letter")?;
+        search_all(m, &row.subject, window, cx);
+        Ok(())
+    }),
+];
 
 const TO_LOCAL: &[Input] = &[
     Input::Until(mail_ready),

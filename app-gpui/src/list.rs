@@ -821,6 +821,11 @@ impl MailList {
         cx.notify();
     }
 
+    /// Групп в найденном (S5-10).
+    pub(crate) fn found_groups(&self) -> usize {
+        self.search_groups.len()
+    }
+
     /// Найденное поиском (S5-10): тот же запрос — дополнить (выделение остаётся), новый — сверху без выделения.
     pub(crate) fn show_found(&mut self, ids: Vec<String>, groups: Vec<(Group, usize)>, found: crate::search::Found, cx: &mut Context<Self>) {
         let same = self.search_ids.is_some() && self.found.as_ref().is_some_and(|f| f.text == found.text && f.all == found.all);
@@ -1462,7 +1467,7 @@ impl PageSource {
             PageSource::Mailbox(mb) => crate::local::page(cache, mb, offset, limit),
             PageSource::Ids(ids) => {
                 let end = (offset + limit).min(ids.len());
-                cache.rows_by_ids(&ids[offset.min(end)..end]).unwrap_or_default()
+                crate::local::rows(cache, &ids[offset.min(end)..end])
             }
             PageSource::Empty => Vec::new(),
         }

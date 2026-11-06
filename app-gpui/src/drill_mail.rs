@@ -121,6 +121,8 @@ const SCENES: &[Scene] = &[
     scene("mail-30-syntax", search_over, SYNTAX),
     // Раздел 32, шаги 2, 3: F3 и Shift+F3 по кругу, в поле поиска тоже; Esc — строки нет.
     scene("mail-32-hits", search_over, HITS),
+    // S8-09, решение 5: «Везде» находит письмо «На этом компьютере» без индекса (демо — откат на кэш), оно открывается.
+    scene("mail-s809-local", search_over, LOCAL_FOUND),
     // Раздел 35, шаг 1: стрелки ходят, J, K, Ctrl+Shift+G, Ctrl+Shift+F — ничего; Insert — срок; флаг — кнопкой.
     scene("mail-35-keys", |_, m, cx| m.list.read(cx).rows.1.iter().any(|r| r.flagged), OUTLOOK),
     // Раздел 35, шаг 5 (без фильтров): Ctrl+T, своё письмо у вкладки, Ctrl+W закрывает, «Почта» — нет.
@@ -893,9 +895,46 @@ fn found(m: &Mailer, cx: &App) -> bool {
     m.find.active() && list.search_ids.is_some() && !list.computing && rows_loaded(list)
 }
 
+/// Письмо локальной папки демо-ящика: только в базе, связи с сервером нет.
+fn archive_letter(m: &Mailer, cx: &App) -> Option<(String, String)> {
+    let folders = m.folders.read(cx);
+    let key = &folders.mailboxes.iter().find(|f| crate::local::is_local(&f.id) && f.name == postman_demo::store::ARCHIVE)?.id;
+    let (id, row) = m.cache.folder_page(crate::local::local_folder(key)?, 0, 1).ok()?.pop()?;
+    Some((postman_core::store::letter_ref(postman_core::model::LetterId(id.0)), row.subject))
+}
+
+fn archive_found(m: &Mailer, cx: &App) -> Option<usize> {
+    let (id, _) = archive_letter(m, cx)?;
+    let list = m.list.read(cx);
+    list.search_ids.as_ref().filter(|_| found(m, cx))?.iter().position(|x| *x == id)
+}
+
 fn search_over(_: &Scene, m: &Mailer, cx: &App) -> bool {
     !m.find.active() && m.reading.read(cx).marks.is_none() && m.list.read(cx).search_ids.is_none()
 }
+
+const LOCAL_FOUND: &[Input] = &[
+    READY,
+    until!(|m, cx| archive_letter(m, cx).is_some()),
+    Input::Run(|_, m, window, cx| {
+        let (_, subject) = archive_letter(m, cx).ok_or("no local letter in the demo")?;
+        m.search.update(cx, |s, cx| s.set_value(subject.clone(), window, cx));
+        m.run_search(&subject, cx);
+        Ok(())
+    }),
+    until!(|m, cx| archive_found(m, cx).is_some()),
+    Input::Run(|_, m, _, cx| {
+        let i = archive_found(m, cx).ok_or("the letter is gone from the results")?;
+        m.list.update(cx, |l, cx| l.select(i, cx));
+        Ok(())
+    }),
+    until!(|m, cx| archive_letter(m, cx).is_some_and(|(id, _)| screens::reading(m, cx).is_some_and(|r| r.row.id == id))),
+    Input::Run(|_, m, window, cx| {
+        m.search.update(cx, |s, cx| s.set_value("", window, cx));
+        m.run_search("", cx);
+        Ok(())
+    }),
+];
 
 const HITS: &[Input] = &[
     READY,

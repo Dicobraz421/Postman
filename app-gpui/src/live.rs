@@ -444,34 +444,29 @@ pub(crate) fn bench_store(warm: bool, keep: bool, start: &mut std::time::Instant
     Ok(opened)
 }
 
-/// Поиск по своим данным (в фоне): индекс, пока он пуст (строится) — кэш.
+/// Поиск по своим данным (в фоне): индекс ядра, пока он не собран — кэш. Письма — ключами строк списка.
 pub(crate) fn local_search(index: &Index, cache: &Cache, query: &str, mailbox: Option<&str>) -> Vec<String> {
-    match index.as_ref().filter(|i| !i.is_empty()) {
-        Some(i) => {
-            // Строки, записанные синхронизацией, видны в поиске после коммита.
-            let _ = i.commit();
-            let ids = i.search(query, SEARCH_LIMIT).unwrap_or_default();
-            match mailbox {
-                Some(mb) => cache.filter_mailbox(&ids, mb).unwrap_or_default(),
-                None => ids,
-            }
-        }
-        None => cache.search(query, mailbox, SEARCH_LIMIT).unwrap_or_default(),
-    }
+    let folder = match mailbox.map(|mb| crate::local::folder_id(cache, mb)) {
+        Some(Some(f)) => Some(postman_core::model::FolderId(f.0)),
+        Some(None) => return Vec::new(),
+        None => None,
+    };
+    let ids = postman_core::indexer::search(index.as_deref(), cache, query, folder, SEARCH_LIMIT).unwrap_or_else(|e| {
+        tracing::warn!("search: {e}");
+        Vec::new()
+    });
+    ids.into_iter().map(|id| crate::local::letter_key(cache, id)).collect()
 }
 
-/// Индекс пуст, а в кэше письма есть (кэш старше индекса): построить в фоне — строки, затем тексты тел.
+/// Индекс не собран или пуст (кэш старше индекса): собрать в фоне — строки и тела, затем тексты HTML.
 fn build_index(index: Arc<postman_search::SearchIndex>, cache: Cache, extractor: Extractor) {
     let started = std::thread::Builder::new().name("index-build".into()).spawn(move || {
-        let mut offset = 0;
-        while let Ok(rows) = cache.all_rows(offset, 5000) {
-            if rows.is_empty() {
-                break;
-            }
-            offset += rows.len();
-            postman_core::indexer::rows(&index, &rows);
+        if !index.is_empty() && postman_core::indexer::ready(&cache) {
+            return;
         }
-        let _ = index.commit();
+        if let Err(e) = postman_core::indexer::rebuild(&index, &cache, &|| false) {
+            tracing::warn!("index build: {e}");
+        }
         let mut offset = 0;
         while let Ok(ids) = cache.body_ids(offset, 5000) {
             if ids.is_empty() {
@@ -535,7 +530,9 @@ impl Mailer {
         self.live.session = session;
         self.live.pending = confirm.then_some(account);
         self.live.extractor = index.clone().map(|i| Extractor::spawn(self.cache.clone(), i));
-        if let (Some(i), Some(x)) = (index.clone().filter(|i| i.is_empty()), self.live.extractor.clone()) {
+        // Повторный вход в ту же учётную запись: индекс тот же, сборка уже шла.
+        let same = self.live.index.as_ref().zip(index.as_ref()).is_some_and(|(a, b)| Arc::ptr_eq(a, b));
+        if let (Some(i), Some(x), false) = (index.clone(), self.live.extractor.clone(), same) {
             build_index(i, self.cache.clone(), x);
         }
         self.live.index = index;
@@ -1098,16 +1095,16 @@ impl Mailer {
         // ни разу не открывали, пришло в базу целиком: тело разбирает воркер, один раз (S8-15, шаг 5).
         let task = cx.background_spawn(async move {
             use postman_core::store::{Source, parse_ref, source};
-            let Some(letter) = parse_ref(&key) else { return cache.body(&key).ok().flatten() };
+            let Some(letter) = parse_ref(&key) else { return cache.body(&key).ok().flatten().map(|b| (b, false)) };
             match source(&cache, letter).ok()? {
-                Source::Body(b) => Some(*b),
+                Source::Body(b) => Some((*b, false)),
                 Source::Raw(raw) => {
                     let mime = worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).mime(&raw);
                     let body = postman_core::render::body_of(mime.map_err(|e| tracing::warn!("letter content: {e}")).ok()?, &key);
                     if let Err(e) = cache.put_body(&key, &body) {
                         tracing::warn!("letter body: {e}");
                     }
-                    Some(body)
+                    Some((body, true))
                 }
                 Source::Missing => None,
             }
@@ -1115,7 +1112,11 @@ impl Mailer {
         cx.spawn(async move |this, cx| {
             let body = task.await;
             let _ = this.update(cx, |m, cx| {
-                if let Some(b) = body {
+                if let Some((b, parsed)) = body {
+                    // Тело собрано из содержимого: его текст — и в индекс поиска.
+                    if let Some(x) = m.live.extractor.as_ref().filter(|_| parsed) {
+                        x.queue(vec![id.clone()]);
+                    }
                     m.reading.update(cx, |r, cx| r.show_body(&id, b, cx));
                 } else if fetch && postman_core::store::parse_ref(&id).is_none() && !m.backend.send(Command::Body(id)) {
                     m.sync_stopped(cx);

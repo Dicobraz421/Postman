@@ -3,10 +3,11 @@
 //! (`postman_core::query`), результаты группами по папкам (как «Все папки» S5-03, `postman_core::filters::arrange`),
 //! подсветка совпадений янтарным (роль `app.search.hit`) в строках списка и в письме, чипы «Уточнить».
 //!
-//! Поток интерфейса не ищет: ввод ждёт паузы ([`DEBOUNCE`]), поиск по своим данным (индекс tantivy или кэш, если
-//! индекса нет) и проверка условий — в фоне; живой ящик в «Везде» и «Текущей папке» ещё спрашивает сервер
-//! (`Email/query` с теми же условиями), найденное сводится по id. Каждый запуск — свой номер: ответы прежних
-//! запусков (фон, сервер) отбрасываются.
+//! Поток интерфейса не ищет: ввод ждёт паузы ([`DEBOUNCE`]), поиск по своим данным (индекс ядра по `LetterId` или кэш,
+//! пока индекс не собран) и проверка условий — в фоне; живой ящик в «Везде» и «Текущей папке» ещё спрашивает сервер
+//! (`Email/query` с теми же условиями), найденное сводится по ключу письма: письмо находится, где бы ни лежало, и после
+//! удаления у источника — ключом `#<LetterId>` (`local.rs`). Каждый запуск — свой номер: ответы прежних запусков (фон,
+//! сервер) отбрасываются.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -101,14 +102,21 @@ impl Local {
                 None => Scan::Account(self.account.clone()),
             };
             let mut hits: Vec<(i64, String)> = Vec::new();
-            let scanned = self.cache.scan(&scan, |row, to| {
+            let mut check = |row: EmailRow, to: Recipients| {
                 if self.query.matches(&self.env, &row, &to) {
                     hits.push((row.received_at, row.id));
                 }
+            };
+            let scanned = self.cache.scan(&scan, |row, to| {
+                check(row, to);
                 true
             });
             if let Err(e) = scanned {
                 tracing::warn!("search scan: {e}");
+            }
+            for row in crate::local::unlinked(&self.cache, self.mailbox.as_deref()) {
+                let to = crate::local::recipients(&self.cache, &row.id);
+                check(row, to);
             }
             hits.sort_by_key(|h| std::cmp::Reverse(h.0));
             return hits.into_iter().take(LIMIT).map(|(_, id)| id).collect();
@@ -117,8 +125,8 @@ impl Local {
         if !self.query.has_conditions() {
             return ids;
         }
-        let rows = self.cache.rows_by_ids(&ids).unwrap_or_default();
-        rows.into_iter().filter(|r| self.query.matches(&self.env, r, &self.cache.recipients(&r.id).unwrap_or_default())).map(|r| r.id).collect()
+        let rows = crate::local::rows(&self.cache, &ids);
+        rows.into_iter().filter(|r| self.query.matches(&self.env, r, &crate::local::recipients(&self.cache, &r.id))).map(|r| r.id).collect()
     }
 }
 
@@ -141,11 +149,11 @@ struct Arrange {
 
 impl Arrange {
     fn run(self) -> Arranged {
-        let rows = self.cache.rows_by_ids(&self.ids).unwrap_or_default();
+        let rows = crate::local::rows(&self.cache, &self.ids);
         let index: HashMap<&str, usize> = self.order.iter().enumerate().map(|(i, id)| (id.as_str(), i)).collect();
         let now = jiff::Zoned::now();
         let sample: Vec<(EmailRow, Recipients)> =
-            rows.iter().take(SAMPLE).map(|r| (r.clone(), self.cache.recipients(&r.id).unwrap_or_default())).collect();
+            rows.iter().take(SAMPLE).map(|r| (r.clone(), crate::local::recipients(&self.cache, &r.id))).collect();
         let chips = suggest(&self.query, &sample, &now, &self.categories, &self.me);
         let hits: Vec<Hit> = rows
             .iter()
@@ -188,7 +196,7 @@ impl Mailer {
         let all = self.bar.read(cx).scope == crate::bar::Scope::All;
         let mailbox = self.search_mailbox(cx);
         let list = self.list.read(cx);
-        let account = list.mailbox.as_deref().and_then(postman_cache::account_of).map(str::to_owned);
+        let account = list.mailbox.as_deref().and_then(postman_cache::account_of).filter(|a| *a != crate::local::LOCAL).map(str::to_owned);
         let me = list.me.addresses().to_vec();
         let categories = own_categories(list);
         let env = query.env(&jiff::Zoned::now(), |name| category_keyword(&categories, name), &me);
@@ -202,8 +210,9 @@ impl Mailer {
             all,
             ..Find::default()
         };
-        // Живой ящик: те же условия — серверу (в кэше — лишь первые страницы папок).
+        // Живой ящик: те же условия — серверу (в кэше — лишь первые страницы папок). Локальная папка — без сервера.
         if self.backend.is_live()
+            && !mailbox.as_deref().is_some_and(crate::local::is_local)
             && let Some(filter) = query.server_filter(&env)
         {
             find.filter = Some(filter.clone());

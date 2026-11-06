@@ -14,8 +14,11 @@ use std::collections::HashMap;
 
 use gpui_kit::*;
 use pets_i18n::tr;
-use postman_cache::{Cache, EmailRow, FolderId, FolderRow, LetterRow, MailboxRow, MigrationState, Owner, Place, Refused, Rights, scoped, unscoped};
-use postman_core::store::{letter_ref, parse_ref};
+use postman_cache::{
+    Cache, EmailRow, FolderId, FolderRow, LetterRow, MailboxRow, MigrationState, Owner, Place, Recipients, Refused, Rights, scoped, unscoped,
+};
+use postman_core::model::LetterId;
+use postman_core::store::{key_of, letter_of_key, letter_ref, parse_ref};
 use postman_core::sync::Command;
 
 use crate::Mailer;
@@ -107,6 +110,46 @@ pub(crate) fn page(cache: &Cache, mailbox: &str, offset: usize, limit: usize) ->
     let letters = cache.folder_page(f, offset, limit).unwrap_or_default();
     let mut keys = Keys { cache, folders: HashMap::new() };
     letters.into_iter().map(|(id, row)| keys.email(id, row)).collect()
+}
+
+/// Ключ письма в списке: действующая связь с сервером, без неё — ссылка `#<LetterId>`.
+pub(crate) fn letter_key(cache: &Cache, id: LetterId) -> String {
+    key_of(cache, id).ok().flatten().unwrap_or_else(|| letter_ref(id))
+}
+
+/// Строки писем по ключам списка, в том же порядке, — и письма без связи с сервером; нет такого письма — пропускается.
+pub(crate) fn rows(cache: &Cache, ids: &[String]) -> Vec<EmailRow> {
+    if !ids.iter().any(|k| parse_ref(k).is_some()) {
+        return cache.rows_by_ids(ids).unwrap_or_default();
+    }
+    let mut keys = Keys { cache, folders: HashMap::new() };
+    let letters = ids.iter().filter_map(|k| letter_of_key(cache, k).ok().flatten());
+    letters
+        .filter_map(|id| {
+            let id = postman_cache::LetterId(id.0);
+            Some(keys.email(id, cache.letter(id).ok().flatten()?))
+        })
+        .collect()
+}
+
+/// Получатели письма по ключу списка.
+pub(crate) fn recipients(cache: &Cache, key: &str) -> Recipients {
+    match parse_ref(key) {
+        Some(id) => cache.letter_recipients(postman_cache::LetterId(id.0)),
+        None => cache.recipients(key),
+    }
+    .unwrap_or_default()
+}
+
+/// Письма без связи с сервером в папке `mailbox` или во всех папках: обход кэша (`Cache::scan`) их не видит.
+pub(crate) fn unlinked(cache: &Cache, mailbox: Option<&str>) -> Vec<EmailRow> {
+    let folders: Vec<FolderId> = match mailbox {
+        Some(mb) => folder_id(cache, mb).into_iter().collect(),
+        None => cache.folders().unwrap_or_default().into_iter().map(|(id, _)| id).collect(),
+    };
+    let mut keys = Keys { cache, folders: HashMap::new() };
+    let letters = folders.into_iter().flat_map(|f| cache.folder_page(f, 0, usize::MAX).unwrap_or_default());
+    letters.filter(|(_, row)| row.place != Place::Synced).map(|(id, row)| keys.email(id, row)).collect()
 }
 
 /// Ключи папок дерева по `FolderId` — с запоминанием на одно окно.

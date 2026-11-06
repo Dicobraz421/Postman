@@ -438,6 +438,26 @@ impl Cache {
         tx.open_table(LETTER)?.get(id.0)?.map(|v| dec(v.value())).transpose()
     }
 
+    /// Письма с номера `from` по возрастанию, не больше `limit` (номера только растут: индекс поиска догоняет базу).
+    pub fn letters_from(&self, from: LetterId, limit: usize) -> Result<Vec<(LetterId, LetterRow)>> {
+        let tx = self.db.begin_read()?;
+        let letter = tx.open_table(LETTER)?;
+        letter
+            .range(from.0..)?
+            .take(limit)
+            .map(|r| {
+                let (k, v) = r?;
+                Ok((LetterId(k.value()), dec(v.value())?))
+            })
+            .collect()
+    }
+
+    /// Получатели письма; не записаны — пусто.
+    pub fn letter_recipients(&self, id: LetterId) -> Result<crate::Recipients> {
+        let tx = self.db.begin_read()?;
+        Ok(tx.open_table(RECIPIENTS)?.get(id.0)?.map(|v| dec(v.value())).transpose()?.unwrap_or_default())
+    }
+
     /// Писем в папке.
     pub fn folder_count(&self, folder: FolderId) -> Result<usize> {
         let tx = self.db.begin_read()?;

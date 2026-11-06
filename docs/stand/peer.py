@@ -20,6 +20,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import ssl
 import struct
 import subprocess
@@ -1405,6 +1406,38 @@ def group_move(ctx):
             admin.destroy(account)
 
 
+def group_find(ctx):
+    """S8-09, решение 5 в `docs/manual-tests/OWNER.md`: письмо перенесено в «На этом компьютере», удалено у источника, «Везде» находит и открывает его."""
+    play = Play(ctx, "find")
+    admin = Admin()
+    name, secret = "dfind" + secrets.token_hex(2), secrets.token_urlsafe(18)
+    domain = os.environ["POSTMAN_STAND_USER1"].split("@")[1]
+    account = admin.temp_user(name, secret)
+    box = Mailbox(user=f"{name}@{domain}", password=secret)
+    word = "find" + ctx.stamp
+
+    def after(scene):
+        if scene == "st-s809-local":
+            wait_for(lambda: len(box.by_subject(word)) == 2, "письмо осталось у источника", 60)
+            print("сервер: письма у источника нет", flush=True)
+
+    def run(scenes, on_scene=lambda _: None):
+        play.run(scenes, on_scene, box.user, box.password)
+
+    try:
+        fill(box, 3, word)
+        run(["st-s809-local", "st-s809-find", "st-s809-open", "st-s809-groups", "st-s809-from"], after)
+        run(["st-s809-again"])
+        # Индекс — производные данные: стёрт, собирается из базы заново.
+        gone = [os.path.join(root, d) for root, dirs, _ in os.walk(os.path.join(ctx.data, "find")) for d in dirs if d.endswith(".search")]
+        assert gone, "нет каталога индекса"
+        for path in gone:
+            shutil.rmtree(path)
+        run(["st-s809-rebuilt"])
+    finally:
+        admin.destroy(account)
+
+
 def together(*runs):
     """Два окна сразу: сцены ждут друг друга условиями `Until`, сервер — посредник."""
     with concurrent.futures.ThreadPoolExecutor(len(runs)) as pool:
@@ -1435,7 +1468,7 @@ class Ctx:
 
 
 GROUPS = {"live": group_live, "rules": group_rules, "vacation": group_vacation, "tasks": group_tasks, "card": group_card, "full": group_full, "own": group_own, "files": group_files, "forward": group_forward, "more": group_more, "deleg": group_deleg,
-          "shared": group_shared, "accounts": group_accounts, "box": group_box, "imap": group_imap, "dav": group_dav, "access": group_access, "move": group_move}
+          "shared": group_shared, "accounts": group_accounts, "box": group_box, "imap": group_imap, "dav": group_dav, "access": group_access, "move": group_move, "find": group_find}
 
 
 def main():

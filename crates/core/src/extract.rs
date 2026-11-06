@@ -48,9 +48,10 @@ impl Extractor {
     }
 }
 
+/// `id` — ключ тела в кэше: письма с сервера или ссылка `#<LetterId>` (тело из содержимого).
 fn extract_one(cache: &Cache, index: &SearchIndex, worker: &mut Client, id: &str) {
-    let (Ok(Some(body)), Ok(rows)) = (cache.body(id), cache.rows_by_ids(&[id.to_string()])) else { return };
-    let Some(row) = rows.first() else { return };
+    let Ok(Some(letter)) = crate::store::letter_of_key(cache, id) else { return };
+    let (Ok(Some(body)), Ok(Some(row))) = (cache.body(id), cache.letter(crate::store::cache_id(letter))) else { return };
     let text = match (&body.text, &body.html) {
         (Some(t), _) => t.clone(),
         (None, Some(h)) => match worker.render(&Request::Html(h.clone())) {
@@ -59,5 +60,5 @@ fn extract_one(cache: &Cache, index: &SearchIndex, worker: &mut Client, id: &str
         },
         (None, None) => String::new(),
     };
-    crate::indexer::full(index, row, &body, &text);
+    crate::indexer::letter(index, letter, &row, &body, &text);
 }
