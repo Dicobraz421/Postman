@@ -41,6 +41,9 @@ pub const ATTEMPTS: u32 = 3;
 pub const DESTROY_ATTEMPTS: u32 = 10;
 /// Писем, которые одно задание одновременно загружает у источника.
 const FETCHES: usize = 4;
+/// Писем шага «содержимое» за один [`Engine::poll`]: шаг письма — запись в базу, а с письмами из базы очередь не упирается
+/// в загрузку. Без предела большое задание держало бы поток ядра, и «Пауза» ждала бы весь проход.
+const STEPS: usize = 64;
 
 /// Шаг письма задания; задание начинается с первого.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,6 +206,8 @@ struct Job {
     /// Смена состояния — показать сразу.
     forced: bool,
     shown: Option<Instant>,
+    /// Очередь не пройдена до конца за один круг: следующий — сразу.
+    again: Option<Instant>,
 }
 
 impl Job {
@@ -224,6 +229,7 @@ impl Job {
             dirty: true,
             forced: true,
             shown: None,
+            again: None,
         }
     }
 
@@ -722,6 +728,7 @@ impl<S: Store> Engine<S> {
                 continue;
             }
             j.waiting.iter().for_each(|(t, _)| soon(*t));
+            j.again.iter().for_each(|t| soon(*t));
             let uploading =
                 j.cancel.is_none() && j.row.mode == MigrationMode::Upload && j.row.state == MigrationState::Running && !j.upload.is_empty();
             if !uploading {
@@ -748,6 +755,7 @@ fn show(j: &mut Job, out: &mut Output, now: Instant) {
 
 /// Шаги задания, которые можно сделать сейчас.
 fn pump(j: &mut Job, store: &mut dyn Store, net: &mut Net, now: Instant) -> Result<()> {
+    j.again = None;
     if matches!(j.row.state, MigrationState::Paused | MigrationState::QuotaFull) {
         return Ok(());
     }
@@ -763,7 +771,7 @@ fn pump(j: &mut Job, store: &mut dyn Store, net: &mut Net, now: Instant) -> Resu
         let idle: Vec<LetterId> = j.content.drain(..).chain(j.upload.drain(..)).collect();
         j.settle_cancelled(&idle, store)?;
     } else {
-        fetch(j, store, net)?;
+        fetch(j, store, net, now)?;
         match j.row.mode {
             MigrationMode::LocalArchive => {
                 while let Some(id) = j.upload.pop_front() {
@@ -784,10 +792,17 @@ fn pump(j: &mut Job, store: &mut dyn Store, net: &mut Net, now: Instant) -> Resu
 }
 
 /// Шаг «содержимое»: есть в базе — дальше, нет — загрузить у источника (не больше [`FETCHES`] писем сразу).
-fn fetch(j: &mut Job, store: &mut dyn Store, net: &mut Net) -> Result<()> {
+fn fetch(j: &mut Job, store: &mut dyn Store, net: &mut Net, now: Instant) -> Result<()> {
+    let mut steps = 0;
     while let Some(id) = j.content.pop_front() {
         if !j.letters.get(&id).is_some_and(|l| !l.busy && l.step == Step::Content) {
             continue;
+        }
+        steps += 1;
+        if steps > STEPS {
+            j.content.push_front(id);
+            j.again = Some(now);
+            break;
         }
         let Some(info) = store.info(id)? else {
             j.remove(id);
@@ -1552,6 +1567,25 @@ mod tests {
         assert_eq!(engine.wake_at(), None, "ждать нечего: разбудит вход");
         engine.online(Some("@2"));
         assert_eq!(sent(&mut engine), Limits::DEFAULT.imports);
+    }
+
+    /// Письма с содержимым в базе проходят шаг без ожидания сети: за круг — не больше [`STEPS`], иначе «Пауза» ждала бы весь
+    /// проход большого задания.
+    #[test]
+    fn long_content_queue_does_not_hold_the_core_thread() {
+        let mut engine = Engine::open(Mem::moved("", Home::Account("@2".into()), 500, |_| true)).unwrap();
+        engine.moved(Some(JOB)).unwrap();
+        engine.online(None);
+        engine.online(Some("@2"));
+        let now = Instant::now();
+        engine.poll(now).unwrap();
+        let waiting = |e: &Engine<Mem>| e.store().outbound.values().filter(|o| o.step == Step::Content).count();
+        assert_eq!(waiting(&engine), 500 - STEPS, "за круг — предел");
+        assert_eq!(engine.wake_at(), Some(now), "следующий круг — сразу");
+        engine.request(MigrationRequest::Pause { job: JOB }).unwrap();
+        engine.poll(now).unwrap();
+        assert_eq!(waiting(&engine), 500 - STEPS, "пауза между кругами останавливает очередь");
+        assert_eq!(engine.job_state(JOB), Some(MigrationState::Paused));
     }
 
     /// Задание выборки на сервере: всего — вместе с письмами, которые ещё придут; пока они не пришли, задание не кончается;
