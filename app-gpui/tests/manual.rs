@@ -575,6 +575,7 @@ fn mail_drills() {
         "mail-30-bold",
         "mail-30-syntax",
         "mail-32-hits",
+        "mail-s809-local",
         "mail-35-keys",
         "mail-35-tabs",
         "mail-37-single",

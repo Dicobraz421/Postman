@@ -186,12 +186,25 @@ impl SearchIndex {
         })
     }
 
-    /// Зафиксировать изменения и освободить писателя (вместе с его памятью).
+    /// Убрать все письма. Видно после [`commit`](Self::commit).
+    pub fn clear(&self) -> Result<()> {
+        self.with_writer(|w| w.delete_all_documents().map(|_| ()))
+    }
+
+    /// Письмо записано в индекс (после [`commit`](Self::commit)). Удалённое может числиться до слияния сегментов.
+    pub fn contains(&self, id: &str) -> Result<bool> {
+        Ok(self.reader.searcher().doc_freq(&Term::from_field_text(self.f.id, id))? > 0)
+    }
+
+    /// Зафиксировать изменения и освободить писателя (вместе с его памятью). Замок — до конца: второй писатель
+    /// на занятом индексе не откроется, и письмо из другого потока потерялось бы.
     pub fn commit(&self) -> Result<()> {
-        let Some(mut w) = self.writer().take() else { return Ok(()) };
+        let mut guard = self.writer();
+        let Some(mut w) = guard.take() else { return Ok(()) };
         w.commit()?;
         // Дождаться фоновых слияний сегментов, чтобы не оставлять потоков.
         w.wait_merging_threads()?;
+        drop(guard);
         self.reader.reload()
     }
 
@@ -345,6 +358,43 @@ mod tests {
         i.upsert(&[d("old", 1_000), d("new", 2_000_000_000), d("mid", 1_700_000_000)]).unwrap();
         i.commit().unwrap();
         assert_eq!(i.search("pipelin faild", 10).unwrap(), ["new", "mid", "old"]);
+    }
+
+    /// Запись из другого потока во время коммита ждёт его: письма не теряются.
+    #[test]
+    fn writes_during_commit_are_kept() {
+        let i = std::sync::Arc::new(SearchIndex::in_memory().unwrap());
+        let writers: Vec<_> = (0..2)
+            .map(|n| {
+                let i = i.clone();
+                std::thread::spawn(move || {
+                    for k in 0..20 {
+                        let id = format!("{n}-{k}");
+                        i.upsert(&[Doc { id: &id, subject: "Письмо", people: "", body: "", attachments: "", received_at: 0 }]).unwrap();
+                        i.commit().unwrap();
+                    }
+                })
+            })
+            .collect();
+        for w in writers {
+            w.join().unwrap();
+        }
+        i.commit().unwrap();
+        assert_eq!(i.len(), 40);
+    }
+
+    /// Индекс помнит письма по id; очищенный пуст, в него пишут дальше.
+    #[test]
+    fn contains_and_clear() {
+        let i = index();
+        assert!(i.contains("1").unwrap() && !i.contains("#1").unwrap());
+        i.clear().unwrap();
+        i.commit().unwrap();
+        assert!(i.is_empty() && !i.contains("1").unwrap());
+        i.upsert(&[Doc { id: "#1", subject: "Обед", people: "", body: "", attachments: "", received_at: 0 }]).unwrap();
+        i.commit().unwrap();
+        assert!(i.contains("#1").unwrap());
+        assert_eq!(i.search("обед", 10).unwrap(), ["#1"]);
     }
 
     #[test]

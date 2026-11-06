@@ -2030,7 +2030,7 @@ fn save(cache: &mut Cache, index: &Index, rows: Vec<EmailRow>, notify: &impl Fn(
     cache.upsert_emails(&rows).map_err(db_err)?;
     if let Some(i) = index {
         let (full, brief): (Vec<EmailRow>, Vec<EmailRow>) = rows.into_iter().partition(|r| cache.body(&r.id).ok().flatten().is_some());
-        postman_core::indexer::rows(i, &brief);
+        postman_core::indexer::rows(i, cache, &brief);
         if !full.is_empty() {
             notify(Event::BodiesStored(full.into_iter().map(|r| r.id).collect()));
         }

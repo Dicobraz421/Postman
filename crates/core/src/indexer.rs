@@ -1,10 +1,10 @@
 //! Наполнение поискового индекса. Ошибки индекса не мешают почте:
 //! поиск тогда откатывается на простой поиск по кэшу.
 //!
-//! Письма формата 6 (S8-09) — документами по `LetterId` ([`store::letter_ref`]): id не меняется при переносе между
-//! папками и учётками. После переноса формата 5 и с пустой базой индекс пересобирается в фоне ([`rebuild`]); до
-//! готовности [`search`] ищет по кэшу. [`rows`] и [`full`] — документы по ключам кэша для интерфейса до его перехода на
-//! `LetterId`.
+//! Письма — документами по `LetterId` ([`store::letter_ref`], S8-09): id не меняется при переносе между папками и
+//! учётками, письмо находится и после удаления у источника. Индекс собирает [`rebuild`] в фоне (после переноса
+//! формата 5, с пустой базой, со стёртым индексом); до готовности [`search`] ищет по кэшу. Письма, пришедшие в базу мимо
+//! [`rows`] (пути IMAP и EWS), [`search`] догоняет сам.
 
 use std::collections::HashSet;
 
@@ -14,31 +14,27 @@ use postman_search::{Doc, SearchIndex};
 use crate::model::{FolderId, LetterId};
 use crate::store::{self, cache_id};
 
-/// Индекс по `LetterId` собран ([`rebuild`]): состояние в хранилище. После переноса формата 5 и в пустой базе его нет.
+/// Индекс по `LetterId` собран ([`rebuild`]): состояние в хранилище — номер письма, с которого индекс базу ещё не видел
+/// (номера только растут). Нет числа — индекс не готов.
 const READY: &str = "search.letters";
 /// Писем за одно чтение и один коммит при пересборке.
 const PAGE: usize = 500;
 
-/// Строки списка: тема, отправитель, превью.
-pub fn rows(index: &SearchIndex, rows: &[EmailRow]) {
-    let people: Vec<String> = rows.iter().map(|r| format!("{} {}", r.from_name, r.from_addr)).collect();
+/// Строки писем с сервера: тема, отправитель, превью. Письма, которого нет в базе, — нет и в индексе.
+pub fn rows(index: &SearchIndex, cache: &Cache, rows: &[EmailRow]) {
+    let ids: Vec<Option<String>> = rows.iter().map(|r| store::letter_of_key(cache, &r.id).ok().flatten().map(store::letter_ref)).collect();
+    let people: Vec<String> = rows.iter().map(|r| people(&r.from_name, &r.from_addr, None)).collect();
     let docs: Vec<Doc> = rows
         .iter()
+        .zip(&ids)
         .zip(&people)
-        .map(|(r, p)| Doc { id: &r.id, subject: &r.subject, people: p, body: &r.preview, attachments: "", received_at: r.received_at })
+        .filter_map(|((r, id), p)| {
+            Some(Doc { id: id.as_deref()?, subject: &r.subject, people: p, body: &r.preview, attachments: "", received_at: r.received_at })
+        })
         .collect();
     if index.upsert(&docs).is_ok() {
         let _ = index.commit();
     }
-}
-
-/// Письмо целиком, когда известен его текст: получатели, тело, имена вложений.
-pub fn full(index: &SearchIndex, row: &EmailRow, body: &BodyRow, text: &str) {
-    let people = people(&row.from_name, &row.from_addr, Some(body));
-    let attachments = attachments(body);
-    let doc = Doc { id: &row.id, subject: &row.subject, people: &people, body: text, attachments: &attachments, received_at: row.received_at };
-    // Коммит — пакетно, из UI-цикла (см. `App::commit_index`): открытие писем подряд не плодит сегменты.
-    let _ = index.upsert(&[doc]);
 }
 
 fn people(name: &str, addr: &str, body: Option<&BodyRow>) -> String {
@@ -56,22 +52,7 @@ fn attachments(body: &BodyRow) -> String {
     body.attachments.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(" ")
 }
 
-/// Строки писем формата 6: тема, отправитель, превью.
-pub fn letters(index: &SearchIndex, rows: &[(LetterId, LetterRow)]) {
-    let ids: Vec<String> = rows.iter().map(|(id, _)| store::letter_ref(*id)).collect();
-    let people: Vec<String> = rows.iter().map(|(_, r)| people(&r.from_name, &r.from_addr, None)).collect();
-    let docs: Vec<Doc> = rows
-        .iter()
-        .zip(&ids)
-        .zip(&people)
-        .map(|(((_, r), id), p)| Doc { id, subject: &r.subject, people: p, body: &r.preview, attachments: "", received_at: r.received_at })
-        .collect();
-    if index.upsert(&docs).is_ok() {
-        let _ = index.commit();
-    }
-}
-
-/// Письмо формата 6 целиком, когда известен его текст. Коммит — пакетно, у вызывающего.
+/// Письмо целиком, когда известен его текст: получатели, тело, имена вложений. Коммит — пакетно, у вызывающего.
 pub fn letter(index: &SearchIndex, id: LetterId, row: &LetterRow, body: &BodyRow, text: &str) {
     let (key, people, attachments) = (store::letter_ref(id), people(&row.from_name, &row.from_addr, Some(body)), attachments(body));
     let doc = Doc { id: &key, subject: &row.subject, people: &people, body: text, attachments: &attachments, received_at: row.received_at };
@@ -86,42 +67,71 @@ pub fn forget(index: &SearchIndex, ids: &[LetterId]) {
     }
 }
 
-/// Индекс по `LetterId` собран: [`search`] ищет по нему.
-pub fn ready(cache: &Cache) -> bool {
-    cache.state(READY).ok().flatten().is_some()
+fn seen_up_to(cache: &Cache) -> Option<u64> {
+    cache.state(READY).ok().flatten()?.parse().ok()
 }
 
-/// Пересобрать индекс по письмам хранилища — в фоне (после переноса формата 5, как при первом запуске): строки и
-/// тела, которые уже есть (текст; HTML — потом извлечением). `stop` — прервать: индекс останется не готов, следующая
-/// пересборка — сначала. `true` — собран.
-pub fn rebuild(index: &SearchIndex, cache: &Cache, stop: &dyn Fn() -> bool) -> postman_cache::Result<bool> {
-    let mut seen = HashSet::new();
-    for (folder, _) in cache.folders()? {
-        let mut offset = 0;
-        loop {
-            if stop() {
-                return Ok(false);
+/// Индекс по `LetterId` собран: [`search`] ищет по нему.
+pub fn ready(cache: &Cache) -> bool {
+    seen_up_to(cache).is_some()
+}
+
+/// Письма базы с номера `from`, которых нет в индексе, — в индекс: строки и тела, которые уже есть (текст; HTML — потом
+/// извлечением). Ответ — номер, с которого индекс базу ещё не видел; `None` — `stop`.
+fn walk(index: &SearchIndex, cache: &Cache, from: u64, stop: &dyn Fn() -> bool) -> postman_cache::Result<Option<u64>> {
+    let mut next = from;
+    loop {
+        if stop() {
+            return Ok(None);
+        }
+        let page = cache.letters_from(postman_cache::LetterId(next), PAGE)?;
+        for (id, row) in &page {
+            next = id.0 + 1;
+            let id = LetterId(id.0);
+            if index.contains(&store::letter_ref(id)).unwrap_or(false) {
+                continue;
             }
-            let page = cache.folder_page(folder, offset, PAGE)?;
-            offset += page.len();
-            for (id, row) in page.iter().filter(|(id, _)| seen.insert(id.0)) {
-                let id = LetterId(id.0);
-                let body = store::body(cache, id)?.unwrap_or_default();
-                let text = body.text.as_deref().unwrap_or(&row.preview);
-                letter(index, id, row, &body, text);
-            }
-            let _ = index.commit();
-            if page.len() < PAGE {
-                break;
-            }
+            let body = store::body(cache, id)?.unwrap_or_default();
+            let text = body.text.as_deref().unwrap_or(&row.preview);
+            letter(index, id, row, &body, text);
+        }
+        let _ = index.commit();
+        if page.len() < PAGE {
+            return Ok(Some(next));
         }
     }
-    cache.set_state(READY, "1")?;
+}
+
+/// Пересобрать индекс по письмам хранилища — в фоне (после переноса формата 5, как при первом запуске); прежнее
+/// содержимое индекса не нужно. `stop` — прервать: индекс останется не готов, следующая пересборка — сначала. `true` —
+/// собран.
+pub fn rebuild(index: &SearchIndex, cache: &Cache, stop: &dyn Fn() -> bool) -> postman_cache::Result<bool> {
+    if stop() {
+        return Ok(false);
+    }
+    cache.set_state(READY, "")?;
+    if index.clear().is_ok() {
+        let _ = index.commit();
+    }
+    let Some(next) = walk(index, cache, 0, stop)? else { return Ok(false) };
+    cache.set_state(READY, &next.to_string())?;
     Ok(true)
 }
 
-/// Поиск писем формата 6, по релевантности: по индексу, если он собран ([`ready`]); иначе — по кэшу (тема,
-/// отправитель, превью), новые сверху. `folder` — только письма этой папки.
+/// Письма, пришедшие в базу после прошлого поиска, — в индекс; что записала синхронизация — видно в поиске.
+fn catch_up(index: &SearchIndex, cache: &Cache) -> postman_cache::Result<()> {
+    let _ = index.commit();
+    let Some(from) = seen_up_to(cache) else { return Ok(()) };
+    if let Some(next) = walk(index, cache, from, &|| false)?
+        && next != from
+    {
+        cache.set_state(READY, &next.to_string())?;
+    }
+    Ok(())
+}
+
+/// Поиск писем, по релевантности: по индексу, если он собран ([`ready`]); иначе — по кэшу (тема, отправитель, превью),
+/// новые сверху. `folder` — только письма этой папки.
 pub fn search(
     index: Option<&SearchIndex>,
     cache: &Cache,
@@ -130,19 +140,22 @@ pub fn search(
     limit: usize,
 ) -> postman_cache::Result<Vec<LetterId>> {
     let in_folder = |row: &LetterRow| folder.is_none_or(|f| row.folders.contains(&postman_cache::FolderId(f.0)));
-    if let Some(index) = index.filter(|_| ready(cache))
-        && let Ok(hits) = index.search(query, limit.saturating_mul(4).max(limit))
-    {
-        let mut out = Vec::with_capacity(limit);
-        for id in hits.iter().filter_map(|h| store::parse_ref(h)) {
-            if cache.letter(cache_id(id))?.is_some_and(|r| in_folder(&r)) {
-                out.push(id);
-                if out.len() == limit {
-                    break;
+    if let Some(index) = index.filter(|_| ready(cache)) {
+        if let Err(e) = catch_up(index, cache) {
+            tracing::warn!("search index: {e}");
+        }
+        if let Ok(hits) = index.search(query, limit.saturating_mul(4).max(limit)) {
+            let mut out = Vec::with_capacity(limit.min(hits.len()));
+            for id in hits.iter().filter_map(|h| store::parse_ref(h)) {
+                if cache.letter(cache_id(id))?.is_some_and(|r| in_folder(&r)) {
+                    out.push(id);
+                    if out.len() == limit {
+                        break;
+                    }
                 }
             }
+            return Ok(out);
         }
-        return Ok(out);
     }
     let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
     if words.is_empty() {
@@ -199,5 +212,64 @@ mod tests {
         assert!(!search(Some(&index), &cache, &subject, Some(FolderId(inbox.0)), 50).unwrap().contains(&letter));
         forget(&index, &[letter]);
         assert!(!search(Some(&index), &cache, &subject, None, 50).unwrap().contains(&letter));
+    }
+
+    /// Решение 5 (`docs/manual-tests/OWNER.md`): письмо перенесено в «На этом компьютере», источник его удалил — связей
+    /// с сервером нет, письмо находится: по индексу, без индекса и пока индекс не собран.
+    #[test]
+    fn moved_letter_found_after_source_delete() {
+        let (_dir, cache) = demo();
+        let index = SearchIndex::in_memory().unwrap();
+        let letter = id(&cache, "demo7");
+        let subject = cache.letter(cache_id(letter)).unwrap().unwrap().subject;
+        assert!(rebuild(&index, &cache, &|| false).unwrap());
+        let local = cache.create_folder(None, "Локальная").unwrap();
+        cache.move_letters(&[cache_id(letter)], local).unwrap();
+        cache.delete_remote("", &["demo7".to_owned()]).unwrap();
+        assert!(cache.remotes(cache_id(letter)).unwrap().is_empty());
+        assert!(search(Some(&index), &cache, &subject, None, 500).unwrap().contains(&letter), "индекс");
+        assert_eq!(search(Some(&index), &cache, &subject, Some(FolderId(local.0)), 50).unwrap(), [letter], "папка");
+        assert!(search(None, &cache, &subject, None, 500).unwrap().contains(&letter), "индекса нет");
+        cache.set_state(READY, "").unwrap();
+        assert!(!ready(&cache));
+        assert!(search(Some(&index), &cache, &subject, None, 500).unwrap().contains(&letter), "не собран");
+    }
+
+    /// Письмо пришло в базу мимо [`rows`] (пути IMAP и EWS): поиск его догоняет, текст, уже извлечённый из тела, не
+    /// затирается строкой.
+    #[test]
+    fn search_catches_up_with_the_store() {
+        let (_dir, cache) = demo();
+        let index = SearchIndex::in_memory().unwrap();
+        assert!(rebuild(&index, &cache, &|| false).unwrap());
+        let inbox = cache.folder_of("", "inbox").unwrap().unwrap();
+        let row = LetterRow { subject: "Телеграмма запоздалая".into(), folders: vec![inbox], ..LetterRow::default() };
+        let (late, indexed) = (cache.upsert_remote("", "late", &row).unwrap(), cache.upsert_remote("", "full", &row).unwrap());
+        let (late, indexed) = (LetterId(late.0), LetterId(indexed.0));
+        super::letter(&index, indexed, &row, &BodyRow::default(), "квитанция");
+        let _ = index.commit();
+        let before = seen_up_to(&cache);
+        let found = search(Some(&index), &cache, "телеграмма", None, 50).unwrap();
+        assert!(found.contains(&late) && found.contains(&indexed), "{found:?}");
+        assert!(seen_up_to(&cache) > before);
+        assert_eq!(search(Some(&index), &cache, "квитанция", None, 50).unwrap(), [indexed]);
+    }
+
+    /// Строки с сервера — документами по `LetterId`; документы по ключам кэша пересборка убирает.
+    #[test]
+    fn documents_by_letter_id() {
+        let (_dir, cache) = demo();
+        let index = SearchIndex::in_memory().unwrap();
+        let row = cache.rows_by_ids(&["demo7".to_owned()]).unwrap().remove(0);
+        let old = Doc { id: &row.id, subject: "Прежний документ", people: "", body: "", attachments: "", received_at: 0 };
+        index.upsert(&[old]).unwrap();
+        index.commit().unwrap();
+        let letter = store::letter_ref(id(&cache, "demo7"));
+        rows(&index, &cache, std::slice::from_ref(&row));
+        assert!(index.search(&row.subject, 500).unwrap().contains(&letter));
+        rows(&index, &cache, &[EmailRow { id: "нет такого".into(), ..row.clone() }]);
+        assert!(rebuild(&index, &cache, &|| false).unwrap());
+        assert!(index.search("прежний", 10).unwrap().is_empty());
+        assert!(!index.contains(&row.id).unwrap() && index.contains(&letter).unwrap());
     }
 }
