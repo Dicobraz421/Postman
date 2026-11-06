@@ -1063,11 +1063,23 @@ impl Mailer {
         }
         let cache = self.cache.clone();
         let key = id.clone();
-        // Письмо без связи с сервером (`#<LetterId>`, S8-15) — тело из содержимого в базе, без сети.
+        let worker = self.reading.read(cx).worker.clone();
+        // Письмо без связи с сервером (`#<LetterId>`, S8-15) — тело из содержимого в базе, без сети. Письмо, которое
+        // ни разу не открывали, пришло в базу целиком: тело разбирает воркер, один раз (S8-15, шаг 5).
         let task = cx.background_spawn(async move {
-            match postman_core::store::parse_ref(&key) {
-                Some(letter) => postman_core::store::body(&cache, letter).ok().flatten(),
-                None => cache.body(&key).ok().flatten(),
+            use postman_core::store::{Source, parse_ref, source};
+            let Some(letter) = parse_ref(&key) else { return cache.body(&key).ok().flatten() };
+            match source(&cache, letter).ok()? {
+                Source::Body(b) => Some(*b),
+                Source::Raw(raw) => {
+                    let mime = worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).mime(&raw);
+                    let body = postman_core::render::body_of(mime.map_err(|e| tracing::warn!("letter content: {e}")).ok()?, &key);
+                    if let Err(e) = cache.put_body(&key, &body) {
+                        tracing::warn!("letter body: {e}");
+                    }
+                    Some(body)
+                }
+                Source::Missing => None,
             }
         });
         cx.spawn(async move |this, cx| {
