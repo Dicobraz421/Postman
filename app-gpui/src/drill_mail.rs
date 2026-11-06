@@ -110,7 +110,7 @@ const SCENES: &[Scene] = &[
     // Раздел 29, шаг 6: «Срок» на выделении — панель «N писем», метка у всех.
     scene("mail-29-due", selected_due, BULK_DUE),
     // Раздел 29, шаг 8: Ctrl+Shift+V — меню с открытым «Переместить»; выбор папки — письмо там, тост.
-    scene("mail-29-move", letter_left, MOVE),
+    scene("mail-29-move", count_fell, MOVE),
     // Раздел 30, шаг 2: выполненные строки палитры — первыми при пустом запросе.
     scene("mail-30-recent", |_, m, _| m.recent.len() >= 2 && m.palette.is_some(), RECENT),
     // Раздел 30, шаг 4: слово из темы — группа «Письма», Enter открывает письмо.
@@ -1957,8 +1957,8 @@ const THREAD_HEAD: Input = until!(|m, cx| {
     *MEMBERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = members;
     many
 });
-/// Без выделения: шапки «Выбрано N писем» нет, меню — над одним письмом.
-const ONE_LETTER: Input = until!(|m, cx| m.list.read(cx).selection.is_empty() && m.menu.as_ref().is_some_and(|x| x.letters() == 1));
+/// Без выделения: меню строки, а не выделения; что сроки берут одно письмо, сверяет выбор срока.
+const ONE_LETTER: Input = until!(|m, cx| m.list.read(cx).selection.is_empty() && m.menu.is_some());
 
 const THREAD_REMIND: &[Input] = &[
     READY,
