@@ -4,7 +4,8 @@
 //! Письма — документами по `LetterId` ([`store::letter_ref`], S8-09): id не меняется при переносе между папками и
 //! учётками, письмо находится и после удаления у источника. Индекс собирает [`rebuild`] в фоне (после переноса
 //! формата 5, с пустой базой, со стёртым индексом); до готовности [`search`] ищет по кэшу. Письма, пришедшие в базу мимо
-//! [`rows`] (пути IMAP и EWS), [`search`] догоняет сам.
+//! [`rows`] (пути IMAP и EWS), [`search`] догоняет сам, а документы писем, которых в базе больше нет, убирает, встретив
+//! в выдаче: удаляют письма многие пути, и ни один из них индекс не трогает.
 
 use std::collections::HashSet;
 
@@ -145,14 +146,19 @@ pub fn search(
             tracing::warn!("search index: {e}");
         }
         if let Ok(hits) = index.search(query, limit.saturating_mul(4).max(limit)) {
-            let mut out = Vec::with_capacity(limit.min(hits.len()));
+            let (mut out, mut gone) = (Vec::with_capacity(limit.min(hits.len())), Vec::new());
             for id in hits.iter().filter_map(|h| store::parse_ref(h)) {
-                if cache.letter(cache_id(id))?.is_some_and(|r| in_folder(&r)) {
-                    out.push(id);
-                    if out.len() == limit {
-                        break;
-                    }
+                match cache.letter(cache_id(id))? {
+                    Some(row) if in_folder(&row) => out.push(id),
+                    Some(_) => {}
+                    None => gone.push(id),
                 }
+                if out.len() == limit {
+                    break;
+                }
+            }
+            if !gone.is_empty() {
+                forget(index, &gone);
             }
             return Ok(out);
         }
@@ -253,6 +259,19 @@ mod tests {
         assert!(found.contains(&late) && found.contains(&indexed), "{found:?}");
         assert!(seen_up_to(&cache) > before);
         assert_eq!(search(Some(&index), &cache, "квитанция", None, 50).unwrap(), [indexed]);
+    }
+
+    /// Письмо стёрто из базы мимо индекса: в выдаче его нет, документ поиск убирает.
+    #[test]
+    fn search_drops_letters_gone_from_the_store() {
+        let (_dir, cache) = demo();
+        let index = SearchIndex::in_memory().unwrap();
+        assert!(rebuild(&index, &cache, &|| false).unwrap());
+        let (letter, before) = (id(&cache, "demo7"), index.len());
+        let subject = cache.letter(cache_id(letter)).unwrap().unwrap().subject;
+        cache.delete_emails(&["demo7".to_owned()]).unwrap();
+        assert!(!search(Some(&index), &cache, &subject, None, 500).unwrap().contains(&letter));
+        assert_eq!(index.len(), before - 1);
     }
 
     /// Строки с сервера — документами по `LetterId`; документы по ключам кэша пересборка убирает.
