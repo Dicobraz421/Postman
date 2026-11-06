@@ -241,8 +241,8 @@ impl Mailer {
             let s = list.summary.as_ref().map(|s| s.summary.clone()).unwrap_or_default();
             (list.selection.ids().to_vec(), None, s.unread > 0 || s.count == 0, s.flagged < s.count || s.count == 0)
         } else {
-            // Строка беседы — её последнее письмо, а не вся беседа (решение владельца 2026-11-06, п. 10): всем письмам — выделением.
-            (vec![row.id.clone()], Some((index, row.clone())), !row.seen, !row.flagged)
+            // Строка беседы (вид «как Outlook», S5-05б) — над всей беседой; ответ, пересылка и сроки — последнее письмо.
+            (list.members_of(index), Some((index, row.clone())), !row.seen, !row.flagged)
         };
         self.list.update(cx, |l, cx| {
             l.menu_row = Some(index);
@@ -338,6 +338,8 @@ impl Mailer {
             return cx.notify();
         }
         let (ids, row, unread, unflagged) = (m.ids.clone(), m.row.clone(), m.unread, m.unflagged);
+        // Строка беседы: сроки и пересылка вложениями — последнее письмо (решение владельца 2026-11-06, п. 10), всем письмам — выделением.
+        let last = row.as_ref().map_or_else(|| ids.clone(), |(_, r)| vec![r.id.clone()]);
         self.close_menu(cx);
         let respond = |mode: Mode, this: &mut Mailer, cx: &mut Context<Mailer>| {
             if let Some((i, _)) = row.clone() {
@@ -349,14 +351,13 @@ impl Mailer {
             Item::Reply => respond(Mode::Reply, self, cx),
             Item::ReplyAll => respond(Mode::ReplyAll, self, cx),
             Item::Forward => respond(Mode::Forward, self, cx),
-            // Одно письмо или выделение (беседа — все её письма в папке) — вложениями.
-            Item::ForwardAttached => self.forward_attached(ids, cx),
+            Item::ForwardAttached => self.forward_attached(last, cx),
             Item::Seen => self.ask(ids, Ask::Seen(Some(unread)), cx),
             Item::Flag => self.ask(ids, Ask::Flag(Some(unflagged)), cx),
-            Item::Due => self.ask(ids, Ask::Lifecycle(Kind::Due), cx),
-            Item::Remind => self.ask(ids, Ask::Lifecycle(Kind::Remind), cx),
-            Item::Wait => self.ask(ids, Ask::Lifecycle(Kind::Wait), cx),
-            Item::Expire => self.ask(ids, Ask::Lifecycle(Kind::Expire), cx),
+            Item::Due => self.ask(last, Ask::Lifecycle(Kind::Due), cx),
+            Item::Remind => self.ask(last, Ask::Lifecycle(Kind::Remind), cx),
+            Item::Wait => self.ask(last, Ask::Lifecycle(Kind::Wait), cx),
+            Item::Expire => self.ask(last, Ask::Lifecycle(Kind::Expire), cx),
             Item::Archive => self.ask(ids, Ask::Archive, cx),
             Item::Delete => self.ask(ids, Ask::Trash, cx),
             Item::Phishing => self.ask(ids, Ask::Phishing, cx),
