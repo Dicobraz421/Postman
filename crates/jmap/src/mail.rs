@@ -669,6 +669,47 @@ impl Client {
         Ok((q.ids, total))
     }
 
+    /// Письмо папки с этим `Message-ID` (с угловыми скобками или без), полученное в секунду `received_at`: повтор
+    /// выгрузки без дублей. Условие `header` Stalwart не выполняет (`docs/STALWART-GAPS.md`), поэтому кандидаты — по дате
+    /// получения, а `Message-ID` сверяется по письмам.
+    pub async fn find_by_message_id(&self, mailbox_id: &str, message_id: &str, received_at: i64) -> Result<Option<String>> {
+        const PAGE: u64 = 500;
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Found {
+            id: String,
+            #[serde(default)]
+            message_id: Option<Vec<String>>,
+        }
+        let acc = self.mail_account()?;
+        let wanted = message_id.trim_start_matches('<').trim_end_matches('>');
+        let filter = Filter::And(vec![
+            Filter::InMailbox(mailbox_id.to_owned()),
+            // Stalwart: `after` — строго позже, хотя RFC 8621 велит «не раньше» (`docs/STALWART-GAPS.md`).
+            Filter::After(crate::unix_to_utc(received_at - 1)),
+            Filter::Before(crate::unix_to_utc(received_at + 1)),
+        ]);
+        let mut position = 0;
+        loop {
+            let query = json!({ "accountId": acc, "filter": filter.to_json(), "position": position, "limit": PAGE });
+            let get = json!({
+                "accountId": acc,
+                "#ids": { "resultOf": "q", "name": "Email/query", "path": "/ids" },
+                "properties": ["id", "messageId"],
+            });
+            let mut r = self.call(USING, &[inv("Email/query", query, "q"), inv("Email/get", get, "g")]).await?;
+            let g: GetResponse<Found> = take(&mut r, "g")?;
+            let seen = g.list.len() as u64;
+            if let Some(hit) = g.list.into_iter().find(|f| f.message_id.iter().flatten().any(|m| m == wanted)) {
+                return Ok(Some(hit.id));
+            }
+            if seen < PAGE {
+                return Ok(None);
+            }
+            position += PAGE;
+        }
+    }
+
     /// Письма по фильтру, новые сверху (фильтры панели, «Все папки» — без `inMailbox`).
     pub async fn filtered(&self, filter: &Filter, limit: u64) -> Result<EmailPage> {
         self.query_page(filter.to_json(), Some(0), None, limit).await

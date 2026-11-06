@@ -220,6 +220,24 @@ fn twenty_letters_to_another_account_and_back() {
     engine.online(Some("@2"));
     migrate(&mut engine, &letters, inbox(&cache, "@2"), &first, &second);
     assert_eq!(counts(&rt, &word, (0, LETTERS as usize)), (0, LETTERS as usize), "перенесено");
+
+    // Выгрузка дошла, ответ — нет (выход посреди задания): повтор находит письмо, а не кладёт второе.
+    let id = postman_cache::LetterId(letters[0].0);
+    let raw = String::from_utf8(cache.letter_content(id).unwrap().unwrap()).unwrap();
+    let message_id = raw.lines().find_map(|l| l.strip_prefix("Message-ID: ")).map(str::to_owned);
+    let (row, refs) = (cache.letter(id).unwrap().unwrap(), cache.remotes(id).unwrap());
+    let retry = Command::Import {
+        job: JobId(99),
+        letter: letters[0],
+        folder: FolderId(inbox(&cache, "@2").0),
+        keywords: Vec::new(),
+        received_at: row.received_at,
+        message_id,
+        retry: true,
+    };
+    let got = second.answers(retry);
+    assert!(matches!(&got[..], [Event::Imported { remote, .. }] if remote.id == refs[0].id), "то же письмо");
+    assert_eq!(counts(&rt, &word, (0, LETTERS as usize)), (0, LETTERS as usize), "без дубля");
     for l in &letters {
         let refs = cache.remotes(postman_cache::LetterId(l.0)).unwrap();
         assert!(refs.len() == 1 && refs[0].account == "@2" && !refs[0].detached, "{refs:?}");
