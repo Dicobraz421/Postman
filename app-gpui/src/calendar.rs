@@ -701,8 +701,9 @@ impl CalendarView {
 
     pub(crate) fn on_sync(&mut self, ev: &SyncEvent, cx: &mut Context<Self>) {
         match ev {
+            // Ждём другой период — ответ прошлого не показывать: он снял бы ожидание, и ответ нужного периода потерялся бы.
             SyncEvent::EventsLoaded { from, to, events, colleagues, account }
-                if self.pending == Some((*from, *to)) || self.parts_range == Some((*from, *to)) =>
+                if self.pending == Some((*from, *to)) || (self.pending.is_none() && self.parts_range == Some((*from, *to))) =>
             {
                 self.pending = None;
                 // Учётные записи профиля отвечают каждая за себя (S7-03б): период — сумма их ответов.
@@ -968,6 +969,11 @@ impl CalendarView {
         self.events.iter().any(|e| e.title == title && e.participants.iter().any(accepted))
     }
 
+    /// Кому открыт мой календарь.
+    pub(crate) fn access_list(&self) -> &[postman_core::sync::Access] {
+        &self.access
+    }
+
     /// В открытом диапазоне есть событие с таким названием.
     pub(crate) fn has_title(&self, title: &str) -> bool {
         self.events.iter().any(|e| e.title == title)
@@ -1162,6 +1168,13 @@ impl CalendarView {
             mine.is_some_and(|p| p.owner) && e.participants.len() > 1 && e.span.start < to && e.span.end > from
         });
         self.own = cancel.then_some(Own::Cancel);
+        cx.notify();
+    }
+
+    /// Выбрать событие открытого диапазона по названию (сцены стенда: на живой неделе событий много).
+    pub(crate) fn select_titled(&mut self, title: &str, cx: &mut Context<Self>) {
+        self.selected = self.events.iter().position(|e| e.title == title);
+        self.own = None;
         cx.notify();
     }
 
@@ -1471,6 +1484,7 @@ impl CalendarView {
         } else {
             div()
                 .id("share-open")
+                .children(crate::screens::spot("share-open"))
                 .h(px(30.))
                 .px(px(8.))
                 .flex()
@@ -1570,6 +1584,7 @@ impl CalendarView {
                         .child(
                             div()
                                 .id(("cal-access-level", n))
+                                .children(crate::screens::spot(("cal-access-level", n)))
                                 .cursor_pointer()
                                 .text_color(l.text2())
                                 .hover(|d| d.underline())
@@ -1579,6 +1594,7 @@ impl CalendarView {
                         .child(
                             div()
                                 .id(("cal-access-close", n))
+                                .children(crate::screens::spot(("cal-access-close", n)))
                                 .cursor_pointer()
                                 .text_color(l.accent_text())
                                 .hover(|d| d.underline())
@@ -2731,6 +2747,7 @@ impl CalendarView {
         let has_people = people.len() > 1;
         div()
             .id("event-details")
+            .children(crate::screens::spot("event-details"))
             .size_full()
             .overflow_y_scroll()
             .flex()

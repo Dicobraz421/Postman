@@ -447,6 +447,10 @@ async fn flush(store: &impl TaskStore, cache: &Cache, notify: &impl Fn(Reply)) -
     for row in cache.dirty_tasks().map_err(db)? {
         match push(store, &row).await {
             Ok(Some(fresh)) => {
+                if let Some(newer) = edited_meanwhile(cache, &row, &fresh).map_err(db)? {
+                    cache.put_tasks(std::slice::from_ref(&newer)).map_err(db)?;
+                    continue;
+                }
                 cache.put_tasks(std::slice::from_ref(&fresh)).map_err(db)?;
                 notify(Reply::Changed(from_row(&fresh).into_iter().collect()));
             }
@@ -474,6 +478,17 @@ async fn flush(store: &impl TaskStore, cache: &Cache, notify: &impl Fn(Reply)) -
         }
     }
     Ok(())
+}
+
+/// Пока запись шла, задачу правили: кэш пишет и поток интерфейса (`save_local`), и строка с сервера затёрла бы новую
+/// правку молча. Правка остаётся неотправленной, её база — то, что теперь на сервере; уйдёт следующим `Flush`.
+fn edited_meanwhile(cache: &Cache, sent: &TaskRow, fresh: &TaskRow) -> postman_cache::Result<Option<TaskRow>> {
+    Ok(cache.task(&sent.uid)?.filter(|now| now.json != sent.json || now.deleted != sent.deleted).map(|now| TaskRow {
+        server_id: fresh.server_id.clone(),
+        base: Some(fresh.json.clone()),
+        dirty: true,
+        ..now
+    }))
 }
 
 /// Одна правка на сервер: строка после записи (`None` — удалена).
@@ -622,6 +637,8 @@ mod tests {
         changed: RefCell<Vec<(u64, String)>>,
         offline: RefCell<bool>,
         next: RefCell<u64>,
+        /// Что случится, пока идёт запись на сервер.
+        during: RefCell<Option<Box<dyn FnOnce()>>>,
     }
 
     impl Mem {
@@ -689,6 +706,9 @@ mod tests {
             self.items.borrow_mut().insert(id.clone(), v);
             self.log.borrow_mut().push(format!("create {id}"));
             self.bump(&id, false);
+            if let Some(during) = self.during.borrow_mut().take() {
+                during();
+            }
             Ok(id)
         }
 
@@ -770,6 +790,29 @@ mod tests {
         assert_eq!(log[2], "create t1");
         assert!(log.iter().any(|l| l.starts_with("update t1") && l.contains("progress")), "{log:?}");
         assert!(log.contains(&"destroy t1".to_string()));
+    }
+
+    /// Правка в окне, пока первая запись ещё идёт на сервер: ответ сервера её не затирает, она уходит следующим `Flush`.
+    #[test]
+    fn edit_during_a_write_is_not_lost() {
+        let server = Mem::default();
+        let c = Cache::open_in_memory().unwrap();
+        let note = |_| {};
+        let edited = c.clone();
+        run(async {
+            *server.during.borrow_mut() = Some(Box::new(move || {
+                let mut t = cached(&edited).remove(0);
+                t.important = true;
+                save_local(&edited, t).unwrap();
+            }));
+            handle(&server, &c, Request::Save(Box::new(Task::new("u1", "b", "Смета"))), &note).await.unwrap();
+            assert!(cached(&c)[0].important, "правка осталась в кэше");
+            assert_eq!(c.dirty_tasks().unwrap().len(), 1);
+            handle(&server, &c, Request::Flush, &note).await.unwrap();
+            assert!(c.dirty_tasks().unwrap().is_empty());
+            assert_eq!(server.items.borrow()["t1"]["priority"], json!(1));
+            assert_eq!(cached(&c)[0].id, "t1");
+        });
     }
 
     /// Без связи: правка — в кэше сразу и помечена; сеть вернулась — `Flush` отправляет патч к серверной версии,

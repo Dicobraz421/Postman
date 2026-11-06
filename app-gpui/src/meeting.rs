@@ -1298,6 +1298,12 @@ impl MeetingView {
         self.senders.iter().position(|(e, _)| e.eq_ignore_ascii_case(email))
     }
 
+    /// Ответ о занятости участника: `None` — ещё нет ответа, `Some(None)` — «нет данных», иначе — сколько отрезков занято.
+    pub(crate) fn lane_of(&self, email: &str) -> Option<Option<usize>> {
+        let found = self.busy.people.iter().find(|(e, _)| e.eq_ignore_ascii_case(email))?;
+        Some(found.1.as_ref().map(Vec::len))
+    }
+
     /// Подписи чипов обязательных участников.
     pub(crate) fn chip_names(&self) -> Vec<String> {
         self.chips[0].iter().map(|c| c.display().to_string()).collect()

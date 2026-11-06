@@ -26,6 +26,7 @@
 //!   Без них, как и правил и автоответа, — нет.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
@@ -383,6 +384,24 @@ fn rekey(cache: &Cache, scope: Option<&str>, g: &Folder, raw: &str) -> postman_c
 
 /// Синхронизация учётной записи IMAP: свой поток, как у JMAP (`postman_core::sync::spawn_thread`). `areas` — пути
 /// областей реестра: подключаются те, чьи адреса есть у учётной записи.
+/// Писем в окне «Отменить» у всех учётных записей этого пути, ещё не ушедших.
+static HOLDING: AtomicUsize = AtomicUsize::new(0);
+/// Приложение выходит: удержанные письма — сейчас, а не по сроку.
+static LEAVING: AtomicBool = AtomicBool::new(false);
+/// Как часто удержание смотрит на [`LEAVING`].
+const LEAVE_LOOK: Duration = Duration::from_millis(100);
+
+/// Приложение выходит: письма в окне «Отменить» уходят сейчас. Процесс ждёт их по [`holding`]: без этого письмо пропало бы
+/// вместе с потоком синхронизации.
+pub fn leave() {
+    LEAVING.store(true, Ordering::Relaxed);
+}
+
+/// Сколько писем ещё держит этот путь.
+pub fn holding() -> usize {
+    HOLDING.load(Ordering::Relaxed)
+}
+
 pub fn spawn(
     account: ImapAccount,
     profile: Option<String>,
@@ -414,6 +433,8 @@ struct Imap {
     /// Календарь, задачи и контакты — пути областей (S7-05б): ключ и подключение; пусто — у учётной записи только
     /// почта.
     areas: Vec<(&'static str, Box<dyn Areas>)>,
+    /// Первая сверка прошла: опрос раз в [`POLL`] идёт молча, `Status::Loading` — только первая загрузка.
+    loaded: bool,
 }
 
 /// Письмо, которое держит синхронизация до срока окна «Отменить».
@@ -452,6 +473,7 @@ async fn run(
         held: Vec::new(),
         next_hold: 0,
         areas: Vec::new(),
+        loaded: false,
     };
     notify(Event::Status(Status::SignedIn { user: me.account.email.clone() }));
     let login = Login { user: me.account.imap.user.clone(), password: me.account.imap.password.clone(), email: me.account.email.clone() };
@@ -470,6 +492,8 @@ async fn run(
         }
     }
     let address = Address::new("", &me.account.email);
+    // Задачи — у основной учётной записи, как у JMAP (S7-03б): сами они не приходят, сверять нужно из этого цикла.
+    let tasks = me.profile.is_none() && me.areas.iter().any(|(_, a)| a.features().has(Feature::Tasks));
     if me.profile.is_none() {
         // Основная учётная запись IMAP: почта и то, что нашлось по CalDAV/CardDAV (S7-03а «Нет у сервера — нет на
         // экране»). Ключевые слова (категории, сроки, «Ждём») — если сервер их хранит: `PERMANENTFLAGS \*` у «Входящих».
@@ -495,6 +519,10 @@ async fn run(
     if let Err(e) = me.cache.replace_accounts_of(me.profile.as_deref(), &rows) {
         return notify(Event::Error(error(Stage::Load, &db(e))));
     }
+    // Задачи — из кэша сразу, с сервера — дельта; экран задач ждёт этого ответа. Сбой — тостом, почта работает.
+    if tasks {
+        me.area_command(Command::Tasks(postman_core::tasks::Request::Load), notify).await;
+    }
     if let Err(e) = me.refresh_all(notify).await {
         let stop = e.kind == ErrorKind::Auth;
         notify(Event::Error(e));
@@ -502,6 +530,7 @@ async fn run(
             return;
         }
     }
+    me.loaded = true;
     notify(Event::Status(Status::Synced));
     let (idle_tx, mut idle_rx) = unbounded_channel::<()>();
     tokio::spawn(idle_loop(me.account.imap.clone(), idle_tx));
@@ -537,18 +566,25 @@ async fn run(
                     notify(Event::MailboxesChanged);
                 }
             }
-            () = held_until(me.held.iter().map(|h| h.at).min()) => me.release_held(false, notify).await,
+            () = held_until(me.held.iter().map(|h| h.at).min()) => me.release_held(LEAVING.load(Ordering::Relaxed), notify).await,
             _ = poll.tick() => {
                 if let Err(e) = me.refresh_all(notify).await {
                     notify(Event::Error(e));
                 }
                 // Области без push (CalDAV): изменения календарей — опросом (ctag и sync-token).
+                let mut changed = false;
                 for (key, a) in me.areas.iter_mut() {
                     match a.changed().await {
-                        Ok(true) => notify(Event::CalendarChanged),
-                        Ok(false) => {}
+                        Ok(c) => changed |= c,
                         Err(e) => tracing::debug!("{key} poll: {e}"),
                     }
+                }
+                if changed {
+                    // Задачи — те же записи календаря (VTODO): сверить и их.
+                    if tasks {
+                        me.area_command(Command::Tasks(postman_core::tasks::Request::Refresh), notify).await;
+                    }
+                    notify(Event::CalendarChanged);
                 }
             }
         }
@@ -557,9 +593,13 @@ async fn run(
 
 /// Срок ближайшего удержанного письма; нет — никогда.
 async fn held_until(at: Option<tokio::time::Instant>) {
-    match at {
-        Some(at) => tokio::time::sleep_until(at).await,
-        None => std::future::pending().await,
+    let Some(at) = at else { return std::future::pending().await };
+    while !LEAVING.load(Ordering::Relaxed) {
+        let now = tokio::time::Instant::now();
+        if now >= at {
+            return;
+        }
+        tokio::time::sleep((at - now).min(LEAVE_LOOK)).await;
     }
 }
 
@@ -628,7 +668,9 @@ impl Imap {
         notify(Event::MailboxesChanged);
         let mut changed = false;
         for f in self.folders.clone().iter().filter(|f| f.selectable) {
-            notify(Event::Status(Status::Loading { mailbox: f.name.clone() }));
+            if !self.loaded {
+                notify(Event::Status(Status::Loading { mailbox: f.name.clone() }));
+            }
             match self.refresh(f).await {
                 Ok(c) => changed |= c,
                 Err(e) => {
@@ -1080,6 +1122,7 @@ impl Imap {
                 tracing::warn!("imap held send: {e}");
                 notify(Event::Error(error(Stage::Command, &e)));
             }
+            HOLDING.fetch_sub(1, Ordering::Relaxed);
         }
         let folders: Vec<String> = [Role::Sent, Role::Drafts].iter().filter_map(|r| self.folder_by_role(*r).map(|f| f.key.clone())).collect();
         self.after(&folders, notify).await;
@@ -1294,6 +1337,7 @@ impl Imap {
                 // Письмо ещё здесь: не отправлять; черновик откроет интерфейс (он держит его с окна «Отменить»).
                 Some(i) => {
                     self.held.remove(i);
+                    HOLDING.fetch_sub(1, Ordering::Relaxed);
                     notify(Event::Unsent { ticket, email: String::new() });
                 }
                 None => notify(Event::UnsendFailed { ticket, too_late: true, error: String::new() }),
@@ -1310,7 +1354,10 @@ impl Imap {
                 let mut too_late = false;
                 for s in &scheduled {
                     match self.held.iter().position(|h| h.id == s.submission) {
-                        Some(i) => drop(self.held.remove(i)),
+                        Some(i) => {
+                            self.held.remove(i);
+                            HOLDING.fetch_sub(1, Ordering::Relaxed);
+                        }
                         None => too_late = true,
                     }
                 }
@@ -1492,6 +1539,7 @@ impl Imap {
         let send_at = jiff::Timestamp::now().as_second() + i64::from(secs);
         let at = tokio::time::Instant::now() + Duration::from_secs(u64::from(secs));
         self.held.push(Held { id: id.clone(), draft, replace, at });
+        HOLDING.fetch_add(1, Ordering::Relaxed);
         postman_core::send_later::Scheduled { submission: id.clone(), email: id, send_at }
     }
 

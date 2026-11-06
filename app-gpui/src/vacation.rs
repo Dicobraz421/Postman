@@ -276,6 +276,8 @@ pub(crate) struct VacationPanel {
     pub(crate) error: Option<String>,
     /// Предупреждение под переключателем (S4-07: другой фильтр сервера будет выключен).
     pub(crate) warning: Option<String>,
+    /// Что сервер не применил при последнем сохранении: автоответ работает, но не весь.
+    pub(crate) limit: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -349,6 +351,7 @@ impl VacationPanel {
             busy: false,
             error: None,
             warning: None,
+            limit: None,
             _subscriptions: subscriptions,
         };
         p.paint(0, cx);
@@ -402,6 +405,7 @@ impl VacationPanel {
         self.busy = false;
         self.touched = false;
         self.error = None;
+        self.limit = None;
         self.form = from_server(v, reply, &tz());
         self.saved = self.form.clone();
         self.saved_at = Some(now_hm());
@@ -413,6 +417,13 @@ impl VacationPanel {
         self.busy = false;
         self.loading = false;
         self.error = Some(error);
+        cx.notify();
+    }
+
+    /// Сохранено, но сервер применил не всё.
+    pub(crate) fn limited(&mut self, text: String, cx: &mut Context<Self>) {
+        self.busy = false;
+        self.limit = Some(text);
         cx.notify();
     }
 
@@ -896,6 +907,7 @@ impl Render for VacationPanel {
             .child(self.texts(&l, window, cx))
             .child(self.extra(&l, cx))
             .when_some(self.error.clone(), |d, e| d.child(div().pt_2().text_color(l.error()).child(e)))
+            .when_some(self.limit.clone(), |d, t| d.child(div().pt_2().text_color(l.warning()).child(t)))
             .child(self.footer(&l, cx));
         let tip = crate::settings_tab::aside_card(tr!("vacation-tip"), vec![tr!("vacation-tip-1"), tr!("vacation-tip-2")], &l);
         div()

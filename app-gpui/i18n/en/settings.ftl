@@ -51,6 +51,7 @@ vacation-saved-at = Saved on the server · { $time }
 vacation-saved = Automatic replies saved and turned on.
 vacation-saved-off = Automatic replies are off.
 vacation-failed = Automatic replies not saved: { $error }
+vacation-one-text = Saved with a limit: this server keeps one automatic reply for everyone. Separate texts, the audience and the Out of office event are not applied.
 vacation-bad-from = The “from” date is not recognized: DD.MM.YYYY or DD.MM.YYYY HH:MM.
 vacation-bad-to = The “to” date is not recognized: DD.MM.YYYY or DD.MM.YYYY HH:MM.
 vacation-bad-order = The “to” date is before the “from” date.

@@ -502,6 +502,15 @@ impl Mailer {
                 }
             }
             Reply::Unsupported(Area::Quota) => {}
+            // Записано, но не всё: строка в панели, а не «не сохранён».
+            Reply::Failed { area: Area::Vacation, error } if crate::plugins::autoreply_limited(error) => {
+                tracing::info!("vacation: {error}");
+                let text = tr!("vacation-one-text");
+                match &vacation {
+                    Some(p) => p.update(cx, |p, cx| p.limited(text, cx)),
+                    None => self.toasts.update(cx, |t, cx| t.push(Toast::Warning, text, cx)),
+                }
+            }
             Reply::Failed { area: Area::Vacation, error } => {
                 tracing::warn!("vacation: {error}");
                 let text = tr!("vacation-failed", error = error.clone());

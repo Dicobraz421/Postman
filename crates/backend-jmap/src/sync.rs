@@ -116,6 +116,11 @@ fn report(e: impl Kinded, stage: Stage, notify: &impl Fn(Event)) -> bool {
     postman_core::sync::report(sync_error(stage, &e), notify)
 }
 
+/// Сервер не даёт читать почту этого аккаунта.
+fn no_mail_rights(e: &postman_jmap::Error) -> bool {
+    matches!(e, postman_jmap::Error::Method { kind, .. } if kind == "forbidden")
+}
+
 /// Где изменилась почта по событию push.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum MailChange {
@@ -348,9 +353,18 @@ async fn run(
         me: me.filter(|_| !main),
     };
     accounts.own.state = Some(start_state(&accounts.own, &mut cache, &index, notify).await.map_err(|e| sync_error(Stage::Load, &e))?);
-    for acc in &mut accounts.shared {
-        match start_state(acc, &mut cache, &index, notify).await {
+    let mut opened = Vec::with_capacity(accounts.shared.len());
+    for mut acc in std::mem::take(&mut accounts.shared) {
+        match start_state(&acc, &mut cache, &index, notify).await {
             Ok(s) => acc.state = Some(s),
+            // Открыт только календарь (`read` на него у Stalwart даёт аккаунт в сессии, а почта — `forbidden`): почты здесь нет,
+            // это не ошибка, и сверять такой аккаунт незачем. Календарь идёт своим путём (`schedule.rs`).
+            Err(e) if no_mail_rights(&e) => {
+                tracing::info!("shared account without mail is skipped");
+                rows.retain(|r| Some(r.id.as_str()) != acc.scope());
+                cache.replace_accounts_of(p, &rows).map_err(|e| sync_error(Stage::Load, &db_err(e)))?;
+                continue;
+            }
             // Общий ящик не загрузился — свой работает; повтор — со следующей сверкой.
             Err(e) => {
                 if report(e, Stage::Load, notify) {
@@ -358,7 +372,9 @@ async fn run(
                 }
             }
         }
+        opened.push(acc);
     }
+    accounts.shared = opened;
     notify(Event::Status(Status::Synced));
     notify_scheduled(&accounts, &send_as, notify).await;
     let mut poll = tokio::time::interval(POLL);
@@ -708,9 +724,10 @@ async fn apply_refresh(
 /// Держит EventSource и будит основной цикл на каждое событие `state` (с тем, что изменилось).
 async fn push_loop(client: Client, wake: UnboundedSender<Changed>) {
     let mut backoff = 5;
-    // Первое подключение — сразу после загрузки: календарь ещё не открывали, сверять только почту.
+    // Первое подключение — сразу после загрузки: сверить почту и календарь с задачами (правка другого клиента между загрузкой
+    // и подключением иначе ждала бы следующего события), таблицы файлов только что прочитаны.
     let mut first = true;
-    let mail = || Changed { mail: MailChange::All, calendar: false, files: MailChange::None };
+    let mail = || Changed { mail: MailChange::All, calendar: true, files: MailChange::None };
     loop {
         match client.event_source(PUSH_PING).await {
             Ok(mut es) => {

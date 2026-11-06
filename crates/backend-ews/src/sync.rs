@@ -31,6 +31,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use postman_cache::{
@@ -315,6 +316,26 @@ struct Ews {
     held: Vec<Held>,
     next_hold: u64,
     areas: Option<EwsAreas>,
+    /// Первая сверка прошла: дальше сверки молчат, `Status::Loading` — только первая загрузка.
+    loaded: bool,
+}
+
+/// Писем в окне «Отменить» у всех учётных записей этого пути, ещё не ушедших.
+static HOLDING: AtomicUsize = AtomicUsize::new(0);
+/// Приложение выходит: удержанные письма — сейчас, а не по сроку.
+static LEAVING: AtomicBool = AtomicBool::new(false);
+/// Как часто удержание смотрит на [`LEAVING`].
+const LEAVE_LOOK: Duration = Duration::from_millis(100);
+
+/// Приложение выходит: письма в окне «Отменить» уходят сейчас. Процесс ждёт их по [`holding`]: без этого письмо пропало бы
+/// вместе с потоком синхронизации.
+pub fn leave() {
+    LEAVING.store(true, Ordering::Relaxed);
+}
+
+/// Сколько писем ещё держит этот путь.
+pub fn holding() -> usize {
+    HOLDING.load(Ordering::Relaxed)
 }
 
 /// Письмо, которое держит синхронизация до срока окна «Отменить».
@@ -460,6 +481,7 @@ async fn run(
         held: Vec::new(),
         next_hold: 0,
         areas: None,
+        loaded: false,
     };
     notify(Event::Status(Status::SignedIn { user: me.email.clone() }));
     match EwsAreas::connect(&ews_url, &user, &password, &me.email).await {
@@ -499,6 +521,7 @@ async fn run(
             return;
         }
     }
+    me.loaded = true;
     notify(Event::Status(Status::Synced));
     let mut poll = tokio::time::interval(POLL);
     poll.tick().await;
@@ -518,7 +541,7 @@ async fn run(
                     notify(Event::Error(sync_error(Stage::Command, &e)));
                 }
             }
-            () = held_until(me.held.iter().map(|h| h.at).min()) => me.release_held(false, notify).await,
+            () = held_until(me.held.iter().map(|h| h.at).min()) => me.release_held(LEAVING.load(Ordering::Relaxed), notify).await,
             Some(w) = watch_rx.recv() => me.on_watch(w, notify).await,
             _ = poll.tick() => {
                 if let Some(tree) = poll_plan(me.subscribed, me.tree_at, tokio::time::Instant::now())
@@ -670,9 +693,13 @@ async fn watch(url: String, auth: postman_ews::Auth, tx: UnboundedSender<Watch>)
 }
 
 async fn held_until(at: Option<tokio::time::Instant>) {
-    match at {
-        Some(at) => tokio::time::sleep_until(at).await,
-        None => std::future::pending().await,
+    let Some(at) = at else { return std::future::pending().await };
+    while !LEAVING.load(Ordering::Relaxed) {
+        let now = tokio::time::Instant::now();
+        if now >= at {
+            return;
+        }
+        tokio::time::sleep((at - now).min(LEAVE_LOOK)).await;
     }
 }
 
@@ -863,7 +890,9 @@ impl Ews {
         notify(Event::MailboxesChanged);
         let mut changed = false;
         for f in self.folders.clone() {
-            notify(Event::Status(Status::Loading { mailbox: f.name.clone() }));
+            if !self.loaded {
+                notify(Event::Status(Status::Loading { mailbox: f.name.clone() }));
+            }
             match self.refresh(&f).await {
                 Ok(c) => changed |= c,
                 Err(e) => {
@@ -1372,6 +1401,7 @@ impl Ews {
                 tracing::warn!("ews held send: {e}");
                 notify(Event::Error(sync_error(Stage::Command, &e)));
             }
+            HOLDING.fetch_sub(1, Ordering::Relaxed);
         }
         let folders = self.sent_and_drafts();
         self.after(&folders, notify).await;
@@ -1387,6 +1417,7 @@ impl Ews {
         let send_at = jiff::Timestamp::now().as_second() + i64::from(secs);
         let at = tokio::time::Instant::now() + Duration::from_secs(u64::from(secs));
         self.held.push(Held { id: id.clone(), draft, replace, at });
+        HOLDING.fetch_add(1, Ordering::Relaxed);
         postman_core::send_later::Scheduled { submission: id.clone(), email: id, send_at }
     }
 
@@ -1523,6 +1554,7 @@ impl Ews {
             Command::Unsend { scheduled, ticket } => match self.held.iter().position(|h| h.id == scheduled.submission) {
                 Some(i) => {
                     self.held.remove(i);
+                    HOLDING.fetch_sub(1, Ordering::Relaxed);
                     notify(Event::Unsent { ticket, email: String::new() });
                 }
                 None => notify(Event::UnsendFailed { ticket, too_late: true, error: String::new() }),
@@ -1561,7 +1593,10 @@ impl Ews {
                 let mut too_late = false;
                 for s in &scheduled {
                     match self.held.iter().position(|h| h.id == s.submission) {
-                        Some(i) => drop(self.held.remove(i)),
+                        Some(i) => {
+                            self.held.remove(i);
+                            HOLDING.fetch_sub(1, Ordering::Relaxed);
+                        }
                         None => too_late = true,
                     }
                 }
