@@ -66,6 +66,13 @@ fn id_of(url: &str) -> String {
     format!("{:016x}", h.finish())
 }
 
+/// Имя подписки с ключом `key` (`ics:…`) для строк настроек: ключ пользователю ничего не говорит.
+pub(crate) fn name_of_key(cal: &postman_core::prefs::Calendar, key: &str) -> Option<String> {
+    let id = key.strip_prefix(PREFIX)?;
+    let sub = cal.subscriptions.iter().find(|s| id_of(&s.url) == id);
+    Some(sub.map(|s| s.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| pets_i18n::tr!("cal-sub-new")))
+}
+
 /// Каталог файлов подписок; демо и снимки — временный: данные Postman они не трогают.
 fn dir(live: bool) -> PathBuf {
     if live { crate::data_dir().join("subscriptions") } else { std::env::temp_dir().join("postman-demo-subscriptions") }
@@ -114,17 +121,33 @@ impl CalendarView {
     pub(crate) fn start_subscriptions(&mut self, worker: Arc<Mutex<Client>>, cx: &mut Context<Self>) {
         self.worker = Some(worker);
         self.subs = crate::prefs::get(cx).calendar.subscriptions.into_iter().map(Sub::new).collect();
-        self.load_subs(cx);
-        self.fetch_subs(false, cx);
+        // Первый проход — после создания окна: живой ящик включается уже потом (`go_live`), а демо-проход писал бы своё и
+        // считал подписку проверенной.
         cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(TICK).await;
-                if this.update(cx, |v, cx| v.fetch_subs(false, cx)).is_err() {
+                let pass = this.update(cx, |v, cx| {
+                    v.load_subs(cx);
+                    v.fetch_subs(false, cx);
+                });
+                if pass.is_err() {
                     return;
                 }
+                cx.background_executor().timer(TICK).await;
             }
         })
         .detach();
+    }
+
+    /// Живой ящик включён: подписки — заново, из своего каталога и с сервера; демо-проход (если успел) не считается.
+    pub(super) fn subs_go_live(&mut self, cx: &mut Context<Self>) {
+        for sub in &mut self.subs {
+            sub.events.clear();
+            sub.fetching = false;
+            sub.checked = None;
+            sub.failed = false;
+        }
+        self.load_subs(cx);
+        self.fetch_subs(false, cx);
     }
 
     /// События подписок — за показанный период, из файлов.
@@ -266,12 +289,59 @@ impl CalendarView {
     pub(crate) fn has_subscription_events(&self) -> bool {
         self.subs.iter().any(|s| !s.events.is_empty())
     }
+
+    /// Подписки на экране: имя и «не обновился» (сцены).
+    pub(crate) fn subs_state(&self) -> Vec<(String, bool)> {
+        self.subs.iter().map(|s| (s.shown_name(), s.failed)).collect()
+    }
+
+    /// Идёт обновление подписки (сцены).
+    pub(crate) fn subs_fetching(&self) -> bool {
+        self.subs.iter().any(|s| s.fetching)
+    }
+
+    /// Все подписки проверены после `since` (сцены).
+    pub(crate) fn subs_checked_since(&self, since: Instant) -> bool {
+        self.subs.iter().all(|s| !s.fetching && s.checked.is_some_and(|t| t >= since))
+    }
+
+    /// События подписок показанного периода (сцены).
+    pub(crate) fn sub_events(&self) -> Vec<&Event> {
+        self.events.iter().filter(|e| is_subscription(e)).collect()
+    }
+
+    /// Номера событий подписок на весь день (сцены).
+    pub(crate) fn sub_events_all_day(&self) -> Vec<usize> {
+        self.events.iter().enumerate().filter(|(_, e)| is_subscription(e) && e.all_day).map(|(i, _)| i).collect()
+    }
+
+    /// Названия событий подписок без скрытых флажком, без повторов (сцены).
+    pub(crate) fn visible_sub_titles(&self) -> Vec<String> {
+        let mut titles: Vec<String> = self.events.iter().filter(|e| is_subscription(e) && !self.hidden(e)).map(|e| e.title.clone()).collect();
+        titles.sort();
+        titles.dedup();
+        titles
+    }
+
+    /// Показать меню образца цвета подписки `n` (сцены).
+    pub(crate) fn open_sub_menu(&mut self, n: usize, cx: &mut Context<Self>) {
+        self.color_menu = self.subs.get(n).map(Sub::key);
+        cx.notify();
+    }
+
+    /// С прошлой проверки подписок прошло `age`: тот же шаг таймера, что и в работе (сцены).
+    pub(crate) fn expire_subs(&mut self, age: Duration, cx: &mut Context<Self>) {
+        for sub in &mut self.subs {
+            sub.checked = Instant::now().checked_sub(age);
+        }
+        self.fetch_subs(false, cx);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     // Не `super::*`: вместе с gpui пришёл бы атрибут `gpui::test`, он перекрывает `#[test]`.
-    use super::{CalendarSubscription, EventStatus, FreeBusy, IcsEvent, Sub, event_of, id_of, is_subscription};
+    use super::{CalendarSubscription, EventStatus, FreeBusy, IcsEvent, Sub, event_of, id_of, is_subscription, name_of_key};
 
     /// Экземпляры повтора отличаются временем, событие — только для чтения и подписано календарём.
     #[test]
@@ -295,5 +365,15 @@ mod tests {
         assert_eq!((event.status, event.free_busy), (EventStatus::Tentative, FreeBusy::Free));
         assert!(event.participants.is_empty());
         assert_eq!(id_of(" https://cal.example.test/a.ics "), sub.id);
+    }
+
+    /// В строках настроек — имя подписки, ключи коллег не трогаются.
+    #[test]
+    fn settings_show_the_name() {
+        let url = "https://cal.example.test/a.ics".to_owned();
+        let sub = Sub::new(CalendarSubscription { url: url.clone(), name: "A".into() });
+        let cal = postman_core::prefs::Calendar { subscriptions: vec![CalendarSubscription { url, name: "A".into() }], ..Default::default() };
+        assert_eq!(name_of_key(&cal, &sub.key()).as_deref(), Some("A"));
+        assert_eq!(name_of_key(&cal, "colleague@example.test"), None);
     }
 }

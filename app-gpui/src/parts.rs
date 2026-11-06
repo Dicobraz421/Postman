@@ -42,6 +42,7 @@ pub(crate) const PARTS: &[Part] = &[
     crate::drill_mail::PART,
     crate::drill_tasks::PART,
     crate::drill_stand::PART,
+    crate::drill_net::PART,
 ];
 
 /// Тексты всех частей (без `pets_ui::FTL`: его добавляет запуск).

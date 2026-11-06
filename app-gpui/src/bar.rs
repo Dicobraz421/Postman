@@ -108,6 +108,8 @@ impl Render for CommandBar {
         let l = look(cx);
         let new = div()
             .id("bar-new")
+            .relative()
+            .children(crate::screens::spot("bar-new"))
             .h(px(32.))
             .px(px(14.))
             .mr(px(12.))

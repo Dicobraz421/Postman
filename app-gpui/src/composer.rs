@@ -743,7 +743,7 @@ impl Composer {
 
     /// Адреса без сертификата — в каталог (S5-12 Ф5): `explicit` — «Найти в каталоге», иначе — при отправке.
     fn find_in_directory(&mut self, explicit: bool, cx: &mut Context<Self>) {
-        let addrs: Vec<String> = self
+        let mut addrs: Vec<String> = self
             .model
             .checks()
             .filter_map(|c| match c {
@@ -754,6 +754,11 @@ impl Composer {
             .collect();
         if addrs.is_empty() {
             return;
+        }
+        // Свой сертификат нужен тоже, но замечание о нём появится, только когда найдутся адресаты: спросить сразу.
+        let from = self.model.from().email.clone();
+        if crate::smime_seal::lock(&self.certs).families(&from).is_none_or(|f| f.is_empty()) && !addrs.contains(&from) {
+            addrs.push(from);
         }
         let mailer = self.mailer.clone();
         cx.defer(move |cx| {
@@ -842,6 +847,23 @@ impl Composer {
 
     /// Подписи на выбор: «без подписи», свои подписи для адреса «От» (настройки, S5-09) и подписи адресов «От»
     /// (своя и общих ящиков) без повторов.
+    /// Адреса замечания «Нет сертификата» (сцены).
+    pub(crate) fn no_certificate(&self) -> Vec<String> {
+        self.model
+            .checks()
+            .filter_map(|c| match c {
+                Check::NoCertificate { addresses, .. } => Some(addresses.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    }
+
+    /// У адресата есть замок: сертификат принят (сцены).
+    pub(crate) fn locked(&self, email: &str) -> bool {
+        self.model.confidential && crate::smime_seal::lock(&self.certs).families(email).is_some_and(|f| !f.is_empty())
+    }
+
     /// Открыто меню «Подпись».
     pub(crate) fn signature_menu_open(&self) -> bool {
         self.menu == Menu::Signature
@@ -1723,17 +1745,23 @@ impl Composer {
                 tr!("checks-review"),
                 tr!("checks-ok"),
             ),
-            Check::NoCertificate { names, .. } => (
-                tr!("checks-no-cert", names = names.join(", ")),
-                match crate::smime_seal::lock(&self.certs).directory.clone() {
-                    Some(DirectoryStatus::Searching) => tr!("checks-no-cert-searching"),
-                    Some(DirectoryStatus::Failed(e)) => tr!("checks-no-cert-directory-failed", reason = e),
-                    Some(DirectoryStatus::Done { .. }) => tr!("checks-no-cert-not-in-directory"),
-                    None => tr!("checks-no-cert-detail"),
-                },
-                tr!("checks-no-cert-remove"),
-                if self.confirm_unmark { tr!("checks-no-cert-unmark-confirm") } else { tr!("checks-no-cert-unmark") },
-            ),
+            Check::NoCertificate { names, addresses } => {
+                let (status, asked) = {
+                    let book = crate::smime_seal::lock(&self.certs);
+                    (book.directory.clone(), book.directory_asked(addresses))
+                };
+                (
+                    tr!("checks-no-cert", names = names.join(", ")),
+                    match status {
+                        Some(DirectoryStatus::Searching) => tr!("checks-no-cert-searching"),
+                        Some(DirectoryStatus::Failed(e)) => tr!("checks-no-cert-directory-failed", reason = e),
+                        Some(DirectoryStatus::Done { .. }) if asked => tr!("checks-no-cert-not-in-directory"),
+                        _ => tr!("checks-no-cert-detail"),
+                    },
+                    tr!("checks-no-cert-remove"),
+                    if self.confirm_unmark { tr!("checks-no-cert-unmark-confirm") } else { tr!("checks-no-cert-unmark") },
+                )
+            }
             Check::Split { gost } => (tr!("checks-split", names = gost.join(", ")), tr!("checks-split-detail"), tr!("checks-ok"), tr!("checks-ok")),
             Check::Moved { name, from, to, last } => (
                 tr!("checks-moved", name = name.clone()),
@@ -1774,6 +1802,8 @@ impl Composer {
         let directory = (matches!(c, Check::NoCertificate { .. }) && !searching).then(|| {
             div()
                 .id(ElementId::NamedInteger("check-directory".into(), i as u64))
+                .relative()
+                .children(crate::screens::spot(ElementId::NamedInteger("check-directory".into(), i as u64)))
                 .cursor_pointer()
                 .text_color(l.accent_text())
                 .hover(|d| d.underline())

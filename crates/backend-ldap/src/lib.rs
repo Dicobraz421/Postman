@@ -232,11 +232,18 @@ fn tls_config() -> Result<Arc<rustls::ClientConfig>, DirectoryError> {
     use rustls_platform_verifier::BuilderVerifierExt as _;
     let tls = |e: rustls::Error| DirectoryError::Unavailable(e.to_string());
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    let config = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .map_err(tls)?
-        .with_platform_verifier()
-        .map_err(tls)?
-        .with_no_client_auth();
-    Ok(Arc::new(config))
+    let builder = rustls::ClientConfig::builder_with_provider(provider.clone()).with_safe_default_protocol_versions().map_err(tls)?;
+    #[cfg(debug_assertions)]
+    if let Some(root) = stand_root() {
+        let verifier = rustls_platform_verifier::Verifier::new_with_extra_roots([root], provider).map_err(tls)?;
+        return Ok(Arc::new(builder.dangerous().with_custom_certificate_verifier(Arc::new(verifier)).with_no_client_auth()));
+    }
+    Ok(Arc::new(builder.with_platform_verifier().map_err(tls)?.with_no_client_auth()))
+}
+
+/// Только отладочная сборка, сцены `drill_net`: корень стенда (DER, файл `POSTMAN_TEST_CA`) рядом с корнями Windows. Цепочку и
+/// имя сервера по-прежнему проверяет Windows; в выпуске этого кода нет, хранилище ОС не трогается (`docs/DEV.md`, «Стенд сети»).
+#[cfg(debug_assertions)]
+fn stand_root() -> Option<rustls::pki_types::CertificateDer<'static>> {
+    std::fs::read(std::env::var_os("POSTMAN_TEST_CA")?).ok().map(Into::into)
 }
