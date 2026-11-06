@@ -2854,8 +2854,16 @@ impl crate::Mailer {
                 self.toasts.update(cx, |t, cx| t.push_action(Toast::Info, text.clone(), act, cx));
                 // Окно свёрнуто или не в фокусе — ещё и уведомление Windows (решение 7).
                 let active = self.window.update(cx, |_, window, _| window.is_window_active()).unwrap_or(true);
-                if !active && let Err(e) = crate::sys::shell::notify(&tr!("tasks-remind-title"), title) {
-                    tracing::warn!("task reminder notification: {e}");
+                if !active {
+                    // В фоне: показ — вызов COM в другой процесс, поток окна на это время качает сообщения при занятом `App`,
+                    // и кадр окна теряется (`RefCell already borrowed`).
+                    let (head, title) = (tr!("tasks-remind-title"), title.clone());
+                    cx.background_spawn(async move {
+                        if let Err(e) = crate::sys::shell::notify(&head, &title) {
+                            tracing::warn!("task reminder notification: {e}");
+                        }
+                    })
+                    .detach();
                 }
             }
             TasksAction::Undo { text, undo } => {

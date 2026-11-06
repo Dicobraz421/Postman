@@ -752,6 +752,7 @@ impl Mailer {
         Some(
             div()
                 .id("migration-status")
+                .children(crate::screens::spot("migration-status"))
                 .h(px(22.))
                 .px(px(6.))
                 .flex()
