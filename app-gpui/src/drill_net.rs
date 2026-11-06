@@ -91,10 +91,15 @@ const SCENES: &[Scene] = &[
     scene("net-s844-kept", week, kept_offline, KEPT),
     // S8-44, шаг 7: «Удалить»: календари и события ушли (файлы сверяет `net.py`).
     scene("net-s844-remove", week, |_, m, cx| subs(m, cx).is_empty() && visible(m, cx).is_empty(), REMOVE),
-    // Известные дефекты воркера (группа `defects`), S8-44, шаг 3, и S8-42, шаг 4: бесконечные серии календаря.
-    scene("net-series-endless", week, all_series, ENDLESS),
-    // Серия со временем UTC (`DTSTART:…Z`) — в свой час при поясе показа не UTC.
-    scene("net-series-utc", week, utc_series, UTC),
+    // S8-44, шаг 3: тысячи бесконечных серий с 2015 года в одном файле: серии недели — все, каждая в свой час.
+    scene("net-series-many", week, all_series, MANY),
+    // S8-44, шаг 3: серии с `UNTIL` в UTC: то же.
+    scene("net-series-until", week, all_series, UNTIL),
+    // S8-44, шаг 3: как пишут Outlook и Google: исключения, перенос и отмена экземпляра, `COUNT`, `UNTIL` на последнем экземпляре,
+    // плавающее время, старт в 2015 году, весь день.
+    scene("net-series-outlook", week, outlook_series, OUTLOOK),
+    // S8-42, шаг 4: тот же файл по ссылке занятости.
+    scene("net-series-busy", meeting, outlook_busy, LINK_SERIES),
     // S5-12.5, шаги 1, 6: `ldaps://`, имя и пароль: «Сохранён…», запись в Диспетчере; «Проверить» — отвечает.
     scene("net-s5125-ldaps", password_login, |_, m, cx| check_ok(m, cx, 1) && password_kept(LDAPS), LDAPS_CHECK),
     // S5-12.5, шаг 7: имя и пароль по `ldap://` без StartTLS: «Каталог недоступен», входа на сервере нет (сверяет `net.py`).
@@ -119,8 +124,10 @@ const SCENES: &[Scene] = &[
 
 /// Источники (`docs/stand/net.py`): имена настоящие для клиента, сервера за прокси на 127.0.0.1.
 const SUBSCRIPTION: &str = "https://cal.example.test/public/basic.ics";
-const ENDLESS_ICS: &str = "https://cal.example.test/public/endless.ics";
-const UTC_ICS: &str = "https://cal.example.test/public/utc.ics";
+const MANY_ICS: &str = "https://cal.example.test/public/many.ics";
+const UNTIL_ICS: &str = "https://cal.example.test/public/until.ics";
+const OUTLOOK_ICS: &str = "https://cal.example.test/public/outlook.ics";
+const LINK_OUTLOOK: &str = "https://cal.example.test/free-busy/outlook.ics";
 const SECOND_WEBCAL: &str = "webcal://cal.example.test/public/second.ics";
 const LINK_ICS: &str = "https://cal.example.test/free-busy/guest.ics";
 const LINK_VFB: &str = "https://cal.example.test/free-busy/guest.vfb";
@@ -210,18 +217,26 @@ const ADD_GUEST: &[Input] = &[
     until!(|m, cx| view(m, cx).is_some_and(|v| v.chips().0 == 1)),
 ];
 
-const LINK: &[Input] = &[
-    OPENED,
-    Input::Keys(&["ctrl-shift-b"]),
-    Input::Text(GUEST),
-    Input::Keys(&["enter"]),
-    until!(|m, cx| view(m, cx).is_some_and(|v| v.chips().0 == 1 && v.ready())),
-    Input::Run(remember_unknown),
-    Input::Press(GUEST_ROW),
-    Input::Text(LINK_ICS),
-    Input::Keys(&["enter"]),
-    until!(|m, cx| view(m, cx).is_some_and(|v| v.link_loading(GUEST))),
-];
+/// Участник и его ссылка: «Загружаю…» показано.
+macro_rules! guest_link {
+    ($url:expr) => {
+        &[
+            OPENED,
+            Input::Keys(&["ctrl-shift-b"]),
+            Input::Text(GUEST),
+            Input::Keys(&["enter"]),
+            until!(|m, cx| view(m, cx).is_some_and(|v| v.chips().0 == 1 && v.ready())),
+            Input::Run(remember_unknown),
+            Input::Press(GUEST_ROW),
+            Input::Text($url),
+            Input::Keys(&["enter"]),
+            until!(|m, cx| view(m, cx).is_some_and(|v| v.link_loading(GUEST))),
+        ]
+    };
+}
+
+const LINK: &[Input] = guest_link!(LINK_ICS);
+const LINK_SERIES: &[Input] = guest_link!(LINK_OUTLOOK);
 
 /// Строк без данных до ссылки: «счётчик вырос на одного».
 fn remember_unknown(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
@@ -494,13 +509,11 @@ const WEBCAL_ADD: &[Input] = &[Input::Press("sub-open"), Input::Text(SECOND_WEBC
 /// Событие недели от подписки: название, начало, конец, весь день, «под вопросом», занимает ли время.
 type Shown = (String, i64, i64, bool, bool, bool);
 
-/// Что должно быть в неделе (`ICS_EVENTS`, `ICS_ALL_DAY` в `net.py`, по событию каждой подписки на весь день).
-fn subscribed(c: &CalendarView, monday: Date) -> Option<Vec<Shown>> {
+/// Что должно быть в неделе от `ICS_EVENTS` в `net.py`.
+fn ics_events(monday: Date) -> Option<Vec<Shown>> {
     let timed = |title: &str, day: i64, from: (i8, i8), minutes: i64, zone: &str, tentative: bool, busy: bool| {
         at(add_days(monday, day), from.0, from.1, zone).map(|s| (title.to_owned(), s, s + minutes * 60, false, tentative, busy))
     };
-    let (day, next) = (day_start(add_days(monday, 2), c.time_zone()), day_start(add_days(monday, 3), c.time_zone()));
-    let whole = ("Весь день".to_owned(), day, next, true, false, false); // i18n-ok: данные источника
     let mut out = vec![
         timed("Пояс Outlook", 0, (12, 0), 60, "Europe/Moscow", false, true)?, // i18n-ok: данные источника
         timed("Пояс Токио", 1, (10, 0), 60, "Asia/Tokyo", false, true)?,      // i18n-ok: данные источника
@@ -508,28 +521,59 @@ fn subscribed(c: &CalendarView, monday: Date) -> Option<Vec<Shown>> {
         timed("Прозрачное", 2, (15, 0), 60, "UTC", false, false)?,            // i18n-ok: данные источника
         timed(PLAIN_EVENT, 3, (9, 0), 90, "UTC", false, true)?,
         timed("Пояс Нью-Йорк", 4, (9, 0), 60, "America/New_York", false, true)?, // i18n-ok: данные источника
-        whole.clone(),
-        whole,
     ];
     out.sort();
     Some(out)
 }
 
-fn week_matches(_: &Scene, m: &Mailer, cx: &App) -> bool {
-    let c = m.cal.read(cx);
-    let Some(monday) = c.days().first().copied() else { return false };
+/// Что должно быть в неделе двух подписок: ещё `ICS_ALL_DAY`, по событию каждой на весь день.
+fn subscribed(c: &CalendarView, monday: Date) -> Option<Vec<Shown>> {
+    let (day, next) = (day_start(add_days(monday, 2), c.time_zone()), day_start(add_days(monday, 3), c.time_zone()));
+    let whole = ("Весь день".to_owned(), day, next, true, false, false); // i18n-ok: данные источника
+    let mut out = ics_events(monday)?;
+    out.push(whole.clone());
+    out.push(whole);
+    out.sort();
+    Some(out)
+}
+
+/// Что должно быть в неделе от `ics_outlook` в `net.py`: «Исключён», «Отменён» и «Кончился» — нет, «Перенесён» — раз, в среду.
+fn outlook(tz: &jiff::tz::TimeZone, monday: Date) -> Option<Vec<Shown>> {
+    let timed = |title: &str, day: i64, hour: i8, zone: &str| {
+        at(add_days(monday, day), hour, 0, zone).map(|s| (title.to_owned(), s, s + 3600, false, false, true))
+    };
+    let floating = add_days(monday, 4).at(16, 0, 0, 0).to_zoned(tz.clone()).ok()?.timestamp().as_second();
+    let mut out = vec![
+        timed("Перенесён", 2, 14, "Europe/Moscow")?,                             // i18n-ok: данные источника
+        timed("Третий из трёх", 3, 12, "UTC")?,                                  // i18n-ok: данные источника
+        timed("Последний", 4, 15, "Asia/Tokyo")?,                                // i18n-ok: данные источника
+        ("Без пояса".to_owned(), floating, floating + 3600, false, false, true), // i18n-ok: данные источника
+        timed("С 2015", 5, 8, "America/New_York")?,                              // i18n-ok: данные источника
+        ("Весь день серии".to_owned(), day_start(add_days(monday, 6), tz), day_start(add_days(monday, 7), tz), true, false, true), // i18n-ok: данные источника
+    ];
+    out.sort();
+    Some(out)
+}
+
+/// События подписок в неделе совпали с ожидаемыми.
+fn week_is(c: &CalendarView, want: Option<Vec<Shown>>) -> bool {
     let mut got: Vec<Shown> = c
         .sub_events()
         .iter()
         .map(|e| (e.title.clone(), e.span.start, e.span.end, e.all_day, e.status == EventStatus::Tentative, e.free_busy == FreeBusy::Busy))
         .collect();
     got.sort();
-    let want = subscribed(c, monday);
     let same = want.as_ref() == Some(&got);
     if !same {
         note(format!("week: got {got:?}, want {want:?}"));
     }
-    same && all_day_stacked(c)
+    same
+}
+
+fn week_matches(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    let c = m.cal.read(cx);
+    let Some(monday) = c.days().first().copied() else { return false };
+    week_is(c, subscribed(c, monday)) && all_day_stacked(c)
 }
 
 /// Два события на весь день в один день видны оба: друг под другом, а не одно поверх другого.
@@ -542,39 +586,44 @@ fn all_day_stacked(c: &CalendarView) -> bool {
     stacked
 }
 
-const ENDLESS: &[Input] = &[
-    until!(|m, cx| m.section == Section::Calendar && m.cal.read(cx).subs_ready()),
-    Input::Press("sub-open"),
-    Input::Text(ENDLESS_ICS),
-    Input::Keys(&["enter"]),
-];
-
-const UTC: &[Input] = &[
-    until!(|m, cx| m.section == Section::Calendar && m.cal.read(cx).subs_ready()),
-    Input::Press("sub-open"),
-    Input::Text(UTC_ICS),
-    Input::Keys(&["enter"]),
-];
-
-/// «Время UTC» — в четверг в 09:00 UTC.
-fn utc_series(_: &Scene, m: &Mailer, cx: &App) -> bool {
-    let c = m.cal.read(cx);
-    let Some(monday) = c.days().first().copied() else { return false };
-    let got: Vec<i64> = c.sub_events().iter().filter(|e| e.title == PLAIN_EVENT).map(|e| e.span.start).collect();
-    let want = at(add_days(monday, 3), 9, 0, "UTC");
-    if !got.is_empty() {
-        note(format!("utc series: got {got:?}, want {want:?}"));
-    }
-    want.is_some_and(|w| got == [w])
+/// Подписка на ссылку.
+macro_rules! subscribe {
+    ($url:expr) => {
+        &[
+            until!(|m, cx| m.section == Section::Calendar && m.cal.read(cx).subs_ready()),
+            Input::Press("sub-open"),
+            Input::Text($url),
+            Input::Keys(&["enter"]),
+        ]
+    };
 }
 
-/// Все серии файла в неделе, не только первая.
+const MANY: &[Input] = subscribe!(MANY_ICS);
+const UNTIL: &[Input] = subscribe!(UNTIL_ICS);
+const OUTLOOK: &[Input] = subscribe!(OUTLOOK_ICS);
+
+/// Все серии `ICS_EVENTS`, не только первая, и каждая в свой час.
 fn all_series(_: &Scene, m: &Mailer, cx: &App) -> bool {
-    let got = visible(m, cx);
-    if !got.is_empty() {
-        note(format!("endless: {got:?}"));
-    }
-    got.len() == 6
+    let c = m.cal.read(cx);
+    c.days().first().is_some_and(|monday| week_is(c, ics_events(*monday)))
+}
+
+fn outlook_series(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    let c = m.cal.read(cx);
+    c.days().first().is_some_and(|monday| week_is(c, outlook(c.time_zone(), *monday)))
+}
+
+/// Занятость того же файла по ссылке: неделя встречи, все события заняты, весь день — сутки пояса показа.
+fn outlook_busy(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    let tz = m.cal.read(cx).time_zone().clone();
+    view(m, cx).is_some_and(|v| {
+        let want = outlook(&tz, v.shown_monday()).map(|list| {
+            let mut spans: Vec<(i64, i64, BusyKind)> = list.into_iter().map(|e| (e.1, e.2, BusyKind::Busy)).collect();
+            spans.sort_by_key(|s| (s.0, s.1));
+            spans
+        });
+        v.link_shown(GUEST) && spans_match(v, GUEST, want)
+    })
 }
 
 fn event_spot(m: &Mailer, cx: &App) -> Option<String> {

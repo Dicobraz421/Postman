@@ -20,7 +20,6 @@ import hashlib
 import http.server
 import json
 import os
-import re
 import secrets
 import socket
 import socketserver
@@ -225,7 +224,7 @@ END:VTIMEZONE
 """
 
 # Повторы — с января: неделя прогона всегда внутри серии. Что ждать в неделе — `series` и `subscribed` в `drill_net.rs`.
-# `;UNTIL@` заменяет `calendar`: конечные серии или бесконечные (`endless`, группа `endless`).
+# `;UNTIL@` заменяет `calendar`: серии бесконечные, как публикуют Outlook и Google, а с `endless=False` — с `UNTIL` в UTC.
 ICS_EVENTS = """BEGIN:VEVENT
 UID:outlook@example.test
 DTSTAMP:20260101T000000Z
@@ -309,17 +308,70 @@ END:VEVENT
 """
 
 
-def calendar(*parts, name=None, endless=False, utc_named=False):
-    """`endless` — серии без конца; `utc_named` — `TZID=UTC` вместо `Z` (известный дефект: группа `defects`)."""
+def calendar(*parts, name=None, endless=True):
+    """`endless` — серии без конца; иначе `UNTIL` на год вперёд."""
     head = "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//Postman Stand//RU\nCALSCALE:GREGORIAN\n"
     if name:
         head += f"X-WR-CALNAME:{name}\n"
     end = datetime.date.today() + datetime.timedelta(days=400)
     text = head + ICS_ZONES + "".join(parts) + "END:VCALENDAR\n"
     text = text.replace(";UNTIL@", "" if endless else f";UNTIL={end:%Y%m%d}T235959Z").replace(";UNTIL#", "" if endless else f";UNTIL={end:%Y%m%d}")
-    if utc_named:
-        text = re.sub(r"^(DTSTART|DTEND):(\d{8}T\d{6})Z$", r"\1;TZID=UTC:\2", text, flags=re.M)
     return text.replace("\n", "\r\n").encode()
+
+
+def ics_heavy(count):
+    """Тысячи бесконечных серий с 2015 года, месяц — другой: разворачивать надо, показать нечего."""
+    month = (datetime.date.today().month + 5) % 12 + 1
+    return "".join(f"BEGIN:VEVENT\nUID:heavy{i}@example.test\nDTSTAMP:20260101T000000Z\nDTSTART:20150105T{i % 24:02}{i % 60:02}00Z\nDURATION:PT30M\n"
+                   f"RRULE:FREQ=DAILY;BYMONTH={month}\nSUMMARY:Другой месяц {i}\nEND:VEVENT\n" for i in range(count))
+
+
+def ics_outlook(monday):
+    """Что пишут Outlook и Google, на неделю с понедельника `monday`; настоящих файлов здесь нет. Что ждать — `outlook` в `drill_net.rs`."""
+
+    def day(number, time):
+        return f"{monday + datetime.timedelta(days=number):%Y%m%d}T{time}"
+
+    def event(uid, title, *lines):
+        return "\n".join(["BEGIN:VEVENT", f"UID:{uid}@example.test", "DTSTAMP:20260101T000000Z", *lines, f"SUMMARY:{title}", "END:VEVENT", ""])
+
+    moscow = "TZID=Europe/Moscow"
+    windows = "TZID=Russian Standard Time"
+    return "".join([
+        # Пояс Windows, `WKST` как у Outlook, экземпляр этой недели исключён.
+        event("exdate", "Исключён", f"DTSTART;{windows}:20260105T100000", f"DTEND;{windows}:20260105T110000", "RRULE:FREQ=WEEKLY;BYDAY=MO;WKST=SU",
+              f"EXDATE;{windows}:{day(0, '100000')}"),
+        # Экземпляр перенесён со вторника на среду, `SEQUENCE` у него другой.
+        event("moved", "Перенесён", f"DTSTART;{moscow}:20260106T110000", f"DTEND;{moscow}:20260106T120000", "RRULE:FREQ=WEEKLY;BYDAY=TU", "SEQUENCE:0"),
+        event("moved", "Перенесён", f"RECURRENCE-ID;{moscow}:{day(1, '110000')}", f"DTSTART;{moscow}:{day(2, '140000')}", f"DTEND;{moscow}:{day(2, '150000')}", "SEQUENCE:2"),
+        # Экземпляр отменён, как пишет Google.
+        event("cancelled", "Отменён", "DTSTART:20260107T090000Z", "DTEND:20260107T100000Z", "RRULE:FREQ=WEEKLY;BYDAY=WE"),
+        event("cancelled", "Отменён", f"RECURRENCE-ID:{day(2, '090000Z')}", f"DTSTART:{day(2, '090000Z')}", f"DTEND:{day(2, '100000Z')}", "STATUS:CANCELLED", "SEQUENCE:1"),
+        # `COUNT`: третий экземпляр — на этой неделе, а другая серия кончилась на прошлой.
+        event("count", "Третий из трёх", f"DTSTART:{day(-11, '120000Z')}", "DURATION:PT1H", "RRULE:FREQ=WEEKLY;COUNT=3"),
+        event("over", "Кончился", f"DTSTART:{day(-14, '130000Z')}", "DURATION:PT1H", "RRULE:FREQ=WEEKLY;COUNT=2"),
+        # `UNTIL` в UTC — ровно последний экземпляр: 15:00 в Токио, 06:00 UTC.
+        event("until", "Последний", "DTSTART;TZID=Asia/Tokyo:20260109T150000", "DTEND;TZID=Asia/Tokyo:20260109T160000", f"RRULE:FREQ=WEEKLY;BYDAY=FR;UNTIL={day(4, '060000Z')}"),
+        event("floating", "Без пояса", "DTSTART:20260109T160000", "DTEND:20260109T170000", "RRULE:FREQ=WEEKLY;BYDAY=FR"),
+        event("old", "С 2015", "DTSTART;TZID=America/New_York:20150110T080000", "DTEND;TZID=America/New_York:20150110T090000", "RRULE:FREQ=WEEKLY;BYDAY=SA"),
+        event("whole", "Весь день серии", "DTSTART;VALUE=DATE:20250105", "DTEND;VALUE=DATE:20250106", "RRULE:FREQ=WEEKLY;BYDAY=SU"),
+    ])
+
+
+def monday_of(day):
+    return day - datetime.timedelta(days=day.weekday())
+
+
+def meeting_monday():
+    """Неделя новой встречи: `default_start` в `meeting.rs`, вечером и в выходные это следующий рабочий день."""
+    now = datetime.datetime.now()
+    day = now.date()
+    if day.weekday() < 5 and ((now.hour * 60 + now.minute) // 30 + 1) * 30 <= 17 * 60:
+        return monday_of(day)
+    day += datetime.timedelta(days=1)
+    while day.weekday() >= 5:
+        day += datetime.timedelta(days=1)
+    return monday_of(day)
 
 
 def free_busy():
@@ -368,15 +420,19 @@ class Net:
         """Тело ресурса, задержка ответа, отдавать ли ETag."""
         if target == "/public/basic.ics":
             parts = [ICS_EVENTS, ICS_ALL_DAY] + ([ICS_FRESH] if self.fresh else [])
-            return calendar(*parts, name="Стенд подписка", utc_named=True), 0, True
-        if target == "/public/endless.ics":
-            return calendar(ICS_EVENTS, name="Стенд бесконечные", endless=True, utc_named=True), 0, False
-        if target == "/public/utc.ics":
-            return calendar(ICS_EVENTS, name="Стенд UTC"), 0, False
+            return calendar(*parts, name="Стенд подписка"), 0, True
+        if target == "/public/many.ics":
+            return calendar(ICS_EVENTS, ics_heavy(3000), name="Стенд тысячи серий"), 0, False
+        if target == "/public/until.ics":
+            return calendar(ICS_EVENTS, name="Стенд до даты", endless=False), 0, False
+        if target == "/public/outlook.ics":
+            return calendar(ics_outlook(monday_of(datetime.date.today())), name="Стенд Outlook"), 0, False
         if target == "/public/second.ics":
             return calendar(ICS_ALL_DAY, name="Стенд второй"), 0, False
         if target == "/free-busy/guest.ics":
             return calendar(ICS_EVENTS), 1.0, False
+        if target == "/free-busy/outlook.ics":
+            return calendar(ics_outlook(meeting_monday())), 1.0, False
         if target in ("/free-busy/guest.vfb", "/free-busy/booked.vfb"):
             return free_busy(), 0, False
         return None, 0, False
@@ -729,18 +785,12 @@ def group_no_root(ctx, servers):
     assert not got, f"запрос прошёл без доверия к корню: {got}"
 
 
-def group_defects(ctx, servers):
-    """Известные дефекты разбора в воркере (класс B). Падают, пока они не исправлены:
-    `endless` — бесконечные серии: первая съедает предел развёртки на весь файл, так публикуют Outlook и Google;
-    `utc` — серия с `DTSTART:…Z`: календарь разворачивает её как время пояса показа."""
-    failed = []
-    for scene in ("net-series-endless", "net-series-utc"):
-        try:
-            os.environ["POSTMAN_NET_LIMIT"] = "60"
-            Play(ctx, scene, servers).run([scene])
-        except AssertionError as e:
-            failed.append(f"{scene}: {e}")
-    assert not failed, "; ".join(failed)
+def group_series(ctx, servers):
+    """Серии настоящих файлов (модульные тесты — `crates/worker/src/ics.rs`). Основные сцены `subs` и `free` уже идут на бесконечных
+    сериях с `Z`; здесь — то, что им не видно: тысячи серий в файле, `UNTIL` в UTC, исключения, переносы, `COUNT`, плавающее время и
+    весь день, в подписке и в занятости по ссылке. У каждой сцены свой каталог данных: подписки не смешиваются."""
+    for scene in ("net-series-many", "net-series-until", "net-series-outlook", "net-series-busy"):
+        Play(ctx, scene, servers).run([scene])
 
 
 class Ctx:
@@ -749,9 +799,8 @@ class Ctx:
 
 
 # `ldap` — только по имени: пишет записи в Диспетчер учётных данных Windows.
-GROUPS = {"free": group_free, "subs": group_subs, "ldap-chain": group_ldap_chain, "no-root": group_no_root}
-# Известные дефекты воркера: только по имени.
-ON_REQUEST = {"defects": group_defects, "ldap": group_ldap}
+GROUPS = {"free": group_free, "subs": group_subs, "series": group_series, "ldap-chain": group_ldap_chain, "no-root": group_no_root}
+ON_REQUEST = {"ldap": group_ldap}
 
 
 def run(args):
