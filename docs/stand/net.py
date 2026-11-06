@@ -308,6 +308,9 @@ END:VEVENT
 """
 
 
+OVER_LIMIT = "Серия за пределом"
+
+
 def calendar(*parts, name=None, endless=True):
     """`endless` — серии без конца; иначе `UNTIL` на год вперёд."""
     head = "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//Postman Stand//RU\nCALSCALE:GREGORIAN\n"
@@ -324,6 +327,80 @@ def ics_heavy(count):
     month = (datetime.date.today().month + 5) % 12 + 1
     return "".join(f"BEGIN:VEVENT\nUID:heavy{i}@example.test\nDTSTAMP:20260101T000000Z\nDTSTART:20150105T{i % 24:02}{i % 60:02}00Z\nDURATION:PT30M\n"
                    f"RRULE:FREQ=DAILY;BYMONTH={month}\nSUMMARY:Другой месяц {i}\nEND:VEVENT\n" for i in range(count))
+
+
+# Пояса без имени в базе: время только по правилам самого файла. Форма — как у Outlook, правила те же, что у поясов из `file_zones` в
+# `drill_net.rs`: там ожидаемое считается по настоящему поясу, поэтому сцена верна в любую неделю года.
+ICS_FILE_ZONES = """BEGIN:VTIMEZONE
+TZID:Customized Time Zone
+BEGIN:STANDARD
+DTSTART:16010101T020000
+TZOFFSETFROM:-0400
+TZOFFSETTO:-0500
+RRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=1SU;BYMONTH=11
+END:STANDARD
+BEGIN:DAYLIGHT
+DTSTART:16010101T020000
+TZOFFSETFROM:-0500
+TZOFFSETTO:-0400
+RRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=2SU;BYMONTH=3
+END:DAYLIGHT
+END:VTIMEZONE
+BEGIN:VTIMEZONE
+TZID:Customized South
+BEGIN:STANDARD
+DTSTART:19700405T030000
+TZOFFSETFROM:+1100
+TZOFFSETTO:+1000
+RRULE:FREQ=YEARLY;BYMONTH=4;BYDAY=1SU
+END:STANDARD
+BEGIN:DAYLIGHT
+DTSTART:19701004T020000
+TZOFFSETFROM:+1000
+TZOFFSETTO:+1100
+RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=1SU
+END:DAYLIGHT
+END:VTIMEZONE
+BEGIN:VTIMEZONE
+TZID:Customized Fixed
+BEGIN:STANDARD
+DTSTART:16010101T000000
+TZOFFSETFROM:+0300
+TZOFFSETTO:+0300
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:zone-north@example.test
+DTSTAMP:20260101T000000Z
+DTSTART;TZID=Customized Time Zone:20260105T090000
+DTEND;TZID=Customized Time Zone:20260105T100000
+RRULE:FREQ=WEEKLY;BYDAY=MO
+SUMMARY:Пояс файла север
+END:VEVENT
+BEGIN:VEVENT
+UID:zone-south@example.test
+DTSTAMP:20260101T000000Z
+DTSTART;TZID=Customized South:20260106T100000
+DTEND;TZID=Customized South:20260106T110000
+RRULE:FREQ=WEEKLY;BYDAY=TU
+SUMMARY:Пояс файла юг
+END:VEVENT
+BEGIN:VEVENT
+UID:zone-fixed@example.test
+DTSTAMP:20260101T000000Z
+DTSTART;TZID=Customized Fixed:20260107T120000
+DTEND;TZID=Customized Fixed:20260107T130000
+RRULE:FREQ=WEEKLY;BYDAY=WE
+SUMMARY:Пояс файла без перехода
+END:VEVENT
+"""
+
+
+def ics_over_limit():
+    """Серии дороже предела работы: разворачивать секунды надо, показать нечего, месяц другой. Название приметное: в журнале его быть не должно."""
+    month = (datetime.date.today().month + 5) % 12 + 1
+    return "".join(f"BEGIN:VEVENT\nUID:limit{i}@example.test\nDTSTAMP:20260101T000000Z\nDTSTART:20260101T000000Z\nDURATION:PT1S\n"
+                   f"RRULE:FREQ=SECONDLY;BYMONTH={month}\nSUMMARY:{OVER_LIMIT}\nEND:VEVENT\n" for i in range(8))
 
 
 def ics_outlook(monday):
@@ -423,6 +500,10 @@ class Net:
             return calendar(*parts, name="Стенд подписка"), 0, True
         if target == "/public/many.ics":
             return calendar(ICS_EVENTS, ics_heavy(3000), name="Стенд тысячи серий"), 0, False
+        if target == "/public/zones.ics":
+            return calendar(ICS_FILE_ZONES, name="Стенд пояса файла"), 0, False
+        if target == "/public/limit.ics":
+            return calendar(ICS_EVENTS, ics_over_limit(), name="Стенд предел"), 0, False
         if target == "/public/until.ics":
             return calendar(ICS_EVENTS, name="Стенд до даты", endless=False), 0, False
         if target == "/public/outlook.ics":
@@ -788,9 +869,17 @@ def group_no_root(ctx, servers):
 def group_series(ctx, servers):
     """Серии настоящих файлов (модульные тесты — `crates/worker/src/ics.rs`). Основные сцены `subs` и `free` уже идут на бесконечных
     сериях с `Z`; здесь — то, что им не видно: тысячи серий в файле, `UNTIL` в UTC, исключения, переносы, `COUNT`, плавающее время и
-    весь день, в подписке и в занятости по ссылке. У каждой сцены свой каталог данных: подписки не смешиваются."""
-    for scene in ("net-series-many", "net-series-until", "net-series-outlook", "net-series-busy"):
+    весь день, в подписке и в занятости по ссылке, пояс по правилам файла. `net-series-limit`: отсечённое видно только в журнале, и там
+    только числа. У каждой сцены свой каталог данных: подписки не смешиваются."""
+    for scene in ("net-series-many", "net-series-until", "net-series-outlook", "net-series-busy", "net-series-zone", "net-series-limit"):
         Play(ctx, scene, servers).run([scene])
+        if scene == "net-series-limit":
+            with open(os.path.join(ctx.data, scene + ".log"), encoding="utf-8", errors="replace") as f:
+                log = f.read()
+            found = [line for line in log.splitlines() if "calendar subscription cut:" in line]
+            assert found and "series not expanded" in found[0], f"в журнале нет отсечения: {found}"
+            assert OVER_LIMIT not in log and "limit0@" not in log, "содержимое файла попало в журнал"
+            print("  журнал:", found[0].split("WARN")[-1].strip()[:200], flush=True)
 
 
 class Ctx:

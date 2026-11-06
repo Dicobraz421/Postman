@@ -11,6 +11,7 @@
 //! обменом ([`Client::viewer`]).
 
 mod ics;
+pub use ics::Cut;
 pub mod mapi;
 pub mod mime;
 pub mod preview;
@@ -272,8 +273,9 @@ enum Response {
     },
     Calendar(serde_json::Value),
     Contacts(Vec<serde_json::Value>),
-    FreeBusy(Vec<BusySpan>),
-    Ics(IcsCalendar),
+    /// Интервалы и что отсекли пределы: журнала в песочнице нет, запись делает приложение ([`Client::take_cut`]).
+    FreeBusy(Vec<BusySpan>, Cut),
+    Ics(IcsCalendar, Cut),
     Preview(Preview),
     /// Итог проверки подписи; DER цепочки — в бинарной части.
     Smime {
@@ -504,19 +506,21 @@ fn parse_ical(bytes: &[u8], max: usize) -> Result<(calcard::icalendar::ICalendar
 }
 
 /// События в `[from, to)`: повторы развёрнуты ([`ics::instances`]), без пояса — время пояса `tz`; отменённые не берутся.
-fn events_of(ical: &calcard::icalendar::ICalendar, tz: &str, from: i64, to: i64) -> Vec<IcsEvent> {
+fn events_of(ical: &calcard::icalendar::ICalendar, tz: &str, from: i64, to: i64) -> (Vec<IcsEvent>, Cut) {
     use calcard::common::timezone::Tz;
     use calcard::icalendar::{ICalendarProperty as Prop, ICalendarStatus, ICalendarTransparency, ICalendarValue};
     let zone: Tz = tz.parse().unwrap_or(Tz::UTC);
     let mut out = Vec::new();
-    for instance in ics::instances(ical, zone, from, to) {
+    let (instances, mut cut) = ics::instances(ical, zone, from, to);
+    for instance in instances {
         let Some(comp) = ical.components.get(instance.comp) else { continue };
         let value = |test: &dyn Fn(&ICalendarValue) -> bool| comp.entries.iter().any(|e| e.values.iter().any(test));
         if value(&|v| matches!(v, ICalendarValue::Status(ICalendarStatus::Cancelled))) {
             continue;
         }
         if out.len() >= MAX_ICS_EVENTS {
-            break;
+            cut.events_dropped = cut.events_dropped.saturating_add(1);
+            continue;
         }
         let text = |name: Prop| {
             let entry = comp.entries.iter().find(|e| e.name == name);
@@ -537,22 +541,32 @@ fn events_of(ical: &calcard::icalendar::ICalendar, tz: &str, from: i64, to: i64)
         });
     }
     out.sort_by(|a, b| (a.start, &a.uid).cmp(&(b.start, &b.uid)));
-    out
+    (out, cut)
 }
 
 /// iCalendar → занятость в `[from, to)`: `FREEBUSY` из VFREEBUSY и непрозрачные неотменённые события с повторами
 /// (опубликованные календари Outlook и Google — события, а не VFREEBUSY); события на весь день и без пояса — в поясе `tz`.
 /// Чужие данные — только в песочнице.
 pub fn parse_free_busy(bytes: &[u8], from: i64, to: i64, tz: &str) -> Result<Vec<BusySpan>, String> {
+    free_busy_of(bytes, from, to, tz).map(|got| got.0)
+}
+
+/// [`parse_free_busy`] и что отсекли пределы.
+fn free_busy_of(bytes: &[u8], from: i64, to: i64, tz: &str) -> Result<(Vec<BusySpan>, Cut), String> {
     use calcard::icalendar::{
         ICalendarComponentType as Kind, ICalendarFreeBusyType as Fb, ICalendarParameterName as Param, ICalendarParameterValue as Value,
         ICalendarPeriod as Period, ICalendarProperty as Prop, ICalendarValue,
     };
     let (ical, _) = parse_ical(bytes, MAX_FREE_BUSY)?;
     let mut out = Vec::new();
+    let mut dropped = 0u32;
     let mut push = |start: i64, end: i64, kind: BusyType| {
-        if start < to && end > from && start < end && out.len() < MAX_BUSY {
-            out.push(BusySpan { start, end, kind });
+        if start < to && end > from && start < end {
+            if out.len() < MAX_BUSY {
+                out.push(BusySpan { start, end, kind });
+            } else {
+                dropped = dropped.saturating_add(1);
+            }
         }
     };
     for comp in ical.components.iter().filter(|c| c.component_type == Kind::VFreebusy) {
@@ -579,18 +593,26 @@ pub fn parse_free_busy(bytes: &[u8], from: i64, to: i64, tz: &str) -> Result<Vec
             }
         }
     }
-    for e in events_of(&ical, tz, from, to).into_iter().filter(|e| !e.transparent) {
+    let (events, mut cut) = events_of(&ical, tz, from, to);
+    for e in events.into_iter().filter(|e| !e.transparent) {
         push(e.start, e.end, if e.tentative { BusyType::Tentative } else { BusyType::Busy });
     }
+    cut.busy_dropped = dropped;
     out.sort_by_key(|b| (b.start, b.end));
-    Ok(out)
+    Ok((out, cut))
 }
 
 /// iCalendar подписки (S8-44) → имя и события `[from, to)` в поясе `tz`. Чужие данные — только в песочнице.
 pub fn parse_ics(bytes: &[u8], from: i64, to: i64, tz: &str) -> Result<IcsCalendar, String> {
+    ics_of(bytes, from, to, tz).map(|got| got.0)
+}
+
+/// [`parse_ics`] и что отсекли пределы.
+fn ics_of(bytes: &[u8], from: i64, to: i64, tz: &str) -> Result<(IcsCalendar, Cut), String> {
     let (ical, text) = parse_ical(bytes, MAX_ICS)?;
     let name = text.lines().find_map(|l| l.trim().strip_prefix("X-WR-CALNAME:")).map(|n| n.trim().to_owned()).filter(|n| !n.is_empty());
-    Ok(IcsCalendar { name, events: events_of(&ical, tz, from, to) })
+    let (events, cut) = events_of(&ical, tz, from, to);
+    Ok((IcsCalendar { name, events }, cut))
 }
 
 /// Карточек в одном .vcf — не больше: адресная книга приходит по карточке на ресурс.
@@ -734,12 +756,12 @@ fn handle(req: Result<Request, serde_json::Error>, bin: &[u8]) -> (Response, Vec
         },
         Ok(Request::Html(h)) => Response::Ok(postman_ir::from_html(&h)),
         Ok(Request::Text(t)) => Response::Ok(postman_ir::from_plain(&t)),
-        Ok(Request::FreeBusy { from, to, tz }) => match parse_free_busy(bin, from, to, &tz) {
-            Ok(v) => Response::FreeBusy(v),
+        Ok(Request::FreeBusy { from, to, tz }) => match free_busy_of(bin, from, to, &tz) {
+            Ok((v, cut)) => Response::FreeBusy(v, cut),
             Err(e) => Response::Err(e),
         },
-        Ok(Request::Ics { from, to, tz }) => match parse_ics(bin, from, to, &tz) {
-            Ok(v) => Response::Ics(v),
+        Ok(Request::Ics { from, to, tz }) => match ics_of(bin, from, to, &tz) {
+            Ok((v, cut)) => Response::Ics(v, cut),
             Err(e) => Response::Err(e),
         },
         Ok(Request::Calendar) => match parse_calendar(bin) {
@@ -871,11 +893,13 @@ pub struct Client {
     fallback: Option<String>,
     /// Предел памяти процесса (Windows: Job Object).
     memory: usize,
+    /// Что отсекли пределы в последнем календаре ([`Client::take_cut`]).
+    cut: Option<Cut>,
 }
 
 impl Client {
     pub fn new(exe: PathBuf, timeout: Duration) -> Self {
-        Self { exe, timeout, running: None, level: Level::None, relaxed: false, fallback: None, memory: sandbox::MEMORY_LIMIT }
+        Self { exe, timeout, running: None, level: Level::None, relaxed: false, fallback: None, memory: sandbox::MEMORY_LIMIT, cut: None }
     }
 
     /// Клиент хоста модулей просмотра `postman-viewer` (S8-24): та же песочница, память — [`wasm::JOB_MEMORY`];
@@ -913,8 +937,8 @@ impl Client {
             Response::Image { .. }
             | Response::Calendar(_)
             | Response::Contacts(_)
-            | Response::FreeBusy(_)
-            | Response::Ics(_)
+            | Response::FreeBusy(..)
+            | Response::Ics(..)
             | Response::Preview(_)
             | Response::Smime { .. }
             | Response::Envelope(_)
@@ -1206,16 +1230,27 @@ impl Client {
     /// Занятость из iCalendar по ссылке (S8-42) в песочнице.
     pub fn free_busy(&mut self, ics: &[u8], from: i64, to: i64, tz: &str) -> Result<Vec<BusySpan>, String> {
         match self.call_for(&Request::FreeBusy { from, to, tz: tz.to_owned() }, ics, self.timeout.max(ICS_TIMEOUT))?.0 {
-            Response::FreeBusy(v) => Ok(v),
+            Response::FreeBusy(v, cut) => {
+                self.cut = (!cut.is_empty()).then_some(cut);
+                Ok(v)
+            }
             Response::Err(e) => Err(e),
             _ => Err("неожиданный ответ".into()),
         }
     }
 
+    /// Что отсекли пределы в последнем календаре: журнал ведёт приложение, у воркера его нет. Только числа.
+    pub fn take_cut(&mut self) -> Option<Cut> {
+        self.cut.take()
+    }
+
     /// Календарь подписки (S8-44) в песочнице.
     pub fn ics(&mut self, ics: &[u8], from: i64, to: i64, tz: &str) -> Result<IcsCalendar, String> {
         match self.call_for(&Request::Ics { from, to, tz: tz.to_owned() }, ics, self.timeout.max(ICS_TIMEOUT))?.0 {
-            Response::Ics(v) => Ok(v),
+            Response::Ics(v, cut) => {
+                self.cut = (!cut.is_empty()).then_some(cut);
+                Ok(v)
+            }
             Response::Err(e) => Err(e),
             _ => Err("неожиданный ответ".into()),
         }

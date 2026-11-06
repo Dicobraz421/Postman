@@ -1108,7 +1108,11 @@ impl MeetingView {
             let task = cx.background_spawn(async move {
                 let bytes = if live { postman_backend_dav::fetch_public(&url, postman_worker::MAX_FREE_BUSY)? } else { demo::free_busy(from) };
                 let mut w = worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                w.free_busy(&bytes, from, to, &tz)
+                let busy = w.free_busy(&bytes, from, to, &tz);
+                if let Some(cut) = w.take_cut() {
+                    tracing::warn!("free/busy link cut: {cut}");
+                }
+                busy
             });
             cx.spawn(async move |this, cx| {
                 let result = task.await;

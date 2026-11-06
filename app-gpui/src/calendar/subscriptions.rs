@@ -161,7 +161,11 @@ impl CalendarView {
             let task = cx.background_spawn(async move {
                 let Ok(bytes) = std::fs::read(dir(live).join(format!("{name}.ics"))) else { return None };
                 let mut w = worker.lock().unwrap_or_else(PoisonError::into_inner);
-                Some(w.ics(&bytes, from, to, &tz))
+                let parsed = w.ics(&bytes, from, to, &tz);
+                if let Some(cut) = w.take_cut() {
+                    tracing::warn!("calendar subscription cut: {cut}");
+                }
+                Some(parsed)
             });
             cx.spawn(async move |this, cx| {
                 let parsed = task.await;
