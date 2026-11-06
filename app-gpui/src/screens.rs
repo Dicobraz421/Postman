@@ -501,6 +501,13 @@ fn feed(m: &mut Mailer, scene: &'static Scene, window: &mut Window, cx: &mut Con
     {
         return true;
     }
+    // Живой ящик: тост прошлого шага лежит поверх кнопок (находка F3) и забрал бы щелчок. Кроме кнопки самого тоста.
+    if let Input::Press(id) = step
+        && live(m)
+        && id != "notice-act"
+    {
+        m.toasts.update(cx, |t, cx| t.hide_all(cx));
+    }
     if let Input::Run(run) = step
         && let Err(e) = run(scene, m, window, cx)
     {

@@ -976,12 +976,6 @@ const REVOKE: &[Input] = &[
         Ok(())
     }),
     until!(|_, _| clock_past(16)),
-    // Тосты столбиком доходят до кнопок карточки (находка F3).
-    Input::Run(|_, m, _, cx| {
-        m.toasts.update(cx, |t, cx| t.hide_all(cx));
-        Ok(())
-    }),
-    until!(|m, cx| m.toasts.read(cx).on_screen() == 0),
     Input::Press("assign-revoke"),
 ];
 
@@ -1646,16 +1640,8 @@ const DAV_TASK_NEW: &[Input] = &[
     until!(|m, cx| task(m, cx, FIRST_TASK).is_some()),
 ];
 
-const DAV_TASK_DUE: &[Input] = &[
-    // Тост прошлой сцены лежит поверх строки «Срок» (находка F3): щелчок ушёл бы в него.
-    Input::Run(|_, m, _, cx| {
-        m.toasts.update(cx, |t, cx| t.hide_all(cx));
-        Ok(())
-    }),
-    Input::Run(|_, m, _, cx| pick(m, cx, Nav::List(List::Inbox), FIRST_TASK)),
-    Input::Press("card-due"),
-    Input::Press("due-opt-1"),
-];
+const DAV_TASK_DUE: &[Input] =
+    &[Input::Run(|_, m, _, cx| pick(m, cx, Nav::List(List::Inbox), FIRST_TASK)), Input::Press("card-due"), Input::Press("due-opt-1")];
 
 const DAV_TASK_DONE: &[Input] = &[
     OPEN_TASKS,
