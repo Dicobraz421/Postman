@@ -1343,11 +1343,13 @@ def group_move(ctx):
 
     def first(scene):
         if scene == "st-s815-flag":
-            flagged = source.call([["Email/query", {"accountId": source.account, "filter": {"operator": "AND", "conditions": [
-                {"inMailbox": source.boxes()["inbox"]}, {"hasKeyword": "$flagged"}]}, "calculateTotal": True, "limit": 1}, "0"]])[0][1]["total"]
+            # Правки уходят серверу без ответа по странице: последняя страница доходит чуть позже конца выборки.
+            def flagged():
+                return source.call([["Email/query", {"accountId": source.account, "filter": {"operator": "AND", "conditions": [
+                    {"inMailbox": source.boxes()["inbox"]}, {"hasKeyword": "$flagged"}]}, "calculateTotal": True, "limit": 1}, "0"]])[0][1]["total"]
             have = total(source)
-            assert flagged == have, f"флаг у {flagged} писем из {have}: выборка прошла не все письма"
-            print(f"сервер: флаг у всех {flagged} писем", flush=True)
+            wait_for(lambda: flagged() == have, f"флаг не у всех из {have} писем: выборка прошла не все", 60)
+            print(f"сервер: флаг у всех {have} писем", flush=True)
         if scene == "st-s815-menu":
             started["drag"] = time.time()
         if scene == "st-s815-target":
