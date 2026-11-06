@@ -10,7 +10,7 @@
 //! она открыта; ход — в строке состояния, как квота, щелчок — полоса задания; «нет места» показывается сама;
 //! «Остановить» — строкой подтверждения (очередь на паузе до ответа); конец — тост.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -353,6 +353,8 @@ pub(crate) struct Migrations {
     pub(crate) upgrade: Option<u64>,
     /// Действия над выборками на сервере, идущие сейчас (`sweep`).
     pub(crate) sweeps: BTreeMap<SweepId, Progress>,
+    /// Кончившиеся задания: чтение из базы, начатое раньше конца, их не воскрешает.
+    ended: HashSet<JobId>,
 }
 
 /// Что показать полосой над списком.
@@ -399,6 +401,18 @@ impl Migrations {
         self.jobs.values().find(|j| j.state == MigrationState::Running).or_else(|| self.jobs.values().find(|j| shown(j.state)))
     }
 
+    /// Задания, прочитанные из базы в фоне. Чтение долгое, пока идёт ход: состояние и числа известных заданий — из событий,
+    /// они новее; иначе пауза, пришедшая за время чтения, стёрлась бы, и экран показывал бы идущее задание.
+    pub(crate) fn merge(&mut self, read: Vec<JobView>) {
+        let old = std::mem::take(&mut self.jobs);
+        for mut j in read.into_iter().filter(|j| !self.ended.contains(&j.id)) {
+            if let Some(o) = old.get(&j.id) {
+                (j.state, j.done, j.total, j.bytes, j.since) = (o.state, o.done, o.total, o.bytes, o.since);
+            }
+            self.jobs.insert(j.id, j);
+        }
+    }
+
     /// Выборка в строке состояния: перенос показывает своё задание, пока идёт снимок задания ещё нет.
     pub(crate) fn sweep(&self) -> Option<&Progress> {
         self.sweeps.values().find(|p| p.state == sweep::State::Listing || !matches!(p.action, Action::Transfer { .. }))
@@ -418,6 +432,7 @@ impl Migrations {
             if self.stopping == Some(id) {
                 self.stopping = None;
             }
+            self.ended.insert(id);
             let j = self.jobs.remove(&id);
             if self.active().is_none() {
                 self.open = false;
@@ -502,7 +517,7 @@ impl Mailer {
         cx.spawn(async move |this, cx| {
             let jobs = task.await;
             let _ = this.update(cx, |m, cx| {
-                m.migration.jobs = jobs.into_iter().map(|j| (j.id, j)).collect();
+                m.migration.merge(jobs);
                 cx.notify();
             });
         })
@@ -616,7 +631,9 @@ impl Mailer {
         cx.spawn(async move |this, cx| {
             if let Some(j) = task.await {
                 let _ = this.update(cx, |m, cx| {
-                    m.migration.jobs.insert(j.id, j);
+                    if !m.migration.ended.contains(&j.id) {
+                        m.migration.jobs.entry(j.id).or_insert(j);
+                    }
                     cx.notify();
                 });
             }
@@ -1112,6 +1129,24 @@ mod tests {
     use postman_core::model::{JobId, MigrationMode, MigrationState};
 
     use super::{Bar, JobView, Migrations, count_text};
+
+    /// Чтение из базы началось до паузы и до конца другого задания: события новее, пауза не стирается, кончившееся не
+    /// возвращается.
+    #[test]
+    fn stale_read_does_not_undo_events() {
+        let mut m = Migrations::default();
+        m.jobs.insert(JobId(1), job(1, MigrationState::Running, "to"));
+        m.jobs.insert(JobId(2), job(2, MigrationState::Running, "to"));
+        let read = vec![job(1, MigrationState::Running, "to"), job(2, MigrationState::Running, "to"), job(3, MigrationState::Asking, "to")];
+        let now = Instant::now();
+        assert!(m.progress(JobId(1), 4, 10, 0, MigrationState::Paused, now).is_none());
+        assert!(m.progress(JobId(2), 10, 10, 0, MigrationState::Done, now).is_some());
+        m.merge(read);
+        assert_eq!(m.jobs[&JobId(1)].state, MigrationState::Paused);
+        assert_eq!(m.jobs[&JobId(1)].done, 4);
+        assert!(!m.jobs.contains_key(&JobId(2)), "кончившееся задание не возвращается");
+        assert_eq!(m.jobs[&JobId(3)].state, MigrationState::Asking, "новое — как в базе");
+    }
 
     fn job(id: u64, state: MigrationState, to: &str) -> JobView {
         JobView {
