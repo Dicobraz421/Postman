@@ -1236,8 +1236,9 @@ async fn handle(
         }
         // Шаги задания переноса (S8-13): ответ — по письму, задание ведёт ядро.
         Command::FetchRaw { letter } => notify(fetch_raw(accounts, cache, letter).await),
-        Command::Import { job, letter, folder, keywords, received_at, .. } => {
-            notify(match import(accounts, cache, letter, folder, &keywords, received_at).await {
+        Command::Import { job, letter, folder, keywords, received_at, message_id, retry } => {
+            let known = message_id.filter(|_| retry);
+            notify(match import(accounts, cache, letter, folder, &keywords, received_at, known.as_deref()).await {
                 Ok(remote) => Event::Imported { job, letter, remote },
                 Err(error) => {
                     tracing::info!(job = job.0, letter = letter.0, "jmap import refused: {error}");
@@ -1321,8 +1322,18 @@ async fn import(
     folder: FolderId,
     keywords: &[String],
     received_at: i64,
+    retry: Option<&str>,
 ) -> Result<Remote, ImportError> {
     let (acc, account, mailbox) = folder_in(accounts, cache, folder).ok_or_else(|| ImportError::Rejected("no such folder".into()))?;
+    // Повтор: выгрузка могла дойти, а ответ — нет (выход посреди задания). Stalwart `alreadyExists` на `Email/import` не
+    // отвечает, письмо ищем сами; поиск не удался — выгрузка, сервер сам скажет, если умеет.
+    if let Some(message_id) = retry.filter(|_| received_at > 0) {
+        match acc.client.find_by_message_id(&mailbox, message_id, received_at).await {
+            Ok(Some(id)) => return Ok(Remote { account, id, data: Vec::new() }),
+            Ok(None) => {}
+            Err(e) => tracing::warn!(letter = letter.0, "jmap import check failed: {e}"),
+        }
+    }
     let raw = match cache.letter_content(postman_cache::LetterId(letter.0)) {
         Ok(Some(raw)) => raw,
         Ok(None) => return Err(ImportError::Rejected("letter content is not stored".into())),
