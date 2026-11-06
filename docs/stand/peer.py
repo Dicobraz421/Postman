@@ -654,7 +654,7 @@ def group_full(ctx):
     try:
         peer.share(dav.principal())
         print("другой клиент: user2 открыл календарь user1", flush=True)
-        play.run(["st-s703a-rail", "st-s703a-settings", "st-s703a-sections", "st-s703a-palette", "st-s703a-contacts", "st-s703a-keys", "st-s521-found", "st-s521-open", "st-s522-week"],
+        play.run(["st-s703a-nav", "st-s703a-settings", "st-s703a-sections", "st-s703a-palette", "st-s703a-contacts", "st-s703a-keys", "st-s521-found", "st-s521-open", "st-s522-week"],
                  lambda _: None, one.user, one.password)
     finally:
         peer.unshare()
@@ -1243,7 +1243,7 @@ def group_dav(ctx):
             # Окно user2 — после письма: оно ждёт поручение не дольше времени шага сцены.
             play.run(["st-s705-order-got"], lambda _: None, two.user, two.password, url=url, data="dav-second")
 
-    only = ["st-s705-rail", "st-s705-week", "st-s705-search", "st-s705-meeting", "st-s705-accepted", "st-s705-contact", "st-s705-suggest",
+    only = ["st-s705-nav", "st-s705-week", "st-s705-search", "st-s705-meeting", "st-s705-accepted", "st-s705-contact", "st-s705-suggest",
             "st-s705-task", "st-s705-task-due", "st-s705-task-back", "st-s705-task-done", "st-s705-task-gone", "st-s705-order", "st-s705-order-sent"]
     try:
         play.run(only, on_scene, one.user, one.password, url=url, extra={"POSTMAN_STAND_PEER": two.user})
