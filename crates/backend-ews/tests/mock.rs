@@ -188,9 +188,11 @@ fn selection_is_listed_and_stored_by_the_server() {
     let sweep = SweepId(1);
     let selector = Selector { mailbox: inbox.clone(), filter: None, except: Vec::new() };
     live.commands.send(Command::ListLetters { sweep, selector: selector.clone(), position: 500, limit: 500 }).unwrap();
-    let Event::LettersListed { ids, end, total, .. } = live.wait("LettersListed", |e| matches!(e, Event::LettersListed { .. })) else { unreachable!() };
-    assert!(!ids.is_empty() && end, "страница корпуса — последняя: {ids:?}");
-    assert_eq!(total, 500 + ids.len() as u64);
+    let Event::LettersListed { ids, end, total, .. } = live.wait("LettersListed", |e| matches!(e, Event::LettersListed { .. })) else {
+        unreachable!()
+    };
+    assert!(!ids.is_empty() && !end, "в корпусе страница не последняя: {ids:?}");
+    assert_eq!(total, 500 + ids.len() as u64 + 1, "числа у `FindItem` с `IdOnly` нет: позиция и признак «есть ещё»");
     assert!(log.lock().unwrap().iter().any(|b| b.contains("<m:FindItem") && b.contains(r#"Offset="500""#)), "страница — с позиции");
 
     let filter = Some(Filter::HasAttachment(true));
@@ -1288,7 +1290,9 @@ fn letters_of_another_account(cache: &Cache, n: u32) -> Vec<postman_cache::Lette
 fn engine_on(cache: &Cache) -> postman_core::migrate::Engine<postman_core::store::CacheStore> {
     let split = |raw: &[u8]| postman_worker::mime::split(raw).and_then(|(s, d)| postman_core::store::split_of(s, &d));
     let store = postman_core::store::CacheStore::new(cache.clone(), Box::new(split));
-    postman_core::migrate::Engine::open(store).unwrap()
+    let mut engine = postman_core::migrate::Engine::open(store).unwrap();
+    engine.online(None);
+    engine
 }
 
 /// 50 писем другой учётки — в «Входящие» Exchange: `CreateItem` полученными («прочитано» и флаг), ящик полон на
