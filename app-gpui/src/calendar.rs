@@ -360,7 +360,7 @@ pub(crate) struct CalendarView {
     second: Option<TimeZone>,
     /// Месяц слева (первое число).
     month: Date,
-    events: Vec<Event>,
+    pub(crate) events: Vec<Event>,
     live: bool,
     /// Ждём период с сервера: его `[from, to)`; пришёл другой — уже не нужен.
     pending: Option<(i64, i64)>,
@@ -376,7 +376,7 @@ pub(crate) struct CalendarView {
     categories: Categories,
     /// Коллеги, открывшие мне календарь (S5-22); первые `mine` — другие мои учётные записи (S7-03б): их календари —
     /// в «Мои календари», цветом и подписью владельца, как календари коллег.
-    colleagues: Vec<Owner>,
+    pub(crate) colleagues: Vec<Owner>,
     mine: usize,
     /// Ответы учётных записей профиля за показанный период (S7-03б): учётная запись, её события и календари коллег.
     parts: Vec<(Option<String>, Vec<Event>, Vec<Owner>)>,
@@ -415,7 +415,7 @@ pub(crate) struct CalendarView {
     /// Найденное показано (выбор результата открывает событие и прячет список до новой правки запроса).
     results_open: bool,
     cursor: usize,
-    scroll: ScrollHandle,
+    pub(crate) scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -1149,6 +1149,7 @@ impl CalendarView {
         let menu_key = key.clone();
         let swatch = div()
             .id(id.clone())
+            .children(crate::screens::spot(id.clone()))
             .size(px(18.))
             .flex_none()
             .flex()
@@ -1178,6 +1179,7 @@ impl CalendarView {
             let on = c == current;
             div()
                 .id(("cal-color", n))
+                .children(crate::screens::spot(("cal-color", n)))
                 .size(px(18.))
                 .rounded(px(4.))
                 .bg(l.cat(&c).dot)
@@ -2095,6 +2097,7 @@ impl CalendarView {
         };
         div()
             .id(("event", i))
+            .children(crate::screens::spot(("event", i)))
             .relative()
             .size_full()
             .overflow_hidden()
@@ -2107,7 +2110,9 @@ impl CalendarView {
             .text_size(px(12.))
             .line_height(px(15.))
             .text_color(fg)
-            .when(look == Shown::Pending, |d| d.bg(l.none()).border_1().border_dashed().border_color(bar.opacity(0.7)))
+            .when(look == Shown::Pending, |d| {
+                d.bg(if selected { l.panel() } else { l.none() }).border_1().border_dashed().border_color(bar.opacity(0.7))
+            })
             .when(look != Shown::Pending, |d| d.bg(bg))
             .when(selected, |d| d.shadow(glow(bar)))
             .cursor_pointer()
@@ -2614,12 +2619,13 @@ impl CalendarView {
             let tip = tr!(key, n = n);
             div()
                 .id(("legend", k))
+                .children(crate::screens::spot(("legend", k)))
                 .flex()
                 .items_center()
                 .gap(px(4.))
                 .child(status_glyph_sized(s, 16., l))
                 .child(n.to_string())
-                .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx))
+                .tooltip(move |window, cx| crate::screens::tip(tip.clone(), window, cx))
         });
         let list = people.iter().map(|p| {
             let name = if p.name.trim().is_empty() { p.email.clone() } else { p.name.clone() };
@@ -2921,8 +2927,10 @@ impl crate::Mailer {
 
 /// Кнопка-значок 28 px без рамки.
 pub(crate) fn icon_button(id: impl Into<ElementId>, glyph: char, l: &Look) -> Stateful<Div> {
+    let id = id.into();
     div()
-        .id(id)
+        .id(id.clone())
+        .children(crate::screens::spot(id))
         .size(px(28.))
         .flex_none()
         .flex()

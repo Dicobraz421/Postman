@@ -62,6 +62,12 @@ pub(crate) struct Mailer {
     pub(crate) refocus: bool,
     /// Открыта форма контакта: когда закроется — фокус экрану (`refocus`).
     pub(crate) contact_form: bool,
+    /// Открыто поле карточки задачи: когда закроется — фокус экрану (`refocus`).
+    pub(crate) task_field: bool,
+    /// Сменился раздел или закрылось меню папки: элемент с фокусом мог уйти с экрана.
+    pub(crate) focus_check: bool,
+    /// Меню папки открыто.
+    pub(crate) folder_menu: bool,
     /// Ширины папок и списка в этом кадре (T1-05б): из настроек или перетаскивания, ужаты окном.
     pub(crate) panes: (f32, f32),
     /// Тянется разделитель панелей (T1-05б).
@@ -340,6 +346,9 @@ impl Mailer {
             menu: None,
             refocus: false,
             contact_form: false,
+            task_field: false,
+            focus_check: false,
+            folder_menu: false,
             panes: (W_FOLDERS, W_LIST),
             split: SplitDrag::default(),
             offline: Default::default(),
@@ -505,6 +514,7 @@ impl Mailer {
     }
 
     pub(crate) fn set_section(&mut self, section: Section, cx: &mut Context<Self>) {
+        self.focus_check |= self.section != section;
         // Модуль рейла — во вкладке «Почта» (вкладка настроек остаётся открытой); «Почта» во вкладке почты (S5-16) —
         // там же.
         if section == Section::Mail {
@@ -575,9 +585,25 @@ impl Render for Mailer {
         // Форма контакта закрылась, поле с фокусом пропало: иначе F2 и Delete раздела не сработают до щелчка (раздел 26, шаг 12).
         let contact_form = self.contacts.read(cx).editing();
         self.refocus |= std::mem::replace(&mut self.contact_form, contact_form) && !contact_form;
+        // То же у полей карточки задачи: иначе Space, F2 и Ctrl+N раздела не сработают до щелчка (S6-05, шаги 4, 5).
+        let task_field = self.tasks.read(cx).field_open();
+        self.refocus |= std::mem::replace(&mut self.task_field, task_field) && !task_field;
         screens::drive(self, window, cx);
         if std::mem::take(&mut self.refocus) {
             window.focus(&self.focus, cx);
+        }
+        // Элемент с фокусом ушёл с экрана вместе с разделом или меню папки: клавиши шли бы мимо экрана, Ctrl+3 после
+        // Ctrl+2 и Esc у полосы экспорта не срабатывали. Проверка — после кадра: поле, открытое тем же действием
+        // (Ctrl+N, «Новая папка»), уже в дереве и фокус не теряет.
+        let folder_menu = self.folders.read(cx).menu_open();
+        self.focus_check |= std::mem::replace(&mut self.folder_menu, folder_menu) && !folder_menu;
+        if std::mem::take(&mut self.focus_check) {
+            let root = self.focus.clone();
+            window.defer(cx, move |window, cx| {
+                if !root.contains_focused(window, cx) {
+                    window.focus(&root, cx);
+                }
+            });
         }
         let l = crate::roles::look(cx);
         let menu = self.context_menu(window, &l, cx);

@@ -2182,7 +2182,7 @@ impl MeetingView {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
-            .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(hint.clone()).build(window, cx))
+            .tooltip(move |window, cx| crate::screens::tip(hint.clone(), window, cx))
             // Щелчок по сетке — фокус вкладке (не полю): ←/→ и Enter — по окнам.
             .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| this.focus.focus(window, cx)))
             .px(px(24.))

@@ -59,6 +59,10 @@ fn letter_home(key: &str) -> Option<&str> {
 /// Папки учёток и «На этом компьютере» одним списком дерева.
 pub(crate) fn mailboxes(cache: &Cache) -> Vec<MailboxRow> {
     let mut rows = cache.mailboxes().unwrap_or_default();
+    // Счётчика сервера нет (демо, папка ещё не синхронизирована): писем — столько, сколько в базе (полоса «Экспорт», S8-32).
+    for m in rows.iter_mut().filter(|m| m.total == 0) {
+        m.total = count(cache, &m.id) as u32;
+    }
     rows.extend(local_rows(cache));
     rows
 }
@@ -365,6 +369,11 @@ impl Mailer {
         }
         if !across(&ids, &to) {
             return self.run_bulk(ids, crate::bulk::Ask::Move(to), cx);
+        }
+        // Письмо уходит из папки (S8-15, шаг 6): открытое — закрыть, а не ждать конца задания.
+        let open = crate::screens::reading_id(self, cx);
+        if open.is_some_and(|id| ids.contains(&id)) {
+            self.reading.update(cx, |r, cx| r.clear(cx));
         }
         let cache = self.cache.clone();
         let task = cx.background_spawn(async move { move_command(&cache, &ids, &to) });

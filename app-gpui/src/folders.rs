@@ -344,6 +344,13 @@ impl Folders {
         false
     }
 
+    /// Держать дерево у нижнего края (сценарии: новые папки — последние).
+    pub(crate) fn screen_keep_end(&mut self) {
+        if let Some(last) = self.rows().len().checked_sub(1) {
+            self.scroll.scroll_to_item(last);
+        }
+    }
+
     pub(crate) fn scrolled(&self) -> bool {
         self.scroll.offset().y < px(0.)
     }
@@ -579,6 +586,11 @@ impl Folders {
         }
     }
 
+    /// Группа свёрнута (сценарии; `""` — своя).
+    pub(crate) fn is_collapsed(&self, account: &str) -> bool {
+        self.collapsed.contains(if account.is_empty() { OWN } else { account })
+    }
+
     /// Подпапки папки свёрнуты (сценарии).
     pub(crate) fn is_folded(&self, id: &str) -> bool {
         self.folded.contains(id)
@@ -725,6 +737,7 @@ impl Folders {
         let selected = self.holds_current(LOCAL);
         div()
             .id("local-group")
+            .children(crate::screens::spot("local-group"))
             .mt(px(10.))
             .h(px(28.))
             .flex_none()
@@ -741,7 +754,7 @@ impl Folders {
             .child(chevron(open))
             .child(crate::chrome::icon(crate::local::PC, 14.))
             .child(div().flex_1().min_w_0().truncate().child(tr!("local-group")))
-            .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(hint.clone()).build(window, cx))
+            .tooltip(move |window, cx| crate::screens::tip(hint.clone(), window, cx))
             .on_click(cx.listener(|this, _, _, cx| this.toggle(LOCAL, cx)))
             .on_mouse_down(
                 MouseButton::Right,
@@ -765,6 +778,7 @@ impl Folders {
         let selected = self.holds_current(&a.id);
         div()
             .id(SharedString::from(format!("acc-{}", a.id)))
+            .children(crate::screens::spot(SharedString::from(format!("acc-{}", a.id))))
             .mt(px(10.))
             .h(px(28.))
             .flex_none()
@@ -786,7 +800,7 @@ impl Folders {
             .when(self.read_only(a), |d| d.child(div().flex_none().text_size(px(11.)).child(tr!("shared-read-only"))))
             .when(total > 0, |d| unread(d, total, l))
             // Подсказка «Общий ящик · доступ» — только у общих ящиков (S7-09б).
-            .when(!own, |d| d.tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(hint.clone()).build(window, cx)))
+            .when(!own, |d| d.tooltip(move |window, cx| crate::screens::tip(hint.clone(), window, cx)))
             .on_click(cx.listener(move |this, _, _, cx| this.toggle(&id, cx)))
             .into_any_element()
     }
@@ -814,6 +828,7 @@ impl Folders {
         });
         div()
             .id("own-account")
+            .children(crate::screens::spot("own-account"))
             .flex()
             .flex_none()
             .items_center()

@@ -183,9 +183,9 @@ pub(crate) struct RulesPanel {
     /// Правила на сервере; `None` — ещё не пришли.
     pub(crate) state: Option<RulesState>,
     /// Папки ящика: (id, имя).
-    mailboxes: Vec<(String, String)>,
+    pub(crate) mailboxes: Vec<(String, String)>,
     /// Категории своего ящика (таблица S5-02).
-    categories: Vec<CategoryChoice>,
+    pub(crate) categories: Vec<CategoryChoice>,
     pub(crate) editor: Option<Draft>,
     value: Entity<InputState>,
     address: Entity<InputState>,
@@ -197,7 +197,7 @@ pub(crate) struct RulesPanel {
     /// Последний отправленный список.
     pending: Option<Vec<Rule>>,
     confirm_delete: Option<usize>,
-    error: Option<String>,
+    pub(crate) error: Option<String>,
     note: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
@@ -360,8 +360,10 @@ impl RulesPanel {
 
 fn chip(id: impl Into<ElementId>, label: String, selected: bool) -> Stateful<Div> {
     let l = crate::roles::now();
+    let id = id.into();
     div()
-        .id(id)
+        .id(id.clone())
+        .children(crate::screens::spot(id))
         .px_2()
         .py_0p5()
         .rounded_md()

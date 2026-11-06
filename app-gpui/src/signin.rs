@@ -46,12 +46,12 @@ impl Step {
 }
 
 pub(crate) struct SignIn {
-    step: Step,
+    pub(crate) step: Step,
     url: Entity<InputState>,
     user: Entity<InputState>,
     password: Entity<InputState>,
     /// Пароль — в диспетчер учётных данных Windows (`false` — не хранить, спрашивать при запуске).
-    store: bool,
+    pub(crate) store: bool,
     /// Машина в домене: у Exchange — выбор «Войти как пользователь Windows» (T1-02б).
     pub(crate) domain: bool,
     /// Выбран вход Windows: шага «Пароль» нет, пароль пустой.
@@ -292,6 +292,7 @@ impl SignIn {
             .child(
                 div()
                     .id(id)
+                    .children(crate::screens::spot(id))
                     .px_2()
                     .rounded(l.px(Metric::RadiusControl))
                     .text_color(l.accent_text())
@@ -314,12 +315,11 @@ impl SignIn {
 
     fn radio_row(&self, l: &crate::roles::Look, id: &'static str, on: bool, label: String, cx: &mut Context<Self>) -> Stateful<Div> {
         let store = id == "signin-store-windows";
-        div().id(id).flex().items_center().gap_2().cursor_pointer().child(crate::settings_tab::radio(on, l)).child(label).on_click(cx.listener(
-            move |this, _, _, cx| {
-                this.store = store;
-                cx.notify();
-            },
-        ))
+        let row = div().id(id).children(crate::screens::spot(id)).flex().items_center().gap_2().cursor_pointer();
+        row.child(crate::settings_tab::radio(on, l)).child(label).on_click(cx.listener(move |this, _, _, cx| {
+            this.store = store;
+            cx.notify();
+        }))
     }
 
     fn content(&self, l: &crate::roles::Look, cx: &mut Context<Self>) -> Div {

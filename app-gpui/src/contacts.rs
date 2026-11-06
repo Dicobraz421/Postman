@@ -815,7 +815,7 @@ impl ContactsView {
         cx.notify();
     }
 
-    fn set_source(&mut self, source: Source, cx: &mut Context<Self>) {
+    pub(crate) fn set_source(&mut self, source: Source, cx: &mut Context<Self>) {
         if self.source != source {
             self.source = source;
             self.selected = None;

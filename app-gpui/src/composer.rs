@@ -118,12 +118,12 @@ pub(crate) struct Composer {
     pub(crate) model: Model,
     place: Place,
     /// Выбор «От» (S4-06).
-    senders: Vec<Sender>,
+    pub(crate) senders: Vec<Sender>,
     /// Сертификаты шифрования адресатов (S5-12 Ф4) и «Снять „Конфиденциально“» ждёт подтверждения.
     certs: crate::smime_seal::Certs,
     confirm_unmark: bool,
     /// Ответ на письмо общего ящика (S5-28).
-    shared: Option<crate::shared::Reply>,
+    pub(crate) shared: Option<crate::shared::Reply>,
     to: Entity<InputState>,
     cc: Entity<InputState>,
     bcc: Entity<InputState>,

@@ -38,7 +38,7 @@ use crate::chrome::icon;
 use crate::roles::Look;
 
 mod delegation;
-use delegation::Edit;
+pub(crate) use delegation::Edit;
 pub(crate) use delegation::mail_card;
 
 const NAV_W: f32 = 236.;
@@ -331,6 +331,8 @@ pub(crate) enum TasksAction {
 pub(crate) enum Undo {
     /// Задачи, как были (выполнение или удаление).
     Tasks(Vec<Task>),
+    /// Повторяющаяся, как была, и копия, созданная выполнением (S6-07): её быть не должно.
+    Repeat(Box<Task>, String),
     /// Слова срока писем.
     Letters(Vec<Patch>),
     /// Поручение до «Забрать» или «Удалить» (S6-11): копия — как была, письма отмены — не отправлять.
@@ -346,20 +348,20 @@ pub(crate) struct TasksView {
     /// Письма задач со ссылкой (без срока у письма) — из кэша по выбору задачи: блок письма в карточке.
     linked: Vec<EmailRow>,
     pub(crate) nav: Nav,
-    shown: Vec<Task>,
-    items: Vec<Item>,
+    pub(crate) shown: Vec<Task>,
+    pub(crate) items: Vec<Item>,
     list: ListState,
     pub(crate) selected: Option<String>,
-    completing: Completing,
+    pub(crate) completing: Completing,
     categories: Categories,
     pub(crate) search: Entity<InputState>,
     query: String,
     /// «Добавить задачу» над списком.
     pub(crate) quick: Entity<InputState>,
     /// Новая задача (Ctrl+N): карточка с полем названия, ещё не записана.
-    draft: Option<Task>,
+    pub(crate) draft: Option<Task>,
     /// Правка названия (F2) — поле вместо заголовка карточки.
-    title: Option<Entity<InputState>>,
+    pub(crate) title: Option<Entity<InputState>>,
     /// Варианты срока в карточке открыты (Insert).
     pub(crate) due_open: bool,
     /// Открытые варианты поля карточки (S6-06): напоминание, проект, категория.
@@ -369,7 +371,7 @@ pub(crate) struct TasksView {
     /// «Добавить подзадачу»: Enter — подзадача, поле остаётся для следующей.
     sub_input: Entity<InputState>,
     /// Заметки — поле с живым отображением Markdown (как письмо, S5-27).
-    notes: Entity<EditorState>,
+    pub(crate) notes: Entity<EditorState>,
     notes_marks: Option<TextDecorationCollection>,
     /// Чьи заметки в поле; сохранение — с задержкой после набора.
     notes_uid: Option<String>,
@@ -385,7 +387,7 @@ pub(crate) struct TasksView {
     pub(crate) slot: usize,
     /// Напоминания (S6-07): проверено до этого момента, отложенные, таймер к ближайшему.
     remind_since: i64,
-    snoozed: Vec<(String, i64)>,
+    pub(crate) snoozed: Vec<(String, i64)>,
     remind_timer: Option<gpui_kit::Task<()>>,
     tz: TimeZone,
     /// Задачи пришли (снимки ждут их).
@@ -396,7 +398,7 @@ pub(crate) struct TasksView {
     /// Адресная книга окна письма: исполнитель и наблюдатели из справочника и контактов.
     book: Option<crate::compose::Book>,
     /// Формы поручения (S6-10).
-    deleg: delegation::State,
+    pub(crate) deleg: delegation::State,
     /// «Поручения» (S6-11): последняя вкладка и «Только свои».
     tab: Tab,
     pub(crate) own_only: bool,
@@ -707,12 +709,18 @@ impl TasksView {
         model::parse(text, lang, now.date(), now.time(), hours, &self.categories, &self.ignored)
     }
 
-    /// Крестик на чипе: кусок — снова часть названия.
-    fn unchip(&mut self, text: String, cx: &mut Context<Self>) {
+    /// Крестик на чипе: кусок — снова часть названия, курсор — снова в строке (Enter добавляет задачу).
+    fn unchip(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
         self.ignored.push(text);
         let value = self.quick.read(cx).value().to_string();
         self.parsed = self.parse(&value, cx);
+        self.quick.update(cx, |s, cx| s.focus(window, cx));
         cx.notify();
+    }
+
+    /// Открыто поле карточки, которое исчезнет с фокусом: название, новый проект, форма поручения.
+    pub(crate) fn field_open(&self) -> bool {
+        self.title.is_some() || self.open == Some(Field::Project) || self.deleg.edit.is_some()
     }
 
     /// Снимок: строка «Добавить задачу» с текстом.
@@ -1111,6 +1119,8 @@ impl TasksView {
                 .letter(mailtask::letter_key(&t).unwrap_or_default())
                 .and_then(|row| mailtask::letter_due(row).map(|w| cycle::set(row, Kind::Due, Some(w))));
             Undo::Letters(back.into_iter().collect())
+        } else if let Some(n) = &next {
+            Undo::Repeat(Box::new(t.clone()), n.uid.clone())
         } else {
             Undo::Tasks(vec![t.clone()])
         };
@@ -1129,6 +1139,10 @@ impl TasksView {
     pub(crate) fn undo(&mut self, undo: Undo, cx: &mut Context<Self>) {
         match undo {
             Undo::Tasks(list) => self.save(list, cx),
+            Undo::Repeat(t, copy) => {
+                self.remove(&copy, cx);
+                self.save(vec![*t], cx);
+            }
             Undo::Letters(p) => cx.emit(TasksAction::Patch(p)),
             Undo::Delegation(t) => self.undo_delegation(*t, cx),
         }
@@ -1391,7 +1405,8 @@ impl TasksView {
             |id: ElementId, glyph: Option<char>, lead: Option<AnyElement>, text: String, n: usize, badge: usize, nav: Nav, cx: &mut Context<Self>| {
                 let on = self.nav == nav;
                 div()
-                    .id(id)
+                    .id(id.clone())
+                    .children(crate::screens::spot(id))
                     .h(px(32.))
                     .flex_none()
                     .flex()
@@ -1568,7 +1583,12 @@ impl TasksView {
                 .flex_none()
                 .px(px(14.))
                 .pb(px(10.))
-                .child(Input::new(&self.quick).prefix(icon(g::ADD, 14.).text_color(l.accent_text())))
+                .child(
+                    div()
+                        .relative()
+                        .children(crate::screens::spot("tasks-quick"))
+                        .child(Input::new(&self.quick).prefix(icon(g::ADD, 14.).text_color(l.accent_text()))),
+                )
                 .children(chips)
         });
         let empty = self
@@ -1716,6 +1736,7 @@ impl TasksView {
         let deleg = postman_calendar::assign::status(t);
         let circle = div()
             .id(("task-check", ix))
+            .children(crate::screens::spot(("task-check", ix)))
             .size(px(20.))
             .flex_none()
             .rounded_full()
@@ -1759,6 +1780,7 @@ impl TasksView {
         let stripe = cat.as_ref().map(|(_, c)| l.cat(c).dot);
         div()
             .id(("task", ix))
+            .children(crate::screens::spot(("task", ix)))
             .relative()
             .w_full()
             .h(px(if two {
@@ -1814,6 +1836,7 @@ impl TasksView {
                 controls.child(div().text_size(px(12.)).text_color(l.accent_text()).child(slot_label(Span::new(b.start, b.end), &self.tz))).child(
                     div()
                         .id("block-remove")
+                        .children(crate::screens::spot("block-remove"))
                         .text_size(px(12.))
                         .text_color(l.text2())
                         .cursor_pointer()
@@ -1829,6 +1852,7 @@ impl TasksView {
                 .child(
                     div()
                         .id("block-place")
+                        .children(crate::screens::spot("block-place"))
                         .h(px(26.))
                         .px(px(10.))
                         .flex()
@@ -1939,6 +1963,7 @@ impl TasksView {
                 .child(
                     div()
                         .id(("unchip", i))
+                        .children(crate::screens::spot(("unchip", i)))
                         .size(px(16.))
                         .flex()
                         .items_center()
@@ -1947,7 +1972,7 @@ impl TasksView {
                         .cursor_pointer()
                         .hover(|d| d.bg(l.hover()))
                         .child(icon(crate::calendar::g::CANCEL, 8.))
-                        .on_click(cx.listener(move |this, _, _, cx| this.unchip(text.clone(), cx))),
+                        .on_click(cx.listener(move |this, _, window, cx| this.unchip(text.clone(), window, cx))),
                 )
                 .into_any_element()
         });
@@ -2025,6 +2050,7 @@ impl TasksView {
                 d.child(
                     div()
                         .id("task-reopen")
+                        .children(crate::screens::spot("task-reopen"))
                         .cursor_pointer()
                         .text_color(l.accent_text())
                         .child(tr!("tasks-reopen"))
@@ -2034,6 +2060,7 @@ impl TasksView {
         let uid = t.uid.clone();
         let circle = div()
             .id("card-check")
+            .children(crate::screens::spot("card-check"))
             .mt(px(3.))
             .size(px(24.))
             .flex_none()
@@ -2059,6 +2086,7 @@ impl TasksView {
         };
         let prio = div()
             .id("card-prio")
+            .children(crate::screens::spot("card-prio"))
             .size(px(28.))
             .flex_none()
             .flex()
@@ -2092,6 +2120,7 @@ impl TasksView {
             let has = row.is_some() || mailtask::letter_key(t).is_some();
             div()
                 .id("card-mail")
+                .children(crate::screens::spot("card-mail"))
                 .mx(px(20.))
                 .mt(px(12.))
                 .flex_none()
@@ -2161,6 +2190,7 @@ impl TasksView {
         };
         let due_row = div()
             .id("card-due")
+            .children(crate::screens::spot("card-due"))
             .rounded(px(4.))
             .cursor_pointer()
             .hover(|d| d.bg(l.hover()))
@@ -2175,6 +2205,7 @@ impl TasksView {
                     let when = p.when(Kind::Due, &now);
                     div()
                         .id(("due-opt", i))
+                        .children(crate::screens::spot(("due-opt", i)))
                         .h(px(26.))
                         .px(px(10.))
                         .flex()
@@ -2193,6 +2224,7 @@ impl TasksView {
             opts.push(
                 div()
                     .id("due-none")
+                    .children(crate::screens::spot("due-none"))
                     .h(px(26.))
                     .px(px(10.))
                     .flex()
@@ -2240,6 +2272,7 @@ impl TasksView {
         let clickable = |id: &'static str, f: Field, row: Div, cx: &mut Context<Self>| {
             div()
                 .id(id)
+                .children(crate::screens::spot(id))
                 .rounded(px(4.))
                 .when(editable, |d| {
                     d.cursor_pointer().hover(|d| d.bg(l.hover())).on_click(cx.listener(move |this, _, _, cx| this.toggle_field(f, cx)))
@@ -2248,7 +2281,8 @@ impl TasksView {
         };
         let pill = |id: ElementId, text: String, on: bool| {
             div()
-                .id(id)
+                .id(id.clone())
+                .children(crate::screens::spot(id))
                 .h(px(26.))
                 .px(px(10.))
                 .flex()
@@ -2336,7 +2370,9 @@ impl TasksView {
                     .on_click(cx.listener(|this, _, _, cx| this.set_project(None, cx)))
                     .into_any_element(),
             );
-            items.push(div().w(px(180.)).child(Input::new(&self.project_input)).into_any_element());
+            items.push(
+                div().relative().children(crate::screens::spot("proj-new")).w(px(180.)).child(Input::new(&self.project_input)).into_any_element(),
+            );
             options(items)
         });
         let category_opts = (self.open == Some(Field::Category)).then(|| {
@@ -2406,6 +2442,7 @@ impl TasksView {
                 let suid = s.uid.clone();
                 div()
                     .id(("sub", i))
+                    .children(crate::screens::spot(("sub", i)))
                     .h(px(25.))
                     .flex()
                     .items_center()
@@ -2448,7 +2485,15 @@ impl TasksView {
                     .children(bar),
             )
             .children(sub_rows)
-            .when(editable, |d| d.child(div().pt(px(4.)).child(Input::new(&self.sub_input).prefix(icon(g::ADD, 12.).text_color(l.text3())))))
+            .when(editable, |d| {
+                d.child(
+                    div()
+                        .relative()
+                        .children(crate::screens::spot("sub-new"))
+                        .pt(px(4.))
+                        .child(Input::new(&self.sub_input).prefix(icon(g::ADD, 12.).text_color(l.text3()))),
+                )
+            })
             .when(sn == 0 && !editable, |d| d.child(div().h(px(25.)).flex().items_center().text_color(l.text3()).child(tr!("tasks-no-subtasks"))));
         // Заметки — Markdown с живым отображением (S6-06): то же поле, что текст письма.
         let notes = div()
@@ -2465,6 +2510,8 @@ impl TasksView {
             ))
             .child(if editable {
                 div()
+                    .relative()
+                    .children(crate::screens::spot("task-notes"))
                     .flex_1()
                     .min_h(px(60.))
                     .child(
@@ -2698,6 +2745,7 @@ impl Render for TasksBar {
         };
         let new = div()
             .id("task-new")
+            .children(crate::screens::spot("task-new"))
             .h(px(32.))
             .px(px(12.))
             .mr(px(12.))

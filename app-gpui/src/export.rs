@@ -164,6 +164,19 @@ impl Mailer {
 
     /// «Выбрать папку и начать…»: каталог — диалогом, затем задание ядру. Отмена диалога — полоса остаётся.
     fn export_start(&mut self, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: None });
+        cx.spawn(async move |this, cx| {
+            let dir = match picked.await {
+                Ok(Ok(Some(mut dirs))) if !dirs.is_empty() => dirs.swap_remove(0),
+                _ => return,
+            };
+            let _ = this.update(cx, |m, cx| m.export_to(dir, cx));
+        })
+        .detach();
+    }
+
+    /// Каталог выбран: задание ядру.
+    pub(crate) fn export_to(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
         let Some(c) = self.export.choose.clone() else { return };
         let names: Vec<(String, String)> = {
             let mut homes: Vec<String> = Vec::new();
@@ -175,13 +188,8 @@ impl Mailer {
             }
             homes.into_iter().map(|h| (h.clone(), self.account_name(&h, cx))).collect()
         };
-        let picked = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: None });
         let cache = self.cache.clone();
         cx.spawn(async move |this, cx| {
-            let dir = match picked.await {
-                Ok(Ok(Some(mut dirs))) if !dirs.is_empty() => dirs.swap_remove(0),
-                _ => return,
-            };
             let what = c.what.clone();
             let with = c.with_subfolders;
             let scope = cx.background_spawn(async move { scope(&cache, &what, with, &names) }).await;
@@ -277,6 +285,7 @@ impl Mailer {
         if let Some(c) = &self.export.choose {
             let picker = div()
                 .id("export-format")
+                .children(crate::screens::spot("export-format"))
                 .flex_none()
                 .h(px(26.))
                 .w(px(96.))
@@ -301,6 +310,7 @@ impl Mailer {
                 let on = c.with_subfolders;
                 div()
                     .id("export-subfolders")
+                    .children(crate::screens::spot("export-subfolders"))
                     .flex_none()
                     .flex()
                     .items_center()
@@ -354,6 +364,7 @@ impl Mailer {
             let on = f == c.format;
             div()
                 .id(("export-format-item", i))
+                .children(crate::screens::spot(("export-format-item", i)))
                 .px(px(10.))
                 .py(px(6.))
                 .rounded(l.px(Metric::RadiusControl))
@@ -404,6 +415,7 @@ impl Mailer {
         Some(
             div()
                 .id("export-status")
+                .children(crate::screens::spot("export-status"))
                 .h(px(22.))
                 .px(px(6.))
                 .flex()

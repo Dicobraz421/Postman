@@ -509,6 +509,7 @@ use crate::buttons::plain as button;
 fn toggle_row(id: &'static str, title: Div, hint: String, on: bool, l: &Look) -> Stateful<Div> {
     div()
         .id(id)
+        .children(crate::screens::spot(id))
         .flex()
         .items_center()
         .gap_4()
@@ -550,6 +551,7 @@ impl VacationPanel {
         };
         div()
             .id("vacation-enabled")
+            .children(crate::screens::spot("vacation-enabled"))
             .flex()
             .items_center()
             .gap_3()
@@ -634,6 +636,7 @@ impl VacationPanel {
                 .child(
                     div()
                         .id("vacation-contacts-only")
+                        .children(crate::screens::spot("vacation-contacts-only"))
                         .flex()
                         .items_center()
                         .gap_2()

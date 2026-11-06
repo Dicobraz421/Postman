@@ -421,6 +421,10 @@ impl Mailer {
         self.list.update(cx, |l, cx| l.refresh(cx));
         self.open_row_changed(&rows, cx);
         self.lifecycle_pass(false, cx);
+        // Срок письма — задача «Из почты» (S6-05, шаг 6): выполненная уходит из списка сразу, не с ответом сервера.
+        if self.section == crate::Section::Tasks {
+            self.tasks.update(cx, |t, cx| t.letters_changed(cx));
+        }
     }
 
     /// Письмо в области чтения среди изменённых: шапка — по новой строке (метки сроков).
