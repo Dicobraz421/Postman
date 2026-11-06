@@ -394,7 +394,10 @@ fn caldav_task_round_trip() {
     // Записана на сервере — у строки появился id (путь).
     a.wait("задача на сервере", |e| matches!(e, Event::Tasks(Reply::Changed(v)) if v.iter().any(|x| x.uid == uid && !x.id.is_empty())));
 
-    let Reply::Loaded(seen) = b.tasks(Request::Load, "Loaded у второго", |r| matches!(r, Reply::Loaded(v) if v.iter().any(|x| x.uid == uid)))
+    // Задачи загружаются сами при входе: новая придёт дельтой (`Changed`) или полной загрузкой.
+    let has = |v: &[Task]| v.iter().any(|x| x.uid == uid);
+    let (Reply::Loaded(seen) | Reply::Changed(seen)) =
+        b.tasks(Request::Refresh, "задача у второго", |r| matches!(r, Reply::Loaded(v) | Reply::Changed(v) if has(v)))
     else {
         unreachable!()
     };
