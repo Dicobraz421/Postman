@@ -1,4 +1,4 @@
-# Каркас окна (S5-01): вкладки в заголовке, командная строка, рейл модулей, строка состояния.
+# Каркас окна (S5-01): разделы и вкладки в заголовке, командная строка, строка состояния.
 frame-tab-mail = Почта
 frame-tab-close = Закрыть
 frame-new = Новое письмо
@@ -13,11 +13,11 @@ frame-rules = Правила
 frame-search = Поиск в почте
 frame-scope-all = Везде
 frame-scope-folder = Текущая папка
-frame-rail-mail = Почта
-frame-rail-calendar = Календарь
-frame-rail-contacts = Контакты
-frame-rail-tasks = Задачи
-frame-rail-settings = Настройки
+frame-section-mail = Почта
+frame-section-calendar = Календарь
+frame-section-contacts = Контакты
+frame-section-tasks = Задачи
+frame-section-settings = Настройки
 frame-list-count = { $n ->
     [one] { $n } письмо
     [few] { $n } письма

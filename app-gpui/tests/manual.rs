@@ -532,7 +532,7 @@ fn s42_s43_scenes() {
 #[ignore = "окно и рабочий стол: cargo nextest run -p postman-gpui --test manual --run-ignored only"]
 fn input_drills() {
     need_worker();
-    const DRILLS: &[&str] = &["drill-tabs", "drill-select", "drill-split", "drill-keytips", "drill-palette"];
+    const DRILLS: &[&str] = &["drill-tabs", "drill-select", "drill-split", "drill-keytips", "drill-palette", "drill-nav-mail-only", "drill-nav"];
     themed_scenes(DRILLS, DRILLS);
 }
 

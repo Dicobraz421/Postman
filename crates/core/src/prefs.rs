@@ -613,7 +613,7 @@ pub struct Layout {
 
 impl Layout {
     /// Ширины макета.
-    pub const FOLDERS: u16 = 236;
+    pub const FOLDERS: u16 = 288;
     pub const LIST: u16 = 452;
     /// Минимумы: уже панель не сжимается ни разделителем, ни окном.
     pub const MIN_FOLDERS: u16 = 160;
@@ -1267,8 +1267,8 @@ mod tests {
         assert_eq!(Layout { folders: Some(10), list: Some(10) }.clamp(1600), Layout { folders: Some(160), list: Some(280) });
         assert_eq!(wide.clamp(600), Layout { folders: Some(160), list: Some(280) });
         assert_eq!(Layout::default().widths(600), (160, 280));
-        // Без своей ширины папок список считается от ширины макета (236).
-        assert_eq!(Layout { folders: None, list: Some(900) }.clamp(1000), Layout { folders: None, list: Some(404) });
+        // Без своей ширины папок список считается от ширины макета (288).
+        assert_eq!(Layout { folders: None, list: Some(900) }.clamp(1000), Layout { folders: None, list: Some(352) });
         let d = dir();
         let path = d.path().join(FILE);
         let p = Prefs { layout: Layout { folders: Some(200), list: None }, ..Prefs::default() };

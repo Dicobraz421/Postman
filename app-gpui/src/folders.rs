@@ -1,4 +1,4 @@
-//! Панель папок (разделы — рейл модулей, `chrome.rs`). Общие ящики (S4-06) — свёртываемые ветки
+//! Панель папок (разделы — в заголовке окна, `chrome.rs`). Общие ящики (S4-06) — свёртываемые ветки
 //! с именем аккаунта под своими папками; своя учётная запись сворачивается так же (T1-06). Воронка у открытой папки
 //! переключает панель на фильтры (S5-03, `filters.rs`). Меню папки (ПКМ, T1-04д) — «Новая папка», «Переименовать»: имя
 //! — полем в строке дерева (Enter — сохранить, Esc — отмена); перенос — перетаскиванием на папку или на имя учётки.
@@ -18,7 +18,8 @@ use postman_core::sync::Command;
 use pets_ui::theme::{Metric, Role};
 
 use crate::filters::FilterModel;
-use crate::roles::{Look, look};
+use crate::icons::{self, Ico};
+use crate::roles::{Look, Pm, look};
 
 // --- папки ---
 
@@ -658,6 +659,7 @@ impl Folders {
         let menu = m.id.clone();
         let drop = m.id.clone();
         let letters_to = m.id.clone();
+        let (ico, tint) = folder_icon(m.role.as_deref());
         // Шеврон подпапок (T1-04г): место под него — у каждой папки, чтобы значки уровня стояли ровно.
         let open = !self.folded.contains(&m.id);
         let fold_id = SharedString::from(format!("mb-fold-{}", m.id));
@@ -687,7 +689,7 @@ impl Folders {
             .items_center()
             .gap(px(10.))
             .child(chevron)
-            .child(crate::chrome::icon(folder_glyph(m.role.as_deref()), 16.).text_color(l.text2()).ml(px(-6.)))
+            .child(icons::icon(ico, 20., tint.map_or(l.text(), |t| l.pm(t))).ml(px(-6.)))
             .child(div().flex_1().min_w_0().truncate().child(shown_name(m)))
             // Непрочитанные — с сервера (`Mailbox.unreadEmails`), а не по загруженной части папки.
             .when(m.unread > 0, |d| unread(d, m.unread, l))
@@ -795,7 +797,7 @@ impl Folders {
             .child(chevron(open))
             // Значок «общий» и права в подсказке (S5-28, макет `SharedMailboxes`); другая моя учётная запись (S7-03б) —
             // значок почты.
-            .child(crate::chrome::icon(if own { crate::chrome::glyph::MAIL } else { crate::chrome::glyph::PEOPLE }, 14.))
+            .child(icons::icon(if own { icons::MAIL } else { icons::PEOPLE }, 16., l.text2()))
             .child(div().flex_1().min_w_0().truncate().child(a.name.clone()))
             .when(self.read_only(a), |d| d.child(div().flex_none().text_size(px(11.)).child(tr!("shared-read-only"))))
             .when(total > 0, |d| unread(d, total, l))
@@ -922,6 +924,20 @@ pub(crate) fn shown_name(m: &MailboxRow) -> String {
 }
 
 /// Значок папки по роли JMAP.
+/// Значок папки в дереве и токен его цвета (DESIGN «Значки»); без токена — цветом текста.
+pub(crate) fn folder_icon(role: Option<&str>) -> (Ico, Option<Pm>) {
+    match role {
+        Some("inbox") => (icons::INBOX, Some(Pm::IconBlue)),
+        Some("sent") => (icons::SEND, Some(Pm::IconBlue)),
+        Some("drafts") => (icons::DRAFTS, None),
+        Some("trash") => (icons::DELETE, None),
+        Some("archive") => (icons::ARCHIVE, Some(Pm::IconGreen)),
+        Some("junk") => (icons::JUNK, None),
+        _ => (icons::FOLDER, None),
+    }
+}
+
+/// Значок папки шрифтом ОС: палитра команд (набор Fluent — дерево, DESIGN «Значки»).
 pub(crate) fn folder_glyph(role: Option<&str>) -> char {
     use crate::chrome::glyph;
     match role {
@@ -953,7 +969,7 @@ impl Render for Folders {
             ));
         }
         // Справа без отступа: полоса прокрутки — у края панели, место под неё — отступ строк.
-        let mut col = div().flex().flex_col().size_full().pt(px(4.)).pl(px(4.)).text_color(l.text());
+        let mut col = div().flex().flex_col().size_full().pt(px(4.)).pl(px(8.)).text_color(l.text());
         if let Some(n) = self.results {
             col = col.child(
                 div()

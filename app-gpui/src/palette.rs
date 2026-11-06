@@ -739,11 +739,10 @@ impl Mailer {
     /// Палитра поверх окна: под заголовком, по центру.
     pub(crate) fn palette_overlay(&self, window: &Window, cx: &App) -> Option<AnyElement> {
         let p = &self.palette.as_ref()?.view;
-        let l = look(cx);
         let height = p.read(cx).height;
         let width = f32::from(window.viewport_size().width);
         let left = ((width - WIDTH) / 2.).max(8.);
-        let top = l.m(Metric::HTitlebar) - 2.;
+        let top = crate::chrome::TITLEBAR_H - 2.;
         Some(
             div()
                 .absolute()

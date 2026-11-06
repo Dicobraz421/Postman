@@ -75,7 +75,7 @@ const SCENES: &[Scene] = &[
     scene("task-s604-phrases", evening_parsed, PHRASES),
     // S6-04, шаг 5 (только `--lang en`): «Call tomorrow at 3pm #clients !».
     scene("task-s604-en", english_parsed, ENGLISH),
-    // S6-05, шаг 1: кнопка рейла, списки слева, группы «Сегодня», карточка.
+    // S6-05, шаг 1: кнопка раздела, списки слева, группы «Сегодня», карточка.
     scene("task-s605-lists", lists_ready, LISTS),
     // S6-05, шаг 2: состав строки: важная, проект, подзадачи, метка срока (вид — по снимку); повтор.
     scene("task-s605-row", row_ready, ROW),
@@ -468,7 +468,7 @@ fn on_list(m: &Mailer, cx: &App, l: List) -> bool {
 }
 
 const LISTS: &[Input] = &[
-    Input::Press("rail-tasks"),
+    Input::Press("nav-tasks"),
     IN_TASKS,
     Input::Press("tasks-nav-0"),
     until!(|m, cx| on_list(m, cx, List::Inbox)),
@@ -546,7 +546,7 @@ fn tab_named(m: &Mailer, cx: &App, key: &str) -> bool {
 const NEW: &[Input] = &[
     TASKS,
     IN_TASKS,
-    until!(|m, cx| tab_named(m, cx, "frame-rail-tasks")),
+    until!(|m, cx| tab_named(m, cx, "frame-section-tasks")),
     Input::Keys(&["ctrl-n"]),
     until!(|m, cx| view(m, cx).draft.is_some() && view(m, cx).title.is_some()),
     Input::Text("Дрилл новая"),
@@ -562,9 +562,9 @@ const NEW: &[Input] = &[
     until!(|m, cx| task(m, cx, "Дрилл строкой").is_some_and(|t| due_day(t, cx) == Some(today(cx)))),
     until!(|m, cx| view(m, cx).status_text() == tr!("tasks-status-mail", n = 0i64) || !view(m, cx).status_text().is_empty()),
     Input::Keys(&["ctrl-2"]),
-    until!(|m, cx| tab_named(m, cx, "frame-rail-calendar")),
+    until!(|m, cx| tab_named(m, cx, "frame-section-calendar")),
     Input::Keys(&["ctrl-3"]),
-    until!(|m, cx| tab_named(m, cx, "frame-rail-contacts")),
+    until!(|m, cx| tab_named(m, cx, "frame-section-contacts")),
     Input::Keys(&["ctrl-1"]),
     until!(|m, cx| m.section == Section::Mail && rows_loaded(m.list.read(cx))),
     Input::Keys(&["ctrl-n"]),

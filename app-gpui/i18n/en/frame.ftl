@@ -1,4 +1,4 @@
-# Window frame (S5-01): tabs in the title bar, command line, module rail, status bar.
+# Window frame (S5-01): sections and tabs in the title bar, command line, status bar.
 frame-tab-mail = Mail
 frame-tab-close = Close
 frame-new = New mail
@@ -13,11 +13,11 @@ frame-rules = Rules
 frame-search = Search mail
 frame-scope-all = Everywhere
 frame-scope-folder = Current folder
-frame-rail-mail = Mail
-frame-rail-calendar = Calendar
-frame-rail-contacts = Contacts
-frame-rail-tasks = Tasks
-frame-rail-settings = Settings
+frame-section-mail = Mail
+frame-section-calendar = Calendar
+frame-section-contacts = Contacts
+frame-section-tasks = Tasks
+frame-section-settings = Settings
 frame-list-count = { $n ->
     [one] { $n } message
    *[other] { $n } messages

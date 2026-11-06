@@ -144,7 +144,7 @@ impl Mailer {
         self.list.read(cx).labels.for_account(None).cloned().unwrap_or_else(crate::labels::default_table)
     }
 
-    /// `settings.open` (рейл, Ctrl+,): вкладка «Настройки» на разделе `section`; открыта — тот же раздел или новый.
+    /// `settings.open` (шестерёнка в заголовке, Ctrl+,): вкладка «Настройки» на разделе `section`; открыта — тот же раздел или новый.
     pub(crate) fn open_settings(&mut self, section: Option<Section>, window: &mut Window, cx: &mut Context<Self>) {
         self.tabs.open(crate::tabs::TabKind::Settings);
         let info = self.settings_info(cx);

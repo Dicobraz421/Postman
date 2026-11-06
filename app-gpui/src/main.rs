@@ -37,6 +37,7 @@ mod export;
 mod features;
 mod filters;
 mod folders;
+mod icons;
 mod invite_card;
 mod ir_view;
 mod keymap;
@@ -284,7 +285,7 @@ fn main() {
         account::Start::SignIn(_) => (Cache::open_in_memory().unwrap_or_else(|e| fatal("fatal-store", e)), None),
     };
 
-    gpui_kit::application().run(move |cx: &mut App| {
+    gpui_kit::application().with_assets(icons::Assets).run(move |cx: &mut App| {
         gpui_kit::init(cx);
         // Тема (S5-01): «как в ОС» или `--theme`, на лету; до первого окна — чтение реестра, микросекунды.
         roles::init(&theme, density, user_prefs.look.accent, cx);

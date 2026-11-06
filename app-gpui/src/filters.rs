@@ -787,7 +787,7 @@ impl crate::Mailer {
         }
         // Ширины панелей — текущие (T1-05б), с разделителем между папками и списком.
         let (w_folders, w_list) = self.panes;
-        let left = crate::chrome::W_RAIL + w_folders + 8.;
+        let left = w_folders + 8.;
         let overlay = div().absolute().left(px(left)).right(px(8.));
         let overlay = if pane == Pane::Bottom { overlay.bottom(relative(0.55)) } else { overlay.bottom_0() };
         // Ширина закладок — карточка списка без рамки.

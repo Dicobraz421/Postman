@@ -100,10 +100,16 @@ pub(crate) enum Pm {
     /// карточки ([`ROWS`]). Без фокуса — нейтральная заливка и полоса цвета подписей ([`Look::row_fill`]).
     RowHover,
     RowSelected,
+    /// Значки Fluent (ADR 0008, DESIGN «Значки», токены `icon.*`): приглушённые цвета разделов, папок и команд.
+    IconBlue,
+    IconPink,
+    IconGreen,
+    IconAmber,
+    IconRed,
 }
 
 impl Pm {
-    pub(crate) const COUNT: usize = Pm::RowSelected as usize + 1;
+    pub(crate) const COUNT: usize = Pm::IconRed as usize + 1;
 }
 
 const fn c(v: u32) -> Color {
@@ -313,6 +319,12 @@ const FIXED: &[(Pm, &str, Color, Color, Role)] = &[
     // Строка списка, синий акцент (T1-D); акцент и «Серая» — слой [`base`] по [`ROWS`].
     (Pm::RowHover, "app.row.hover", c(0xF0F6FB), c(0x2B333A), Role::FillSubtleHover),
     (Pm::RowSelected, "app.row.selected", c(0xD1E4F4), c(0x2B3E50), Role::FillCursor),
+    // Значки (DESIGN «Значки»): при высокой контрастности — цветом текста.
+    (Pm::IconBlue, "app.icon.blue", c(0x2F6DB5), c(0x74A6E0), Role::TextPrimary),
+    (Pm::IconPink, "app.icon.pink", c(0xC2477F), c(0xE68AB5), Role::TextPrimary),
+    (Pm::IconGreen, "app.icon.green", c(0x3D8556), c(0x7DC08F), Role::TextPrimary),
+    (Pm::IconAmber, "app.icon.amber", c(0xA0761A), c(0xD9AE55), Role::TextPrimary),
+    (Pm::IconRed, "app.icon.red", c(0xB5403B), c(0xE58580), Role::TextPrimary),
 ];
 
 /// Цвет свободного времени (S5-20): только цвета бренда (решение владельца 2026-10-21) — розовый, синий,
@@ -457,6 +469,11 @@ const PMS: [Pm; Pm::COUNT] = [
     Pm::AssignGlyph,
     Pm::RowHover,
     Pm::RowSelected,
+    Pm::IconBlue,
+    Pm::IconPink,
+    Pm::IconGreen,
+    Pm::IconAmber,
+    Pm::IconRed,
 ];
 
 /// Цвета категории в теме.
@@ -936,7 +953,7 @@ mod tests {
         ("#C42B1C", "app.caption.close: «Закрыть» окна при наведении — красный Windows"),
         ("#EEF4FB", "app.event.bg.tentative, светлая"),
         ("#1E2A38", "app.event.bg.tentative, тёмная"),
-        ("#2F6DB5", "app.event.border, светлая (ΔE 10 к синему категорий)"),
+        ("#2F6DB5", "app.event.border и app.icon.blue, светлая (ΔE 10 к синему категорий)"),
         ("#1B4F8A", "app.event.border.selected, светлая"),
         ("#AFD1FC", "app.event.border.selected, тёмная"),
         ("#3A5F8F", "app.fb.busy, тёмная: «занят» во встрече (макет, S5-23)"),
@@ -974,6 +991,15 @@ mod tests {
         ("#C2CCD8", "app.fb.free.slate.fg, тёмная"),
         ("#D13438", "точка и полоса угрозы (palette::Reserved::Threat) — в таблице только подложка и текст"),
         ("#EAA300", "точка срока (palette::Reserved::Deadline) для проверки ΔE — в таблице только текст и подложка"),
+        ("#74A6E0", "app.icon.blue, тёмная: таблица DESIGN «Значки», ADR 0008"),
+        ("#C2477F", "app.icon.pink, светлая"),
+        ("#E68AB5", "app.icon.pink, тёмная"),
+        ("#3D8556", "app.icon.green, светлая"),
+        ("#7DC08F", "app.icon.green, тёмная"),
+        ("#A0761A", "app.icon.amber, светлая"),
+        ("#D9AE55", "app.icon.amber, тёмная"),
+        ("#B5403B", "app.icon.red, светлая"),
+        ("#E58580", "app.icon.red, тёмная"),
     ];
 
     /// Цвета `0xRRGGBB` и `0xAARRGGBB` в коде (до тестов): цвет — последние шесть цифр.

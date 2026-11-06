@@ -4,10 +4,12 @@
 //! В обычный прогон снимков сцены не входят (`on_request`): запускаются по именам из `app-gpui/tests/manual.rs`.
 
 use gpui_kit::*;
+use pets_i18n::tr;
+use postman_core::model::Features;
 
-use crate::Mailer;
 use crate::screens::{Held, Input, Scene, rows_loaded};
 use crate::tabs::TabKind;
+use crate::{Mailer, Section};
 
 pub(crate) const PART: crate::part::Part = crate::part::Part { name: "drill", scenes: SCENES, ..crate::part::Part::NONE };
 
@@ -22,6 +24,11 @@ const SCENES: &[Scene] = &[
     Scene::new("drill-keytips", start, no_tips).input(TIPS).on_request(),
     // Раздел 30, шаги 1, 3: Ctrl+K, запрос кириллицей, совпавшие буквы, Esc закрывает.
     Scene::new("drill-palette", start, palette_closed).input(PALETTE).on_request(),
+    // S7-05: сервер только с почтой — в заголовке одна «Почта», разделитель и шестерёнка на месте.
+    Scene::new("drill-nav-mail-only", start, only_mail_section).input(NAV_MAIL_ONLY).on_request(),
+    // T1-26: разделы и шестерёнка щелчком, подсказка, выход из вкладки письма; зоны заголовка идут встык с кнопками;
+    // одиннадцать вкладок в узком окне не наезжают на шестерёнку и «─ □ ✕». Последняя: окно остаётся узким.
+    Scene::new("drill-nav", start, title_fits).input(NAV).on_request(),
 ];
 
 const TABS: &[Input] = &[
@@ -68,6 +75,83 @@ const PALETTE: &[Input] = &[
     Input::Until(palette_matched),
     Input::Keys(&["escape"]),
 ];
+
+const NAV_MAIL_ONLY: &[Input] = &[Input::Until(mail_ready), Input::Run(mail_only_server), Input::Until(title_tiled)];
+
+const NAV: &[Input] = &[
+    Input::Until(mail_ready),
+    Input::Until(title_tiled),
+    Input::Press("nav-calendar"),
+    Input::Until(|_, m, _| m.section == Section::Calendar),
+    Input::Press("nav-contacts"),
+    Input::Until(|_, m, _| m.section == Section::Contacts),
+    Input::Press("nav-tasks"),
+    Input::Until(|_, m, _| m.section == Section::Tasks),
+    Input::Press("nav-settings"),
+    Input::Until(|_, m, _| m.tabs.is_active(TabKind::Settings)),
+    Input::Press("nav-mail"),
+    Input::Until(|_, m, _| m.section == Section::Mail && m.tabs.is_active(TabKind::Main)),
+    Input::Run(|_, _, _, _| {
+        crate::screens::forget_tip();
+        Ok(())
+    }),
+    Input::Move(|_, _, _| crate::screens::spotted("nav-calendar")),
+    Input::Until(|_, _, cx| {
+        crate::screens::shown_tip() == crate::keytips::with_key(tr!("frame-section-calendar"), crate::keytips::key("view.calendar", cx))
+    }),
+    Input::Keys(&["ctrl-n"]),
+    Input::Until(one_letter),
+    Input::Press("nav-calendar"),
+    Input::Until(|_, m, _| m.section == Section::Calendar && m.tabs.is_active(TabKind::Main) && letters(m) == 1),
+    Input::Press("nav-mail"),
+    Input::Until(|_, m, _| m.section == Section::Mail),
+    Input::Keys(&["ctrl-t", "ctrl-t", "ctrl-t", "ctrl-t", "ctrl-t", "ctrl-t", "ctrl-t", "ctrl-t"]),
+    Input::Until(|_, m, _| m.tabs.iter().count() > 10),
+    Input::Resize(760., 800.),
+];
+
+/// Заголовок слева направо: кнопки и зоны перетаскивания идут встык, друг на друга не заходят. Зона — сосед кнопки, а
+/// не родитель (`chrome.rs`), поэтому щелчок по кнопке не двигает окно, а зазор между кнопками — двигает.
+fn title_tiled(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    let has = |id: &str| crate::chrome::SECTIONS.iter().any(|s| s.id == id && crate::features::available(s.command, crate::features::get(cx)));
+    let left: Vec<String> = ["nav-mail", "nav-calendar", "nav-contacts", "nav-tasks"]
+        .into_iter()
+        .filter(|id| has(id))
+        .enumerate()
+        .flat_map(|(i, id)| [(i > 0).then(|| format!("nav-gap-{i}")), Some(id.to_owned())])
+        .flatten()
+        .collect();
+    let chain = |ids: &[&str]| {
+        let bounds: Option<Vec<_>> = ids.iter().map(|id| crate::screens::spot_bounds(id)).collect();
+        bounds.is_some_and(|b| b.windows(2).all(|p| (p[0].right() - p[1].left()).abs() < px(0.5)))
+    };
+    let mut ids = vec!["app-icon"];
+    ids.extend(left.iter().map(String::as_str));
+    ids.extend(["nav-end", "nav-tabs"]);
+    let height = crate::screens::spot_bounds("drag").is_some_and(|b| b.size.height == px(crate::chrome::TITLEBAR_H));
+    m.tabs.is_active(TabKind::Main) && height && chain(&ids) && chain(&["drag", "nav-settings", "caption-min", "caption-max", "caption-close"])
+}
+
+fn mail_only_server(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+    crate::screens::forget_spots();
+    m.set_features(Features::NONE.with(postman_core::model::Feature::Keywords, true), cx);
+    Ok(())
+}
+
+fn only_mail_section(s: &Scene, m: &Mailer, cx: &App) -> bool {
+    let gone = ["nav-calendar", "nav-contacts", "nav-tasks", "nav-gap-1"].into_iter().all(|id| crate::screens::spot_bounds(id).is_none());
+    gone && title_tiled(s, m, cx) && crate::screens::spot_bounds("nav-mail").is_some()
+}
+
+/// Узкое окно, одиннадцать вкладок: `min_w` зоны перетаскивания держится, справа всё на месте, разделы — на своём.
+fn title_fits(_: &Scene, m: &Mailer, _: &App) -> bool {
+    let spot = crate::screens::spot_bounds;
+    let (Some(drag), Some(gear), Some(close), Some(mail)) = (spot("drag"), spot("nav-settings"), spot("caption-close"), spot("nav-mail")) else {
+        return false;
+    };
+    let room = (drag.right() - gear.left()).abs() < px(0.5) && drag.size.width >= px(48.);
+    m.tabs.iter().count() > 10 && close.right() <= px(760.) && room && (mail.left() - px(46.)).abs() < px(1.)
+}
 
 /// Строка списка.
 fn row(m: &Mailer, cx: &App, i: usize) -> Option<Point<Pixels>> {

@@ -1,11 +1,13 @@
-//! Каркас окна (S5-01, DESIGN «Главное окно»): свой заголовок — вкладки, место для перетаскивания и «─ □ ✕»
-//! (зоны `WindowControlArea`: перетаскивание, двойной щелчок — развернуть, Snap Layouts на «□»), рейл модулей слева,
-//! строка состояния и меню «…» командной строки.
+//! Каркас окна (S5-01, DESIGN «Главное окно»): свой заголовок — значок приложения, разделы, вкладки, место для
+//! перетаскивания, шестерёнка «Настройки» и «─ □ ✕» (зоны `WindowControlArea`: перетаскивание, двойной щелчок —
+//! развернуть, Snap Layouts на «□»), строка состояния и меню «…» командной строки.
 //!
 //! Заголовок рисует сам экран почты, не кэшируемая view: gpui не повторяет `WindowControlArea` из кэша
 //! (`window_control_hitboxes` нет в `reuse_paint`), закэшированный заголовок потерял бы перетаскивание и кнопки.
 //! Кнопки «─ □ ✕» и зона перетаскивания — без своих обработчиков мыши: нажатие обрабатывает Windows
 //! (`WM_NCLBUTTONDOWN` по `HTCAPTION`/`HTMAXBUTTON`), иначе пропали бы Snap и развёртывание двойным щелчком.
+//! Зоны перетаскивания — соседи кнопок, а не их родители: gpui спрашивает зону по всем элементам под мышью, и кнопка
+//! внутри зоны двигала бы окно вместо щелчка. Зазоры между кнопками — тоже заголовок окна ([`drag_gap`]).
 
 use std::time::{Duration, Instant};
 
@@ -15,6 +17,7 @@ use gpui_kit::*;
 use pets_i18n::tr;
 use pets_ui::theme::Metric;
 
+use crate::icons::{self, Ico};
 use crate::roles::{Look, Pm};
 use crate::settings::settings;
 use crate::tabs::{MailState, Tab, TabKind};
@@ -28,8 +31,6 @@ pub(crate) mod glyph {
     pub(crate) const MAIL: char = '\u{E715}';
     pub(crate) const CALENDAR: char = '\u{E787}';
     pub(crate) const CONTACTS: char = '\u{E77B}';
-    /// «Общий ящик» у ветки папок (S5-28): Segoe Fluent Icons People.
-    pub(crate) const PEOPLE: char = '\u{E716}';
     pub(crate) const SETTINGS: char = '\u{E713}';
     /// Сертификат: подробности подписи S/MIME (S5-12).
     pub(crate) const CERTIFICATE: char = '\u{EB95}';
@@ -108,9 +109,18 @@ pub(crate) mod glyph {
 
 /// Ширина кнопки «─ □ ✕» (Windows 11).
 const W_CAPTION: f32 = 46.0;
-/// Рейл модулей: ширина и кнопка (макет главного окна).
-pub(crate) const W_RAIL: f32 = 52.0;
-const RAIL_BUTTON: f32 = 40.0;
+/// Заголовок окна (макет `MainNav_title`): высота; метрика pets-ui `HTitlebar` на 4 px ниже макета.
+pub(crate) const TITLEBAR_H: f32 = 44.0;
+/// Значок приложения: 12 px слева, 20 px значок, 14 px до разделов.
+const W_APP_ICON: f32 = 46.0;
+/// Кнопка раздела, зазор между кнопками; от последней до разделителя и от него до вкладок.
+const W_SECTION: f32 = 34.0;
+const H_SECTION: f32 = 30.0;
+const SECTION_GAP: f32 = 2.0;
+const SECTIONS_END: f32 = 10.0;
+const TABS_START: f32 = 12.0;
+/// Шестерёнка «Настройки».
+const W_SETTINGS: f32 = 40.0;
 /// Вкладка: ширина и скругление верха.
 const W_TAB_MIN: f32 = 96.0;
 const W_TAB_MAX: f32 = 220.0;
@@ -171,6 +181,65 @@ impl MoreMenu {
     }
 }
 
+/// Раздел окна: кнопка в заголовке.
+#[derive(Clone, Copy)]
+pub(crate) struct SectionButton {
+    pub(crate) id: &'static str,
+    pub(crate) icon: Ico,
+    tint: Pm,
+    key: &'static str,
+    /// Команда: подсказка «Название (клавиша)», KeyTips и есть ли раздел у сервера (S7-03).
+    pub(crate) command: &'static str,
+    section: Section,
+    action: fn() -> Box<dyn Action>,
+}
+
+/// Разделы окна (DESIGN «Главное окно», «Значки»): значок 20 px, цвет — токен `icon.*`.
+pub(crate) const SECTIONS: [SectionButton; 4] = [
+    SectionButton {
+        id: "nav-mail",
+        icon: icons::MAIL,
+        tint: Pm::IconBlue,
+        key: "frame-section-mail",
+        command: "view.mail",
+        section: Section::Mail,
+        action: || Box::new(view::Mail),
+    },
+    SectionButton {
+        id: "nav-calendar",
+        icon: icons::CALENDAR,
+        tint: Pm::IconPink,
+        key: "frame-section-calendar",
+        command: "view.calendar",
+        section: Section::Calendar,
+        action: || Box::new(view::Calendar),
+    },
+    SectionButton {
+        id: "nav-contacts",
+        icon: icons::PEOPLE,
+        tint: Pm::IconBlue,
+        key: "frame-section-contacts",
+        command: "view.contacts",
+        section: Section::Contacts,
+        action: || Box::new(view::Contacts),
+    },
+    SectionButton {
+        id: "nav-tasks",
+        icon: icons::TASKS,
+        tint: Pm::IconGreen,
+        key: "frame-section-tasks",
+        command: "view.tasks",
+        section: Section::Tasks,
+        action: || Box::new(view::Tasks),
+    },
+];
+
+/// Свободное место заголовка рядом с кнопками: перетаскивание, двойной щелчок — развернуть.
+fn drag_gap(id: impl Into<ElementId>, w: f32) -> Stateful<Div> {
+    let id = id.into();
+    div().id(id.clone()).children(crate::screens::spot(id)).w(px(w)).h_full().flex_none().window_control_area(WindowControlArea::Drag)
+}
+
 impl Mailer {
     /// Название вкладки и есть ли в ней несохранённое (письмо — точка после названия).
     pub(crate) fn tab_title(&self, t: &Tab, cx: &App) -> (String, bool) {
@@ -181,9 +250,9 @@ impl Mailer {
                 let section = if self.tabs.active().kind == TabKind::Mail { self.main_section.unwrap_or(self.section) } else { self.section };
                 let key = match section {
                     Section::Mail => "frame-tab-mail",
-                    Section::Calendar => "frame-rail-calendar",
-                    Section::Contacts => "frame-rail-contacts",
-                    Section::Tasks => "frame-rail-tasks",
+                    Section::Calendar => "frame-section-calendar",
+                    Section::Contacts => "frame-section-contacts",
+                    Section::Tasks => "frame-section-tasks",
                 };
                 (tr!(key), false)
             }
@@ -199,7 +268,7 @@ impl Mailer {
         }
     }
 
-    /// Заголовок окна: [значок][вкладки][перетаскивание][─ □ ✕].
+    /// Заголовок окна: [значок][разделы][вкладки][перетаскивание][настройки][─ □ ✕].
     pub(crate) fn titlebar(&self, l: &Look, window: &Window, cx: &mut Context<Self>) -> Div {
         let active = self.tabs.active().id;
         // «Закрыть вкладку (Ctrl+W)»: подсказка и плашка KeyTips у активной (S5-18).
@@ -258,6 +327,7 @@ impl Mailer {
         let caption = |id: &'static str, g: char, area: WindowControlArea, close: bool| {
             div()
                 .id(id)
+                .children(crate::screens::spot(id))
                 .w(px(W_CAPTION))
                 .h_full()
                 .flex_none()
@@ -272,85 +342,114 @@ impl Mailer {
         };
         let max = if window.is_maximized() { glyph::RESTORE } else { glyph::MAX };
         div()
-            .h(l.px(Metric::HTitlebar))
+            .h(px(TITLEBAR_H))
             .w_full()
             .flex_none()
             .flex()
+            .items_center()
             .text_size(px(13.))
             .child(
                 div()
                     .id("app-icon")
-                    .w(px(44.))
+                    .children(crate::screens::spot("app-icon"))
+                    .w(px(W_APP_ICON))
                     .h_full()
+                    .pl(px(12.))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .justify_center()
-                    .text_color(l.accent_text())
                     .window_control_area(WindowControlArea::Drag)
-                    .child(icon(glyph::MAIL, 16.)),
+                    .child(img(icons::APP).size(px(20.)).flex_none()),
             )
-            .child(div().h_full().flex().items_end().gap(px(2.)).min_w_0().children(tabs))
+            .children(self.sections(l, cx))
+            // Обрезка только по ширине: плашка KeyTips «×» активной вкладки выходит за низ строки.
+            .child(div().h_full().flex().items_end().gap(px(2.)).min_w_0().overflow_x_hidden().children(tabs))
             // Пустое место — заголовок окна: перетаскивание, двойной щелчок — развернуть.
-            .child(div().id("drag").flex_1().min_w(px(48.)).h_full().window_control_area(WindowControlArea::Drag))
+            .child(
+                div().id("drag").children(crate::screens::spot("drag")).flex_1().min_w(px(48.)).h_full().window_control_area(WindowControlArea::Drag),
+            )
+            .children(self.settings_button(l, cx))
             .child(caption("caption-min", glyph::MIN, WindowControlArea::Min, false))
             .child(caption("caption-max", max, WindowControlArea::Max, false))
             .child(caption("caption-close", glyph::CAPTION_CLOSE, WindowControlArea::Close, true))
     }
 
-    /// Рейл модулей: Почта, Календарь, Контакты, Задачи; внизу — Настройки. Подписи — подсказкой.
-    pub(crate) fn rail(&self, l: &Look, cx: &App) -> Div {
-        let settings_tab = self.tabs.is_active(TabKind::Settings);
-        // Команды кнопок рейла — для подсказки «Название (клавиша)» и KeyTips (S5-18).
-        let command = |key: &str| match key {
-            "frame-rail-mail" => "view.mail",
-            "frame-rail-calendar" => "view.calendar",
-            "frame-rail-contacts" => "view.contacts",
-            "frame-rail-tasks" => "view.tasks",
-            _ => "settings.open",
-        };
-        let button = |id: &'static str, g: char, key: &'static str, on: bool, action: fn() -> Box<dyn Action>| {
+    /// Первый запуск: на месте почты — добавление учётной записи.
+    fn first_run(&self) -> bool {
+        self.section == Section::Mail && self.live.signin.is_some()
+    }
+
+    /// Разделы в заголовке (DESIGN «Главное окно»): Почта, Календарь, Контакты, Задачи и разделитель за ними. Первый
+    /// запуск — без них: учётной записи ещё нет, переключать нечего.
+    fn sections(&self, l: &Look, cx: &App) -> Vec<AnyElement> {
+        if self.first_run() {
+            return Vec::new();
+        }
+        // «Нет у сервера — нет на экране» (S7-03): раздела, которого у сервера нет, в заголовке нет.
+        let features = crate::features::get(cx);
+        let mut out = Vec::new();
+        for (i, s) in SECTIONS.into_iter().filter(|s| crate::features::available(s.command, features)).enumerate() {
+            let on = self.tabs.active().kind.shows_mail() && self.section == s.section;
+            if i > 0 {
+                out.push(drag_gap(("nav-gap", i), SECTION_GAP).into_any_element());
+            }
+            let action = s.action;
             let b = div()
-                .id(id)
-                .children(crate::screens::spot(id))
-                .size(px(RAIL_BUTTON))
+                .id(s.id)
+                .children(crate::screens::spot(s.id))
+                .w(px(W_SECTION))
+                .h(px(H_SECTION))
+                .flex_none()
                 .flex()
                 .items_center()
                 .justify_center()
                 .rounded(px(6.))
                 .cursor_pointer()
-                .when(on, |d| d.bg(l.panel()).text_color(l.accent_text()))
-                .when(!on, |d| d.text_color(l.text2()).hover(|d| d.bg(l.hover())))
-                .child(icon(g, 20.))
+                // Контур снаружи плашки, размер кнопки тот же: `box-shadow` макета.
+                .when(on, |d| {
+                    let outline =
+                        BoxShadow { color: l.border(), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(1.), inset: false };
+                    d.bg(l.panel()).shadow(vec![outline])
+                })
+                .when(!on, |d| d.hover(|d| d.bg(l.hover())))
+                .child(icons::icon(s.icon, 20., l.pm(s.tint)))
                 .on_click(move |_, window, cx| window.dispatch_action(action(), cx));
-            crate::keytips::command(b, command(key), Some(tr!(key)), l, cx)
-        };
-        let module = |s: Section| self.tabs.active().kind.shows_mail() && self.section == s;
-        // «Нет у сервера — нет на экране» (S7-03): модуля, которого у сервера нет, на рейле нет.
-        let features = crate::features::get(cx);
-        let has = |key: &str| crate::features::available(command(key), features);
-        div()
-            .w(px(W_RAIL))
+            out.push(crate::keytips::command(b, s.command, Some(tr!(s.key)), l, cx).into_any_element());
+        }
+        // Разделитель 1 px: в тёмной теме макет берёт цвет разделителей панелей, в светлых — рамки контролов.
+        let line = if l.dark() { l.border() } else { l.stroke() };
+        out.push(
+            drag_gap("nav-end", SECTIONS_END + 1.)
+                .flex()
+                .items_center()
+                .justify_end()
+                .child(div().w(px(1.)).h(px(H_SECTION)).bg(line))
+                .into_any_element(),
+        );
+        out.push(drag_gap("nav-tabs", TABS_START).into_any_element());
+        out
+    }
+
+    /// Шестерёнка перед кнопками окна; подсказка и KeyTips — как у разделов. Нажата, пока открыта вкладка «Настройки».
+    fn settings_button(&self, l: &Look, cx: &App) -> Option<Stateful<Div>> {
+        if self.first_run() {
+            return None;
+        }
+        let on = self.tabs.is_active(TabKind::Settings);
+        let b = div()
+            .id("nav-settings")
+            .children(crate::screens::spot("nav-settings"))
+            .w(px(W_SETTINGS))
             .h_full()
             .flex_none()
             .flex()
-            .flex_col()
             .items_center()
-            .gap(px(4.))
-            .pt(px(4.))
-            .pb(px(8.))
-            .child(button("rail-mail", glyph::MAIL, "frame-rail-mail", module(Section::Mail), || Box::new(view::Mail)))
-            .when(has("frame-rail-calendar"), |d| {
-                d.child(button("rail-calendar", glyph::CALENDAR, "frame-rail-calendar", module(Section::Calendar), || Box::new(view::Calendar)))
-            })
-            .when(has("frame-rail-contacts"), |d| {
-                d.child(button("rail-contacts", glyph::CONTACTS, "frame-rail-contacts", module(Section::Contacts), || Box::new(view::Contacts)))
-            })
-            .when(has("frame-rail-tasks"), |d| {
-                d.child(button("rail-tasks", crate::tasks::g::TASKS, "frame-rail-tasks", module(Section::Tasks), || Box::new(view::Tasks)))
-            })
-            .child(div().flex_1())
-            .child(button("rail-settings", glyph::SETTINGS, "frame-rail-settings", settings_tab, || Box::new(settings::Open)))
+            .justify_center()
+            .cursor_pointer()
+            .hover(|d| d.bg(l.hover()))
+            .child(icons::icon(icons::SETTINGS, 20., if on { l.accent_text() } else { l.text2() }))
+            .on_click(|_, window, cx| window.dispatch_action(Box::new(settings::Open), cx));
+        Some(crate::keytips::command(b, "settings.open", Some(tr!("frame-section-settings")), l, cx))
     }
 
     /// Заполненность ящика (S5-29, макет «Главное окно: автоответ»): «Ящик: 9,4 из 10 ГБ» и полоска 64 px; больше
@@ -540,7 +639,7 @@ impl Mailer {
             .child(tr!("filters-menu-view"));
         let quick =
             item("more-quick", if quick_on { glyph::CHECK } else { ' ' }, "filters-menu-quick", || Box::new(crate::filters::view::QuickFilters));
-        let top = l.m(Metric::HTitlebar) + crate::bar::BAR_HEIGHT - 6.;
+        let top = TITLEBAR_H + crate::bar::BAR_HEIGHT - 6.;
         let menu = div()
             .id("more-menu")
             .absolute()
@@ -788,7 +887,7 @@ const TEXTS: &[pets_i18n::Resource] = &[
     ("en", include_str!("../i18n/en/sync.ftl")),
 ];
 
-/// Разделы окна (рейл, Ctrl+1…4) и история уведомлений.
+/// Разделы окна (заголовок, Ctrl+1…4) и история уведомлений.
 pub(crate) mod view {
     gpui_kit::actions!(view, [Mail, Calendar, Contacts, Tasks, Notifications]);
 }

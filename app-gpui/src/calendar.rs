@@ -62,7 +62,7 @@ pub(crate) const STEP: i64 = 1800;
 const GUTTER: f32 = 52.;
 /// Шкала второго пояса слева от основной (S5-20, «Показывать второй пояс»).
 const GUTTER2: f32 = 44.;
-const SIDE_W: f32 = 236.;
+const SIDE_W: f32 = 288.;
 const DETAILS_W: f32 = 344.;
 /// Месяц: высота строки с числом, строки события и видимых дорожек в клетке (дальше — «+N ещё»).
 const MONTH_NUM_H: f32 = 26.;
@@ -100,7 +100,6 @@ pub(crate) mod g {
     pub(crate) const GLOBE: char = '\u{E774}';
     pub(crate) const SEND: char = '\u{E724}';
     pub(crate) const HIDDEN: char = '\u{ED1A}';
-    pub(crate) const SEARCH: char = '\u{E721}';
     pub(crate) const INFO: char = '\u{E946}';
 }
 
@@ -1516,7 +1515,7 @@ impl CalendarView {
             .gap(px(2.))
             .pt(px(4.))
             .pr(px(8.))
-            .pl(px(4.))
+            .pl(px(8.))
             .text_size(px(13.))
             .child(header)
             .child(div().flex().flex_col().gap(px(2.)).child(names).children(weeks))
@@ -2901,7 +2900,7 @@ impl Render for CalendarBar {
             .w(px(DETAILS_W))
             .ml(px(8.))
             .flex_none()
-            .child(Input::new(&search_state).prefix(icon(g::SEARCH, 14.).text_color(l.text3())))
+            .child(Input::new(&search_state).prefix(crate::icons::icon(crate::icons::SEARCH, 18., l.text3())))
             .capture_action(move |_: &MoveDown, _, cx| {
                 if next_cal.update(cx, |c, cx| c.step_result(1, cx)) {
                     cx.stop_propagation();
