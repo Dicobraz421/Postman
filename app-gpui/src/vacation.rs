@@ -251,7 +251,7 @@ pub(crate) struct Me {
 }
 
 pub(crate) struct VacationPanel {
-    form: Form,
+    pub(crate) form: Form,
     /// Как на сервере: «Есть несохранённые изменения» и «Отмена».
     saved: Form,
     saved_at: Option<String>,
@@ -273,7 +273,7 @@ pub(crate) struct VacationPanel {
     /// Состояние сервера ещё не пришло.
     pub(crate) loading: bool,
     pub(crate) busy: bool,
-    error: Option<String>,
+    pub(crate) error: Option<String>,
     /// Предупреждение под переключателем (S4-07: другой фильтр сервера будет выключен).
     pub(crate) warning: Option<String>,
     _subscriptions: Vec<Subscription>,
@@ -483,7 +483,12 @@ impl VacationPanel {
         cx.notify();
     }
 
-    fn dirty(&self) -> bool {
+    /// Открытая закладка: 0 — «Внутри компании», 1 — «Внешним».
+    pub(crate) fn tab_index(&self) -> usize {
+        self.tab.index()
+    }
+
+    pub(crate) fn dirty(&self) -> bool {
         self.form != self.saved
     }
 }
@@ -525,6 +530,7 @@ fn toggle_row(id: &'static str, title: Div, hint: String, on: bool, l: &Look) ->
 fn tool(id: &'static str, l: &Look) -> Stateful<Div> {
     div()
         .id(id)
+        .children(crate::screens::spot(id))
         .h(px(26.))
         .min_w(px(28.))
         .px_1()
@@ -597,9 +603,9 @@ impl VacationPanel {
             .py_2()
             .when(!on, |d| d.opacity(0.45))
             .child(div().text_color(l.text2()).child(tr!("vacation-from")))
-            .child(div().w(px(170.)).child(Input::new(&self.from).disabled(!on)))
+            .child(div().w(px(170.)).relative().children(crate::screens::spot("vacation-from")).child(Input::new(&self.from).disabled(!on)))
             .child(div().text_color(l.text2()).child(tr!("vacation-to")))
-            .child(div().w(px(170.)).child(Input::new(&self.to).disabled(!on)))
+            .child(div().w(px(170.)).relative().children(crate::screens::spot("vacation-to")).child(Input::new(&self.to).disabled(!on)))
             .when_some(count.filter(|_| on), |d, c| d.child(div().pl_2().text_size(px(12.)).text_color(l.text2()).child(c)));
         div()
             .flex()
@@ -682,7 +688,7 @@ impl VacationPanel {
             .bg(l.c(Role::FillControlInput))
             .child(toolbar)
             .child(
-                div().h(px(200.)).px_2().child(
+                div().h(px(200.)).px_2().relative().children(crate::screens::spot("vacation-body")).child(
                     Editor::new(&self.bodies[i])
                         .appearance(false)
                         .font_family(text.font_family.clone())
@@ -704,7 +710,7 @@ impl VacationPanel {
                     .items_center()
                     .gap_2()
                     .child(div().w(px(56.)).flex_none().text_color(l.text2()).child(tr!("vacation-subject")))
-                    .child(div().flex_1().child(Input::new(&self.subjects[i]))),
+                    .child(div().flex_1().relative().children(crate::screens::spot("vacation-subject")).child(Input::new(&self.subjects[i]))),
             )
             .child(editor)
     }
@@ -929,6 +935,7 @@ impl Render for VacationBar {
         let link = |id: &'static str, text: String| {
             div()
                 .id(id)
+                .children(crate::screens::spot(id))
                 .h(px(24.))
                 .px_2()
                 .flex()

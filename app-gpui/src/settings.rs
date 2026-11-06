@@ -140,7 +140,7 @@ impl Mailer {
     }
 
     /// Таблица категорий своей учётной записи (как в списке писем).
-    fn own_categories(&self, cx: &App) -> Categories {
+    pub(crate) fn own_categories(&self, cx: &App) -> Categories {
         self.list.read(cx).labels.for_account(None).cloned().unwrap_or_else(crate::labels::default_table)
     }
 

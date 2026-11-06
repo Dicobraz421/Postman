@@ -193,7 +193,7 @@ pub(crate) struct RulesPanel {
     /// Список ушёл на сервер, ждём ответа.
     pub(crate) busy: bool,
     /// Ждёт «Заменить»: имя чужого скрипта, заменится ли его текст, список правил.
-    conflict: Option<(String, bool, Vec<Rule>)>,
+    pub(crate) conflict: Option<(String, bool, Vec<Rule>)>,
     /// Последний отправленный список.
     pending: Option<Vec<Rule>>,
     confirm_delete: Option<usize>,
@@ -377,7 +377,16 @@ fn chip(id: impl Into<ElementId>, label: String, selected: bool) -> Stateful<Div
 
 fn link(id: impl Into<ElementId>, label: String) -> Stateful<Div> {
     let l = crate::roles::now();
-    div().id(id).px_1().rounded_md().cursor_pointer().text_color(l.accent_text()).hover(|d| d.bg(l.hover())).child(label)
+    let id = id.into();
+    div()
+        .id(id.clone())
+        .children(crate::screens::spot(id))
+        .px_1()
+        .rounded_md()
+        .cursor_pointer()
+        .text_color(l.accent_text())
+        .hover(|d| d.bg(l.hover()))
+        .child(label)
 }
 
 impl RulesPanel {
@@ -394,7 +403,12 @@ impl RulesPanel {
             .rounded_md()
             .when(editing, |d| d.bg(l.hover()))
             .child(
-                div().id(("rule-on", i)).cursor_pointer().child(checkbox(r.enabled)).on_click(cx.listener(move |this, _, _, cx| this.toggle(i, cx))),
+                div()
+                    .id(("rule-on", i))
+                    .children(crate::screens::spot(("rule-on", i)))
+                    .cursor_pointer()
+                    .child(checkbox(r.enabled))
+                    .on_click(cx.listener(move |this, _, _, cx| this.toggle(i, cx))),
             )
             .child(div().flex_1().min_w_0().when(!r.enabled, |d| d.text_color(l.text2())).child(describe(r, &self.mailboxes, &self.categories)))
             .when(confirm, |d| {
@@ -459,7 +473,14 @@ impl RulesPanel {
             .bg(l.hover())
             .child(div().font_weight(FontWeight::SEMIBOLD).child(if d.index.is_some() { tr!("rules-edit-title") } else { tr!("rules-new-title") }))
             .child(div().flex().items_center().gap_2().child(label(tr!("rules-if"))).children(fields))
-            .child(div().flex().items_center().gap_2().child(label(tr!("rules-contains"))).child(div().flex_1().child(Input::new(&self.value))))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(label(tr!("rules-contains")))
+                    .child(div().flex_1().relative().children(crate::screens::spot("rules-value")).child(Input::new(&self.value))),
+            )
             .child(div().flex().flex_wrap().items_center().gap_2().child(label(tr!("rules-then"))).children(kinds))
             .when(d.kind == Kind::Move, |el| {
                 el.child(div().flex().flex_wrap().items_center().gap_2().child(label(tr!("rules-folder"))).children(folders))
@@ -469,7 +490,12 @@ impl RulesPanel {
             })
             .when(d.kind == Kind::Redirect, |el| {
                 el.child(
-                    div().flex().items_center().gap_2().child(label(tr!("rules-address"))).child(div().flex_1().child(Input::new(&self.address))),
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(label(tr!("rules-address")))
+                        .child(div().flex_1().relative().children(crate::screens::spot("rules-address")).child(Input::new(&self.address))),
                 )
             })
             .when(d.kind == Kind::Discard, |el| el.child(div().text_color(l.text2()).child(tr!("rules-discard-hint"))))

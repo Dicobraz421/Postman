@@ -852,6 +852,11 @@ impl Composer {
         self.suggest.items.len()
     }
 
+    /// Имена в открытых подсказках адресов.
+    pub(crate) fn suggestion_names(&self) -> Vec<String> {
+        self.suggest.items.clone()
+    }
+
     pub(crate) fn signatures(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for s in self.prefs.signatures_for(&self.model.from().email) {
@@ -1431,6 +1436,7 @@ impl Composer {
         let blocked = self.model.blocked();
         let send = div()
             .id("send")
+            .children(crate::screens::spot("send"))
             .h(px(32.))
             .px(px(16.))
             .flex()
