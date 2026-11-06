@@ -197,7 +197,7 @@ const SCENES: &[Scene] = &[
     scene("st-34-to", typed_directory, DIRECTORY_NAMES),
     // Раздел 34, шаг 2: участник встречи из справочника — с ФИО на чипе.
     scene("st-34-chip", meeting_chip, MEETING_NAMES),
-    // S7-04, шаги 1, 2: дерево папок IMAP, рейл только почты, в настройках нет календаря, правил, автоответа.
+    // S7-04, шаги 1, 2: дерево папок IMAP, разделы только почты, в настройках нет календаря, правил, автоответа.
     scene("st-s704-tree", imap_tree, &[Input::Until(mail_ready)]),
     // S7-04, шаг 3: письмо с вложением открывается.
     scene("st-s704-open", |_, m, cx| picked(m, cx, WITH_FILE).is_some(), IMAP_FILE),
@@ -217,8 +217,8 @@ const SCENES: &[Scene] = &[
     scene("st-s704-draft", |_, m, cx| draft_saved(m, cx), IMAP_DRAFT_EDIT),
     // S7-04, шаг 8: «Все папки» находит письмо старше первых 500.
     scene("st-s704-far", far_found, IMAP_FAR),
-    // S7-05, шаг 1: рейл «стандартов»: почта, календарь, задачи, контакты; ни справочника, ни правил, ни автоответа.
-    scene("st-s705-rail", dav_rail, &[Input::Until(mail_ready)]),
+    // S7-05, шаг 1: разделы «стандартов»: почта, календарь, задачи, контакты; ни справочника, ни правил, ни автоответа.
+    scene("st-s705-nav", dav_nav, &[Input::Until(mail_ready)]),
     // S7-05, шаг 2: неделя как в CalDAV, экземпляры серии.
     scene("st-s705-week", |_, m, cx| m.cal.read(cx).loaded && m.cal.read(cx).title_count(&titled(SERIES)) >= 2, DAV_WEEK),
     // S7-05, шаг 2: поиск по теме.
@@ -318,8 +318,8 @@ const SCENES: &[Scene] = &[
     scene("st-s605-mail", |_, m, cx| letter_task(m, cx), FROM_MAIL),
     more("st-s605-mail-done", |_, m, cx| !letter_task(m, cx), MAIL_DONE),
     more("st-s605-mail-undo", |_, m, cx| letter_task(m, cx), &[Input::Press("notice-act")]),
-    // S7-03а, шаг 1: полный сервер: на рейле все разделы.
-    scene("st-s703a-rail", full_rail, &[Input::Until(mail_ready)]),
+    // S7-03а, шаг 1: полный сервер: в заголовке все разделы.
+    scene("st-s703a-nav", full_nav, &[Input::Until(mail_ready)]),
     // S7-03а, шаг 2: разделы настроек сервера на месте.
     more("st-s703a-settings", |_, m, cx| settings_on(m, Page::Calendar, cx), SETTINGS_PAGES),
     // S7-03а, шаг 3: календарь, контакты, задачи открываются, тоста «нет у сервера» нет.
@@ -1564,7 +1564,7 @@ fn far_found(_: &Scene, m: &Mailer, cx: &App) -> bool {
     m.list.read(cx).search_ids.as_ref().is_some_and(|ids| !ids.is_empty())
 }
 
-fn dav_rail(_: &Scene, m: &Mailer, cx: &App) -> bool {
+fn dav_nav(_: &Scene, m: &Mailer, cx: &App) -> bool {
     use postman_core::model::Feature as F;
     let features = crate::features::get(cx);
     m.live.synced
@@ -2307,7 +2307,7 @@ const MAIL_DONE: &[Input] = &[
 const FAR_EVENT: &str = "Встреча далеко"; // i18n-ok: тема `peer.py`
 const COLLEAGUE_EVENT: &str = "Событие коллеги"; // i18n-ok: тема `peer.py`
 
-fn full_rail(_: &Scene, m: &Mailer, cx: &App) -> bool {
+fn full_nav(_: &Scene, m: &Mailer, cx: &App) -> bool {
     use postman_core::model::Feature as F;
     let features = crate::features::get(cx);
     m.live.synced && [F::Calendar, F::Tasks, F::Contacts, F::Directory, F::Rules, F::Autoreply].into_iter().all(|f| features.has(f))
