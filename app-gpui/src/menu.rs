@@ -241,8 +241,8 @@ impl Mailer {
             let s = list.summary.as_ref().map(|s| s.summary.clone()).unwrap_or_default();
             (list.selection.ids().to_vec(), None, s.unread > 0 || s.count == 0, s.flagged < s.count || s.count == 0)
         } else {
-            // Строка беседы (вид «как Outlook», S5-05б) — над всей беседой; ответ — на это письмо.
-            (list.members_of(index), Some((index, row.clone())), !row.seen, !row.flagged)
+            // Строка беседы — её последнее письмо, а не вся беседа (решение владельца 2026-11-06, п. 10): всем письмам — выделением.
+            (vec![row.id.clone()], Some((index, row.clone())), !row.seen, !row.flagged)
         };
         self.list.update(cx, |l, cx| {
             l.menu_row = Some(index);

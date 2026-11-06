@@ -74,11 +74,18 @@ fn usage_text(u: Usage) -> (String, String, &'static str) {
     (decimal(used, &sep), decimal(limit, &sep), unit)
 }
 
-/// Предел квоты: меньше гигабайта — в МБ (целые), иначе в ГБ с одним знаком.
+/// Предел квоты: меньше мегабайта — в МБ с одним знаком (и не ноль: «0,3 из 0 МБ» не прочесть), меньше гигабайта — в МБ
+/// (целые), иначе в ГБ с одним знаком.
 pub(crate) fn limit_parts(bytes: u64) -> (&'static str, f64) {
     const MB: f64 = 1024.0 * 1024.0;
     let mb = bytes as f64 / MB;
-    if mb < 1024.0 { ("mb", mb.round()) } else { ("gb", (mb / 1024.0 * 10.0).round() / 10.0) }
+    if bytes > 0 && mb < 1.0 {
+        ("mb", ((mb * 10.0).round() / 10.0).max(0.1))
+    } else if mb < 1024.0 {
+        ("mb", mb.round())
+    } else {
+        ("gb", (mb / 1024.0 * 10.0).round() / 10.0)
+    }
 }
 
 fn quota_text(u: Usage) -> String {
@@ -181,7 +188,12 @@ impl Mailer {
 
     /// `settings.rules`: раздел «Правила»; живой ящик — правила с сервера заново.
     pub(crate) fn open_rules(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Первое открытие запрашивает сервер само (`section_opened`).
+        let again = self.settings.rules_panel.is_some() && self.backend.is_live();
         self.open_settings(Some(Section::Rules), window, cx);
+        if again && !self.backend.send(Command::Settings(Request::Rules)) {
+            self.sync_stopped(cx);
+        }
     }
 
     pub(crate) fn on_settings(&mut self, ev: &SettingsEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -878,6 +890,11 @@ mod tests {
         assert_eq!(limit_parts(500 * 1024 * 1024), ("mb", 500.0));
         assert_eq!(limit_parts(2 * 1024 * 1024 * 1024), ("gb", 2.0));
         assert_eq!(limit_parts(1536 * 1024 * 1024), ("gb", 1.5));
+        // Малый предел не округляется до нуля.
+        assert_eq!(limit_parts(400 * 1024), ("mb", 0.4));
+        assert_eq!(limit_parts(1024), ("mb", 0.1));
+        assert_eq!(limit_parts(0), ("mb", 0.0));
+        assert_eq!(usage_parts(Usage { used: 300 * 1024, limit: 400 * 1024 }), (0.3, 0.4, "mb"));
         // «9,4 из 10 ГБ» (макет): занято — в той же единице, одним знаком; целое — без «,0».
         let gb = 1024 * 1024 * 1024u64;
         let u = Usage { used: gb * 94 / 10, limit: 10 * gb };

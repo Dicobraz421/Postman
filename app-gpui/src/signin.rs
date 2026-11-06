@@ -204,6 +204,13 @@ impl SignIn {
         cx.notify();
     }
 
+    /// Отказ без попытки входа: текст показывается как есть (учётная запись уже подключена).
+    pub(crate) fn refused(&mut self, text: String, cx: &mut Context<Self>) {
+        self.busy = false;
+        self.error = Some(text);
+        cx.notify();
+    }
+
     /// Вход не удался: показать причину, поля остаются для новой попытки. Вход Windows не удался (T1-02а) — строкой
     /// и предложением войти с паролем: шаг «Пароль».
     pub(crate) fn failed(&mut self, error: &str, cx: &mut Context<Self>) {

@@ -669,6 +669,11 @@ impl CalendarView {
 
     pub(crate) fn go_to(&mut self, date: Date, cx: &mut Context<Self>) {
         let before = self.range();
+        self.jump(date, before, cx);
+    }
+
+    /// Опорная дата `date`; `before` — период до перехода.
+    fn jump(&mut self, date: Date, before: (i64, i64), cx: &mut Context<Self>) {
         self.anchor = date;
         self.month = date.first_of_month();
         self.period_changed(before, cx);
@@ -914,12 +919,17 @@ impl CalendarView {
         }
     }
 
-    /// К найденному событию: его день в виде (неделя, месяц — как есть), подробности — его.
+    /// К найденному событию: его день в виде (неделя, месяц — как есть), подробности — его. Дня нет в «Раб. неделе»
+    /// (встреча в выходной) — вид «Неделя», иначе событие не видно (решение владельца 2026-11-06, п. 11).
     fn open_result(&mut self, e: Event, cx: &mut Context<Self>) {
         self.results_open = false;
         let date = model::dates(&e, &self.tz).0;
         let key = (e.uid.clone(), e.span.start);
-        self.go_to(date, cx);
+        let before = self.range();
+        if self.view == View::WorkWeek && !model::days(View::WorkWeek, date, self.week_start, &self.hours.days).contains(&date) {
+            self.view = View::Week;
+        }
+        self.jump(date, before, cx);
         match self.events.iter().position(|x| x.uid == key.0 && x.span.start == key.1) {
             Some(i) => self.selected = Some(i),
             None if self.live => self.want = Some(key),
@@ -1020,6 +1030,31 @@ impl CalendarView {
     pub(crate) fn go_to_demo_week(&mut self, cx: &mut Context<Self>) {
         let date = zoned(demo::week_start(), &self.tz).map(|z| z.date()).unwrap_or(self.anchor);
         self.go_to(date, cx);
+    }
+
+    /// Сцена: событие `title` — копия первого демо-события, сдвинутая на `n` дней от понедельника демо-недели.
+    pub(crate) fn add_demo_event(&mut self, title: &str, n: i64, cx: &mut Context<Self>) {
+        let Some(mut e) = self.events.first().cloned() else { return };
+        let monday = demo::week_start();
+        let len = e.span.end - e.span.start;
+        e.uid = format!("scene-{title}");
+        e.id.clone_from(&e.uid);
+        title.clone_into(&mut e.title);
+        e.span.start = monday + n * 86_400 + 10 * 3_600;
+        e.span.end = e.span.start + len;
+        e.recurring = false;
+        self.events.push(e);
+        cx.notify();
+    }
+
+    /// Выбранное событие (сцены).
+    pub(crate) fn selected_title(&self) -> Option<&str> {
+        self.selected.and_then(|i| self.events.get(i)).map(|e| e.title.as_str())
+    }
+
+    /// Вид и показанные дни (сцены).
+    pub(crate) fn view_days(&self) -> (View, Vec<Date>) {
+        (self.view, self.days())
     }
 
     /// Снимки: опорная дата — `n` дней от понедельника демо-недели.
@@ -1640,7 +1675,7 @@ impl CalendarView {
                 .py(px(3.))
                 .child(div().text_size(px(12.)).truncate().child(url))
                 .child(action(("cal-pub-copy", 0), tr!("cal-pub-copy")).on_click(cx.listener(move |_, _, _, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
+                    crate::screens::to_clipboard(copy.clone(), cx);
                 })))
                 .child(div().text_size(px(11.)).text_color(l.text2()).child(tr!("cal-pub-once")))
         });

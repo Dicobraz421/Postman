@@ -1755,6 +1755,7 @@ impl Composer {
                     match status {
                         Some(DirectoryStatus::Searching) => tr!("checks-no-cert-searching"),
                         Some(DirectoryStatus::Failed(e)) => tr!("checks-no-cert-directory-failed", reason = e),
+                        Some(DirectoryStatus::Done { refused, .. }) if asked && refused > 0 => tr!("checks-no-cert-refused"),
                         Some(DirectoryStatus::Done { .. }) if asked => tr!("checks-no-cert-not-in-directory"),
                         _ => tr!("checks-no-cert-detail"),
                     },

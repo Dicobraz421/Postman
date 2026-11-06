@@ -1038,19 +1038,20 @@ impl crate::Mailer {
 pub(crate) const PART: crate::part::Part =
     crate::part::Part { name: "folders", commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
 
-/// Папки (T1-04д): новая и переименовать — без клавиш, кнопками меню и палитрой.
+/// Папки (T1-04д): новая и переименовать — без клавиш, кнопками меню и палитрой; перейти — Ctrl+Y, как в Outlook.
 pub(crate) mod folder {
-    gpui_kit::actions!(folder, [New, Rename]);
+    gpui_kit::actions!(folder, [New, Rename, Go]);
 }
 
 const COMMANDS: &[pets_commands::Command] = {
-    use crate::commands::{MAIL, cmd};
-    &[cmd("folder.new", &[], MAIL), cmd("folder.rename", &[], MAIL)]
+    use crate::commands::{MAIL, MAILER_NO_INPUT, cmd};
+    &[cmd("folder.new", &[], MAIL), cmd("folder.rename", &[], MAIL), cmd("folder.go", &["ctrl-y"], MAILER_NO_INPUT)]
 };
 
 fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
     root.on_action(cx.listener(|this, _: &folder::New, window, cx| this.folders.update(cx, |f, cx| f.new_here(window, cx))))
         .on_action(cx.listener(|this, _: &folder::Rename, window, cx| this.folders.update(cx, |f, cx| f.rename_current(window, cx))))
+        .on_action(cx.listener(|this, _: &folder::Go, window, cx| this.pick_folder(window, cx)))
 }
 
 /// Сцены `--screens` папок.

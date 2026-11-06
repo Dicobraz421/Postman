@@ -1,5 +1,6 @@
 # Command palette Ctrl+K (S5-10).
 palette-placeholder = Command, folder, filter or message
+palette-folder-placeholder = Go to folder
 palette-group-commands = Commands
 palette-group-folders = Folders
 palette-group-quick = Quick filters

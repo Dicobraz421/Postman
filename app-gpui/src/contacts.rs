@@ -923,6 +923,14 @@ impl ContactsView {
         matches!(self.mode, Mode::Edit(_))
     }
 
+    /// Текст открытой формы (сценарии).
+    pub(crate) fn form_text(&self, cx: &App) -> Option<FormText> {
+        match &self.mode {
+            Mode::Edit(f) => Some(f.text(cx)),
+            _ => None,
+        }
+    }
+
     /// Ctrl+E в разделе.
     pub(crate) fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search.update(cx, |s, cx| s.focus(window, cx));
@@ -1001,7 +1009,7 @@ impl ContactsView {
     }
 
     fn copy(&mut self, a: Address, cx: &mut Context<Self>) {
-        cx.write_to_clipboard(ClipboardItem::new_string(a.email.clone()));
+        crate::screens::to_clipboard(a.email.clone(), cx);
         cx.emit(ContactsAction::Toast(Toast::Info, tr!("contacts-copied", email = a.email)));
     }
 

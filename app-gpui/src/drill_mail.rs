@@ -22,6 +22,8 @@ use postman_core::send_later::Reject;
 use crate::compose::{Model, Purpose, Status, segments};
 use crate::mailer::{W_FOLDERS, W_LIST};
 use crate::menu::Sub;
+use crate::outline::Mark;
+use crate::palette::Scope;
 use crate::preview::{PvState, Shown};
 use crate::screens::{self, Held, Input, Scene, demo_row, outlook_letter, rows_loaded};
 use crate::settings_tab::Section as SettingsPage;
@@ -185,6 +187,16 @@ const SCENES: &[Scene] = &[
     from("mail-37-afe", single, |_, m, cx| gone(m, cx), AFE),
     // T1-04г, шаги 1–3: отступ 16 px на уровень, шеврон, переход из палитры разворачивает родителей, счётчик тот же.
     scene("mail-t104-tree", tree_open, TREE),
+    // Решение владельца п. 7, T1-04г шаг 3, T1-06 шаг 3: Ctrl+Y — выбор папки, переход разворачивает родителей; в поле — повтор правки.
+    scene("mail-t104-go", went_and_redid, GO_TO),
+    // Решение владельца п. 10, раздел 29 шаг 7: меню строки беседы — последнее письмо; «Напомнить» — у него одного.
+    scene("mail-29-thread-remind", one_reminded, THREAD_REMIND),
+    // Решение владельца п. 10, T1-17 шаг 2: «Переслать вложениями» из меню строки беседы — одно письмо.
+    scene(
+        "mail-29-thread-forward",
+        |_, m, cx| model(m, cx).is_some_and(|c| c.subject.starts_with("FW:") && c.attachments().count() == 1),
+        THREAD_FORWARD,
+    ),
     // T1-05б, шаги 1, 2: разделители тянутся до минимума; двойной щелчок — ширина макета.
     scene("mail-t105-split", |_, m, cx| m.panes == (W_FOLDERS, W_LIST) && crate::prefs::get(cx).layout == Layout::default(), SPLITS),
     // T1-05б, шаг 3: узкое окно: сначала чтение, затем список, затем папки.
@@ -1512,7 +1524,7 @@ const ARRIVE: &[Input] = &[
     Input::Until(|_, _, _| !(21..45).contains(&second())),
     Input::Until(|_, _, _| (8..21).contains(&second())),
     Input::Until(|_, _, _| (36..46).contains(&second())),
-    // Из палитры — одно письмо; меню строки взяло бы всю беседу, и карточек было бы по числу её писем.
+    // Из палитры: срок набирается в строке палитры, как в разделе 28.
     Input::Keys(&["ctrl-k"]),
     Input::Text("Напомнить"), // i18n-ok: ввод сценария
     PALETTE_SHOWN,
@@ -1886,6 +1898,80 @@ const TREE: &[Input] = &[
     FORGET,
     SETTLE,
 ];
+
+const REDO_TEXT: &str = "abc";
+
+const GO_TO: &[Input] = &[
+    READY,
+    Input::Click(at!("mb-fold-inbox"), Held::No),
+    until!(|m, cx| m.folders.read(cx).is_folded("inbox")),
+    FORGET,
+    SETTLE,
+    Input::Keys(&["ctrl-y"]),
+    until!(|m, cx| m.palette.as_ref().is_some_and(|p| p.view.read(cx).scope() == Scope::Folders && p.view.read(cx).shown() > 0)),
+    Input::Text("Договоры"), // i18n-ok: ввод сценария
+    PALETTE_SHOWN,
+    ENTER,
+    until!(|m, cx| m.palette.is_none() && m.folders.read(cx).current.as_deref() == Some(DEEP) && !m.folders.read(cx).is_folded("inbox")),
+    Input::Keys(&["ctrl-e"]),
+    Input::Text(REDO_TEXT),
+    until!(|m, cx| m.search.read(cx).value() == REDO_TEXT),
+    Input::Keys(&["ctrl-z"]),
+    until!(|m, cx| m.search.read(cx).value() != REDO_TEXT),
+    Input::Keys(&["ctrl-y"]),
+];
+
+fn went_and_redid(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    m.palette.is_none() && m.search.read(cx).value() == REDO_TEXT && m.folders.read(cx).current.as_deref() == Some(DEEP)
+}
+
+// Решение владельца п. 10.
+
+/// Письма беседы под меню: запоминает их шаг `THREAD_HEAD`.
+static MEMBERS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Первая видимая строка беседы из нескольких писем.
+fn thread_head(m: &Mailer, cx: &App) -> Option<usize> {
+    let list = m.list.read(cx);
+    let (offset, rows) = &list.rows;
+    (*offset..offset + rows.len()).find(|i| matches!(list.thread_mark(*i), Mark::Head { .. }) && row(m, cx, *i).is_some())
+}
+
+fn head_place(m: &Mailer, _: &Window, cx: &App) -> Option<Point<Pixels>> {
+    row(m, cx, thread_head(m, cx)?)
+}
+
+const THREAD_HEAD: Input = until!(|m, cx| {
+    let list = m.list.read(cx);
+    let members = thread_head(m, cx).map(|i| list.members_of(i)).unwrap_or_default();
+    let many = members.len() > 1 && list.outline.is_some() && !list.computing;
+    *MEMBERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = members;
+    many
+});
+/// Без выделения: шапки «Выбрано N писем» нет, меню — над одним письмом.
+const ONE_LETTER: Input = until!(|m, cx| m.list.read(cx).selection.is_empty() && m.menu.as_ref().is_some_and(|x| x.letters() == 1));
+
+const THREAD_REMIND: &[Input] = &[
+    READY,
+    THREAD_HEAD,
+    Input::Right(head_place),
+    MENU,
+    ONE_LETTER,
+    Input::Keys(TO_REMIND),
+    ENTER,
+    until!(|m, _| m.lifecycle.picker.as_ref().is_some_and(|p| p.kind == Kind::Remind && p.rest.is_empty())),
+    until!(|_, _| screens::spotted("lifecycle-pick-0").is_some()),
+    Input::Click(at!("lifecycle-pick-0"), Held::No),
+];
+
+fn one_reminded(_: &Scene, m: &Mailer, _: &App) -> bool {
+    let ids = MEMBERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    let rows = m.cache.rows_by_ids(&ids).unwrap_or_default();
+    rows.len() == ids.len() && rows.iter().filter(|r| postman_core::marks::find(&r.keywords, Kind::Remind).is_some()).count() == 1
+}
+
+const THREAD_FORWARD: &[Input] =
+    &[READY, THREAD_HEAD, Input::Right(head_place), MENU, ONE_LETTER, Input::Keys(&["down", "down", "down", "enter"]), COMPOSE];
 
 fn tree_open(_: &Scene, m: &Mailer, cx: &App) -> bool {
     let f = m.folders.read(cx);

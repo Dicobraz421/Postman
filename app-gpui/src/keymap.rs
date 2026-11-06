@@ -358,8 +358,9 @@ pub(crate) fn hint(layer: &Scheme, set: &KeySet, c: &Command) -> Option<String> 
 }
 
 /// Ревизия клавиш по умолчанию (`Prefs::keys_rev`): растёт, когда реестр снимает или переносит клавиши.
-/// 1 — S5-16, правило одного модификатора (`docs/DESIGN.md` «Хоткеи»).
-pub(crate) const KEYS_REV: u32 = 1;
+/// 1 — S5-16, правило одного модификатора (`docs/DESIGN.md` «Хоткеи»). 2 — Ctrl+Y «Перейти к папке» (решение владельца
+/// 2026-11-06, п. 7).
+pub(crate) const KEYS_REV: u32 = 2;
 
 /// Клавиши по умолчанию, которые S5-16 сняла с команд: (команда, сочетание).
 const REMOVED_1: &[(&str, &str)] = &[
@@ -387,6 +388,9 @@ const ADDED_1: &[(&str, &str)] = &[
     ("tab.new", "ctrl-t"),
 ];
 
+/// Клавиши по умолчанию, которые дала ревизия 2.
+const ADDED_2: &[(&str, &str)] = &[("folder.go", "ctrl-y")];
+
 /// Свои клавиши ревизии `rev` — к [`KEYS_REV`]. Из прежних умолчаний в своих списках (остаются после «Заменить»)
 /// снятые клавиши уходят; своё, совпавшее с новым умолчанием, и назначения несуществующих команд не хранятся;
 /// новое умолчание, которое пользователь уже отдал другой команде там же, остаётся у его команды (у новой — без
@@ -396,14 +400,17 @@ pub(crate) fn migrate(commands: &[Command], overrides: &mut Overrides, rev: u32)
         return;
     }
     overrides.retain(|id, _| commands.iter().any(|c| c.id == id && editable(c)));
-    let ids: Vec<String> = overrides.keys().cloned().collect();
-    for id in ids {
-        let Some(c) = commands.iter().find(|c| c.id == id) else { continue };
-        let Some(keys) = overrides.get(&id) else { continue };
-        let kept: Vec<String> = keys.iter().filter(|k| !REMOVED_1.iter().any(|(cid, r)| *cid == id && canon(k) == canon(r))).cloned().collect();
-        set_outlook(overrides, c, kept);
+    if rev < 1 {
+        let ids: Vec<String> = overrides.keys().cloned().collect();
+        for id in ids {
+            let Some(c) = commands.iter().find(|c| c.id == id) else { continue };
+            let Some(keys) = overrides.get(&id) else { continue };
+            let kept: Vec<String> = keys.iter().filter(|k| !REMOVED_1.iter().any(|(cid, r)| *cid == id && canon(k) == canon(r))).cloned().collect();
+            set_outlook(overrides, c, kept);
+        }
     }
-    for &(id, key) in ADDED_1 {
+    let added = (rev < 1).then_some(ADDED_1).into_iter().chain((rev < 2).then_some(ADDED_2)).flatten();
+    for &(id, key) in added {
         let Some(c) = commands.iter().find(|c| c.id == id) else { continue };
         let set = KeySet { outlook: overrides.clone(), ..KeySet::default() };
         if overrides.contains_key(id) || taken_by(commands, &NO_LAYER, &set, id, key).is_none() {
@@ -569,6 +576,30 @@ mod tests {
         o.insert("mail.next".into(), vec!["j".into()]);
         migrate(crate::commands::all(), &mut o, KEYS_REV);
         assert_eq!(o.get("mail.next"), Some(&vec!["j".to_string()]));
+    }
+
+    /// Ревизия 2: Ctrl+Y у «Перейти к папке» появляется и при своих клавишах; отдал её другой команде — остаётся у него.
+    #[test]
+    fn ctrl_y_reaches_saved_schemes() {
+        let all = crate::commands::all();
+        let go = pets_commands::find(all, "folder.go").unwrap();
+        let mut o = Overrides::new();
+        o.insert("mail.reply".into(), vec!["ctrl-j".into()]);
+        migrate(all, &mut o, 1);
+        assert_eq!(effective(go, &o), ["ctrl-y"]);
+        assert_eq!(o.get("mail.reply"), Some(&vec!["ctrl-j".to_string()]), "свои клавиши на месте");
+        // Прежние свои S5-16 ревизия 1 не трогает: снятая клавиша, назначенная после S5-16, — выбор пользователя.
+        let mut o = Overrides::new();
+        o.insert("mail.next".into(), vec!["j".into()]);
+        migrate(all, &mut o, 1);
+        assert_eq!(o.get("mail.next"), Some(&vec!["j".to_string()]));
+        // Ctrl+Y уже занята своей клавишей: у новой команды её нет, конфликта нет.
+        let mut o = Overrides::new();
+        o.insert("mail.reply".into(), vec!["ctrl-y".into()]);
+        migrate(all, &mut o, 1);
+        assert_eq!(o.get("mail.reply"), Some(&vec!["ctrl-y".to_string()]));
+        assert_eq!(o.get("folder.go"), Some(&vec![]));
+        assert_eq!(conflicts(all, &SINGLE, &outlook(&o)), vec![]);
     }
 
     #[test]
