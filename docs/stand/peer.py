@@ -895,12 +895,9 @@ def group_shared(ctx):
             assert sales.by_subject(subject, sent), "нет копии в «Отправленных» ящика"
             print("сервер: копия в «Отправленных» ящика")
         if scene == "st-18-flag":
-            for _ in range(20):
-                got = sales.by_subject(subject, sales.boxes()["inbox"])[0]
-                if "$flagged" in got["keywords"]:
-                    break
-                time.sleep(0.5)
-            assert "$flagged" in got["keywords"], got["keywords"]
+            # Следующая сцена уже может перенести письмо в «Удалённые»: ищем во всём ящике.
+            flagged = lambda: any("$flagged" in g["keywords"] for g in sales.by_subject(subject))
+            wait_for(flagged, "нет флага в ящике группы", 10)
             print("сервер: флаг в ящике группы")
         if scene == "st-18-delete":
             trash = sales.boxes()["trash"]
@@ -1426,7 +1423,7 @@ def main():
         try:
             GROUPS[name](ctx)
             print("== готово", name, flush=True)
-        except (AssertionError, urllib.error.URLError, KeyError, OSError) as e:
+        except Exception as e:
             print("== ПАДЕНИЕ", name, str(e)[:400], flush=True)
             traceback.print_exc(limit=3)
             failed.append(name)

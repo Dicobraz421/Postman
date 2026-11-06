@@ -289,13 +289,13 @@ const SCENES: &[Scene] = &[
     // S6-05, шаг 3: выполнена: тост, на сервере `STATUS:COMPLETED`.
     more("st-s605-closed", |_, m, cx| task(m, cx, CARD_TASK).is_some_and(|t| t.progress.is_closed()), CARD_CLOSE),
     // S6-05, шаг 3: «Отменить» — снова в работе, и на сервере.
-    more("st-s605-undone", |_, m, cx| task(m, cx, CARD_TASK).is_some_and(|t| !t.progress.is_closed()), &[Input::Press("notice-act")]),
+    more("st-s605-undone", |_, m, cx| task(m, cx, CARD_TASK).is_some_and(|t| !t.progress.is_closed()), UNDO_LATER),
     // S6-05, шаг 5: Insert — срок «Завтра»; F2 — новое название.
     more("st-s605-keys", |_, m, cx| task(m, cx, CARD_RENAMED).is_some_and(|t| t.due.is_some()), CARD_KEYS),
     // S6-05, шаг 5: Del — удалена, на сервере нет.
     more("st-s605-del", |_, m, cx| task(m, cx, CARD_RENAMED).is_none(), CARD_DELETE),
     // S6-05, шаг 5: «Отменить» — снова на сервере.
-    more("st-s605-undel", |_, m, cx| task(m, cx, CARD_RENAMED).is_some(), &[Input::Press("notice-act")]),
+    more("st-s605-undel", |_, m, cx| task(m, cx, CARD_RENAMED).is_some(), UNDO_LATER),
     // S6-06, шаг 1: напоминание, проект, категория: на сервере (`peer.py`, CalDAV).
     more("st-s606-fields", card_fields, CARD_FIELDS),
     // S6-06, шаг 2: подзадачи, отмеченная — сразу.
@@ -969,13 +969,13 @@ const REVOKE_UNDO: &[Input] = &[
     Input::Press("notice-act"),
 ];
 
-/// `peer.py` 14 с сверяет, что письма отмены нет: новая отмена — после этого.
+/// `peer.py` 14 с сверяет, что письма отмены нет (начинает, когда разберётся с прошлой сценой): новая отмена — заметно позже.
 const REVOKE: &[Input] = &[
     Input::Run(|_, _, _, _| {
         *lock_clock() = Some(Instant::now());
         Ok(())
     }),
-    until!(|_, _| lock_clock().is_some_and(|t| t.elapsed() > Duration::from_secs(16))),
+    until!(|_, _| clock_past(30)),
     Input::Press("assign-revoke"),
 ];
 
@@ -2140,6 +2140,9 @@ fn card_shown(m: &Mailer, cx: &App, word: &str) -> bool {
     m.tasks.read(cx).shown.iter().any(|t| t.title == title && t.due.is_some())
 }
 
+/// `peer.py` сверяет прошлую сцену с сервером уже во время этой: «Отменить» — когда он успел.
+const UNDO_LATER: &[Input] = &[Input::Run(start_clock), until!(|_, _| clock_past(3)), Input::Press("notice-act")];
+
 const CARD_NEW: &[Input] = &[
     Input::Until(mail_ready),
     OPEN_TASKS,
@@ -2392,6 +2395,7 @@ fn branch_open(_: &Scene, m: &Mailer, cx: &App) -> bool {
 
 /// Ветка свёрнута, открытие папки из неё разворачивает (то же делает выбор папки в палитре, `folders.rs`).
 const OPEN_BRANCH: &[Input] = &[
+    until!(|m, cx| shared_inbox(m, cx, "shared-sales").is_some()),
     Input::Run(|_, m, _, cx| {
         let id = m.folders.read(cx).accounts.iter().find(|a| a.name.contains("shared-sales")).map(|a| a.id.clone()).ok_or("no shared account")?;
         m.folders.update(cx, |f, cx| {
