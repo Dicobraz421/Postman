@@ -1166,7 +1166,7 @@ impl MailList {
         let caption = |text: String| div().flex_none().text_size(l.px(Metric::TypeCaption)).text_color(l.text2()).child(text);
         let filtered = self.search_ids.is_none() && !self.query.criteria.is_empty();
         // Беседы (вид «как Outlook», S5-05б): писем, а не строк.
-        let letters = self.threads().map_or(self.count, |o| o.total());
+        let letters = self.letter_total();
         let summary = if filtered && m.counts.total > 0 {
             tr!("filters-shown", n = letters, total = m.counts.total)
         } else {
@@ -1243,6 +1243,11 @@ impl MailList {
     }
 
     /// Заголовок группы `seg` раскладки.
+    /// Писем в списке: `count` — строки, а строка беседы — несколько писем.
+    pub(crate) fn letter_total(&self) -> usize {
+        self.threads().map_or(self.count, |o| o.total())
+    }
+
     fn group_el(&self, seg: usize, l: &Look, cx: &mut Context<Self>) -> AnyElement {
         let Some(s) = self.layout.segs().get(seg) else { return div().into_any_element() };
         let Some(g) = &s.group else { return div().into_any_element() };
