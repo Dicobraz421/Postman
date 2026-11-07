@@ -1,9 +1,12 @@
 # S4-01: the delivery zip postman-<version>-windows-x64.zip: postman.exe, postman-worker.exe, README.txt, install.ps1,
 # and postman-viewer.exe (S8-24, ADR 0007). WASM viewer modules (viewers/*) are not packaged.
+# The MSI postman-<version>-windows-x64.msi (owner decision 2026-11-07) - the same files without install.ps1, made by
+# postman-pack.exe of the same build (tools/pack); signed afterwards by scripts\windows\sign.ps1 in CI.
 # Takes the exes of a finished release build (cargo build --release --workspace --features postman-worker/viewer);
 # the version is the one built into postman.exe (Cargo). Prints the zip path; in GitHub Actions also sets the
-# outputs name, dir (the folder with the packaged files, the build artifact), version and assets (S8-39: the files
-# of a GitHub release - the zip plus the components under their own names, docs/DEV.md "Выпуск").
+# outputs name, dir (the folder with the packaged files, the build artifact), version, msi (its path) and assets
+# (S8-39: the files of a GitHub release - the zip, the MSI and the components under their own names,
+# docs/DEV.md "Выпуск").
 # Usage: powershell -File scripts\windows\package.ps1 [-TargetDir <cargo target dir>] [-Out <dir, default dist>]
 param(
   [string]$TargetDir = "",
@@ -43,9 +46,15 @@ $assets = Join-Path $Out "assets"
 if (Test-Path -LiteralPath $assets) { Remove-Item -LiteralPath $assets -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $assets | Out-Null
 Copy-Item -LiteralPath $zip, (Join-Path $dir "postman-worker.exe"), (Join-Path $dir "postman-viewer.exe") -Destination $assets
+$pack = Join-Path $release "postman-pack.exe"
+if (-not (Test-Path -LiteralPath $pack)) { throw "no $pack - build the whole workspace (cargo build --release --workspace)" }
+$msi = Join-Path $assets "$name.msi"
+& $pack msi $dir $msi
+if ($LASTEXITCODE) { throw "postman-pack msi failed ($LASTEXITCODE)" }
 if ($env:GITHUB_OUTPUT) {
   # UTF-8 without BOM in Windows PowerShell 5.1 and in pwsh alike.
-  $lines = "name=$name`ndir=$dir`nassets=$assets`nversion=$version`n"
+  $lines = "name=$name`ndir=$dir`nassets=$assets`nmsi=$msi`nversion=$version`n"
   [IO.File]::AppendAllText($env:GITHUB_OUTPUT, $lines, (New-Object Text.UTF8Encoding $false))
 }
 "package: $zip"
+"package: $msi"

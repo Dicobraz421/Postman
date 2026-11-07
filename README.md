@@ -30,17 +30,20 @@ cargo test --workspace
 
 ## Поставка
 
-Выпуски — [Releases](https://github.com/Dicobraz421/Postman/releases): `postman-<версия>-windows-x64.zip`
-(`postman.exe`, `postman-worker.exe`, `postman-viewer.exe`, `README.txt`, `install.ps1`), отдельные компоненты и
-`SHA256SUMS.txt`; как выпустить — `docs/DEV.md` «Выпуск». Сборка каждого `main` — артефакт CI (Actions → запуск →
-Artifacts). Локально — `scripts/windows/package.ps1` после `cargo build --release --workspace` (в `dist/`). Установка — `install.ps1` без прав администратора, инструкция
-пользователя — `scripts/windows/README.txt`. Версия exe — из `version` в `Cargo.toml`; значок —
+Выпуски — [Releases](https://github.com/Dicobraz421/Postman/releases): установщик `postman-<версия>-windows-x64.msi`
+(все пользователи, `Program Files`, нужны права администратора; он же — пакет winget `Pets.Postman`), архив
+`postman-<версия>-windows-x64.zip` (`postman.exe`, `postman-worker.exe`, `postman-viewer.exe`, `README.txt`,
+`install.ps1` — установка для себя без прав администратора), отдельные компоненты и `SHA256SUMS.txt`. Решение —
+`docs/decisions/2026-11-07-installer-msi-winget.md`; как выпустить — `docs/DEV.md` «Выпуск». Сборка каждого `main` —
+артефакт CI (Actions → запуск → Artifacts). Локально — `scripts/windows/package.ps1` после
+`cargo build --release --workspace` (в `dist/`; MSI собирает `tools/pack`). Инструкция пользователя —
+`docs/USER-GUIDE.md` «Установка» и `scripts/windows/README.txt`. Версия exe — из `version` в `Cargo.toml`; значок —
 `app-gpui/res/postman.ico` (`scripts/windows/make-icon.ps1`), манифест — `app-gpui/res/postman.manifest`.
 
 ### Подпись (решение владельца 1)
 
-Шаг «Подпись exe» в CI подписывает `postman.exe` и `postman-worker.exe` (`signtool`, SHA-256, метка времени),
-если в репозитории заданы секреты (Settings → Secrets and variables → Actions):
+Шаги «Подпись exe» и «Подпись MSI» в CI (`scripts/windows/sign.ps1`) подписывают `postman.exe`, `postman-worker.exe`,
+`postman-viewer.exe` и MSI (`signtool`, SHA-256, метка времени), если в репозитории заданы секреты (Settings → Secrets and variables → Actions):
 
 - `WINDOWS_CERT_PFX_BASE64` — сертификат подписи кода с закрытым ключом (.pfx) в base64:
   `[Convert]::ToBase64String([IO.File]::ReadAllBytes("cert.pfx")) | Set-Content cert.b64`, затем
