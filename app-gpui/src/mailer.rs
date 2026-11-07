@@ -201,7 +201,8 @@ impl Mailer {
             cx.subscribe(&cal, |this, _, action: &calendar::CalendarAction, cx| this.on_calendar(action, cx)),
             on_search,
             cx.subscribe(&bar, |this, bar, ev: &BarEvent, cx| match ev {
-                BarEvent::More => this.toggle_more(cx),
+                BarEvent::More(overflow) => this.toggle_more(*overflow, cx),
+                BarEvent::Category => this.category_key(cx),
                 BarEvent::Scope => {
                     // Охват сменился посреди поиска — искать заново.
                     let q = bar.read(cx).search.read(cx).value().to_string();

@@ -123,8 +123,8 @@ const SCENES: &[Scene] = &[
     scene("mail-32-hits", search_over, HITS),
     // S8-09, решение 5: «Везде» находит письмо «На этом компьютере» без индекса (демо — откат на кэш), оно открывается.
     scene("mail-s809-local", search_over, LOCAL_FOUND),
-    // Раздел 35, шаг 1: стрелки ходят, J, K, Ctrl+Shift+G, Ctrl+Shift+F — ничего; Insert — срок; флаг — кнопкой.
-    scene("mail-35-keys", |_, m, cx| m.list.read(cx).rows.1.iter().any(|r| r.flagged), OUTLOOK),
+    // Раздел 35, шаг 1: стрелки ходят, J, K, Ctrl+Shift+G, Ctrl+Shift+F — ничего; Insert и кнопка «Срок» — панель срока.
+    scene("mail-35-keys", |_, m, _| m.lifecycle.picker.is_some(), OUTLOOK),
     // Раздел 35, шаг 5 (без фильтров): Ctrl+T, своё письмо у вкладки, Ctrl+W закрывает, «Почта» — нет.
     scene("mail-35-tabs", only_main, MAIL_TAB),
     // Раздел 37, шаг 2: одиночные клавиши в списке.
@@ -211,6 +211,8 @@ const SCENES: &[Scene] = &[
     scene("mail-t105-split", |_, m, cx| m.panes == (W_FOLDERS, W_LIST) && crate::prefs::get(cx).layout == Layout::default(), SPLITS),
     // T1-05б, шаг 3: узкое окно: сначала чтение, затем список, затем папки.
     scene("mail-t105-narrow", |_, m, _| m.panes == (f32::from(Layout::MIN_FOLDERS), f32::from(Layout::MIN_LIST)), NARROW),
+    // T1-27: узкое окно (760): в строке — только первые кнопки, поиск и «Вид» видны; «Всем» из «…» отвечает всем.
+    scene("mail-t127-narrow", |_, m, cx| replying(m, cx, "RE:") && !m.bar.read(cx).more_open && screens::spotted("bar-more").is_some(), NARROW_BAR),
     // T1-D, шаг 1 (шаг 3 — в тёмной теме): строка в фокусе и наведение. Цвета проверяет `mail_drills` по снимку.
     scene("mail-t1d-focus", |_, m, cx| m.list.read(cx).focused, FOCUS),
     // T1-D, шаг 1: щелчок в поиск: выделение нейтральное у писем, папок и контактов.
@@ -288,11 +290,16 @@ const BAR: &[Input] = &[
     until!(|m, cx| replying(m, cx, "RE:")),
     Input::Keys(&["escape"]),
     until!(|m, _| m.compose.last().is_none()),
-    Input::Click(at!("frame-reply-all"), Held::No),
-    until!(|m, cx| replying(m, cx, "RE:")),
+    // Окно сцен (1280): «Всем» и «Переслать» не влезли в строку — они в «…» (T1-27).
+    Input::Click(at!("bar-overflow"), Held::No),
+    until!(|_, _| screens::spotted("overflow-frame-reply-all").is_some()),
+    Input::Click(at!("overflow-frame-reply-all"), Held::No),
+    until!(|m, cx| replying(m, cx, "RE:") && !m.bar.read(cx).more_open),
     Input::Keys(&["escape"]),
     until!(|m, _| m.compose.last().is_none()),
-    Input::Click(at!("frame-forward"), Held::No),
+    Input::Click(at!("bar-overflow"), Held::No),
+    until!(|_, _| screens::spotted("overflow-frame-forward").is_some()),
+    Input::Click(at!("overflow-frame-forward"), Held::No),
     until!(|m, cx| replying(m, cx, "FW:")),
     Input::Keys(&["escape"]),
     until!(|m, cx| m.compose.last().is_none() && keep_open(m, cx)),
@@ -972,7 +979,8 @@ const OUTLOOK: &[Input] = &[
     until!(|m, _| m.lifecycle.picker.is_some()),
     Input::Keys(&["escape"]),
     until!(|m, _| m.lifecycle.picker.is_none()),
-    Input::Click(at!("frame-flag"), Held::No),
+    Input::Click(at!("frame-due"), Held::No),
+    until!(|m, _| m.lifecycle.picker.is_some()),
 ];
 
 const MAIL_TAB: &[Input] = &[
@@ -2098,6 +2106,17 @@ const SPLITS: &[Input] = &[
     until!(|m, cx| m.panes.1 == W_LIST && crate::prefs::get(cx).layout.list.is_none()),
     SETTLE,
     Input::Double(split_folders),
+];
+
+const NARROW_BAR: &[Input] = &[
+    READY,
+    LEFT,
+    OPENED,
+    Input::Resize(760., 800.),
+    until!(|m, cx| m.bar.read(cx).hidden.iter().any(|b| b.id == "frame-reply-all")),
+    Input::Click(at!("bar-overflow"), Held::No),
+    until!(|_, _| screens::spotted("overflow-frame-reply-all").is_some()),
+    Input::Click(at!("overflow-frame-reply-all"), Held::No),
 ];
 
 const NARROW: &[Input] = &[

@@ -35,13 +35,17 @@ set! {
     REPLY_ALL = "reply-all",
     FORWARD = "forward",
     DELETE = "delete",
+    ARCHIVE = "archive",
+    MOVE = "move",
+    TAG = "tag",
     FLAG = "flag",
+    CLOCK = "clock",
     SEARCH = "search",
+    VIEW = "view",
     // Дерево папок.
     INBOX = "inbox",
     SEND = "send",
     DRAFTS = "drafts",
-    ARCHIVE = "archive",
     JUNK = "junk",
     FOLDER = "folder",
 }
@@ -76,7 +80,7 @@ pub(crate) fn icon(ico: Ico, size: f32, color: Hsla) -> Svg {
 mod tests {
     use gpui_kit::AssetSource;
 
-    use super::{APP, Assets, COMPOSE, Ico, SEARCH, SET, SETTINGS};
+    use super::{APP, Assets, COMPOSE, Ico, SEARCH, SET, SETTINGS, VIEW};
 
     /// Файлы каталога и таблица совпадают, у каждого — запись в `README.md`, контур и сетка 20 × 20.
     #[test]
@@ -117,9 +121,9 @@ mod tests {
         }
         assert!(has(SETTINGS));
         for b in crate::bar::BUTTONS {
-            assert!(has(b.0), "{}", b.3);
+            assert!(has(b.ico), "{}", b.cmd);
         }
-        assert!(has(COMPOSE) && has(SEARCH));
+        assert!(has(COMPOSE) && has(SEARCH) && has(VIEW));
         for role in [None, Some("inbox"), Some("sent"), Some("drafts"), Some("trash"), Some("archive"), Some("junk"), Some("other")] {
             assert!(has(crate::folders::folder_icon(role).0), "{role:?}");
         }

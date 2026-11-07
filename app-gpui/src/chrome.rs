@@ -118,7 +118,9 @@ const W_SECTION: f32 = 34.0;
 const H_SECTION: f32 = 30.0;
 const SECTION_GAP: f32 = 2.0;
 const SECTIONS_END: f32 = 10.0;
-const TABS_START: f32 = 12.0;
+const TABS_START: f32 = 8.0;
+/// Высота вкладки в заголовке (макет `MainNav_title`).
+const H_TAB: f32 = 34.0;
 /// Шестерёнка «Настройки».
 const W_SETTINGS: f32 = 40.0;
 /// Вкладка: ширина и скругление верха.
@@ -160,14 +162,17 @@ pub(crate) fn quiet_button(id: &'static str, l: &Look) -> Stateful<Div> {
 #[derive(Default)]
 pub(crate) struct MoreMenu {
     pub(crate) open: bool,
+    /// Открыто кнопкой «…» (кнопки, которым не хватило места), а не «Вид».
+    pub(crate) overflow: bool,
     closed_at: Option<Instant>,
 }
 
 impl MoreMenu {
-    /// Щелчок по «…».
-    pub(crate) fn toggle(&mut self) {
+    /// Щелчок по «Вид» (`overflow = false`) или «…».
+    pub(crate) fn toggle(&mut self, overflow: bool) {
         let just_closed = self.closed_at.is_some_and(|t| t.elapsed() < REOPEN_GUARD);
         self.open = !self.open && !just_closed;
+        self.overflow = overflow;
         self.closed_at = None;
     }
 
@@ -304,12 +309,12 @@ impl Mailer {
             let letter = matches!(t.kind, TabKind::Compose(_));
             div()
                 .id(("tab", id as usize))
-                .h(l.px(Metric::HTab))
+                .h(px(H_TAB))
                 .min_w(px(W_TAB_MIN))
                 .max_w(px(W_TAB_MAX))
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(px(8.))
                 .pl(px(14.))
                 .pr(px(if close.is_some() { 6. } else { 14. }))
                 .rounded_t(l.px(Metric::RadiusOverlay))
@@ -597,10 +602,14 @@ impl Mailer {
             )
     }
 
-    /// Меню «…» под командной строкой справа: автоответы, правила и все настройки (вкладка «Настройки», S5-09).
+    /// Меню «Вид» под командной строкой справа: автоответы, правила и все настройки (вкладка «Настройки», S5-09),
+    /// быстрые фильтры. Открытое кнопкой «…» — кнопки, которым не хватило места в строке (T1-27).
     pub(crate) fn more_menu(&self, l: &Look, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.more.open {
             return None;
+        }
+        if self.more.overflow {
+            return Some(self.overflow_menu(l, cx));
         }
         // Вид → Быстрые фильтры (S5-03): галочка — закладки видны.
         let quick_on = !crate::prefs::get(cx).quick.hidden;
@@ -666,17 +675,71 @@ impl Mailer {
         Some(menu.into_any_element())
     }
 
-    pub(crate) fn toggle_more(&mut self, cx: &mut Context<Self>) {
-        self.more.toggle();
+    pub(crate) fn toggle_more(&mut self, overflow: bool, cx: &mut Context<Self>) {
+        self.more.toggle(overflow);
         let open = self.more.open;
         self.bar.update(cx, |b, cx| {
             b.more_open = open;
+            b.overflow_open = overflow;
             cx.notify();
         });
         cx.notify();
     }
 
-    /// Закрыть меню «…»; `false` — не было открыто (Esc идёт дальше).
+    /// Меню «…»: скрытые кнопки командной строки по порядку — значок, подпись, клавиша; щелчок — как по кнопке.
+    fn overflow_menu(&self, l: &Look, cx: &mut Context<Self>) -> AnyElement {
+        let (hidden, x) = {
+            let b = self.bar.read(cx);
+            (b.hidden.clone(), b.overflow_x)
+        };
+        let items = hidden.into_iter().map(|b| {
+            let key = if b.keyed { crate::keytips::key(b.cmd, cx) } else { None };
+            let id = ElementId::Name(format!("overflow-{}", b.id).into());
+            div()
+                .id(id.clone())
+                .children(crate::screens::spot(id))
+                .h(l.px(Metric::HMenuItem))
+                .px(px(10.))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .rounded(l.px(Metric::RadiusControl))
+                .cursor_pointer()
+                .hover(|d| d.bg(l.hover()))
+                .child(icons::icon(b.ico, 16., b.tint.map_or(l.text(), |t| l.pm(t))))
+                .child(div().flex_1().child(tr!(b.id)))
+                .children(key.map(|k| div().pl(px(16.)).text_color(l.text2()).child(k)))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.close_more(cx);
+                    match b.run {
+                        crate::bar::Run::Action(action) => window.dispatch_action(action(), cx),
+                        crate::bar::Run::Category => this.category_key(cx),
+                    }
+                }))
+        });
+        div()
+            .id("overflow-menu")
+            .absolute()
+            .top(px(TITLEBAR_H + crate::bar::BAR_HEIGHT - 6.))
+            .left(px(x))
+            .min_w(px(200.))
+            .p(px(4.))
+            .flex()
+            .flex_col()
+            .rounded(l.px(Metric::RadiusOverlay))
+            .border_1()
+            .border_color(l.c(pets_ui::theme::Role::StrokeCard))
+            .bg(l.c(pets_ui::theme::Role::LayerOverlay))
+            .text_color(l.text())
+            .shadow_lg()
+            .children(items)
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.close_more(cx);
+            }))
+            .into_any_element()
+    }
+
+    /// Закрыть меню «Вид» или «…»; `false` — не было открыто (Esc идёт дальше).
     pub(crate) fn close_more(&mut self, cx: &mut Context<Self>) -> bool {
         if !self.more.close() {
             return false;
@@ -990,12 +1053,12 @@ mod tests {
     #[test]
     fn more_menu_closes_on_its_own_button() {
         let mut m = MoreMenu::default();
-        m.toggle();
+        m.toggle(false);
         assert!(m.open);
         assert!(m.close());
-        m.toggle();
+        m.toggle(false);
         assert!(!m.open, "тот же щелчок");
-        m.toggle();
-        assert!(m.open);
+        m.toggle(true);
+        assert!(m.open && m.overflow);
     }
 }
