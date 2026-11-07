@@ -164,6 +164,8 @@ pub(crate) const GRAY_CORE: &[(Role, Color)] = &[
     (Role::FillCursor, c(0xDEDEDE)),
     (Role::StrokeDivider, c(0xD5D5D5)),
     (Role::StrokeControl, c(0xC2C2C2)),
+    // Поле ввода — как карточка, без белого (решение владельца 2026-11-06, п. 8; T1-28).
+    (Role::FillControlInput, c(0xEDEDED)),
     (Role::TextPrimary, c(0x242424)),
     (Role::TextSecondary, c(0x575757)),
     (Role::TextTertiary, c(0x767676)),
@@ -799,7 +801,7 @@ fn sync_components(l: &Look, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::{GRAY, Look, PMS, Pm, ROLES, base, gray_theme, pm_name};
-    use pets_ui::theme::{FontSizes, OsLook, ThemeSpec, resolve};
+    use pets_ui::theme::{FontSizes, OsLook, Role, ThemeSpec, resolve};
     use postman_core::prefs::Accent;
 
     /// Акцент «Внешнего вида» (S5-30): заливка, текст и тонированная подложка — токены акцента; синий — по умолчанию.
@@ -910,6 +912,8 @@ mod tests {
         assert!(g.gray() && !g.dark() && !l.gray());
         assert_eq!([hex(g.base()), hex(g.panel()), hex(g.hover()), hex(g.fill())], ["#DADADA", "#EDEDED", "#E5E5E5", "#DEDEDE"]);
         assert_eq!([hex(g.border()), hex(g.stroke())], ["#D5D5D5", "#C2C2C2"]);
+        // Поле ввода (поиск): в светлой белое, как карточка; в «Серой» — тоже как карточка (T1-28).
+        assert_eq!([hex(l.c(Role::FillControlInput)), hex(g.c(Role::FillControlInput))], ["#FFFFFF", "#EDEDED"]);
         assert_eq!([hex(g.text()), hex(g.text2()), hex(g.text3())], ["#242424", "#575757", "#767676"]);
         assert_eq!([hex(g.row_hover()), hex(g.row_fill(true))], ["#DFE5EA", "#C2D5E5"]);
         assert_eq!(hex(g.accent()), "#0067C0", "акцент — как в светлой");
