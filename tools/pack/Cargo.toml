@@ -1,0 +1,21 @@
+[package]
+name = "postman-pack"
+description = "Сборка поставки: MSI и манифест winget (решение владельца 2026-11-07)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+# Запись базы MSI и встроенного архива CAB — чистый Rust, MIT: без WiX и скачиваний.
+cab = "0.6"
+msi = "0.11"
+sha2 = "0.11"
+uuid = "1"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile = "3"

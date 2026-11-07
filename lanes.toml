@@ -56,4 +56,4 @@ paths = ["docs/*", "*.md", "LICENSE"]
 paths = ["Cargo.toml", "Cargo.lock", "deny.toml", "rust-toolchain.toml"]
 
 [lane.ci]
-paths = [".github/*", "scripts/*", ".config/*", ".cargo/*", "lanes.toml", "clippy.toml", ".gitattributes", ".gitignore"]
+paths = [".github/*", "scripts/*", "tools/*", ".config/*", ".cargo/*", "lanes.toml", "clippy.toml", ".gitattributes", ".gitignore"]

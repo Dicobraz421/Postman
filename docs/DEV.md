@@ -53,7 +53,8 @@ Actions — для разработки. Схема общая для Pets (ск
 
 | Файл выпуска | Что это |
 |---|---|
-| `postman-<версия>-<os>-<arch>.zip` | Комплект целиком: `windows-x64` сейчас; Linux — `linux-x64.tar.gz` |
+| `postman-<версия>-windows-x64.msi` | Установщик для всех пользователей (`tools/pack`, решение 2026-11-07); его же ставит winget `Pets.Postman` |
+| `postman-<версия>-<os>-<arch>.zip` | Комплект целиком с `install.ps1` (для себя, без прав администратора): `windows-x64` сейчас; Linux — `linux-x64.tar.gz` |
 | `postman-worker.exe`, `postman-viewer.exe` | Компоненты под своими именами — скачать один файл вместо всего («Нет компонента», S8-38) |
 | `SHA256SUMS.txt` | Контрольные суммы всех файлов |
 
@@ -65,6 +66,17 @@ Actions — для разработки. Схема общая для Pets (ск
 - Ссылки приложения: «Проверить обновления» — `releases/latest` (стабильный) или `releases` (предварительный);
   «Скачать» у «Нет компонента» — `releases/download/v<своя версия>/<файл>`: компонент той же версии.
 - Linux: строка в matrix job `release` и `scripts/linux/package.sh` с теми же выходами; `publish` не меняется.
+- MSI: `package.ps1` вызывает `postman-pack msi` той же сборки. Версия MSI для бет — `a.b.(c·1000 + r)`
+  (`0.1.0-beta.2` → `0.1.302`, `tools/pack/src/ids.rs`). `UpgradeCode` постоянный, `ProductCode` выводится из версии.
+  Коды компонентов меняются, только если меняется ключевой файл компонента. Новый файл комплекта — строка в `ITEMS`
+  (`tools/pack/src/msi.rs`) и в `msi-check.ps1`. CI (`msi-check.ps1`, раннер — администратор) ставит MSI, обновляет до
+  `--as <следующая версия>`, проверяет отказ ставить старую поверх новой и удаляет. Локально без записи в систему —
+  тест `windows_installer_extracts_the_package` (`msiexec /a`). Тихую установку на рабочем месте не запускать.
+- winget: на теге CI кладёт артефакт `winget-<версия>` — `manifests/p/Pets/Postman/<версия>/` с хэшем подписанного
+  MSI. В `microsoft/winget-pkgs` манифест уходит PR из форка (или `wingetcreate submit <каталог>`), только для
+  стабильной версии и с согласия владельца: это публикация в чужом репозитории. Проверка перед PR —
+  `winget validate --manifest <каталог>`; на своей машине `winget install --manifest <каталог>` требует включить
+  локальные манифесты (`winget settings --enable LocalManifestFiles`, администратор).
 
 ## Диск
 
