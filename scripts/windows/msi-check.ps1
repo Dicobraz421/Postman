@@ -35,8 +35,12 @@ function Assert-Installed([string]$displayVersion) {
   foreach ($f in $files) { if (-not (Test-Path -LiteralPath (Join-Path $dir $f))) { throw "not installed: $f" } }
   $target = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk).TargetPath
   if ($target -ine (Join-Path $dir "postman.exe")) { throw "Start menu shortcut: '$target'" }
-  $msg = (Get-ItemProperty $eventKey).EventMessageFile
-  if ($msg -notlike "%SystemRoot%\Microsoft.NET\Framework64\*EventLogMessages.dll") { throw "event source: '$msg'" }
+  # As written, not expanded: REG_EXPAND_SZ with %SystemRoot% (Get-ItemProperty would expand it).
+  $k = Get-Item $eventKey
+  $msg = $k.GetValue("EventMessageFile", $null, "DoNotExpandEnvironmentNames")
+  if ($k.GetValueKind("EventMessageFile") -ne "ExpandString" -or $msg -notlike "%SystemRoot%\Microsoft.NET\Framework64\*EventLogMessages.dll") {
+    throw "event source: $($k.GetValueKind('EventMessageFile')) '$msg'"
+  }
   $e = Entries
   if ($e.Count -ne 1) { throw "expected one Postman entry in Installed apps, found $($e.Count)" }
   if ($e[0].DisplayVersion -ne $displayVersion) { throw "Installed apps version $($e[0].DisplayVersion), expected $displayVersion" }
