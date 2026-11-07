@@ -294,6 +294,16 @@ impl Mailer {
         }
     }
 
+    /// Кнопка «Категория» командной строки: меню с открытым подменю «Категория».
+    pub(crate) fn category_key(&mut self, cx: &mut Context<Self>) {
+        self.context_menu_key(cx);
+        if let Some(m) = &mut self.menu {
+            m.sub = Some(Sub::Category);
+            m.cursor = items(m.features).position(|it| it == Item::Category).unwrap_or(0);
+            m.sub_cursor = 0;
+        }
+    }
+
     /// Снимки (`--screens`): подменю открыто, как по наведению.
     pub(crate) fn screen_menu_sub(&mut self, sub: Sub) {
         if let Some(m) = &mut self.menu {
