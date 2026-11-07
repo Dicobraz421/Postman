@@ -38,6 +38,8 @@ const LAYERS: &[(&str, u8)] = &[
     ("postman-backend-ews", L2B),
     ("postman-backend-ldap", L2B),
     ("postman-gpui", L3),
+    // Сборка поставки (S8-47): программа CI, от крейтов рабочей области не зависит.
+    ("postman-pack", L1),
 ];
 const UI_LAYER: u8 = L3;
 
