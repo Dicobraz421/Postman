@@ -1,11 +1,24 @@
-**Что скачать** — Windows 10/11 x64
+<!-- Страница выпуска для пользователей: job `publish` (ci.yml) вырезает лишние блоки и подставляет {version}. -->
+<!-- pre -->
+**Бета-версия.** Основное работает, но возможны ошибки. Нашли ошибку — «Настройки» → «Общие» → «Отчёт для поддержки» и приложите файл к сообщению.
+<!-- /pre -->
+<!-- stable -->
+**Стабильная версия** для повседневной работы.
+<!-- /stable -->
 
-| Файл | Зачем |
-|---|---|
-| `postman-{version}-windows-x64.msi` | Установщик: для всех пользователей, в `Program Files`, нужны права администратора. Двойной щелчок — и подтвердить запрос UAC. |
-| `postman-{version}-windows-x64.zip` | Программа целиком, установка только для себя, без прав администратора: распакуйте и выполните `install.ps1` — инструкция в `README.txt` внутри архива. |
-| `postman-worker.exe`, `postman-viewer.exe` | Отдельные компоненты. Postman пишет «Нет компонента» — скачайте нужный файл и положите в папку программы, переустанавливать не нужно. |
-| `SHA256SUMS.txt` | Контрольные суммы файлов. |
+## Скачать — Windows 10 и 11 (64 бита)
 
-**Downloads** — `postman-{version}-windows-x64.msi` installs for all users (administrator rights);
-`postman-{version}-windows-x64.zip` is the full program for the current user without administrator rights (unpack, run `install.ps1`); `postman-worker.exe` and `postman-viewer.exe` are single components to put into the program folder when Postman reports “Component missing”.
+| | Что это | Права |
+|---|---|---|
+| [**Установщик** (.msi)](https://github.com/Dicobraz421/Postman/releases/download/v{version}/postman-{version}-windows-x64.msi) | Обычный выбор. Откройте файл — Postman установится для всех на этом компьютере и появится в меню «Пуск». | Нужны права администратора: Windows попросит подтвердить. |
+| [**Архив** (.zip)](https://github.com/Dicobraz421/Postman/releases/download/v{version}/postman-{version}-windows-x64.zip) | Если прав администратора нет. Распакуйте и запустите `install.ps1` — как, написано в `README.txt` внутри. Postman установится только для вас. | Не нужны. |
+
+Обновление — так же: новая версия ставится поверх старой, письма и вход сохраняются. Перед обновлением закройте Postman.
+<!-- unsigned -->
+
+Если Windows пишет «Система Windows защитила ваш компьютер», нажмите «Подробнее» → «Выполнить в любом случае».
+<!-- /unsigned -->
+
+Остальные файлы ниже нужны, только если Postman сам попросит скачать недостающий компонент.
+
+*English:* the **.msi** installs Postman for all users (administrator rights required); the **.zip** installs it for you only, no administrator rights needed.
