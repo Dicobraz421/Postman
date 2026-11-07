@@ -242,17 +242,22 @@ jobs:
           pattern: release-*
           path: assets
           merge-multiple: true
+      # Страница — для пользователей (.github/release-notes.md): готовность и что скачать, без списка PR.
+      # Блоки: pre или stable — по версии; unsigned (подсказка про SmartScreen) — пока нет подписи.
       - name: Выпуск
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          SIGNED: ${{ secrets.WINDOWS_CERT_PFX_BASE64 != '' }}
         run: |
           (cd assets && sha256sum * > SHA256SUMS.txt)
           version="${GITHUB_REF_NAME#v}"
-          sed "s/{version}/$version/g" .github/release-notes.md > notes.md
-          pre=(); case "$version" in *-*) pre=(--prerelease);; esac
+          if [[ "$version" == *-* ]]; then pre=(--prerelease); drop=stable; else pre=(); drop=pre; fi
+          if [ "$SIGNED" = true ]; then cut=unsigned; else cut=none; fi
+          sed -e "/^<!-- $drop -->/,/^<!-- \/$drop -->/d" -e "/^<!-- $cut -->/,/^<!-- \/$cut -->/d" \
+            -e '/^<!-- .* -->$/d' -e "s/{version}/$version/g" .github/release-notes.md > notes.md
           gh release create "$GITHUB_REF_NAME" assets/* -R "$GITHUB_REPOSITORY" --verify-tag \
-            --title "Postman $version" --notes-file notes.md --generate-notes "${pre[@]}"
+            --title "Postman $version" --notes-file notes.md "${pre[@]}"
 
   # Единственный required check: зелёный, если всё нужное прошло или было пропущено.
   gate:
