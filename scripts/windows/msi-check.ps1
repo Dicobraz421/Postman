@@ -53,9 +53,10 @@ function Msi-Version([string]$path) {
   $i = New-Object -ComObject WindowsInstaller.Installer
   $db = $i.OpenDatabase($path, 0)
   $v = $db.OpenView("SELECT Value FROM Property WHERE Property = 'ProductVersion'")
-  $v.Execute()
+  # Execute writes to the pipeline: without [void] the function returns an array.
+  [void]$v.Execute()
   $r = $v.Fetch()
-  $r.StringData(1)
+  return [string]$r.StringData(1)
 }
 
 $ver = Msi-Version $Msi
