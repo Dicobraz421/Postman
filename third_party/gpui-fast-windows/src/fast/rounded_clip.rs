@@ -239,28 +239,31 @@ pub(crate) fn draw_group(
             texture.GetDesc(&mut desc);
         }
         let size = (desc.Width, desc.Height);
-        let fallback = if target.paths.is_none() {
+        // Pets patch: the window's path textures are lazy (`frame::PathTargets::of`), so a target
+        // without them is the usual case, not only a layer tile. Intermediate textures the size of
+        // the target (plain + MSAA 4×, ~32 MB at 1600×1000) are made only when the clipped content
+        // draws paths; before, every rounded clip made them, every frame size anew.
+        let fallback = if target.paths.is_none() && !child.paths.is_empty() {
             Some(frame.rounded_masks.paths(target.device, size)?)
         } else {
             None
         };
         let parent_view = Some(render_target);
-        let paths = target.paths.unwrap_or_else(|| {
-            let image = fallback.as_ref().unwrap();
-            PathTargets {
+        let paths = target.paths.or_else(|| {
+            fallback.as_ref().map(|image| PathTargets {
                 render_target_view: &parent_view,
                 intermediate_texture: &image.intermediate,
                 intermediate_srv: &image.view,
                 msaa_texture: &image.msaa,
                 msaa_view: &image.msaa_target,
-            }
+            })
         });
         let content_target = Target {
             device: target.device,
             device_context: context,
             atlas: target.atlas,
             globals: target.globals,
-            paths: Some(PathTargets {
+            paths: paths.map(|paths| PathTargets {
                 render_target_view: &parent_view,
                 ..paths
             }),
