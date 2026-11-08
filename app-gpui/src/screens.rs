@@ -473,8 +473,19 @@ impl Driver {
     }
 }
 
-/// Шаг сценария; вызывается из `Render for Mailer` на каждом кадре.
+/// Шаг сценария; вызывается из `Render for Mailer` на каждом кадре, а сам шаг идёт после кадра (`Window::defer`).
+/// `notify` отрисованной сущности в фазе отрисовки ядро gpui-fast только помечает к перерисовке, наблюдателям
+/// (`cx.observe`) он не доходит: сброс сцены из `render` терял бы их (ответ не уходил из области чтения). У живого
+/// пользователя состояние в `render` не меняется — стенд снимков тоже меняет его вне отрисовки.
 pub fn drive(m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) {
+    if m.screens.is_none() {
+        return;
+    }
+    let mailer = cx.entity();
+    window.defer(cx, move |window, cx| mailer.update(cx, |m, cx| step(m, window, cx)));
+}
+
+fn step(m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) {
     let Some(d) = &m.screens else { return };
     let Some(&scene) = d.scenes().get(d.scene) else { return };
     let timeout = d.timeout();
@@ -521,8 +532,9 @@ pub fn drive(m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) {
     }
     // Границы — только этого кадра: от скрытого элемента не должно остаться точки.
     SPOTS.with_borrow_mut(HashMap::clear);
-    // Кадры — по запросу (патч gpui): без запроса в простое ничего не рисуется.
-    window.request_animation_frame();
+    // Кадры — по запросу: без запроса в простое ничего не рисуется. Шаг идёт вне отрисовки, поэтому `cx.notify()`, а не
+    // `request_animation_frame` (тому нужен текущий вид, он есть только в фазе отрисовки).
+    cx.notify();
     // Следующий кадр — целиком, без кэша частей: `ready` читает часть (`m.reading`) раньше её отрисовки, gpui не
     // засчитывает части её же сущность, и `notify` части теряется — снимок показал бы прошлое письмо.
     window.on_next_frame(|window, _| window.refresh());
