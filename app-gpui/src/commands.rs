@@ -125,7 +125,7 @@ pub fn bind(cx: &mut App, prefs: &postman_core::prefs::Prefs) {
                 }
             },
         };
-        match KeyBinding::load(keys, action, context, false, None, &DummyKeyboardMapper) {
+        match KeyBinding::load(keys, action, context, false, None, cx) {
             Ok(b) => bindings.push(b),
             Err(e) => tracing::error!("command {}: keys {keys}: {e:?}", c.id),
         }

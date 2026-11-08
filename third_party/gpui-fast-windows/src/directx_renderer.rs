@@ -57,6 +57,7 @@ pub(crate) struct DirectXRenderer {
     pub(crate) skip_draws: bool,
     pub(crate) fast_frame: crate::fast::frame::FrameState,
     pub(crate) fast_composition: crate::fast::composition::DirectXComposition,
+    pub(crate) fast_recovery: crate::fast::device_recovery::RecoveryState,
 }
 
 /// Direct3D objects
@@ -219,6 +220,7 @@ impl DirectXRenderer {
             skip_draws: false,
             fast_frame: crate::fast::frame::FrameState::default(),
             fast_composition: crate::fast::composition::DirectXComposition::default(),
+            fast_recovery: crate::fast::device_recovery::RecoveryState::default(),
         })
     }
 
@@ -392,7 +394,7 @@ impl DirectXRenderer {
         scene: &Scene,
         background_appearance: WindowBackgroundAppearance,
     ) -> Result<()> {
-        if self.skip_draws {
+        if self.skip_draws || !crate::fast::device_recovery::can_draw(self) {
             // skip drawing this frame, we just recovered from a device lost event
             // and so likely do not have the textures anymore that are required for drawing
             return Ok(());
@@ -473,6 +475,8 @@ impl DirectXRenderer {
     /// goes through MetalRenderer; this is the Windows analogue). Draws into
     /// the existing render target, copies it into a `D3D11_USAGE_STAGING`
     /// texture, maps it, and converts BGRA to RGBA.
+    // Pets patch: и в тестах крейта — на нём держатся тесты нашей части (`lazy_path`, `image_sprite`, `background`);
+    // в 0.1.13 у них только `feature = "test-support"`.
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn render_to_image(
         &mut self,

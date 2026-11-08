@@ -110,8 +110,17 @@ panic = "deny"
 # Патч Windows-платформы gpui (шейдеры в exe, кадры по запросу, живой ресайз) — общий для приложений Pets:
 # github.com/Dicobraz/pets, crates/pets-gpui-windows.
 gpui-pre-windows = { git = "https://github.com/Dicobraz/pets", rev = "b1e344098d9ce15bec9bfa5f273f211ca0fec81f" }
-# FAST-1 (опыт): платформа ядра gpui-fast — снимок gpui-fast-windows 0.1.11 + правки pets-gpui-windows (4ac64b9).
+# FAST-1 (опыт): платформа ядра gpui-fast — снимок gpui-fast-windows 0.1.13 + правки pets-gpui-windows (4ac64b9; слияние 0.1.11 → 0.1.13).
 gpui-fast-windows = { path = "third_party/gpui-fast-windows" }
+
+# FAST-1 (опыт, только локально): pets с gpui-kit =0.9.0 — рабочее дерево `postman-wt/pets-kit09`
+# (ветка x/gpui-kit-0.9 от b1e3440), иначе pets-ui тянет второй gpui-kit 0.7.3. Все четыре крейта — из одного
+# места, иначе pets-i18n окажется дважды (git и путь).
+[patch."https://github.com/Dicobraz/pets"]
+pets-commands = { path = "../pets-kit09/crates/pets-commands" }
+pets-i18n = { path = "../pets-kit09/crates/pets-i18n" }
+pets-shell = { path = "../pets-kit09/crates/pets-shell" }
+pets-ui = { path = "../pets-kit09/crates/pets-ui" }
 
 # Отладочная информация только для своего кода: target/debug не раздувается до десятков ГБ.
 [profile.dev]

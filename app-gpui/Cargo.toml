@@ -25,7 +25,7 @@ postman-smime.workspace = true
 postman-demo.workspace = true
 zeroize = "1"
 postman-calendar.workspace = true
-gpui-kit = { version = "0.7", features = ["gpui-fast"] }
+gpui-kit = { version = "=0.9.0", features = ["gpui-fast"] }
 jiff = "0.2"
 postman-core.workspace = true
 # Пути к серверам — плагины (ADR 0004): регистрирует `src/plugins.rs`; протокольных крейтов интерфейс не знает.
@@ -55,7 +55,7 @@ image = { version = "0.25", default-features = false }
 # у интерфейса нет (решение владельца 2026-10-28).
 [target.'cfg(windows)'.dependencies]
 # FAST-1 (опыт): `gpui_windows` — платформа ядра gpui-fast (снимок в third_party, `[patch]` в корне).
-gpui-fast-windows = "=0.1.11"
+gpui-fast-windows = "=0.1.13"
 
 # Значок, версия и манифест exe (build.rs, rc.exe из Windows SDK).
 [build-dependencies]

@@ -58,7 +58,7 @@ impl SettingsView {
         self.keys.clash = None;
         let view = cx.entity().downgrade();
         self.keys.intercept = Some(cx.intercept_keystrokes(move |ev, _window, cx| {
-            let keystroke = ev.keystroke.unparse();
+            let keystroke = ev.keystroke.unparse(cx.platform_info().os);
             let taken = view.update(cx, |v, cx| v.on_keystroke(&keystroke, cx)).unwrap_or(false);
             if taken {
                 cx.stop_propagation();
