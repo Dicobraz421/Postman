@@ -11,7 +11,9 @@ checks: [bench, release]
 manual: no
 
 ## Сделать
-- Release обоих вариантов (main и `x/gpui-fast`), `postman.exe --demo 50000 --bench`.
+- Release обоих вариантов (main и `x/gpui-fast`), `postman.exe --demo 50000 --bench`; если FAST-0 уже в main —
+  main с ним.
+- Вклад механизмов: прогон опыта с `GPUI_SCROLL_LAYERS=0` и с `GPUI_VIEW_RETENTION=0` (по 2 прогона).
 - Не меньше 4 чередующихся прогонов на вариант (A B A B …), медианы; машина без нагрузки, монитор тот же.
 - Метрики: CPU процесса и UI-потока при листании, CPU в простое, p99/max листания и ресайза, работа UI-потока за
   кадр p50, `idle_private_ws_mb`, первый кадр, размер exe.
