@@ -6,7 +6,7 @@ deps: []
 class: B
 branch: x/gpui-fast            # опыт, в main не мержить; PR — черновик
 files: [Cargo.toml, Cargo.lock, app-gpui/Cargo.toml, third_party/gpui-fast-windows/]
-read: [docs/PATCHES.md, docs/decisions.md]
+read: [docs/PATCHES.md]
 checks: [release, screens]
 manual: no
 
