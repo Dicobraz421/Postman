@@ -1,7 +1,8 @@
 # Ядро gpui-fast и одна наша платформа на базе gpui-fast-windows
 
-Статус: **Принято владельцем: вариант А (2026-11-08)**. Доведение остановлено: gpui-kit 0.7.3 не собирается с ядром
-gpui-fast 0.1.11 (см. «Итоги варианта А»). Замер — FAST-2 (`2026-11-08-gpui-fast.md`).
+Статус: **Принято владельцем: вариант А (2026-11-08)**. На 0.7.3 / 0.1.11 остановлено: gpui-kit 0.7.3 не собирается
+с ядром gpui-fast 0.1.11 (см. «Итоги варианта А»). Шаг «сразу на 0.9» (gpui-kit 0.9.0 + ядро 0.1.13) собирается, но
+остановлен на снимках сцен (см. «Итоги шага 0.9»). Замер — FAST-2 (`2026-11-08-gpui-fast.md`).
 
 ## Целевая схема
 
@@ -112,6 +113,77 @@ gpui-kit 0.9.0: `gpui-pre =0.3.11` (обязательно), `gpui-fast 0.1.13` 
    0.1.11, наше — наш снимок, их — 0.1.13. Перед этим прочитать справку PR (что изменилось в 0.1.12–0.1.13).
    Правки API приложений идут от gpui-kit 0.9 и проверяются сборкой.
 4. Потом каждая новая версия gpui-fast — так же: снимок N → N+1 слиянием, ядро `=N+1`.
+
+## Итоги шага 0.9 (2026-11-08)
+
+gpui-kit `=0.9.0` (фича `gpui-fast`) + ядро gpui-fast `=0.1.13` + снимок `third_party/gpui-fast-windows` 0.1.13.
+**Собирается**: `cargo check/clippy -p postman-gpui --all-targets` без предупреждений, `cargo fmt --all --check` чист,
+dev-сборка с воркером идёт. **Стоп — снимки сцен расходятся с main, причина выяснена не для всех расхождений.**
+Release, размер exe и `--bench` не сняты.
+
+**Что изменилось в 0.1.12–0.1.13** (справка релизов longbridge/gpui-fast). 0.1.12 — только выравнивание снимков
+gpui-pre 0.3.10, исходник как 0.1.11. 0.1.13 — синхронизация с Zed `decd2399b1` (переносы строк по UAX #14, анимации по
+часам исполнителя, правки подписок и кэшированных видов), снимки gpui-pre 0.3.11; для Windows: восстановление рендера
+после неудачного ресайза и потери устройства (#93, `fast/device_recovery.rs` вместо `panic!`), запасной поиск шрифта
+DirectWrite (#94, `fast/font_fallback.rs`), меньше лишних запросов кадра после ввода (#85), ресурсы композиции
+освобождаются (#90), режим энергосбережения (`PowerMode`), подавление ложных `WM_MOUSEMOVE` без движения.
+
+**Слияние 0.1.11 → 0.1.13** (`git merge-file`: база — чистый 0.1.11, наше — снимок, их — чистый 0.1.13).
+Файлы только их (`fast/composition.rs`, `fast/frame_schedule.rs`, `fast/mod.rs`, новые `device_recovery.rs`,
+`font_fallback.rs`) — их версия. Слились без конфликтов: `directx_renderer.rs`, `events.rs`, `gpui_windows.rs`,
+`platform.rs`, `window.rs`. Конфликт один файл, два места:
+
+| Файл | Как |
+|---|---|
+| `direct_write.rs`, `layout_line` | наш быстрый путь первым; старый путь (`layout_line_slow`) — их разбиение по U+2028/U+2029 и `layout_line_without_separators`. Быстрый путь разделителей не берёт (вне его диапазонов) |
+| `direct_write.rs`, конец файла | наши `fast_font_table`/`font_table` и их `is_line_separator` — оба |
+| `directx_renderer.rs` (без конфликта) | у них `render_to_image` стал только `feature = "test-support"`; вернули `any(test, …)` с меткой «Pets patch» — на нём тесты нашей части |
+| `Cargo.toml` снимка | версия 0.1.13, ядро `=0.1.13`, `gpui-pre-*` `=0.3.11`; наши правки (`[workspace]`, `windows-sys`, build-`windows`, `serde_json`) на месте |
+
+Тесты нашей части: 22 из 22 (`pets_*`, `force_warp`, `lazy_path`, `image_sprite`, `shaders_are_embedded`, `background`).
+`cargo clippy --all-targets` снимка — без ошибок; предупреждения — в их коде и новые линты clippy (`chunks_exact`).
+
+**pets.** `pets-ui` на rev `b1e3440` тянет `gpui-kit =0.7.3` (рабочая область pets) — в сборке было бы два gpui-kit.
+Для опыта — рабочее дерево `postman-wt/pets-kit09`, ветка `x/gpui-kit-0.9` от `b1e3440`, только локально: в
+`Cargo.toml` pets `gpui-kit = { version = "=0.9.0", features = ["gpui-fast"] }`, код pets не менялся. Postman берёт
+все четыре крейта (`pets-commands`, `pets-i18n`, `pets-shell`, `pets-ui`) оттуда через
+`[patch."https://github.com/Dicobraz/pets"]` по пути `../pets-kit09` — **на CI этой ветки пути нет**, сборка там
+не пройдёт. `cargo tree -i gpui-kit`: один gpui-kit 0.9.0 (pets-ui и postman-gpui).
+
+**gpui-pre-windows.** `cargo tree -p postman-gpui -i gpui-pre -e normal --target x86_64-pc-windows-msvc --depth 1`:
+gpui-pre 0.3.11 остаётся (gpui-base, gpui-component, gpui-kit, gpui-kit-assets, gpui-pre-platform, gpui-pre-windows) —
+два ядра. Наш `[patch.crates-io]` на gpui-pre-windows (pets 0.3.9) **не применяется** («patch … was not used»), в сборке
+чистый gpui-pre-windows 0.3.11: его `build.rs` в release (`not(debug_assertions)`) ищет fxc.exe (`GPUI_FXC_PATH`,
+`PATH`, Windows SDK) и падает `panic!("Failed to find fxc.exe")`, если нет. Локально fxc.exe есть
+(`Windows Kits/10/bin/10.0.26100.0/x64`).
+
+**Правки API приложения** (3 строки, поведение то же):
+- `KeyBinding::load(…, &DummyKeyboardMapper)` → `load(…, cx)`: в 0.1.13 только так; берётся раскладка окна. Раскладка
+  меняет внутреннее сочетание только у цифр и знаков с Shift (`ctrl-shift-1` → `ctrl-!`, так приходят события),
+  таких привязок у Postman нет — для них ничего не меняется;
+- `Keystroke::unparse()` → `unparse(cx.platform_info().os)` в `mailer.rs` (строка `POSTMAN_KEYLOG`) и
+  `settings_keys.rs` (запись сочетания): для Windows строки те же (`ctrl-`, `alt-`, `win-`, `shift-`).
+
+**Снимки** (dev-сборка, `--screens`, 135 сцен, main = `origin/main` c7c3008; порог — пиксель отличается > 16):
+совпали 8, у 127 есть отличия. Разбор:
+- почти везде 0,001–0,1 % пикселей: край цветной полосы слева у строки списка (столбец x = 371) сглажен наполовину,
+  1 пиксель; у ряда сцен — то же у краёв карточек. Отрисовка ядра, на вид не заметно;
+- перенос строки в тосте: «…09:00 / –09:30» → «…9 ноября, / 09:00–09:30» — переносы UAX #14 ядра 0.1.13 (лучше);
+- `folder-menu`, `folders`, `local-folders` (~2 %): над «Выберите письмо» остаётся ответ из сцены `taken`. Причина
+  найдена: `screens::drive` вызывается из `Render for Mailer`, сброс сцены (`clean_slate` → `reading.clear`) идёт во
+  время отрисовки, а `notify` видимой сущности в фазе отрисовки ядро только помечает (`invalidate_view` при
+  `draw_phase != None` не ставит `Effect::Notify`) — наблюдатель `inline_follows_letter` не вызывается (проверено
+  отладочной печатью). У gpui-pre 0.3.9 `invalidate_view` такой же; почему на main наблюдатель срабатывает — не
+  проверено (вероятно, учёт отрисованных сущностей у gpui-fast другой).
+  Это особенность прогона снимков (состояние меняется в `render`), а не пути пользователя; лечится переносом шага
+  сцены из `render` в `window.defer` — это правка `screens.rs`, не сделана (стоп);
+- **причина не ясна**: `delegation-mail` (8,8 %) — список не прокручен к выбранному письму; `contact-edit` (2,3 %) и
+  `taken` — фокус в поле правки/ответе (у main — в списке); `rules` (0,6 %) — наоборот, поле без фокуса и карточки
+  правил шире (в main ограничены по ширине); `firstrun`, `settings-categories`, `toasts`, `keytips` (0,1–0,3 %).
+  Вероятно, тот же источник (смена состояния и фокуса внутри `render`) или изменения gpui-kit 0.9 (фокус у Popover,
+  ширина), не проверено.
+
+**Не сделано (стоп):** release-сборка, размер exe main/опыт, `--bench` (idle CPU, прокрутка, RSS).
 
 ## Что уходит из патча при приёме в upstream
 
