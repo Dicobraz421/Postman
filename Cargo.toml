@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/ir", "crates/smime", "crates/jmap", "crates/imap", "crates/dav", "crates/ews", "crates/cache", "crates/compose", "crates/worker", "crates/search", "crates/export", "crates/demo", "crates/calendar", "crates/core", "crates/backend-jmap", "crates/backend-imap", "crates/backend-dav", "crates/backend-ews", "crates/backend-ldap", "app-gpui", "tools/pack"]
+# FAST-1 (опыт): снимок платформы gpui-fast-windows с нашими правками — своя рабочая область, не член этой.
+exclude = ["third_party/gpui-fast-windows"]
 
 [workspace.package]
 edition = "2024"
@@ -108,6 +110,8 @@ panic = "deny"
 # Патч Windows-платформы gpui (шейдеры в exe, кадры по запросу, живой ресайз) — общий для приложений Pets:
 # github.com/Dicobraz/pets, crates/pets-gpui-windows.
 gpui-pre-windows = { git = "https://github.com/Dicobraz/pets", rev = "b1e344098d9ce15bec9bfa5f273f211ca0fec81f" }
+# FAST-1 (опыт): платформа ядра gpui-fast — снимок gpui-fast-windows 0.1.11 + правки pets-gpui-windows (4ac64b9).
+gpui-fast-windows = { path = "third_party/gpui-fast-windows" }
 
 # Отладочная информация только для своего кода: target/debug не раздувается до десятков ГБ.
 [profile.dev]

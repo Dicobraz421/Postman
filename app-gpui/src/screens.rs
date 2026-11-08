@@ -632,11 +632,12 @@ fn events(step: Input, m: &Mailer, window: &Window, cx: &App) -> Result<VecDeque
         Input::Wheel(place, by) => {
             let position = at(place)?;
             out.push_back(hover(position, None));
-            out.push_back(Event::Raw(PlatformInput::ScrollWheel(ScrollWheelEvent {
+            out.push_back(Event::Raw(PlatformInput::Scroll(ScrollEvent {
                 position,
                 delta: ScrollDelta::Pixels(point(px(0.), px(-by))),
                 modifiers: Modifiers::default(),
                 touch_phase: TouchPhase::Moved,
+                ..Default::default()
             })));
             // Отметки рисуются после этого шага: `Input::Press` сразу за прокруткой щёлкнул бы по прежнему месту элемента.
             out.extend([Event::Frame, Event::Frame]);

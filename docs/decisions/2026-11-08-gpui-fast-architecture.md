@@ -1,6 +1,7 @@
 # Ядро gpui-fast и одна наша платформа на базе gpui-fast-windows
 
-Статус: **Предложено** (FAST-1, 2026-11-08). Решение — за владельцем. Замер — FAST-2 (`2026-11-08-gpui-fast.md`).
+Статус: **Принято владельцем: вариант А (2026-11-08)**. Доведение остановлено: gpui-kit 0.7.3 не собирается с ядром
+gpui-fast 0.1.11 (см. «Итоги варианта А»). Замер — FAST-2 (`2026-11-08-gpui-fast.md`).
 
 ## Целевая схема
 
@@ -72,6 +73,34 @@ gpui-pre 0.3.9: у gpui-fast 0.1.12+ вспомогательные снимки
   `pub(crate)`. В `fast/frame.rs` `PathTargets::of` возвращает `Option`, а `draw_batches` создаёт
   `PathTextures::new(device, width, height)`, если `!scene.paths.is_empty()`.
 - **`app-gpui/src/screens.rs`** — `PlatformInput::Scroll(ScrollEvent { …, ..Default::default() })`.
+
+## Итоги варианта А (2026-11-08)
+
+Платформа доведена: в `third_party/gpui-fast-windows` конфликтов нет, `cargo clippy -p gpui-fast-windows` проходит
+(одно предупреждение — их `composition.rs`), тесты нашей части зелёные: 21 из 21 (`force_warp`, `lazy_path`, `image_sprite`,
+`background`, `pets_*`). Как разрешены конфликты:
+
+| Файл | Как |
+|---|---|
+| `platform.rs` | взят их файл 0.1.11 (`frame_schedule`, `schedule_frame` после создания окна — первый кадр сразу) + наш «DirectComposition выкл.» |
+| `window.rs` | их `fast_frame_request`; наши `frame_request`, `frame_waker`/`schedule_frame` убраны; в `draw` — наш фон и снятие `DWMWA_CLOAK`, потом их `schedule_frame`; `draw_composed` и прочие функции композиции — их |
+| `events.rs` | их `defer_draw`; живой ресайз и `WM_ERASEBKGND` — наши, без конфликтов |
+| `vsync.rs` | их файл (наш патч убран целиком) |
+| `build.rs` | сначала их `fast_rounded_clip_shader::stage()`, затем наш `D3DCompile` из `generated_path(OUT_DIR)` |
+| `directx_renderer.rs` | путь к шейдеру во время выполнения убран (байткод вшит); `path_textures: Option<PathTextures>`, поля `pub(crate)`; сброс при ресайзе |
+| `fast/frame.rs` | `PathTargets::of` → `Option`; `draw_batches` создаёт `PathTextures`, если в кадре есть пути |
+| `Cargo.toml` снимка | ядро `=0.1.11`, `[workspace]`, наш `windows-sys` и build-зависимость `windows`; для их тестов — копия `rounded_clip_fixtures.rs` и dev-зависимость `serde_json` (в опубликованном крейте их нет) |
+
+**Стоп: ядро 0.1.11 не подходит к gpui-kit 0.7.3.** gpui-kit 0.7.3 написан под gpui-fast 0.1.7 и требует `^0.1.7`.
+В 0.1.8–0.1.11 API ядра поменялся несовместимо: `Modifiers::secondary()` → `secondary(cx)`,
+`Keystroke::unparse()` → `unparse(os)`, плюс ошибка заимствования в `gpui-component/src/questionnaire/components.rs:947`.
+Ошибок не меньше шести: три в `gpui-base`, три в `gpui-component`. Дальше `gpui-kit` и приложение не проверены.
+Чинить можно только правкой gpui-kit или ядра, а это стоп-условие. Поэтому release, снимки, размер exe опыта
+и idle CPU не получены.
+
+`cargo tree -p postman-gpui -i gpui-pre -e normal --target x86_64-pc-windows-msvc --depth 1`: gpui-pre 0.3.9 остаётся
+(gpui-base, gpui-component, gpui-kit, gpui-kit-assets, gpui-pre-platform, gpui-pre-windows), то есть в сборке два ядра.
+`app-gpui` берёт `gpui_windows` из `gpui-fast-windows =0.1.11`. В `screens.rs` правка `ScrollEvent` уже сделана.
 
 ## Путь 0.7 → 0.9
 
