@@ -79,11 +79,6 @@ pub(crate) fn free_name(c: FreeColor) -> String {
     tr!(&format!("settings-cal-free-{}", c.id()))
 }
 
-/// Пометка «сохраняется»: настройка запомнена, действует со своей задачей.
-fn stored(l: &Look) -> Div {
-    div().flex_none().px_1p5().rounded_sm().bg(l.fill()).text_size(px(11.)).text_color(l.text2()).child(tr!("settings-cal-stored"))
-}
-
 /// Строка настройки, как `settings_tab::row`, с пометкой у названия.
 fn line(title: String, badge: Option<Div>, hint: Option<String>, control: impl IntoElement, l: &Look) -> Div {
     div()
@@ -442,7 +437,7 @@ impl SettingsView {
             .child(group(tr!("settings-cal-invites-group"), l))
             .child(line(
                 tr!("settings-cal-tentative"),
-                Some(stored(l)),
+                None,
                 Some(tr!("settings-cal-tentative-hint")),
                 self.cal_toggle("settings-cal-tentative", c.tentative_invites, |c| c.tentative_invites = !c.tentative_invites, l, cx),
                 l,
@@ -571,7 +566,6 @@ impl SettingsView {
             tr!("settings-cal-preview-days", n = days, from = clock(c.work_start), to = clock(c.work_end)),
             tr!("settings-cal-preview-meeting", duration = duration_text(c.duration_secs()), reminder = reminder_text(c.reminder)),
             tr!("settings-cal-preview-zone", zone = zone_choice(c.zone.as_deref())),
-            tr!("settings-cal-preview-stored"),
         ];
         aside_card(tr!("settings-cal-preview"), lines, l)
     }

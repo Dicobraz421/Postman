@@ -166,6 +166,12 @@ pub enum Command {
         status: Partstat,
         in_reply_to: Option<String>,
     },
+    /// Приглашение, пришедшее только письмом (iMIP, RFC 6047; T2-08в): положить в мой календарь как «не ответил»
+    /// (`NEEDS-ACTION`), без ответа организатору → `CalendarChanged`. Сервер, который разбирает приглашения сам
+    /// (Exchange), команду пропускает.
+    ImportInvite {
+        invite: Box<Invitation>,
+    },
     /// События календаря в `[from, to)` (Unix-секунды), повторения разворачивает сервер → `EventsLoaded`.
     Events {
         from: i64,

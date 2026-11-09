@@ -10,7 +10,7 @@ use jiff::tz::TimeZone;
 
 use crate::invite::{fold, text};
 use crate::task::{cn, utc_ical};
-use crate::{NewEvent, Partstat, Task};
+use crate::{Event, NewEvent, Partstat, Task};
 
 /// Кто рассылает сообщения планирования участнику (RFC 6638 §7.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,6 +89,60 @@ impl NewEvent<'_> {
         }
         l.extend(["END:VEVENT".to_string(), "END:VCALENDAR".into()]);
         Ok(join(&l))
+    }
+}
+
+/// Копия приглашения из письма для моего календаря CalDAV (T2-08в): участники и организатор — как в приглашении, мой
+/// ответ — `NEEDS-ACTION`, у всех `SCHEDULE-AGENT=CLIENT` (сервер ничего не рассылает). Повторяющуюся встречу модель
+/// события целиком не держит (только признак) — её не копируем: `None`, приглашение остаётся карточкой в письме.
+pub fn invite_copy(e: &Event, me: &str, now: i64) -> Option<String> {
+    if e.recurring || e.uid.is_empty() {
+        return None;
+    }
+    let mut l = vec![
+        "BEGIN:VCALENDAR".to_string(),
+        "PRODID:-//Postman//Postman//RU".into(),
+        "VERSION:2.0".into(),
+        "BEGIN:VEVENT".into(),
+        format!("UID:{}", text(&e.uid)),
+        format!("DTSTAMP:{}", utc_ical(now)),
+        format!("DTSTART:{}", utc_ical(e.span.start)),
+        format!("DTEND:{}", utc_ical(e.span.end.max(e.span.start))),
+        format!("SEQUENCE:{}", e.sequence),
+        format!("SUMMARY:{}", text(&e.title)),
+    ];
+    if !e.description.is_empty() {
+        l.push(format!("DESCRIPTION:{}", text(&e.description)));
+    }
+    if !e.location.is_empty() {
+        l.push(format!("LOCATION:{}", text(&e.location)));
+    }
+    if let Some(o) = e.participants.iter().find(|p| p.owner) {
+        l.push(format!("ORGANIZER{};SCHEDULE-AGENT=CLIENT:mailto:{}", cn(&o.name), o.email));
+    }
+    for p in e.participants.iter().filter(|p| p.attendee) {
+        let mine = p.email.eq_ignore_ascii_case(me);
+        let stat = if mine { "NEEDS-ACTION" } else { partstat_name(p.status) };
+        let role = if p.owner {
+            "CHAIR"
+        } else if p.optional {
+            "OPT-PARTICIPANT"
+        } else {
+            "REQ-PARTICIPANT"
+        };
+        l.push(format!("ATTENDEE{};ROLE={role};PARTSTAT={stat};SCHEDULE-AGENT=CLIENT:mailto:{}", cn(&p.name), p.email));
+    }
+    l.extend(["END:VEVENT".to_string(), "END:VCALENDAR".into()]);
+    Some(join(&l))
+}
+
+fn partstat_name(s: Partstat) -> &'static str {
+    match s {
+        Partstat::Accepted => "ACCEPTED",
+        Partstat::Tentative => "TENTATIVE",
+        Partstat::Declined => "DECLINED",
+        Partstat::Delegated => "DELEGATED",
+        Partstat::NeedsAction => "NEEDS-ACTION",
     }
 }
 
@@ -499,6 +553,25 @@ mod tests {
         assert!(ics.contains("TRIGGER:-PT10M\r\nEND:VALARM\r\nEND:VEVENT"), "{ics}");
         let alone = NewEvent { attendees: &[], ..e };
         assert!(!alone.to_ics(0).unwrap().contains("ORGANIZER"));
+    }
+
+    /// Приглашение из письма (T2-08в) — копия: я «не ответил», рассылки нет; повторяющуюся не копируем.
+    #[test]
+    fn invite_copy_needs_action_without_scheduling() {
+        let v = serde_json::json!({ "uid": "inv-1", "title": "Созвон", "utcStart": "2026-10-21T08:00:00Z", "utcEnd": "2026-10-21T09:00:00Z", "participants": {
+            "o": { "name": "Орг", "calendarAddress": "mailto:org@vendor.example", "roles": { "owner": true, "attendee": true }, "participationStatus": "accepted" },
+            "m": { "calendarAddress": "mailto:me@corp.example", "roles": { "attendee": true }, "participationStatus": "needs-action" }
+        }});
+        let e = Event::from_jmap(&v, &TimeZone::UTC).unwrap();
+        let ics = invite_copy(&e, "ME@corp.example", 0).unwrap();
+        let lines = unfold(&ics);
+        assert!(lines.iter().any(|l| l.starts_with("ORGANIZER;CN=") && l.ends_with("SCHEDULE-AGENT=CLIENT:mailto:org@vendor.example")));
+        assert!(lines.iter().any(|l| l.contains("PARTSTAT=NEEDS-ACTION;SCHEDULE-AGENT=CLIENT:mailto:me@corp.example")));
+        assert!(lines.iter().all(|l| !l.contains("SCHEDULE-AGENT=SERVER")));
+        assert!(ics.contains("DTSTART:20261021T080000Z\r\n"));
+        let mut series = e;
+        series.recurring = true;
+        assert!(invite_copy(&series, "me@corp.example", 0).is_none());
     }
 
     #[test]

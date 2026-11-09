@@ -601,6 +601,8 @@ impl EwsAreas {
                 notify(SyncEvent::CalendarFailed("Exchange: free/busy sharing is set by the server".into()))
             }
             Command::CalendarAccess => notify(SyncEvent::CalendarAccess(Vec::new())),
+            // Приглашения из писем Exchange кладёт в календарь сам.
+            Command::ImportInvite { .. } => {}
             other => return Some(other),
         }
         None

@@ -17,6 +17,7 @@
 //! Своя кэшируемая view: перерисовывается только по своему `notify`. С сервером говорит событиями
 //! [`CalendarAction`] (`Mailer` отдаёт их в `Backend`); события синхронизации приходят в [`CalendarView::on_sync`].
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use gpui_kit::component::input::{Input, InputEvent, InputState, MoveDown, MoveUp};
@@ -238,6 +239,15 @@ pub(crate) fn my_part<'a>(e: &'a Event, me: Option<&str>) -> Option<&'a Particip
     e.participants.iter().find(|p| p.email.eq_ignore_ascii_case(me))
 }
 
+/// «Добавлять приглашения „под вопросом“» (T2-08в, «Настройки → Календарь»): неотвеченное приглашение — в сетке
+/// пунктиром и в моей занятости «под вопросом»; выключено — до ответа его нет ни в сетке, ни в занятости (остаётся
+/// карточкой в письме). Одинаково на любом сервере: решает Postman. Флаг процесса — его ставит календарь из настроек.
+static PENDING_SHOWN: AtomicBool = AtomicBool::new(true);
+
+pub(crate) fn pending_shown() -> bool {
+    PENDING_SHOWN.load(Ordering::Relaxed)
+}
+
 /// Как показать событие в сетке.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Shown {
@@ -256,7 +266,8 @@ pub(crate) fn event_look(e: &Event, me: Option<&str>) -> Shown {
     let mine = my_part(e, me);
     match mine.map(|p| (p.owner, p.status)) {
         Some((false, Partstat::Declined)) => Shown::Hidden,
-        Some((false, Partstat::NeedsAction)) => Shown::Pending,
+        Some((false, Partstat::NeedsAction)) if pending_shown() => Shown::Pending,
+        Some((false, Partstat::NeedsAction)) => Shown::Hidden,
         Some((false, Partstat::Tentative)) => Shown::Tentative,
         _ if e.status == EventStatus::Tentative => Shown::Tentative,
         _ => Shown::Normal,
@@ -455,6 +466,7 @@ impl CalendarView {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Пояс, рабочее время, вид, первый день недели, шаг и второй пояс — «Настройки → Календарь» (S5-20).
         let cal = crate::prefs::get(cx).calendar;
+        PENDING_SHOWN.store(cal.tentative_invites, Ordering::Relaxed);
         let tz = cal.zone();
         let share = cx.new(|cx| InputState::new(window, cx).placeholder(tr!("cal-share-placeholder")));
         let on_share = cx.subscribe_in(&share, window, |this: &mut Self, _, ev: &InputEvent, window, cx| {
@@ -574,6 +586,9 @@ impl CalendarView {
     /// вид по умолчанию — период заново.
     fn prefs_changed(&mut self, cx: &mut Context<Self>) {
         let cal = crate::prefs::get(cx).calendar;
+        if PENDING_SHOWN.swap(cal.tentative_invites, Ordering::Relaxed) != cal.tentative_invites {
+            cx.notify();
+        }
         // Календари коллег (S5-22): цвета, скрытые, «Цвета по владельцу», «Имя владельца».
         let colors = Self::assigned(&self.colleagues, &cal.calendar_colors);
         let owners = (colors, cal.hidden_calendars.clone(), cal.owner_colors, cal.owner_names);
@@ -1127,6 +1142,17 @@ impl CalendarView {
 
     /// Своя занятость с сегодня на неделю вперёд (S6-08, «Время в календаре»): загруженные события, кроме
     /// свободных и отменённых.
+    /// Время моих неотвеченных приглашений (T2-08в): в помощнике встречи — «под вопросом» или свободно, что бы ни
+    /// считал сервер.
+    pub(crate) fn pending_spans(&self) -> Vec<Span> {
+        let me = self.me.as_deref();
+        self.events
+            .iter()
+            .filter(|e| e.owner.is_none() && my_part(e, me).is_some_and(|p| !p.owner && p.status == Partstat::NeedsAction))
+            .map(|e| e.span)
+            .collect()
+    }
+
     pub(crate) fn busy_today(&self) -> Vec<Busy> {
         let now = self.clock.unwrap_or_else(|| jiff::Timestamp::now().as_second());
         let Some(today) = zoned(now, &self.tz).map(|z| z.date()) else { return Vec::new() };
@@ -1139,9 +1165,14 @@ impl CalendarView {
             .filter(|e| e.owner.as_ref().is_none_or(|o| mine.iter().any(|m| m.key() == o.key())))
             .filter(|e| e.span.overlaps(&day) && !e.all_day)
             .filter(|e| e.free_busy == postman_calendar::FreeBusy::Busy && e.status != postman_calendar::EventStatus::Cancelled)
+            // Неотвеченное приглашение — «под вопросом» или не занимает время (T2-08в).
+            .filter(|e| event_look(e, self.me.as_deref()) != Shown::Hidden)
             .map(|e| Busy {
                 span: e.span,
-                kind: if e.status == postman_calendar::EventStatus::Tentative { BusyKind::Tentative } else { BusyKind::Busy },
+                kind: match event_look(e, self.me.as_deref()) {
+                    Shown::Pending | Shown::Tentative => BusyKind::Tentative,
+                    _ => BusyKind::Busy,
+                },
             })
             .collect()
     }
@@ -3742,6 +3773,11 @@ mod tests {
         let mut t = ev("accepted", false);
         t.status = postman_calendar::EventStatus::Tentative;
         assert_eq!(event_look(&t, me), Shown::Tentative);
+        // «Добавлять приглашения „под вопросом“» выключено (T2-08в): неотвеченное до ответа не показываем.
+        super::PENDING_SHOWN.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(event_look(&ev("needs-action", false), me), Shown::Hidden);
+        assert_eq!(event_look(&ev("accepted", false), me), Shown::Normal);
+        super::PENDING_SHOWN.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     #[test]

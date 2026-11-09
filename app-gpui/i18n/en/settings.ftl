@@ -504,7 +504,7 @@ settings-cal-owner-names = Show owner name on events
 settings-cal-owner-names-hint = Shows whose event it is when calendars overlap.
 settings-cal-invites-group = Invitations
 settings-cal-tentative = Add invitations to the calendar as “Tentative” automatically
-settings-cal-tentative-hint = The time is held tentatively until you answer.
+settings-cal-tentative-hint = An unanswered invitation is shown dashed in the calendar and its time is tentative; an invitation that came only by email is added to the calendar by Postman. Off: until you answer, the invitation stays in the email and the time is free. How colleagues see your time is up to their server.
 settings-cal-delete = Delete the invitation letter after answering
 settings-cal-delete-hint = The event stays in the calendar, the letter goes to Deleted Items.
 settings-cal-preview = Preview
@@ -512,7 +512,6 @@ settings-cal-preview-view = { $view } · step { $step }
 settings-cal-preview-days = Working days: { $n }, hours { $from }–{ $to }.
 settings-cal-preview-meeting = New meeting — { $duration }, reminder: { $reminder }.
 settings-cal-preview-zone = Time zone: { $zone }.
-settings-cal-preview-stored = “Saved” — the choice is remembered; it takes effect in the calendar with reminders and colleagues' calendars.
 
 # Settings: General, Security, Appearance (S5-30).
 settings-nav-security = Security

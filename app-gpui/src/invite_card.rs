@@ -981,6 +981,14 @@ impl ReadingPane {
         if card.day_pending == Some((from, to)) {
             card.day_pending = None;
             card.day = Some(events.to_vec());
+            // Приглашение только письмом (сервер его в календарь не положил): копией «не ответил» (T2-08в, RFC 6047).
+            let me = self.me.clone();
+            let new = matches!(card.state_for(me.as_deref()), Some(postman_core::invite::InviteState::New));
+            let want = new && card.server_copy().is_none() && crate::prefs::get(cx).calendar.tentative_invites;
+            if let Some(inv) = card.invitation().filter(|i| want && !i.event.recurring && !self.imported.contains(&i.event.uid)).cloned() {
+                self.imported.insert(inv.event.uid.clone());
+                cx.emit(ReadingEvent::Sync(SyncRequest::ImportInvite(Box::new(inv))));
+            }
             cx.notify();
         }
     }

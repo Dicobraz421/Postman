@@ -1246,7 +1246,15 @@ impl MeetingView {
         match ev {
             Event::Availability { ticket, me, people, error, .. } if self.busy.ticket == Some(*ticket) => {
                 self.busy.ticket = None;
-                self.busy.me = Some(me.clone());
+                // Мои неотвеченные приглашения (T2-08в): «под вопросом», а выключено — свободно; одинаково на любом
+                // сервере.
+                let pending = self.mailer.upgrade().map(|m| m.read(cx).cal.read(cx).pending_spans()).unwrap_or_default();
+                let me: Vec<Busy> = me
+                    .iter()
+                    .filter(|b| crate::calendar::pending_shown() || !pending.contains(&b.span))
+                    .map(|b| if pending.contains(&b.span) { Busy { span: b.span, kind: postman_calendar::BusyKind::Tentative } } else { *b })
+                    .collect();
+                self.busy.me = Some(me);
                 self.busy.people = people.iter().map(|(e, b)| (e.to_lowercase(), b.clone())).collect();
                 self.busy.error = error.clone();
                 self.link_busy(cx);
