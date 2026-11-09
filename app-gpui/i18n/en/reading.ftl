@@ -30,6 +30,7 @@ reading-invite-sending = Sending the response…
 reading-invite-mine = Your response: { $status }
 reading-invite-sent-server = The response was sent through the calendar.
 reading-invite-sent-mail = The response was sent to the organizer.
+reading-threat = This message is marked as phishing. Don’t open its links or attachments unless you trust the sender.
 reading-invite-sent-imported = The response was sent to the organizer, the meeting is added to the calendar.
 reading-invite-failed = The response was not sent: { $error }
 reading-partstat = { $s ->

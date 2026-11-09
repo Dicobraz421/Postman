@@ -34,6 +34,12 @@ pub const EXPIRE: &str = "pm.expire";
 const WAITING_MAX: usize = 64;
 
 /// Есть ли у письма слово `base` или его уточнение (`base.…`).
+/// Письмо помечено опасным: `$phishing` (сервер или «Это фишинг») или подсказка безопасности `pm.threat`. Сам клиент
+/// писем не проверяет — показывает вердикт (решение 2026-11-09, `docs/decisions/2026-11-09-security-is-server.md`).
+pub fn is_threat(keywords: &[String]) -> bool {
+    has_word(keywords, PHISHING) || has_word(keywords, THREAT)
+}
+
 fn has_word(keywords: &[String], base: &str) -> bool {
     keywords.iter().any(|k| k.strip_prefix(base).is_some_and(|rest| rest.is_empty() || rest.starts_with('.')))
 }
@@ -207,7 +213,7 @@ impl Facts {
             mention: me.mentioned(&row.preview),
             external: me.external(&row.from_addr),
             to_me: me.to_me(to),
-            threat: has_word(k, PHISHING) || has_word(k, THREAT),
+            threat: is_threat(k),
             due: has_word(k, DUE),
             // «Ждём ответа» или письмо моего невыполненного поручения — одно письмо один раз.
             waiting: has_word(k, WAIT) || k.iter().any(|w| me.waiting.contains(w)),

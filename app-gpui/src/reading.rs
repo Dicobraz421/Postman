@@ -881,6 +881,7 @@ impl Render for ReadingPane {
                 .gap(px(12.))
                 .pb(px(8.))
                 .child(title)
+                .children(threat_strip(&r.row, &l))
                 .children(crate::shared::strip(&r.row, &l, cx))
                 .child(crate::lifecycle::header_row(&r.row, &l, cx))
                 .children(self.stack_info(cx));
@@ -973,6 +974,8 @@ impl Render for ReadingPane {
                     .children(lock)
                     .children(seal),
             )
+            // Вердикт сервера (T2-16): письмо помечено опасным — полоса-предупреждение, без своих проверок.
+            .children(threat_strip(&r.row, &l))
             // Общий ящик (S5-28): кто взял письмо в работу и «Взять» / «Забрать себе» / «Вернуть в очередь».
             .children(crate::shared::strip(&r.row, &l, cx))
             // Сроки письма и действия «Срок», «Напомнить», «Ждать ответа», «Исчезнет» (S5-04).
@@ -1133,6 +1136,27 @@ pub(crate) fn sandbox_label(level: Level) -> String {
         Level::Partial => tr!("sandbox-partial"),
         Level::None => tr!("sandbox-none"),
     }
+}
+
+/// Полоса «Помечено как фишинг» (T2-16): спам и подлинность отправителя решает сервер (SPF/DKIM/DMARC, антиспам);
+/// клиент только показывает его вердикт — `$phishing` или `pm.threat` у письма. Кнопок нет (решение 2026-11-09).
+fn threat_strip(row: &EmailRow, l: &crate::roles::Look) -> Option<Stateful<Div>> {
+    postman_core::filters::is_threat(&row.keywords).then(|| {
+        div()
+            .id("reading-threat")
+            .children(crate::screens::spot("reading-threat"))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .min_h(px(36.))
+            .py(px(6.))
+            .px(px(10.))
+            .rounded(px(6.))
+            .bg(l.error_bg())
+            .text_size(px(13.))
+            .child(crate::chrome::icon(crate::chrome::glyph::WARNING, 16.).text_color(l.error()))
+            .child(div().flex_1().min_w_0().child(tr!("reading-threat")))
+    })
 }
 
 #[cfg(test)]
