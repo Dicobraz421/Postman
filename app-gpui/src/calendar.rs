@@ -39,6 +39,7 @@ use crate::chrome::icon;
 use crate::roles::{Look, Pm};
 
 mod opened;
+mod reminders;
 mod subscriptions;
 pub(crate) use subscriptions::name_of_key;
 
@@ -325,6 +326,8 @@ pub(crate) enum CalendarAction {
     },
     /// Поиск сотрудника в справочнике сервера (поле «Открыть календарь коллеги»).
     FindPeople(String),
+    /// Напоминание о встрече (T2-08б): тост, при неактивном окне — и уведомление Windows.
+    Remind(Box<Event>),
 }
 
 /// Что спрашиваем о своей встрече строкой у подробностей (S7-07б).
@@ -365,6 +368,8 @@ pub(crate) struct CalendarView {
     opened_ticket: Option<u64>,
     picker: opened::Picker,
     pick_input: Entity<InputState>,
+    /// Мои события на сегодня и завтра для напоминаний (T2-08б).
+    upcoming: reminders::Upcoming,
     tz: TimeZone,
     /// Вид и опорная дата: по ней — дни вида (`cal_model::days`).
     pub(crate) view: View,
@@ -560,6 +565,7 @@ impl CalendarView {
             opened_ticket: None,
             picker: opened::Picker::default(),
             pick_input,
+            upcoming: reminders::Upcoming::default(),
             _subscriptions: vec![on_share, on_search, on_sub, on_prefs, on_pick],
         }
     }
@@ -613,6 +619,7 @@ impl CalendarView {
         self.month = self.anchor.first_of_month();
         self.subs_go_live(cx);
         self.opened_ticket = None;
+        self.upcoming_reset();
         cx.notify();
     }
 
@@ -745,6 +752,8 @@ impl CalendarView {
 
     pub(crate) fn on_sync(&mut self, ev: &SyncEvent, cx: &mut Context<Self>) {
         match ev {
+            // Ближайшие события для напоминаний — свой запрос, неделю не трогают.
+            SyncEvent::EventsLoaded { from, to, events, account, .. } if self.upcoming_loaded((*from, *to), account, events) => {}
             // Ждём другой период — ответ прошлого не показывать: он снял бы ожидание, и ответ нужного периода потерялся бы.
             SyncEvent::EventsLoaded { from, to, events, colleagues, account }
                 if self.pending == Some((*from, *to)) || (self.pending.is_none() && self.parts_range == Some((*from, *to))) =>
@@ -3239,6 +3248,10 @@ impl crate::Mailer {
                 self.find_people(text, cx);
                 return;
             }
+            CalendarAction::Remind(event) => {
+                self.meeting_reminder(event, cx);
+                return;
+            }
         };
         let respond = matches!(action, CalendarAction::Respond { .. });
         let cancel = matches!(action, CalendarAction::Cancel { .. });
@@ -3249,6 +3262,31 @@ impl crate::Mailer {
                 (_, true) => c.cancel_refused(cx),
                 _ => c.not_sent(cx),
             });
+        }
+    }
+
+    /// Напоминание о встрече: тост «Через N мин: тема — время, место»; окно не активно — ещё и уведомление Windows (как
+    /// у задач, решение 7).
+    fn meeting_reminder(&mut self, e: &Event, cx: &mut Context<Self>) {
+        let tz = crate::prefs::get(cx).calendar.zone();
+        let mins = ((e.span.start - jiff::Timestamp::now().as_second()) / 60).max(0);
+        let place = if e.location.trim().is_empty() { String::new() } else { format!(", {}", e.location.trim()) };
+        let when = format!("{}{place}", hm(e.span.start, &tz));
+        let text = if mins > 0 {
+            tr!("cal-remind-soon", n = mins, title = e.title.clone(), when = when.clone())
+        } else {
+            tr!("cal-remind-now", title = e.title.clone(), when = when.clone())
+        };
+        self.toasts.update(cx, |t, cx| t.push(Toast::Info, text.clone(), cx));
+        let active = self.window.update(cx, |_, window, _| crate::screens::window_active(window)).unwrap_or(true);
+        if !active {
+            let (head, body) = (tr!("cal-remind-title"), text);
+            cx.background_spawn(async move {
+                if let Err(e) = crate::screens::notify(&head, &body) {
+                    tracing::warn!("meeting reminder notification: {e}");
+                }
+            })
+            .detach();
         }
     }
 

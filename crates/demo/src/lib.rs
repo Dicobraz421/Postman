@@ -927,6 +927,7 @@ pub mod calendar {
             ],
         };
         Event {
+            alert_secs: Some(15 * 60),
             id: id.into(),
             uid: format!("{id}@corp.example"),
             calendar_ids: vec!["work".into()],

@@ -401,7 +401,7 @@ impl SettingsView {
             .child(line(tr!("settings-cal-subscriptions"), None, Some(tr!("settings-cal-subscriptions-hint")), seg_group(subscriptions, l), l))
             .child(line(
                 tr!("settings-cal-reminder"),
-                Some(stored(l)),
+                None,
                 Some(tr!("settings-cal-reminder-hint")),
                 self.cal_select(Menu::Reminder, reminder_text(c.reminder), 120., reminders, l, cx),
                 l,

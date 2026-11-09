@@ -13,6 +13,8 @@
               <t:ItemId Id="AAMkADmeet" ChangeKey="DwAAABYAAAA7"/>
               <t:ParentFolderId Id="AAMkADcal" ChangeKey="AQAAAA=="/>
               <t:Subject>Планёрка &amp; отчёт</t:Subject>
+              <t:ReminderIsSet>true</t:ReminderIsSet>
+              <t:ReminderMinutesBeforeStart>15</t:ReminderMinutesBeforeStart>
               <t:Body BodyType="Text">Повестка:&#13;
 1. Итоги недели&#13;
 </t:Body>

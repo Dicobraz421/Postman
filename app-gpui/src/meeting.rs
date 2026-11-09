@@ -2784,6 +2784,7 @@ mod tests {
             status: Partstat::Accepted,
         };
         let e = CalEvent {
+            alert_secs: None,
             id: "e1".into(),
             uid: "uid-1".into(),
             calendar_ids: Vec::new(),

@@ -485,6 +485,11 @@ pub(crate) fn item(el: &El) -> Option<CalendarItem> {
         keywords,
         sequence: el.text_at(&["AppointmentSequenceNumber"]).and_then(|s| s.parse().ok()).unwrap_or(0),
         owner: None,
+        alert_secs: el
+            .bool_at(&["ReminderIsSet"])
+            .then(|| el.text_at(&["ReminderMinutesBeforeStart"]).and_then(|m| m.parse::<i64>().ok()))
+            .flatten()
+            .map(|m| m * 60),
     };
     let modified = el
         .child("ModifiedOccurrences")
@@ -779,6 +784,8 @@ impl Reply {
 /// воркере).
 const PROPS: &[&str] = &[
     "item:ParentFolderId",
+    "item:ReminderIsSet",
+    "item:ReminderMinutesBeforeStart",
     "item:Subject",
     "item:Body",
     "item:Categories",
@@ -1127,6 +1134,7 @@ mod tests {
         assert_eq!(e.title, "Планёрка & отчёт");
         assert_eq!(e.description, "Повестка:\n1. Итоги недели");
         assert_eq!(e.location, "Переговорная 3");
+        assert_eq!(e.alert_secs, Some(900), "напоминание за 15 мин (T2-08б)");
         assert_eq!(e.uid, "040000008200E00074C5B7101A82E00800000000A1B2C3D4");
         assert_eq!(e.calendar_ids, ["AAMkADcal"]);
         assert_eq!(e.span, Span::new(ts("2026-10-20T07:00:00Z"), ts("2026-10-20T08:00:00Z")));
