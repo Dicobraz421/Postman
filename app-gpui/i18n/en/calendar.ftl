@@ -106,6 +106,8 @@ cal-waits-answer = awaiting reply
 # Event details.
 cal-details-empty = Pick a meeting to see its details here.
 cal-details-recurring = Recurring event
+cal-join = Join
+cal-join-tip = Open the video meeting link in the browser
 cal-chip-organizer = You organize
 cal-chip-waits = Awaiting reply
 cal-chip-tentative = Tentative

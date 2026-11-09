@@ -106,6 +106,8 @@ cal-waits-answer = ждёт ответа
 # Подробности события.
 cal-details-empty = Выберите встречу — подробности появятся здесь.
 cal-details-recurring = Повторяющееся событие
+cal-join = Подключиться
+cal-join-tip = Открыть ссылку видеовстречи в браузере
 cal-chip-organizer = Вы организатор
 cal-chip-waits = Ждёт ответа
 cal-chip-tentative = Под вопросом

@@ -25,6 +25,18 @@ pub fn blocks(bs: &[Block], key: &str, images: &Images, col: Pixels, cx: &mut Ap
     blocks_marked(bs, key, images, &Hits::new(&[], 0, 0), col, cx)
 }
 
+/// Простой текст с нажимаемыми ссылками (T2-01): место и описание встречи. Строки — переносами одного абзаца.
+pub fn linked_text(s: &str, key: &str, cx: &App) -> AnyElement {
+    let mut items = Vec::new();
+    for (n, line) in s.lines().enumerate() {
+        if n > 0 {
+            items.push(Inline::LineBreak);
+        }
+        items.extend(postman_ir::autolink(line));
+    }
+    text(&items, key, &Hits::new(&[], 0, 0), &look(cx))
+}
+
 /// Совпадения поиска при отрисовке письма (S5-10, S5-14): слова, номер текущего и счёт по порядку чтения — тот же
 /// порядок, что видит пользователь (тема, затем текст сверху вниз). Число совпадений — [`Hits::seen`] после отрисовки.
 pub struct Hits<'a> {

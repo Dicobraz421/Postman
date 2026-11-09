@@ -101,6 +101,7 @@ pub(crate) mod g {
     pub(crate) const SEND: char = '\u{E724}';
     pub(crate) const HIDDEN: char = '\u{ED1A}';
     pub(crate) const INFO: char = '\u{E946}';
+    pub(crate) const VIDEO: char = '\u{E714}';
 }
 
 /// Короткое имя дня недели: 0 — понедельник.
@@ -2681,6 +2682,8 @@ impl CalendarView {
                 .child(icon(glyph, 16.).mt(px(1.)).text_color(l.text2()))
                 .child(div().flex_1().min_w_0().child(main))
         };
+        let join = model::meeting_link(e);
+        let show_place = !e.location.trim().is_empty() && !join.as_deref().is_some_and(|j| model::place_is_link(e, j));
         let my_events: Vec<Event> = self.events.iter().filter(|e| e.owner.is_none()).cloned().collect();
         let conflicts = postman_core::invite::conflicts(e.span, &e.uid, &my_events, me);
         let conflict_text = conflicts.first().map(|c| {
@@ -2705,7 +2708,27 @@ impl CalendarView {
                     .into_any_element(),
             ))
             .when(e.recurring, |d| d.child(row(g::REPEAT, div().child(tr!("cal-details-recurring")).into_any_element())))
-            .when(!e.location.trim().is_empty(), |d| d.child(row(g::PIN, div().child(e.location.clone()).into_any_element())))
+            .when(show_place, |d| d.child(row(g::PIN, crate::ir_view::linked_text(e.location.trim(), "event-place", cx))))
+            .when_some(join, |d, link| {
+                let open = link.clone();
+                d.child(
+                    div()
+                        .flex()
+                        .gap(px(10.))
+                        .items_center()
+                        .child(icon(g::VIDEO, 16.).text_color(l.text2()))
+                        .child(div().flex_1().min_w_0().truncate().child(crate::ir_view::linked_text(&link, "event-link", cx)))
+                        .child(
+                            crate::buttons::secondary("event-join", l)
+                                .h(px(24.))
+                                .px(px(8.))
+                                .text_size(px(12.))
+                                .child(tr!("cal-join"))
+                                .tooltip(move |window, cx| crate::screens::tip(tr!("cal-join-tip"), window, cx))
+                                .on_click(move |_, _, cx| cx.open_url(&open)),
+                        ),
+                )
+            })
             .when_some(conflict_text, |d, t| {
                 d.child(
                     div()
@@ -2815,7 +2838,11 @@ impl CalendarView {
                 .child(div().flex().flex_col().children(list))
             })
             .when(!e.description.trim().is_empty(), |d| {
-                d.child(div().pt(px(8.)).border_t_1().border_color(l.border()).line_height(px(19.)).child(e.description.trim().to_string()))
+                d.child(div().pt(px(8.)).border_t_1().border_color(l.border()).line_height(px(19.)).child(crate::ir_view::linked_text(
+                    e.description.trim(),
+                    "event-desc",
+                    cx,
+                )))
             })
             .when(!write.is_empty() && has_people, |d| {
                 d.child(div().flex_1()).child(
@@ -3193,6 +3220,8 @@ pub(crate) mod scenes {
         Scene::new("event-organizer", own, event_ready),
         // «Отменить встречу» у своей повторяющейся встречи: строка «Только эту / Всю серию / Не отменять».
         Scene::new("event-cancel", own, event_ready),
+        // Онлайн-встреча (T2-01): строка видеовстречи с «Подключиться», ссылки в описании нажимаются.
+        Scene::new("event-online", online, event_ready),
         // Календари коллег (S5-22): события коллег цветом их календаря и с именем владельца, слева «Календари коллег»;
         // открыто событие из календаря коллеги.
         Scene::new("calendar-colleagues", colleagues, colleagues_ready),
@@ -3260,6 +3289,12 @@ pub(crate) mod scenes {
 
     fn event(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
         m.cal.update(cx, |c, cx| c.select_busiest(cx));
+        m.set_section(Section::Calendar, cx);
+        Ok(())
+    }
+
+    fn online(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.cal.update(cx, |c, cx| c.select_titled("Созвон с заказчиком", cx)); // i18n-ok: тема в демо-данных
         m.set_section(Section::Calendar, cx);
         Ok(())
     }

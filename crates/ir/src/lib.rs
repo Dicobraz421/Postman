@@ -5,6 +5,7 @@
 //! исходящий HTML ([`markdown_to_html`]). Крейт не делает ввода-вывода и
 //! предназначен для запуска внутри изолированного воркера.
 
+mod autolink;
 mod history;
 mod html;
 mod link;
@@ -12,6 +13,7 @@ mod markdown;
 mod plain;
 mod style;
 
+pub use autolink::{autolink, find_links};
 pub use html::from_html;
 pub use link::{LinkCheck, check_link};
 pub use markdown::{markdown_to_html, quote, to_markdown};
