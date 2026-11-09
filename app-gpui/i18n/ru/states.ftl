@@ -31,3 +31,5 @@ notices-empty = Уведомлений нет.
 notices-log = Подробности ошибок — в журнале Windows «Приложение» (источник Postman).
 notices-left = { $n } с
 notices-more = +{ $n } ещё
+newmail-title = Новых писем: { $n }
+newmail-more = и ещё { $n }

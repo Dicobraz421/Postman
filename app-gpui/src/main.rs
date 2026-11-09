@@ -53,6 +53,7 @@ mod mailer;
 mod meeting;
 mod menu;
 mod migration;
+mod newmail;
 mod notices;
 mod outline;
 mod palette;

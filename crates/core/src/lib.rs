@@ -25,6 +25,7 @@ pub mod mailtask;
 pub mod marks;
 pub mod migrate;
 pub mod model;
+pub mod newmail;
 pub mod palette;
 pub mod prefs;
 pub mod query;

@@ -48,6 +48,15 @@ const ICON: &[u8] = include_bytes!("../../res/postman.ico");
 /// AUMID без ярлыка в «Пуске» (`Pets.Postman`): имя и значок «Ленты» (T1-01; файл — в каталоге данных,
 /// переписывается, если отличается от вшитого).
 pub fn notify(title: &str, body: &str) -> Result<(), String> {
+    show(title, body, toast::Sound::Default)
+}
+
+/// Уведомление о новом письме (T2-10): звук «Новое письмо» или молча («Настройки → Общие → Звук»).
+pub fn notify_with(title: &str, body: &str, sound: bool) -> Result<(), String> {
+    show(title, body, if sound { toast::Sound::Mail } else { toast::Sound::Silent })
+}
+
+fn show(title: &str, body: &str, sound: toast::Sound) -> Result<(), String> {
     let icon = crate::data_dir().join("postman.ico");
     if std::fs::read(&icon).ok().as_deref() != Some(ICON) {
         // Без файла тост выйдет со значком по умолчанию — не повод его не показывать.
@@ -56,7 +65,7 @@ pub fn notify(title: &str, body: &str) -> Result<(), String> {
         }
     }
     let sender = toast::Sender { aumid: "Pets.Postman", name: APP, icon: Some(&icon) };
-    toast::show(&sender, title, body).map_err(|e| e.to_string())
+    toast::show_with(&sender, title, body, sound).map_err(|e| e.to_string())
 }
 
 /// Политика организации (`Software\Policies\Pets\Postman`, сначала HKLM, затем HKCU): строковое значение.

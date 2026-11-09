@@ -76,6 +76,8 @@ pub(crate) struct Mailer {
     pub(crate) backend: Backend,
     /// Живой ящик: статус синхронизации, строка входа, поиск на сервере (`live.rs`).
     pub(crate) live: crate::live::Live,
+    /// Уведомления о новых письмах (T2-10).
+    pub(crate) newmail: crate::newmail::NewMail,
     /// Письма: вкладки и ответ в области чтения (S5-06б).
     pub(crate) compose: crate::compose::Composers,
     /// Окно экрана: полям ввода нового письма нужно окно, а письмо открывается и из событий синхронизации.
@@ -354,6 +356,7 @@ impl Mailer {
             offline_ticking: false,
             backend: Backend::Demo,
             live: Default::default(),
+            newmail: Default::default(),
             compose,
             window: window.window_handle(),
             actions: Default::default(),
