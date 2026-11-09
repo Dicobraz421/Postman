@@ -231,7 +231,8 @@ impl ReadingPane {
             open_dir: data_dir().join("open"),
             retired: Vec::new(),
             feed: None,
-            feed_on: false,
+            // Лента — вид беседы по умолчанию (DESIGN «Беседы», макет `ThreadChat`; T2-06): «Беседа (N)» её выключает.
+            feed_on: true,
             quotes: false,
             mine: Vec::new(),
             scheduled: Vec::new(),
