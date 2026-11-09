@@ -64,3 +64,4 @@ lifecycle-settings-to-archive = В «Архив»
 lifecycle-settings-to-trash = В «Удалённые»
 lifecycle-settings-remind = Напоминания
 lifecycle-settings-remind-hint = «Напомнить…» убирает письмо в «Архив» и возвращает наверх «Входящих» непрочитанным в срок.
+lifecycle-settings-remind-off = Выключено: в срок — только напоминание тостом, письмо остаётся, где лежит.
