@@ -13,7 +13,6 @@ use postman_core::prefs::{Accent, FONT_SIZES, KEYTIPS_DELAYS};
 
 use crate::chrome::icon;
 use crate::roles::Look;
-use crate::settings_general::stored_row;
 use crate::settings_tab::{SettingsView, group, row, seg, seg_group, toggle};
 
 impl SettingsView {
@@ -151,15 +150,6 @@ impl SettingsView {
                 tr!("settings-preview"),
                 Some(tr!(if compact { "settings-compact-off" } else { "settings-preview-hint" })),
                 flag("settings-preview", p.look.preview, |l| l.preview = !l.preview),
-                l,
-            ))
-            .child(stored_row(
-                tr!("settings-animations"),
-                Some(tr!("settings-animations-hint")),
-                toggle("settings-animations", p.look.animations, l).on_click(cx.listener(|_, _, _, cx| {
-                    crate::prefs::update(cx, |p| p.look.animations = !p.look.animations);
-                    cx.notify();
-                })),
                 l,
             ))
             .child(group(tr!("settings-keytips-group"), l))

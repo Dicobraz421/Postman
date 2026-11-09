@@ -222,8 +222,6 @@ pub struct Look {
     /// Аватары и превью текста в строке письма (в компактной плотности — нет всегда).
     pub avatars: bool,
     pub preview: bool,
-    /// Плавные переходы (выключены в Windows — выключены и здесь).
-    pub animations: bool,
     /// Задержка KeyTips, мс (`KEYTIPS_DELAYS`).
     pub keytips_delay: u16,
     /// Акцентный цвет.
@@ -232,7 +230,7 @@ pub struct Look {
 
 impl Default for Look {
     fn default() -> Self {
-        Self { font_size: None, avatars: true, preview: true, animations: true, keytips_delay: 400, accent: Accent::System }
+        Self { font_size: None, avatars: true, preview: true, keytips_delay: 400, accent: Accent::System }
     }
 }
 
