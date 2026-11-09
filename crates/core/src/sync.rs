@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use postman_calendar::{Busy, Invitation, Partstat};
+use postman_calendar::{Busy, BusyNote, Invitation, Partstat};
 use postman_compose::{Address, Draft};
 
 use crate::backend::BoxFuture;
@@ -764,6 +764,8 @@ pub enum Event {
         ticket: u64,
         me: Vec<Busy>,
         people: Vec<(String, Option<Vec<Busy>>)>,
+        /// Тема и место интервалов по адресам, где сервер их дал (T2-02б; сейчас — только Exchange).
+        notes: Vec<(String, Vec<BusyNote>)>,
         error: Option<String>,
     },
     MeetingCreated {

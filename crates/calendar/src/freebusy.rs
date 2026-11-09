@@ -20,6 +20,15 @@ pub struct Busy {
     pub kind: BusyKind,
 }
 
+/// Тема и место интервала занятости, если сервер их дал (T2-02б): Exchange `GetUserAvailability` вид `Detailed` —
+/// когда владелец календаря или организация разрешают «занятость, тема, место». Частное событие — без темы.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BusyNote {
+    pub span: Span,
+    pub subject: String,
+    pub location: String,
+}
+
 /// Состояние ячейки сетки помощника (по убыванию важности для глаза).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Cell {

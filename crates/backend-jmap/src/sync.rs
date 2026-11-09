@@ -1047,11 +1047,12 @@ async fn handle(
         }
         Command::Availability { ticket, emails, from, to, .. } => {
             notify(match schedule::availability(client, &emails, from, to).await {
-                Ok((me, people)) => Event::Availability { ticket, me, people, error: None },
+                Ok((me, people)) => Event::Availability { ticket, me, people, notes: Vec::new(), error: None },
                 Err(e) => Event::Availability {
                     ticket,
                     me: Vec::new(),
                     people: emails.into_iter().map(|e| (e, None)).collect(),
+                    notes: Vec::new(),
                     error: Some(e.to_string()),
                 },
             });

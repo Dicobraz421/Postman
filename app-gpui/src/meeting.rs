@@ -1217,7 +1217,7 @@ impl MeetingView {
     /// Итог по тикету: занятость; встреча создана — экран закроет вкладку и покажет тост.
     fn on_sync(&mut self, ev: &Event, cx: &mut Context<Self>) -> Option<Created> {
         match ev {
-            Event::Availability { ticket, me, people, error } if self.busy.ticket == Some(*ticket) => {
+            Event::Availability { ticket, me, people, error, .. } if self.busy.ticket == Some(*ticket) => {
                 self.busy.ticket = None;
                 self.busy.me = Some(me.clone());
                 self.busy.people = people.iter().map(|(e, b)| (e.to_lowercase(), b.clone())).collect();
