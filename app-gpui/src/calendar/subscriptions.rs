@@ -80,6 +80,7 @@ fn dir(live: bool) -> PathBuf {
 
 fn event_of(sub: &Sub, e: IcsEvent) -> Event {
     Event {
+        time_zone: None,
         private: false,
         recurrence: None,
         alert_secs: None,

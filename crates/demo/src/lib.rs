@@ -927,6 +927,7 @@ pub mod calendar {
             ],
         };
         Event {
+            time_zone: None,
             private: false,
             recurrence: None,
             alert_secs: Some(15 * 60),
@@ -994,6 +995,10 @@ pub mod calendar {
             },
         ]);
         v.push(results);
+        // Организатор в другом поясе (T2-17): «У организатора: 16:00–18:00 · Yekaterinburg (UTC+5)».
+        if let Some(presale) = v.iter_mut().find(|e| e.uid == "e6@corp.example") {
+            presale.time_zone = Some("Asia/Yekaterinburg".into());
+        }
         // Онлайн-встреча (T2-01): ссылки в описании, как их отдаёт Exchange текстом, — «Подключиться» и нажимаемые ссылки.
         if let Some(call) = v.iter_mut().find(|e| e.uid == "e2@corp.example") {
             call.description = "Повестка: статус внедрения, план на квартал.\nМатериалы: https://wiki.corp.example/projects/vector\n\nПрисоединиться к собранию Microsoft Teams<https://teams.microsoft.com/l/meetup-join/19%3ameeting_demo%40thread.v2/0>".into(); // i18n-ok: демо-данные

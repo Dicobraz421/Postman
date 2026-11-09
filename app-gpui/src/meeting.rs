@@ -2932,6 +2932,7 @@ mod tests {
             status: Partstat::Accepted,
         };
         let e = CalEvent {
+            time_zone: None,
             private: false,
             recurrence: None,
             alert_secs: None,

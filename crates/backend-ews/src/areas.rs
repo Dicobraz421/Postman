@@ -749,6 +749,7 @@ mod tests {
 
     fn ev(uid: &str, start: i64) -> Event {
         Event {
+            time_zone: None,
             private: false,
             recurrence: None,
             alert_secs: None,

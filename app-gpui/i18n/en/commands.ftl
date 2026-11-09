@@ -86,6 +86,7 @@ cmd-calendar-view-day = Day view
 cmd-calendar-view-work-week = Work week view
 cmd-calendar-view-week = Week view
 cmd-calendar-view-month = Month view
+cmd-calendar-write-participants = Email meeting participants
 cmd-meeting-send = Send invitations
 cmd-meeting-close = Close the meeting tab
 cmd-meeting-discard = Discard the meeting draft

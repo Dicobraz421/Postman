@@ -542,6 +542,7 @@ pub(crate) fn item(el: &El) -> Option<CalendarItem> {
     keywords.sort();
     keywords.dedup();
     let event = Event {
+        time_zone: None,
         private: false,
         recurrence: None,
         id: id.id.clone(),

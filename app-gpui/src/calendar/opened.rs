@@ -87,6 +87,7 @@ fn title(kind: BusyKind) -> String {
 fn event_of(o: &Opened, b: &Busy) -> Event {
     let note = o.notes.iter().find(|n| n.span == b.span);
     Event {
+        time_zone: None,
         private: false,
         recurrence: None,
         alert_secs: None,

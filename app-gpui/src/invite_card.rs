@@ -426,6 +426,27 @@ fn answer_buttons(card: &Card, side: bool, l: &Look, cx: &mut Context<ReadingPan
     .collect()
 }
 
+/// «Подключиться» к видеовстрече (T2-17, макет «Приглашение»): ссылка Teams/Zoom/… из места или описания.
+fn join_link(e: &Event, id: &'static str, glyph: f32, l: &Look) -> Option<Stateful<Div>> {
+    let link = crate::cal_model::meeting_link(e)?;
+    let open = link.clone();
+    Some(
+        div()
+            .id(id)
+            .children(crate::screens::spot(id))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .text_color(l.accent_text())
+            .cursor_pointer()
+            .hover(|d| d.underline())
+            .child(icon(g::VIDEO, glyph))
+            .child(tr!("cal-join"))
+            .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(link.clone()).build(window, cx))
+            .on_click(move |_, _, cx| cx.open_url(&open)),
+    )
+}
+
 /// Значок ответа в круге (DESIGN «Цвет», кнопки статуса): ✓ принять, ? под вопросом, ✕ отклонить.
 pub(crate) fn status_mark(s: Partstat, ink: Hsla) -> Div {
     let mark = div().size(px(16.)).flex_none().flex().items_center().justify_center().rounded_full().border_1().border_color(ink).text_color(ink);
@@ -608,6 +629,7 @@ pub(crate) fn render(card: &Card, me: Option<&str>, cx: &mut Context<ReadingPane
         .text_size(px(12.))
         .text_color(l.text2())
         .children(place)
+        .children(join_link(e, "invite-join", 12., &l))
         .child(div().flex().items_center().gap(px(8.)).child(icon(g::PERSON, 12.)).child(tr!("invite-organizer", name = p.organizer.clone())))
         .child(people);
     let updated_banner = updated_banner(&p.changes, &l);
@@ -699,6 +721,7 @@ pub(crate) fn render_side(card: &Card, me: Option<&str>, cx: &mut Context<Readin
                 .child(length_chip(e.span.len(), &l)),
         )
         .when(!e.location.trim().is_empty(), |d| d.child(line(g::PIN).child(div().truncate().child(e.location.clone()))))
+        .children(join_link(e, "invite-side-join", 14., &l).map(|j| div().h(px(20.)).flex().items_center().child(j)))
         .child(line(g::PERSON).child(div().truncate().child(tr!("invite-organizer", name = p.organizer.clone()))))
         .child(
             line(g::PEOPLE)
