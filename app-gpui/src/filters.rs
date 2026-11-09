@@ -873,6 +873,8 @@ pub(crate) mod scenes {
         // Быстрые фильтры (S5-03): закладки «Угрозы» и «Срок» включены (ИЛИ), панель по наведению открыта,
         // группы по датам.
         Scene::new("quick", quick, quick_ready),
+        // Вердикт сервера (T2-16): «Угрозы», первое письмо открыто — полоса «Письмо помечено как фишинг».
+        Scene::new("reading-threat", threat, threat_ready).input(THREAT),
     ];
 
     fn panel(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
@@ -914,6 +916,38 @@ pub(crate) mod scenes {
         // Панель закладок — как по наведению.
         m.filters.update(cx, |f, cx| f.set(cx, |f| f.quick_open = true));
         Ok(())
+    }
+
+    fn threat(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.set_section(Section::Mail, cx);
+        let Some(id) = crate::live::inbox(&m.folders.read(cx).mailboxes) else { return Err("no inbox".into()) };
+        m.open_mailbox(id, cx);
+        m.filters.update(cx, |f, cx| {
+            f.set(cx, |f| f.panel = false);
+            f.change(cx, |q| {
+                q.scope = super::Where::Folder;
+                q.criteria.clear_panel();
+                q.criteria.toggle_quick(Quick::Threats);
+            });
+        });
+        Ok(())
+    }
+
+    /// Список «Угроз» посчитан.
+    fn threats_listed(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let list = m.list.read(cx);
+        list.view.is_some() && !list.computing && list.query.criteria.quick.len() == 1 && screens::rows_loaded(list) && list.count > 0
+    }
+
+    fn open_first(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.list.update(cx, |l, cx| l.select(0, cx));
+        Ok(())
+    }
+
+    const THREAT: &[screens::Input] = &[screens::Input::Until(threats_listed), screens::Input::Run(open_first)];
+
+    fn threat_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        screens::reading(m, cx).is_some_and(|r| r.doc.is_some() && postman_core::filters::is_threat(&r.row.keywords))
     }
 
     fn quick_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {

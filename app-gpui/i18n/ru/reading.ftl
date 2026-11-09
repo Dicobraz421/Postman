@@ -30,6 +30,7 @@ reading-invite-sending = Отправка ответа…
 reading-invite-mine = Ваш ответ: { $status }
 reading-invite-sent-server = Ответ на приглашение отправлен через календарь.
 reading-invite-sent-mail = Ответ отправлен организатору.
+reading-threat = Письмо помечено как фишинг. Не открывайте ссылки и вложения, если не уверены в отправителе.
 reading-invite-sent-imported = Ответ отправлен организатору, встреча добавлена в календарь.
 reading-invite-failed = Ответ на приглашение не отправлен: { $error }
 reading-partstat = { $s ->
