@@ -32,6 +32,8 @@ pub struct Meeting {
     /// Моё напоминание до начала, с (T2-08б, «Настройки → Календарь → Напоминание по умолчанию»): `Some(0)` — без
     /// напоминания, `None` — не трогать (как решит сервер).
     pub reminder_secs: Option<i64>,
+    /// Повтор серии — RRULE (T2-13, «Повтор ▾» вкладки встречи); `None` — одна встреча.
+    pub recurrence: Option<String>,
 }
 
 impl Meeting {
@@ -44,6 +46,7 @@ impl Meeting {
     /// Событие для `CalendarEvent/set`; `attendees` — из [`Meeting::attendee_refs`].
     pub fn new_event<'a>(&'a self, calendar_id: &'a str, organizer: (&'a str, &'a str), attendees: &'a [(&'a str, &'a str, bool)]) -> NewEvent<'a> {
         NewEvent {
+            recurrence: self.recurrence.as_deref(),
             uid: &self.uid,
             calendar_id,
             title: &self.title,
@@ -138,6 +141,7 @@ mod tests {
     #[test]
     fn meeting_becomes_an_invitation() {
         let m = Meeting {
+            recurrence: None,
             reminder_secs: None,
             uid: "u1@postman".into(),
             title: "Планёрка".into(),

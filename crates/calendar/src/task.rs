@@ -793,39 +793,9 @@ pub(crate) fn cn(name: &str) -> String {
     if n.is_empty() { String::new() } else { format!(";CN=\"{n}\"") }
 }
 
-/// `recurrenceRule` JSCalendar → RRULE (то подмножество, что пишет Postman, S6-07: частота, интервал, дни недели,
-/// число месяца, месяцы, число повторов, до даты).
+/// `recurrenceRule` JSCalendar → RRULE ([`crate::rrule::to_rrule`]).
 fn rrule(r: &Value) -> Option<String> {
-    let freq = r["frequency"].as_str()?.to_ascii_uppercase();
-    let mut parts = vec![format!("FREQ={freq}")];
-    if let Some(i) = r["interval"].as_u64().filter(|i| *i > 1) {
-        parts.push(format!("INTERVAL={i}"));
-    }
-    if let Some(days) = r["byDay"].as_array().filter(|d| !d.is_empty()) {
-        let list: Vec<String> = days
-            .iter()
-            .filter_map(|d| {
-                let day = d["day"].as_str()?.to_ascii_uppercase();
-                Some(match d["nthOfPeriod"].as_i64() {
-                    Some(n) => format!("{n}{day}"),
-                    None => day,
-                })
-            })
-            .collect();
-        parts.push(format!("BYDAY={}", list.join(",")));
-    }
-    for (key, name) in [("byMonthDay", "BYMONTHDAY"), ("byMonth", "BYMONTH"), ("bySetPosition", "BYSETPOS")] {
-        if let Some(a) = r[key].as_array().filter(|a| !a.is_empty()) {
-            parts.push(format!("{name}={}", a.iter().map(value_text).collect::<Vec<_>>().join(",")));
-        }
-    }
-    if let Some(c) = r["count"].as_u64() {
-        parts.push(format!("COUNT={c}"));
-    }
-    if let Some(u) = r["until"].as_str().and_then(|u| u.parse::<DateTime>().ok()) {
-        parts.push(format!("UNTIL={}", u.strftime("%Y%m%dT%H%M%S")));
-    }
-    Some(parts.join(";"))
+    crate::rrule::to_rrule(r)
 }
 
 #[cfg(test)]

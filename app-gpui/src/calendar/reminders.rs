@@ -95,6 +95,7 @@ mod tests {
 
     fn ev(start: i64, alert: Option<i64>) -> Event {
         Event {
+            recurrence: None,
             id: "e".into(),
             uid: "u".into(),
             calendar_ids: Vec::new(),

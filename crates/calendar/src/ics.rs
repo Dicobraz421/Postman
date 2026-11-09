@@ -62,6 +62,13 @@ impl NewEvent<'_> {
             "SEQUENCE:0".into(),
             format!("SUMMARY:{}", text(self.title)),
         ];
+        // Повтор (T2-13): DTSTART — в UTC, а дни правила — по местному времени встречи; встреча около полуночи в UTC
+        // приходится на другой день — дни недели и числа месяца сдвигаются на эту разницу.
+        if let Some(rule) = self.recurrence {
+            let local = self.start.date();
+            let utc = jiff::Timestamp::from_second(start).map(|t| t.to_zoned(TimeZone::UTC).date()).unwrap_or(local);
+            l.push(format!("RRULE:{}", crate::rrule::shift_days(rule, (utc - local).get_days())));
+        }
         if !self.description.is_empty() {
             l.push(format!("DESCRIPTION:{}", text(self.description)));
         }
@@ -96,7 +103,8 @@ impl NewEvent<'_> {
 /// ответ — `NEEDS-ACTION`, у всех `SCHEDULE-AGENT=CLIENT` (сервер ничего не рассылает). Повторяющуюся встречу модель
 /// события целиком не держит (только признак) — её не копируем: `None`, приглашение остаётся карточкой в письме.
 pub fn invite_copy(e: &Event, me: &str, now: i64) -> Option<String> {
-    if e.recurring || e.uid.is_empty() {
+    // Серия без известного правила (T2-13) — не копируем: вышла бы одна встреча вместо серии.
+    if (e.recurring && e.recurrence.is_none()) || e.uid.is_empty() {
         return None;
     }
     let mut l = vec![
@@ -111,6 +119,9 @@ pub fn invite_copy(e: &Event, me: &str, now: i64) -> Option<String> {
         format!("SEQUENCE:{}", e.sequence),
         format!("SUMMARY:{}", text(&e.title)),
     ];
+    if let Some(rule) = &e.recurrence {
+        l.push(format!("RRULE:{rule}"));
+    }
     if !e.description.is_empty() {
         l.push(format!("DESCRIPTION:{}", text(&e.description)));
     }
@@ -525,6 +536,7 @@ mod tests {
     fn meeting_is_a_vevent_scheduled_by_the_server() {
         let attendees = [("User 2", "user2@itt.test", false), ("Переговорная", "room@itt.test", true)];
         let e = NewEvent {
+            recurrence: None,
             alert_secs: None,
             uid: "u1@postman",
             calendar_id: "",
@@ -551,6 +563,11 @@ mod tests {
         let ics = remind.to_ics(0).unwrap();
         assert!(ics.contains("BEGIN:VALARM\r\nACTION:DISPLAY\r\n"), "{ics}");
         assert!(ics.contains("TRIGGER:-PT10M\r\nEND:VALARM\r\nEND:VEVENT"), "{ics}");
+        // Повтор (T2-13): RRULE; встреча в 01:00 по Москве — в UTC это вторник 22:00 накануне: дни сдвигаются.
+        let weekly = NewEvent { recurrence: Some("FREQ=WEEKLY;BYDAY=WE"), ..e };
+        assert!(weekly.to_ics(0).unwrap().contains("RRULE:FREQ=WEEKLY;BYDAY=WE\r\n"));
+        let night = NewEvent { start: "2026-10-21T01:00:00".parse().unwrap(), recurrence: Some("FREQ=WEEKLY;BYDAY=WE"), ..e };
+        assert!(night.to_ics(0).unwrap().contains("RRULE:FREQ=WEEKLY;BYDAY=TU\r\n"));
         let alone = NewEvent { attendees: &[], ..e };
         assert!(!alone.to_ics(0).unwrap().contains("ORGANIZER"));
     }
@@ -571,7 +588,9 @@ mod tests {
         assert!(ics.contains("DTSTART:20261021T080000Z\r\n"));
         let mut series = e;
         series.recurring = true;
-        assert!(invite_copy(&series, "me@corp.example", 0).is_none());
+        assert!(invite_copy(&series, "me@corp.example", 0).is_none(), "правило не известно — не копируем");
+        series.recurrence = Some("FREQ=WEEKLY;BYDAY=WE".into());
+        assert!(invite_copy(&series, "me@corp.example", 0).unwrap().contains("RRULE:FREQ=WEEKLY;BYDAY=WE\r\n"));
     }
 
     #[test]
@@ -612,6 +631,7 @@ mod tests {
     }
     fn meeting(attendees: &'static [(&'static str, &'static str, bool)]) -> NewEvent<'static> {
         NewEvent {
+            recurrence: None,
             alert_secs: None,
             uid: "s1",
             calendar_id: "",

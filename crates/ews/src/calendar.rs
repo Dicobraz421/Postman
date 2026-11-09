@@ -339,6 +339,78 @@ impl Recurrence {
         format!("<t:Recurrence>{pattern}{range}</t:Recurrence>")
     }
 
+    /// RRULE модели Postman → серия EWS (T2-13); `start` — дата первой встречи в её поясе. Правило, которого EWS не
+    /// выражает (несколько чисел месяца, часы), — `None`.
+    pub fn from_rrule(rule: &str, start: Date) -> Option<Recurrence> {
+        let mut parts = std::collections::HashMap::new();
+        for p in rule.trim().trim_start_matches("RRULE:").split(';').filter(|p| !p.is_empty()) {
+            let (k, v) = p.split_once('=')?;
+            parts.insert(k.trim().to_ascii_uppercase(), v.trim().to_ascii_uppercase());
+        }
+        let interval = parts.get("INTERVAL").map_or(Some(1), |i| i.parse::<u32>().ok())?.max(1);
+        let code = |c: &str| DAYS.iter().find(|d| d.2.len() == 1 && d.2[0] == c).map(|d| d.0);
+        // «2TU», «-1FR» → (номер недели, день).
+        let nth = |s: &str| -> Option<(Option<WeekIndex>, DayOfWeek)> {
+            let at = s.len().checked_sub(2)?;
+            let (n, d) = s.split_at(at);
+            let index = match n {
+                "" => None,
+                n => Some(WeekIndex::ALL.iter().find(|w| w.2 == n.parse::<i8>().ok().unwrap_or(0))?.0),
+            };
+            Some((index, code(d)?))
+        };
+        let days: Vec<(Option<WeekIndex>, DayOfWeek)> = match parts.get("BYDAY") {
+            Some(v) => v.split(',').map(nth).collect::<Option<_>>()?,
+            None => Vec::new(),
+        };
+        let month_day = match parts.get("BYMONTHDAY") {
+            Some(v) => Some(v.parse::<u8>().ok().filter(|d| (1..=31).contains(d))?),
+            None => None,
+        };
+        let month = match parts.get("BYMONTH") {
+            Some(v) => Some(v.parse::<u8>().ok().filter(|m| (1..=12).contains(m))?),
+            None => None,
+        };
+        let day_of = |d: Date| u8::try_from(d.day()).unwrap_or(1);
+        let month_of = |d: Date| u8::try_from(d.month()).unwrap_or(1);
+        let weekday = |d: Date| match d.weekday() {
+            jiff::civil::Weekday::Monday => DayOfWeek::Monday,
+            jiff::civil::Weekday::Tuesday => DayOfWeek::Tuesday,
+            jiff::civil::Weekday::Wednesday => DayOfWeek::Wednesday,
+            jiff::civil::Weekday::Thursday => DayOfWeek::Thursday,
+            jiff::civil::Weekday::Friday => DayOfWeek::Friday,
+            jiff::civil::Weekday::Saturday => DayOfWeek::Saturday,
+            jiff::civil::Weekday::Sunday => DayOfWeek::Sunday,
+        };
+        let pattern = match parts.get("FREQ")?.as_str() {
+            "DAILY" if days.is_empty() => Pattern::Daily { interval },
+            "WEEKLY" => {
+                let list: Vec<DayOfWeek> = if days.is_empty() { vec![weekday(start)] } else { days.iter().map(|(_, d)| *d).collect() };
+                let first_day = parts.get("WKST").and_then(|w| code(w));
+                Pattern::Weekly { interval, days: list, first_day }
+            }
+            "MONTHLY" => match days.as_slice() {
+                [] => Pattern::AbsoluteMonthly { interval, day: month_day.unwrap_or_else(|| day_of(start)) },
+                [(Some(index), d)] => Pattern::RelativeMonthly { interval, days: *d, index: *index },
+                _ => return None,
+            },
+            "YEARLY" if interval == 1 => match days.as_slice() {
+                [] => Pattern::AbsoluteYearly { month: month.unwrap_or_else(|| month_of(start)), day: month_day.unwrap_or_else(|| day_of(start)) },
+                [(Some(index), d)] => Pattern::RelativeYearly { month: month.unwrap_or_else(|| month_of(start)), days: *d, index: *index },
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let range = if let Some(c) = parts.get("COUNT") {
+            Range::Numbered { start, count: c.parse().ok()? }
+        } else if let Some(u) = parts.get("UNTIL") {
+            Range::EndDate { start, end: u.get(..8).and_then(|d| Date::strptime("%Y%m%d", d).ok())? }
+        } else {
+            Range::NoEnd { start }
+        };
+        Some(Recurrence { pattern, range })
+    }
+
     fn from_el(el: &El) -> Option<Recurrence> {
         let num = |e: &El, k: &str| e.text_at(&[k]).and_then(|t| t.parse::<u32>().ok());
         let day_list =
@@ -470,6 +542,7 @@ pub(crate) fn item(el: &El) -> Option<CalendarItem> {
     keywords.sort();
     keywords.dedup();
     let event = Event {
+        recurrence: None,
         id: id.id.clone(),
         uid: el.str_at(&["UID"]),
         calendar_ids: el.child("ParentFolderId").and_then(|p| p.attr("Id")).map(str::to_owned).into_iter().collect(),
@@ -509,6 +582,10 @@ pub(crate) fn item(el: &El) -> Option<CalendarItem> {
         .flat_map(|d| d.all("DeletedOccurrence"))
         .filter_map(|d| parse_time(d.text_at(&["Start"])?))
         .collect();
+    // Правило серии (T2-13) — и в событии модели: подпись «Каждый вторник», копия приглашения.
+    let recurrence = el.child("Recurrence").and_then(Recurrence::from_el);
+    let mut event = event;
+    event.recurrence = recurrence.as_ref().map(Recurrence::rrule);
     Some(CalendarItem {
         id,
         kind,
@@ -516,7 +593,7 @@ pub(crate) fn item(el: &El) -> Option<CalendarItem> {
         my_response: partstat(my),
         is_organizer: my == "Organizer",
         is_meeting: el.bool_at(&["IsMeeting"]),
-        recurrence: el.child("Recurrence").and_then(Recurrence::from_el),
+        recurrence,
         modified,
         deleted,
         original_start: el.text_at(&["OriginalStart"]).and_then(parse_time),
@@ -571,7 +648,7 @@ impl NewItem {
             free_busy: FreeBusy::Busy,
             required,
             optional,
-            recurrence: None,
+            recurrence: e.recurrence.and_then(|r| Recurrence::from_rrule(r, e.start.date())),
             reminder_minutes: e.alert_secs.map(|s| s / 60),
         })
     }
@@ -1256,9 +1333,38 @@ mod tests {
         assert!(off.to_xml().contains("<t:ReminderIsSet>false</t:ReminderIsSet>") && !off.to_xml().contains("ReminderMinutesBeforeStart"));
     }
 
+    /// RRULE модели → серия EWS (T2-13): то, что рисует «Повтор ▾», и обратно тем же `rrule`.
+    #[test]
+    fn recurrence_from_rrule() {
+        let start: Date = "2026-11-04".parse().unwrap();
+        let r = |s: &str| Recurrence::from_rrule(s, start);
+        assert_eq!(r("FREQ=DAILY").unwrap().pattern, Pattern::Daily { interval: 1 });
+        assert_eq!(
+            r("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR").unwrap().pattern,
+            Pattern::Weekly {
+                interval: 1,
+                days: vec![DayOfWeek::Monday, DayOfWeek::Tuesday, DayOfWeek::Wednesday, DayOfWeek::Thursday, DayOfWeek::Friday],
+                first_day: None
+            }
+        );
+        assert_eq!(r("FREQ=MONTHLY;BYMONTHDAY=4").unwrap().pattern, Pattern::AbsoluteMonthly { interval: 1, day: 4 });
+        assert_eq!(r("FREQ=YEARLY").unwrap().pattern, Pattern::AbsoluteYearly { month: 11, day: 4 });
+        assert_eq!(
+            r("FREQ=MONTHLY;BYDAY=2TU").unwrap().pattern,
+            Pattern::RelativeMonthly { interval: 1, days: DayOfWeek::Tuesday, index: WeekIndex::Second }
+        );
+        assert_eq!(r("FREQ=WEEKLY;COUNT=3").unwrap().range, Range::Numbered { start, count: 3 });
+        assert_eq!(r("FREQ=WEEKLY;UNTIL=20261230T235959").unwrap().range, Range::EndDate { start, end: "2026-12-30".parse().unwrap() });
+        assert_eq!(r("FREQ=WEEKLY").unwrap().pattern, Pattern::Weekly { interval: 1, days: vec![DayOfWeek::Wednesday], first_day: None });
+        assert!(r("FREQ=HOURLY").is_none() && r("FREQ=MONTHLY;BYMONTHDAY=1,15").is_none());
+        let back = r("FREQ=WEEKLY;INTERVAL=2;BYDAY=MO").unwrap();
+        assert_eq!(back.rrule(), "FREQ=WEEKLY;INTERVAL=2;BYDAY=MO");
+    }
+
     #[test]
     fn new_item_from_event() {
         let ev = NewEvent {
+            recurrence: None,
             alert_secs: None,
             uid: "u",
             calendar_id: "c",

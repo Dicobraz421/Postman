@@ -87,6 +87,7 @@ fn title(kind: BusyKind) -> String {
 fn event_of(o: &Opened, b: &Busy) -> Event {
     let note = o.notes.iter().find(|n| n.span == b.span);
     Event {
+        recurrence: None,
         alert_secs: None,
         id: format!("{PREFIX}{}{}-{}-{}", if note.is_some() { NOTED } else { "" }, o.key(), b.span.start, b.span.end),
         uid: format!("{PREFIX}{}-{}", o.key(), b.span.start),
