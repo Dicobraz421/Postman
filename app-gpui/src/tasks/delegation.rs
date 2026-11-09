@@ -378,11 +378,8 @@ impl TasksView {
 
     /// «Поручить» (командная строка): своя задача без поручения; у отклонённого — «Поручить другому».
     pub(crate) fn delegate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(t) = self.selected_task().cloned() else { return };
-        if postman_core::mailtask::is_letter(&t) {
-            cx.emit(TasksAction::Toast(Toast::Info, tr!("assign-letter-first")));
-            return;
-        }
+        // Письмо со сроком — сначала записать задачей (T2-04).
+        let Some(t) = self.writable(cx) else { return };
         match assign::status(&t) {
             None => self.deleg_open(Edit::Assign { reassign: false }, window, cx),
             Some(Status::Declined) if owner_side(&t, &self.me_email()) => self.deleg_open(Edit::Assign { reassign: true }, window, cx),

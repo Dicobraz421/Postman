@@ -741,6 +741,7 @@ fn cal_drills() {
 fn task_drills() {
     need_worker();
     const DRILLS: &[&str] = &[
+        "task-t204-promote",
         "task-s604-chips",
         "task-s604-unchip",
         "task-s604-layout",

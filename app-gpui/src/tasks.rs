@@ -736,11 +736,28 @@ impl TasksView {
         cx.notify();
     }
 
-    fn edit_selected(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Task)) {
-        let Some(mut t) = self.selected_task().cloned() else { return };
-        if mailtask::is_letter(&t) {
-            return;
+    /// Задача-письмо → записанная задача со ссылкой на письмо (S6-03, решение 4; T2-04): правка, которой нужна запись
+    /// (напоминание, повтор, проект, категория, «!», название, заметки, подзадачи, время в календаре, поручение),
+    /// сначала записывает её; срок — из письма, письмо из «Из почты» уходит (его заменяет задача). Не задача-письмо —
+    /// она же. Письма нет среди загруженных — `None`.
+    fn writable(&mut self, cx: &mut Context<Self>) -> Option<Task> {
+        let t = self.selected_task()?.clone();
+        if !mailtask::is_letter(&t) {
+            return Some(t);
         }
+        let row = self.letter(mailtask::letter_key(&t)?)?.clone();
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let task = mailtask::promote(&row, None, &model::new_uid(nanos));
+        let uid = task.uid.clone();
+        self.save(vec![task.clone()], cx);
+        self.selected = Some(uid.clone());
+        self.notes_uid = Some(uid);
+        cx.notify();
+        Some(task)
+    }
+
+    fn edit_selected(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Task)) {
+        let Some(mut t) = self.writable(cx) else { return };
         f(&mut t);
         self.open = None;
         self.save(vec![t], cx);
@@ -772,7 +789,7 @@ impl TasksView {
 
     /// Подзадача в конец списка подзадач выбранной.
     fn add_subtask(&mut self, title: String, cx: &mut Context<Self>) {
-        let Some(parent) = self.selected_task().cloned().filter(|t| !mailtask::is_letter(t)) else { return };
+        let Some(parent) = self.writable(cx) else { return };
         let order = model::subtasks(&self.tasks, &parent.uid).iter().filter_map(|s| s.order).max().map_or(0, |o| o + 1);
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         let mut s = Task::new(&model::new_uid(nanos), parent.calendar_ids.first().map(String::as_str).unwrap_or(""), &title);
@@ -827,7 +844,14 @@ impl TasksView {
     }
 
     fn save_notes(&mut self, cx: &mut Context<Self>) {
-        let Some(uid) = self.notes_uid.clone() else { return };
+        // Заметка у задачи-письма — сначала записать задачу (T2-04).
+        let uid = match self.notes_uid.clone() {
+            Some(uid) => uid,
+            None => match self.writable(cx) {
+                Some(t) => t.uid,
+                None => return,
+            },
+        };
         let text = self.notes.read(cx).value().to_string();
         let Some(mut t) = self.tasks.iter().find(|t| t.uid == uid).cloned() else { return };
         if t.notes != text {
@@ -887,7 +911,7 @@ impl TasksView {
 
     /// Поставить блок в выбранное окно (S6-08): событие «занят» в своём календаре со ссылкой на задачу.
     pub(crate) fn place_block(&mut self, cx: &mut Context<Self>) {
-        let Some(t) = self.selected_task().cloned().filter(|t| !mailtask::is_letter(t) && t.block.is_none()) else { return };
+        let Some(t) = self.writable(cx).filter(|t| t.block.is_none()) else { return };
         let (slots, _, _) = self.slots(&t, cx);
         let Some(s) = slots.get(self.slot.min(slots.len().saturating_sub(1))).copied() else { return };
         if self.live {
@@ -1171,10 +1195,7 @@ impl TasksView {
 
     /// «!» в карточке.
     fn toggle_important(&mut self, cx: &mut Context<Self>) {
-        let Some(mut t) = self.selected_task().cloned() else { return };
-        if mailtask::is_letter(&t) {
-            return;
-        }
+        let Some(mut t) = self.writable(cx) else { return };
         t.important = !t.important;
         self.save(vec![t], cx);
     }
@@ -1223,10 +1244,7 @@ impl TasksView {
 
     /// Переименовать (F2): поле вместо названия в карточке; Enter — сохранить, Esc — отменить.
     pub(crate) fn rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(t) = self.selected_task().cloned() else { return };
-        if mailtask::is_letter(&t) {
-            return;
-        }
+        let Some(t) = self.writable(cx) else { return };
         let state = cx.new(|cx| InputState::new(window, cx).default_value(t.title.clone()));
         let sub = cx.subscribe(&state, |this: &mut Self, state, ev: &InputEvent, cx| {
             if let InputEvent::PressEnter { .. } = ev {
@@ -2025,7 +2043,6 @@ impl TasksView {
         let done = t.progress.is_closed();
         let pending = self.completing.is_pending(&t.uid);
         let checked = done || pending;
-        let letter = mailtask::is_letter(t);
         let kind = div()
             .flex()
             .items_center()
@@ -2099,7 +2116,9 @@ impl TasksView {
             .font_weight(FontWeight::BOLD)
             .when(t.important, |d| d.bg(l.picked()).text_color(l.accent_text()))
             .when(!t.important, |d| d.text_color(l.text3()))
-            .when(!letter, |d| d.cursor_pointer().hover(|d| d.bg(l.hover())).on_click(cx.listener(|this, _, _, cx| this.toggle_important(cx))))
+            .cursor_pointer()
+            .hover(|d| d.bg(l.hover()))
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_important(cx)))
             .child("!");
         let head = div()
             .pt(px(16.))
@@ -2242,7 +2261,8 @@ impl TasksView {
             );
             div().flex().flex_wrap().gap(px(6.)).pl(px(26.)).pt(px(4.)).pb(px(8.)).children(opts)
         });
-        let editable = !letter && self.draft.as_ref().is_none_or(|d| d.uid != t.uid);
+        // Задача-письмо правится так же: первая правка записывает её задачей (T2-04).
+        let editable = self.draft.as_ref().is_none_or(|d| d.uid != t.uid);
         let remind = match t.alerts.first().map(|a| &a.trigger) {
             None => muted("tasks-no-remind"),
             Some(tr) => div().child(remind_text(tr)).into_any_element(),
@@ -2729,7 +2749,7 @@ impl Render for TasksBar {
         let sel = v.selected_task();
         let has = sel.is_some();
         let done = sel.is_some_and(|t| t.progress.is_closed());
-        let editable = sel.is_some_and(|t| !mailtask::is_letter(t));
+        let editable = sel.is_some();
         let deleg = v.delegation();
         let me_owner = deleg.as_ref().is_some_and(|(_, _, o)| *o);
         let can = |a: postman_calendar::assign::Action| deleg.as_ref().is_some_and(|(_, st, o)| *o && postman_calendar::assign::next(*st, a).is_ok());

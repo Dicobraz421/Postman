@@ -60,11 +60,36 @@ macro_rules! nav {
     };
 }
 
+const PROMOTE: &[Input] = &[
+    until!(|m, cx| rows_loaded(m.list.read(cx))),
+    Input::Click(|m, _, cx| screens::row_place(m, cx, 0), Held::No),
+    until!(|m, cx| screens::reading(m, cx).is_some_and(|r| r.doc.is_some() && keep(r.row.subject.clone()))),
+    Input::Keys(&["insert"]),
+    Input::Press("lifecycle-pick-2"),
+    until!(|m, _| m.lifecycle.picker.is_none()),
+    TASKS,
+    IN_TASKS,
+    Input::Press("tasks-nav-3"),
+    until!(|m, cx| on_list(m, cx, List::FromMail) && shown(m, cx, &kept())),
+    Input::Run(|_, m, _, cx| {
+        let title = kept();
+        m.tasks.update(cx, |t, cx| t.select_title(&title, cx));
+        if m.tasks.read(cx).selected_task().is_some_and(mailtask::is_letter) { Ok(()) } else { Err("no letter task".into()) }
+    }),
+    Input::Press("card-prio"),
+];
+
+fn promoted(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    m.tasks.read(cx).selected_task().is_some_and(|t| !mailtask::is_letter(t) && t.mail.is_some() && t.important)
+}
+
 const fn scene(name: &'static str, ready: screens::Ready, input: &'static [Input]) -> Scene {
     Scene::new(name, start, ready).input(input).on_request()
 }
 
 const SCENES: &[Scene] = &[
+    // T2-04: письмо со сроком в «Из почты» — «!» в карточке записывает его задачей со ссылкой на письмо.
+    scene("task-t204-promote", promoted, PROMOTE),
     // S6-04, шаг 1: фраза — чипы и итог, Enter — задача со сроком, категорией и «!».
     scene("task-s604-chips", quick_added, CHIPS),
     // S6-04, шаг 2: × на чипе «завтра» — снова часть названия, срок — по времени.
