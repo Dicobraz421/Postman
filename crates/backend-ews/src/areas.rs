@@ -636,6 +636,7 @@ mod tests {
 
     fn meeting(attendees: Vec<(String, String)>) -> Meeting {
         Meeting {
+            reminder_secs: None,
             uid: "u1".into(),
             title: "Обзор".into(),
             location: "Зал".into(),

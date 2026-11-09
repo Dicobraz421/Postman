@@ -214,6 +214,7 @@ async fn invitation_round_trip() {
     let cal = first_calendar(&a.client).await;
     let attendees = [("User 2", b.email.as_str(), false)];
     let ev = NewEvent {
+        alert_secs: None,
         uid: &uid,
         calendar_id: &cal,
         title: "Postman: проверка приглашения",
@@ -269,6 +270,7 @@ async fn event_keywords_sequence_and_principal_kinds() {
     let uid = format!("postman-s511-{}@itt.test", stamp());
     let start = start_in(10);
     let ev = NewEvent {
+        alert_secs: None,
         uid: &uid,
         calendar_id: &cal,
         title: "Postman: метки события",
@@ -345,6 +347,7 @@ async fn free_busy_after_sharing() {
     let uid = format!("postman-busy-{}@itt.test", stamp());
     let start = start_in(9);
     let ev = NewEvent {
+        alert_secs: None,
         uid: &uid,
         calendar_id: &cal,
         title: "Postman: занятость",
@@ -388,6 +391,7 @@ async fn shared_calendar_is_visible() {
     let uid = format!("postman-shared-{}@itt.test", stamp());
     let start = start_in(10);
     let ev = NewEvent {
+        alert_secs: None,
         uid: &uid,
         calendar_id: &cal,
         title: "Postman: календарь коллеги",
@@ -583,6 +587,7 @@ async fn calendar_through_sync() {
     // user3: открыть занятость user1 и занять 14:00–15:00.
     schedule::share_free_busy(&c.client, &a.email, false).await.unwrap();
     let busy = Meeting {
+        reminder_secs: None,
         uid: format!("postman-s305-busy-{stamp}@itt.test"),
         title: "Postman: занят".into(),
         location: String::new(),
@@ -619,6 +624,7 @@ async fn calendar_through_sync() {
     };
     let uid = format!("postman-s305-{stamp}@itt.test");
     let meeting = Meeting {
+        reminder_secs: None,
         uid: uid.clone(),
         title: "Postman: встреча S3-05".into(),
         location: "Переговорная 1".into(),
@@ -787,6 +793,7 @@ async fn calendar_change_arrives_by_push() {
     tokio::time::sleep(Duration::from_secs(3)).await;
     while rx.try_recv().is_ok() {}
     let meeting = Meeting {
+        reminder_secs: None,
         uid: format!("postman-s403-{}@itt.test", stamp()),
         title: "Postman: push календаря".into(),
         location: String::new(),
@@ -825,6 +832,7 @@ async fn stand_calendar_search() {
     let place = format!("Переговорная{stamp}");
     let start = start_in(12);
     let meeting = Meeting {
+        reminder_secs: None,
         uid: format!("postman-s521-search-{stamp}@itt.test"),
         title: format!("Postman: {word}"),
         location: place.clone(),
@@ -911,6 +919,7 @@ async fn meeting_edit_and_cancel_through_sync() {
         }
     }
     let meeting = |uid: &str, title: &str, at: jiff::civil::DateTime| Meeting {
+        reminder_secs: None,
         uid: uid.into(),
         title: title.into(),
         location: "Переговорная 2".into(),

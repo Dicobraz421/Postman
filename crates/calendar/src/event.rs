@@ -343,6 +343,9 @@ pub struct NewEvent<'a> {
     pub organizer: (&'a str, &'a str),
     /// (имя, адрес, необязательный)
     pub attendees: &'a [(&'a str, &'a str, bool)],
+    /// Моё напоминание до начала, с (T2-08б): `Some(0)` — без напоминания, `None` — как решит сервер. Личное:
+    /// в JSCalendar `alerts` — свойство пользователя, участникам не уходит.
+    pub alert_secs: Option<i64>,
 }
 
 impl NewEvent<'_> {
@@ -396,6 +399,16 @@ impl NewEvent<'_> {
         if !self.location.is_empty() {
             v["locations"] = serde_json::json!({ "l1": { "@type": "Location", "name": self.location } });
         }
+        if let Some(secs) = self.alert_secs {
+            v["useDefaultAlerts"] = Value::Bool(false);
+            if secs > 0 {
+                v["alerts"] = serde_json::json!({ "a1": {
+                    "@type": "Alert",
+                    "action": "display",
+                    "trigger": { "@type": "OffsetTrigger", "offset": format!("-{}", format_duration(secs)), "relativeTo": "start" },
+                } });
+            }
+        }
         v
     }
 }
@@ -427,9 +440,14 @@ pub fn format_duration(secs: i64) -> String {
 mod new_event_tests {
     use super::*;
 
+    fn ev_clone<'a>(e: &NewEvent<'a>) -> NewEvent<'a> {
+        NewEvent { ..*e }
+    }
+
     #[test]
     fn roundtrip_through_parser() {
         let ev = NewEvent {
+            alert_secs: None,
             uid: "u1",
             calendar_id: "cal",
             title: "Планёрка",
@@ -443,6 +461,13 @@ mod new_event_tests {
         };
         let v = ev.to_jmap();
         assert_eq!(v["duration"], "PT1H30M");
+        assert!(v.get("alerts").is_none() && v.get("useDefaultAlerts").is_none(), "напоминание не задано — как решит сервер");
+        // Напоминание за 15 мин (T2-08б) — `alerts` пользователя; «без напоминания» — пустые, без умолчаний календаря.
+        let with = NewEvent { alert_secs: Some(900), ..NewEvent { attendees: &[], ..ev_clone(&ev) } }.to_jmap();
+        assert_eq!(with["alerts"]["a1"]["trigger"]["offset"], "-PT15M");
+        assert_eq!(with["useDefaultAlerts"], false);
+        let none = NewEvent { alert_secs: Some(0), ..ev_clone(&ev) }.to_jmap();
+        assert!(none.get("alerts").is_none() && none["useDefaultAlerts"] == false);
         // Stalwart: организатор и адреса — по черновику JMAP Calendars, без replyTo/sendTo.
         assert_eq!(v["organizerCalendarAddress"], "mailto:me@corp.example");
         assert_eq!(v["participants"]["a0"]["calendarAddress"], "mailto:ivan@corp.example");

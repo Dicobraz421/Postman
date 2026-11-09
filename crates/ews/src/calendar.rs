@@ -541,6 +541,8 @@ pub struct NewItem {
     pub optional: Vec<Attendee>,
     /// Серия: `range.start` — дата первого экземпляра (= начало `span` в поясе встречи).
     pub recurrence: Option<Recurrence>,
+    /// Напоминание за N минут (T2-08б): `Some(0)` — без напоминания, `None` — как решит сервер.
+    pub reminder_minutes: Option<i64>,
 }
 
 impl NewItem {
@@ -565,6 +567,7 @@ impl NewItem {
             required,
             optional,
             recurrence: None,
+            reminder_minutes: e.alert_secs.map(|s| s / 60),
         })
     }
 
@@ -573,6 +576,15 @@ impl NewItem {
         let mut x = String::from("<t:CalendarItem>");
         x.push_str(&text_el("t:Subject", &self.title));
         x.push_str(&format!(r#"<t:Body BodyType="Text">{}</t:Body>"#, esc(&self.description)));
+        // Напоминание (T2-08б): поля `ItemType` — до полей встречи, по схеме.
+        match self.reminder_minutes {
+            Some(0) => x.push_str(&text_el("t:ReminderIsSet", "false")),
+            Some(m) => {
+                x.push_str(&text_el("t:ReminderIsSet", "true"));
+                x.push_str(&text_el("t:ReminderMinutesBeforeStart", &m.to_string()));
+            }
+            None => {}
+        }
         x.push_str(&times(self.span, self.all_day));
         x.push_str(&text_el("t:LegacyFreeBusyStatus", free_busy(self.free_busy)));
         if !self.location.is_empty() {
@@ -1186,6 +1198,7 @@ mod tests {
     #[test]
     fn new_item_request() {
         let item = NewItem {
+            reminder_minutes: None,
             title: "Обзор <Q3>".into(),
             description: "Строка 1\nСтрока 2".into(),
             location: "Зал".into(),
@@ -1224,11 +1237,21 @@ mod tests {
         assert_eq!(c.text_at(&["RequiredAttendees", "Attendee", "Mailbox", "EmailAddress"]), Some("boris@example.test"));
         let back = Recurrence::from_el(c.child("Recurrence").unwrap()).unwrap();
         assert_eq!(Some(back), item.recurrence);
+        // Напоминание (T2-08б): поля `ItemType` — после тела, до времени; «нет» — `ReminderIsSet` false.
+        let remind = NewItem { reminder_minutes: Some(15), ..item.clone() };
+        let x = xml(soap::envelope(&remind.to_xml()).as_bytes()).unwrap();
+        let c = x.at(&["Body", "CalendarItem"]).unwrap();
+        let order: Vec<&str> = c.children.iter().take(5).map(|e| e.name.as_str()).collect();
+        assert_eq!(order, ["Subject", "Body", "ReminderIsSet", "ReminderMinutesBeforeStart", "Start"]);
+        assert_eq!(c.text_at(&["ReminderMinutesBeforeStart"]), Some("15"));
+        let off = NewItem { reminder_minutes: Some(0), ..item };
+        assert!(off.to_xml().contains("<t:ReminderIsSet>false</t:ReminderIsSet>") && !off.to_xml().contains("ReminderMinutesBeforeStart"));
     }
 
     #[test]
     fn new_item_from_event() {
         let ev = NewEvent {
+            alert_secs: None,
             uid: "u",
             calendar_id: "c",
             title: "Созвон",
