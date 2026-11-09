@@ -1030,6 +1030,16 @@ async fn handle(
                 Err(e) => Event::InviteFailed { uid, error: e.to_string() },
             });
         }
+        Command::ImportInvite { invite } => {
+            let me = identities.iter().find(|i| invite.my_status(&i.email).is_some()).map(|i| i.email.clone());
+            if let Some(me) = me {
+                match invite::import(client, &invite, &me, Partstat::NeedsAction).await {
+                    Ok(true) => notify(Event::CalendarChanged),
+                    Ok(false) => {}
+                    Err(e) => tracing::info!("jmap: invitation not imported: {e}"),
+                }
+            }
+        }
         Command::Events { from, to } => {
             notify(match schedule::week_with_colleagues(client, from, to).await {
                 Ok((events, colleagues)) => {

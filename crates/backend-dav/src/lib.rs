@@ -341,6 +341,19 @@ impl Dav {
         Ok(href)
     }
 
+    /// Приглашение из письма (T2-08в) — копией в календарь для встреч: я — «не ответил», рассылку сервер не делает
+    /// (`SCHEDULE-AGENT=CLIENT`). Уже есть ресурс с этим UID — `false`.
+    pub async fn import_invite(&self, event: &Event) -> Result<bool, Error> {
+        let Some(cal) = self.meeting_calendar().map(str::to_owned) else { return Ok(false) };
+        let Some(ics) = postman_calendar::ics::invite_copy(event, &self.me, now()) else { return Ok(false) };
+        let href = child_href(&cal, &event.uid, Content::Calendar);
+        match self.client.put(&href, Content::Calendar, &ics, Precondition::Create).await {
+            Ok(_) => Ok(true),
+            Err(Error::Precondition) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Своя встреча недели: ресурс (путь до `#`) и экземпляр серии — `RECURRENCE-ID` в UTC (`20261102T070000Z`; id
     /// экземпляра — `путь#recurrenceId`, время экземпляров `expand` отдаёт в UTC).
     async fn own_meeting(&self, event: &Event) -> Result<(postman_dav::Resource, Option<String>), Error> {
@@ -870,6 +883,11 @@ impl Dav {
                 });
                 self.load_contacts(notify).await;
             }
+            Command::ImportInvite { invite } => match self.import_invite(&invite.event).await {
+                Ok(true) => notify(SyncEvent::CalendarChanged),
+                Ok(false) => {}
+                Err(e) => tracing::info!("caldav: invitation not imported: {e}"),
+            },
             Command::DeleteContact { id, ticket } => {
                 notify(match self.delete_contact(&id).await {
                     Ok(()) => SyncEvent::ContactDeleted { ticket, id },

@@ -119,6 +119,8 @@ pub(crate) struct ReadingPane {
     pub(crate) drag: Option<crate::attachments::Drag>,
     /// Блобы, за которыми пошли (хранилище или сервер) и которых ещё нет.
     pub(crate) in_flight: HashSet<String>,
+    /// Приглашения, уже отправленные в календарь (UID): второй раз не просить.
+    pub(crate) imported: HashSet<String>,
     /// Куда «Открыть» кладёт файл перед запуском системного приложения.
     pub(crate) open_dir: PathBuf,
     /// Картинки закрытого письма: убрать из атласа gpui при следующей отрисовке (S4-08). Сам gpui их не
@@ -200,6 +202,8 @@ pub(crate) enum SyncRequest {
         from: i64,
         to: i64,
     },
+    /// Приглашение только письмом — в мой календарь «не ответил» (T2-08в).
+    ImportInvite(Box<Invitation>),
 }
 
 impl SyncRequest {
@@ -211,6 +215,7 @@ impl SyncRequest {
             }
             SyncRequest::Thread(key) => Command::Thread(key.clone()),
             SyncRequest::Events { from, to } => Command::Events { from: *from, to: *to },
+            SyncRequest::ImportInvite(invite) => Command::ImportInvite { invite: invite.clone() },
         }
     }
 }
@@ -228,6 +233,7 @@ impl ReadingPane {
             pending_files: Vec::new(),
             drag: None,
             in_flight: HashSet::new(),
+            imported: HashSet::new(),
             open_dir: data_dir().join("open"),
             retired: Vec::new(),
             feed: None,
@@ -457,6 +463,10 @@ impl ReadingPane {
             }
             SyncRequest::Thread(_) => self.thread_not_sent(),
             SyncRequest::Events { .. } => self.invite_events_failed(),
+            // Не ушло — попросим снова при следующем открытии письма.
+            SyncRequest::ImportInvite(invite) => {
+                self.imported.remove(&invite.event.uid);
+            }
         }
         cx.notify();
     }

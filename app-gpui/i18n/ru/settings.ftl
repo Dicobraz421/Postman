@@ -507,7 +507,7 @@ settings-cal-owner-names = Показывать имя владельца в с�
 settings-cal-owner-names-hint = Видно, чьё событие, когда календари наложены.
 settings-cal-invites-group = Приглашения
 settings-cal-tentative = Автоматически добавлять приглашения в календарь как «Под вопросом»
-settings-cal-tentative-hint = Время занято предварительно, пока вы не ответили.
+settings-cal-tentative-hint = Неотвеченное приглашение — в календаре пунктиром, время «под вопросом»; приглашение, пришедшее только письмом, Postman кладёт в календарь сам. Выключено — до ответа приглашение только в письме, время свободно. Как ваше время видят коллеги, решает их сервер.
 settings-cal-delete = Удалять письмо-приглашение после ответа
 settings-cal-delete-hint = Событие остаётся в календаре, письмо — в «Удалённых».
 settings-cal-preview = Предпросмотр
@@ -515,7 +515,6 @@ settings-cal-preview-view = { $view } · шаг { $step }
 settings-cal-preview-days = Рабочих дней: { $n }, часы { $from }–{ $to }.
 settings-cal-preview-meeting = Новая встреча — { $duration }, напоминание: { $reminder }.
 settings-cal-preview-zone = Пояс: { $zone }.
-settings-cal-preview-stored = «Сохраняется» — выбор запомнен; в календаре он появится вместе с напоминаниями и календарями коллег.
 
 # «Настройки»: Общие, Безопасность, Внешний вид (S5-30).
 settings-nav-security = Безопасность
