@@ -102,6 +102,9 @@ pub(crate) struct MeetingModel {
     pub(crate) reminder: Option<i64>,
     /// Повтор новой встречи («Повтор ▾», макет `Meeting`, T2-13); правка своей встречи — не меняем.
     pub(crate) repeat: Option<postman_core::recur::Rule>,
+    /// Весь день и частная (T2-14, макет `Meeting`).
+    pub(crate) all_day: bool,
+    pub(crate) private: bool,
     pub(crate) status: Status,
     /// Тикет отправки, итог которой ждём.
     sending: Option<u64>,
@@ -263,6 +266,8 @@ impl MeetingModel {
             late: false,
             reminder: None,
             repeat: None,
+            all_day: false,
+            private: false,
             status: Status::None,
             sending: None,
             editing: None,
@@ -271,6 +276,10 @@ impl MeetingModel {
 
     /// Начало и длительность, с которыми встреча уйдёт: с «на 5 мин позже» — сдвинутые.
     pub(crate) fn sent_time(&self, start: DateTime) -> (DateTime, i64) {
+        if self.all_day {
+            // Весь день: с полуночи на сутки; «на 5 мин позже» не действует.
+            return (start.date().to_datetime(jiff::civil::Time::midnight()), 86_400);
+        }
         let on_grid = start.minute() % 15 == 0 && start.second() == 0;
         if self.late && self.editing.is_none() && on_grid && self.duration > LATE * 2 {
             (start.checked_add(jiff::Span::new().seconds(LATE)).unwrap_or(start), self.duration - LATE)
@@ -380,6 +389,8 @@ impl MeetingModel {
         let required = self.people();
         let optional = self.optional_people().into_iter().filter(|(_, e)| !required.iter().any(|(_, r)| r.eq_ignore_ascii_case(e))).collect();
         Ok(Meeting {
+            private: self.private,
+            all_day: self.all_day,
             recurrence: self.repeat.as_ref().and_then(postman_core::recur::rrule_of_rule),
             reminder_secs: self.reminder,
             uid,
@@ -1833,8 +1844,42 @@ impl MeetingView {
                     .text_color(l.text2())
                     .child(end),
             )
-            .child(div().ml(px(4.)).text_size(px(12.)).text_color(l.text2()).child(duration_text(self.model.duration)))
+            .when(!self.model.all_day, |d| {
+                d.child(div().ml(px(4.)).text_size(px(12.)).text_color(l.text2()).child(duration_text(self.model.duration)))
+            })
             .children(self.late_note().map(|t| div().ml(px(8.)).text_size(px(12.)).text_color(l.text2()).child(t)))
+            .child(div().flex_1())
+            .child(self.check("meeting-all-day", tr!("meeting-all-day"), self.model.all_day, |m| m.all_day = !m.all_day, &l, cx))
+    }
+
+    /// Флажок строки вкладки (T2-14): «Весь день».
+    fn check(&self, id: &'static str, label: String, on: bool, flip: fn(&mut MeetingModel), l: &Look, cx: &mut Context<Self>) -> Stateful<Div> {
+        div()
+            .id(id)
+            .children(crate::screens::spot(id))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .mr(px(8.))
+            .cursor_pointer()
+            .child(
+                div()
+                    .size(px(16.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(if on { l.accent() } else { l.text3() })
+                    .when(on, |d| d.bg(l.accent()).text_color(l.on_accent()).child(icon(g::CHECK, 10.))),
+            )
+            .child(label)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                flip(&mut this.model);
+                this.schedule_query(cx);
+                cx.notify();
+            }))
     }
 
     /// «Начнётся в 10:05» у времени, если встреча уйдёт со сдвигом «на 5 мин позже» (T2-08).
@@ -2574,6 +2619,12 @@ impl Render for MeetingView {
             )
             .child(div().w(px(1.)).h(px(20.)).mx(px(4.)).bg(l.border()))
             .children(self.repeat_button(cx))
+            // «Частная» (T2-14, макет `Meeting`): у тех, кому открыт мой календарь, — только «занят».
+            .child(
+                self.check("meeting-private", tr!("meeting-private"), self.model.private, |m| m.private = !m.private, &l, cx)
+                    .ml(px(4.))
+                    .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(tr!("meeting-private-tip")).build(window, cx)),
+            )
             .child(
                 div()
                     .h(px(32.))
@@ -2881,6 +2932,7 @@ mod tests {
             status: Partstat::Accepted,
         };
         let e = CalEvent {
+            private: false,
             recurrence: None,
             alert_secs: None,
             id: "e1".into(),

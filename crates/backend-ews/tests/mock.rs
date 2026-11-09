@@ -310,6 +310,7 @@ fn invite(uid: &str) -> postman_calendar::Invitation {
         status: postman_calendar::Partstat::NeedsAction,
     };
     let event = postman_calendar::Event {
+        private: false,
         recurrence: None,
         alert_secs: None,
         id: String::new(),
@@ -377,6 +378,8 @@ fn new_meeting_request_and_server_uid() {
     let (url, log) = server_with(new_meeting);
     let live = ready(&url);
     let meeting = postman_core::schedule::Meeting {
+        private: false,
+        all_day: false,
         recurrence: None,
         reminder_secs: None,
         uid: "client-uid".into(),
@@ -517,6 +520,8 @@ fn meeting_edit_and_cancel_requests() {
     let Event::EventsLoaded { events, .. } = live.wait("EventsLoaded", |e| matches!(e, Event::EventsLoaded { .. })) else { unreachable!() };
     let ev = events.into_iter().find(|e| e.id == "AAMkADmeet").expect("встреча корпуса");
     let meeting = postman_core::schedule::Meeting {
+        private: false,
+        all_day: false,
         recurrence: None,
         reminder_secs: None,
         uid: ev.uid.clone(),

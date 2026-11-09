@@ -542,6 +542,7 @@ pub(crate) fn item(el: &El) -> Option<CalendarItem> {
     keywords.sort();
     keywords.dedup();
     let event = Event {
+        private: false,
         recurrence: None,
         id: id.id.clone(),
         uid: el.str_at(&["UID"]),
@@ -586,6 +587,7 @@ pub(crate) fn item(el: &El) -> Option<CalendarItem> {
     let recurrence = el.child("Recurrence").and_then(Recurrence::from_el);
     let mut event = event;
     event.recurrence = recurrence.as_ref().map(Recurrence::rrule);
+    event.private = matches!(el.text_at(&["Sensitivity"]), Some("Private" | "Confidential"));
     Some(CalendarItem {
         id,
         kind,
@@ -625,6 +627,8 @@ pub struct NewItem {
     pub recurrence: Option<Recurrence>,
     /// Напоминание за N минут (T2-08б): `Some(0)` — без напоминания, `None` — как решит сервер.
     pub reminder_minutes: Option<i64>,
+    /// Частная (T2-14): `Sensitivity` Private.
+    pub private: bool,
 }
 
 impl NewItem {
@@ -643,13 +647,14 @@ impl NewItem {
             description: e.description.to_owned(),
             location: e.location.to_owned(),
             span: Span::new(start, start + e.duration_secs),
-            all_day: false,
+            all_day: e.all_day,
             time_zone: Some(e.time_zone.to_owned()),
             free_busy: FreeBusy::Busy,
             required,
             optional,
             recurrence: e.recurrence.and_then(|r| Recurrence::from_rrule(r, e.start.date())),
             reminder_minutes: e.alert_secs.map(|s| s / 60),
+            private: e.private,
         })
     }
 
@@ -657,6 +662,9 @@ impl NewItem {
     fn to_xml(&self) -> String {
         let mut x = String::from("<t:CalendarItem>");
         x.push_str(&text_el("t:Subject", &self.title));
+        if self.private {
+            x.push_str(&text_el("t:Sensitivity", "Private"));
+        }
         x.push_str(&format!(r#"<t:Body BodyType="Text">{}</t:Body>"#, esc(&self.description)));
         // Напоминание (T2-08б): поля `ItemType` — до полей встречи, по схеме.
         match self.reminder_minutes {
@@ -863,6 +871,7 @@ const PROPS: &[&str] = &[
     "item:ParentFolderId",
     "item:ReminderIsSet",
     "item:ReminderMinutesBeforeStart",
+    "item:Sensitivity",
     "item:Subject",
     "item:Body",
     "item:Categories",
@@ -1283,6 +1292,7 @@ mod tests {
     #[test]
     fn new_item_request() {
         let item = NewItem {
+            private: false,
             reminder_minutes: None,
             title: "Обзор <Q3>".into(),
             description: "Строка 1\nСтрока 2".into(),
@@ -1329,6 +1339,11 @@ mod tests {
         let order: Vec<&str> = c.children.iter().take(5).map(|e| e.name.as_str()).collect();
         assert_eq!(order, ["Subject", "Body", "ReminderIsSet", "ReminderMinutesBeforeStart", "Start"]);
         assert_eq!(c.text_at(&["ReminderMinutesBeforeStart"]), Some("15"));
+        // Частная (T2-14): `Sensitivity` — сразу после темы, по схеме.
+        let private = NewItem { private: true, ..item.clone() };
+        let x = xml(soap::envelope(&private.to_xml()).as_bytes()).unwrap();
+        let c = x.at(&["Body", "CalendarItem"]).unwrap();
+        assert_eq!(c.children.iter().take(3).map(|e| e.name.as_str()).collect::<Vec<_>>(), ["Subject", "Sensitivity", "Body"]);
         let off = NewItem { reminder_minutes: Some(0), ..item };
         assert!(off.to_xml().contains("<t:ReminderIsSet>false</t:ReminderIsSet>") && !off.to_xml().contains("ReminderMinutesBeforeStart"));
     }
@@ -1364,6 +1379,8 @@ mod tests {
     #[test]
     fn new_item_from_event() {
         let ev = NewEvent {
+            private: false,
+            all_day: false,
             recurrence: None,
             alert_secs: None,
             uid: "u",

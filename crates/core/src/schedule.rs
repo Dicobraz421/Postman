@@ -34,6 +34,9 @@ pub struct Meeting {
     pub reminder_secs: Option<i64>,
     /// Повтор серии — RRULE (T2-13, «Повтор ▾» вкладки встречи); `None` — одна встреча.
     pub recurrence: Option<String>,
+    /// Весь день и частная (T2-14).
+    pub all_day: bool,
+    pub private: bool,
 }
 
 impl Meeting {
@@ -47,6 +50,8 @@ impl Meeting {
     pub fn new_event<'a>(&'a self, calendar_id: &'a str, organizer: (&'a str, &'a str), attendees: &'a [(&'a str, &'a str, bool)]) -> NewEvent<'a> {
         NewEvent {
             recurrence: self.recurrence.as_deref(),
+            all_day: self.all_day,
+            private: self.private,
             uid: &self.uid,
             calendar_id,
             title: &self.title,
@@ -141,6 +146,8 @@ mod tests {
     #[test]
     fn meeting_becomes_an_invitation() {
         let m = Meeting {
+            private: false,
+            all_day: false,
             recurrence: None,
             reminder_secs: None,
             uid: "u1@postman".into(),
