@@ -50,3 +50,5 @@ reading-weekday = { $d ->
 }
 reading-link-mismatch = The link text says “{ $shown }”, but it leads to { $host }. Go to the real address?
 reading-link-go = Go
+reading-quick-reply = Reply to { $name }
+reading-quick-reply-tip = Reply
