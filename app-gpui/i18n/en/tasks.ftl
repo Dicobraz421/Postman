@@ -218,7 +218,6 @@ assign-form-comment-placeholder = What matters — the assignee will see it
 assign-form-note = { $who } will see the task in “Assigned to me”
 assign-form-note-empty = One assignee
 assign-form-pick-first = Pick an assignee first
-assign-letter-first = An email with a due date cannot be delegated: open it as a task first (a note or a project)
 assign-invalid = This action is not available now
 assign-too-soon = Already reminded — the next reminder is possible after { $time }
 assign-not-yet = The delegation is not in your tasks yet — it will appear in a few seconds
