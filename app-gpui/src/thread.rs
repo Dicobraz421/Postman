@@ -141,7 +141,8 @@ impl ReadingPane {
         if let Some(f) = &mut self.feed {
             f.unfold_fresh(current.as_deref());
         }
-        if self.feed_on || self.view(cx) == View::Stack {
+        let view = self.view(cx);
+        if (self.feed_on && view == View::Feed) || view == View::Stack {
             self.load_feed(cx);
         }
         cx.notify();
@@ -891,7 +892,7 @@ pub(crate) mod scenes {
         m.open_mailbox("inbox".into(), cx);
         let row = m.cache.rows_by_ids(&[postman_demo::CHAIN_OPEN.into()]).map_err(|e| e.to_string())?.pop();
         let Some(row) = row else { return Err("no demo conversation in the cache".into()) };
-        m.reading.update(cx, |r, _| r.feed_on = true);
+        // Лента — без включения: она вид по умолчанию (T2-06).
         m.open_letter(row, cx);
         Ok(())
     }
