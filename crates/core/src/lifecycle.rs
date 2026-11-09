@@ -508,9 +508,11 @@ pub fn plan(input: &Input, roles: &Roles, rules: &Lifecycle, me: &Me, now: &Zone
                 p.keywords.extend(
                     row.keywords.iter().filter(|k| Kind::Remind.owns(k) && !k.eq_ignore_ascii_case(marks::REMIND)).map(|k| (k.clone(), false)),
                 );
-                p.keywords.push((marks::REMIND.to_owned(), true));
-                p.keywords.push((postman_cache::SEEN.to_owned(), false));
-                if let Some(inbox) = &roles.inbox {
+                if rules.remind_return {
+                    p.keywords.push((marks::REMIND.to_owned(), true));
+                    p.keywords.push((postman_cache::SEEN.to_owned(), false));
+                }
+                if let Some(inbox) = roles.inbox.as_ref().filter(|_| rules.remind_return) {
                     if !row.mailbox_ids.contains(inbox) {
                         p.mailboxes.push((inbox.clone(), true));
                     }
@@ -925,6 +927,18 @@ mod tests {
         let p = plan(&Input { items: vec![item(r)], recent: vec![] }, &roles(), &Lifecycle::default(), &me(), &now);
         assert_eq!(p.patches[0].keywords, [("pm.remind".into(), false)]);
         assert_eq!(p.next, None, "сроков нет — таймера нет");
+    }
+
+    /// «Напомнит» выключено в настройках (T2-09): в срок — тост, письмо остаётся в «Архиве» и прочитанным, срок снят.
+    #[test]
+    fn reminders_without_return_only_notify() {
+        let now = now();
+        let due = row("a", &["arch"], &words(Kind::Remind, When::at(date("2026-10-22"), time(9, 0))));
+        let rules = Lifecycle { remind_return: false, ..Lifecycle::default() };
+        let p = plan(&Input { items: vec![item(due)], recent: vec![] }, &roles(), &rules, &me(), &now);
+        assert_eq!(p.patches[0].mailboxes, []);
+        assert_eq!(p.patches[0].keywords, [("pm.remind.2026-10-22t0900".into(), false)]);
+        assert_eq!(p.notices, [Notice::Reminded { id: "a".into(), subject: "s-a".into() }]);
     }
 
     /// «Ждём ответа»: ответ адресата в беседе снимает ожидание; без ответа срок прошёл — во «Входящие» (один раз).

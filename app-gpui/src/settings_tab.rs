@@ -684,7 +684,14 @@ impl SettingsView {
         );
         let rules = vec![
             rule(0, tr!("settings-life-wait"), tr!("settings-life-wait-hint"), lc.wait_reply, |l| l.wait_reply = !l.wait_reply, Some(wait)),
-            row(tr!("lifecycle-settings-remind"), Some(tr!("lifecycle-settings-remind-hint")), div(), l),
+            rule(
+                4,
+                tr!("lifecycle-settings-remind"),
+                tr!(if lc.remind_return { "lifecycle-settings-remind-hint" } else { "lifecycle-settings-remind-off" }),
+                lc.remind_return,
+                |l| l.remind_return = !l.remind_return,
+                None,
+            ),
             rule(1, tr!("settings-life-news"), tr!("settings-life-news-hint"), lc.archive_news, |l| l.archive_news = !l.archive_news, Some(news)),
             rule(2, tr!("settings-life-codes"), tr!("settings-life-codes-hint"), lc.expire_codes, |l| l.expire_codes = !l.expire_codes, Some(codes)),
             row(tr!("lifecycle-settings-expire-to"), Some(tr!("lifecycle-settings-expire-to-hint")), expire_to, l),

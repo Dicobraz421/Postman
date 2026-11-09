@@ -64,3 +64,4 @@ lifecycle-settings-to-archive = To Archive
 lifecycle-settings-to-trash = To Deleted Items
 lifecycle-settings-remind = Reminders
 lifecycle-settings-remind-hint = “Remind me…” moves the message to Archive and brings it back unread on top of the Inbox on time.
+lifecycle-settings-remind-off = Off: at the time only a toast reminds you, the message stays where it is.

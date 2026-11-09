@@ -529,6 +529,9 @@ pub struct Lifecycle {
     pub expire_codes_hours: u16,
     /// Просроченный срок — наверх списка.
     pub overdue_first: bool,
+    /// «Напомнит»: в срок вернуть письмо наверх «Входящих» непрочитанным (T2-09, макет `SettingsViews`); выключено —
+    /// только напоминание тостом, письмо остаётся, где лежит.
+    pub remind_return: bool,
     /// Куда уходят письма, когда наступает «Исчезнет» (свой срок и коды подтверждения).
     pub expire_to: ExpireTo,
 }
@@ -557,6 +560,7 @@ impl Default for Lifecycle {
             expire_codes: true,
             expire_codes_hours: 24,
             overdue_first: true,
+            remind_return: true,
             expire_to: ExpireTo::Trash,
         }
     }
