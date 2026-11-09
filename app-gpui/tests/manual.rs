@@ -542,6 +542,7 @@ fn input_drills() {
 fn mail_drills() {
     need_worker();
     const DRILLS: &[&str] = &[
+        "mail-t207-link",
         "mail-06-toast",
         "mail-07-send",
         "mail-07-remove",

@@ -197,6 +197,18 @@ impl Show {
     }
 }
 
+/// Уведомления окна для мест без своего доступа к окну (отрисовка письма): ставит окно при создании.
+pub(crate) struct Shared(pub(crate) WeakEntity<Notices>);
+
+impl Global for Shared {}
+
+/// Тост с кнопкой из любого места; уведомлений окна ещё нет — ничего.
+pub(crate) fn push_action_anywhere(cx: &mut App, level: Level, text: String, action: ToastAction) {
+    if let Some(n) = cx.try_global::<Shared>().and_then(|w| w.0.upgrade()) {
+        n.update(cx, |t, cx| t.push_action(level, text, action, cx));
+    }
+}
+
 /// Уведомления окна. Встраивается последним ребёнком корня с `.relative()`: рисуется поверх, фокус не берёт.
 #[derive(Default)]
 pub(crate) struct Notices {
