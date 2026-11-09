@@ -3499,8 +3499,7 @@ pub(crate) mod scenes {
 
     fn opened(s: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
         week(s, m, window, cx)?;
-        // i18n-ok: демо-сотрудники
-        let list = [("Сидоров Игорь", "i.sidorov@corp.example"), ("Орлов Дмитрий", "d.orlov@corp.example")];
+        let list = [("Сидоров Игорь", "i.sidorov@corp.example"), ("Орлов Дмитрий", "d.orlov@corp.example")]; // i18n-ok: демо-сотрудники
         m.cal.update(cx, |c, cx| c.open_demo_colleagues(&list, cx));
         Ok(())
     }
