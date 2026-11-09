@@ -248,6 +248,7 @@ cal-fb-away = Out of office
 cal-fb-hidden = Availability hidden
 cal-fb-hidden-tip = The server returned no availability: the calendar is not shared with you or the employee was not found. This does not mean free.
 cal-fb-only = Only availability is visible: the colleague did not share details
+cal-fb-some = Subject and location are visible: the colleague did not share the rest
 cal-chip-colleague = Colleague’s calendar
 cal-color-change = Calendar color
 

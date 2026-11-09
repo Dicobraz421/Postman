@@ -812,12 +812,12 @@ impl CalendarView {
                 cx.emit(CalendarAction::Access);
                 cx.emit(CalendarAction::Toast(Toast::Success, text));
             }
-            SyncEvent::Availability { ticket, people, error, .. } if self.opened_ticket == Some(*ticket) => match error {
+            SyncEvent::Availability { ticket, people, notes, error, .. } if self.opened_ticket == Some(*ticket) => match error {
                 Some(e) => {
                     tracing::info!("opened calendars: availability failed: {e}");
                     self.opened_failed(cx);
                 }
-                None => self.opened_answer(people, cx),
+                None => self.opened_answer(people, notes, cx),
             },
             SyncEvent::PeopleFound { .. } | SyncEvent::DirectoryLoaded(_) => self.pick_refresh(cx),
             SyncEvent::CalendarAccess(list) => self.access = list.clone(),
@@ -2894,7 +2894,12 @@ impl CalendarView {
                     .into_any_element(),
             ))
             .when(e.recurring, |d| d.child(row(g::REPEAT, div().child(tr!("cal-details-recurring")).into_any_element())))
-            .when(opened::is_busy_block(e), |d| d.child(row(g::HIDDEN, div().text_color(l.text2()).child(tr!("cal-fb-only")).into_any_element())))
+            .when(opened::is_busy_block(e), |d| {
+                d.child(row(
+                    g::HIDDEN,
+                    div().text_color(l.text2()).child(if opened::has_note(e) { tr!("cal-fb-some") } else { tr!("cal-fb-only") }).into_any_element(),
+                ))
+            })
             .when(show_place, |d| d.child(row(g::PIN, crate::ir_view::linked_text(e.location.trim(), "event-place", cx))))
             .when_some(join, |d, link| {
                 let open = link.clone();
@@ -3434,6 +3439,8 @@ pub(crate) mod scenes {
         // скрыта»; открыт блок занятости. Затем — выбор сотрудника: поле и подсказки справочника.
         Scene::new("calendar-opened", opened, opened_ready),
         Scene::new("calendar-pick", pick, pick_ready),
+        // Тема и место у блоков занятости, когда сервер их даёт (T2-02б, Exchange `Detailed`).
+        Scene::new("calendar-opened-details", opened_details, opened_ready),
     ];
 
     /// Запрос снимка `calendar-search`: место нескольких встреч демо (планёрки, демо продукта, итоги недели).
@@ -3507,6 +3514,12 @@ pub(crate) mod scenes {
     fn opened_ready(s: &Scene, m: &Mailer, cx: &App) -> bool {
         let c = m.cal.read(cx);
         week_ready(s, m, cx) && c.busy_blocks() > 0 && c.opened_state().iter().any(|(_, denied)| *denied) && c.selected()
+    }
+
+    fn opened_details(s: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        opened(s, m, window, cx)?;
+        m.cal.update(cx, |c, cx| c.demo_notes("i.sidorov@corp.example", cx));
+        Ok(())
     }
 
     fn pick(s: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
