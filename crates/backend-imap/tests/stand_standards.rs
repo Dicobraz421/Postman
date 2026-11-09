@@ -292,7 +292,7 @@ fn caldav_meeting_cycle() {
     let mine = |e: &postman_calendar::Event, who: &str| e.participants.iter().find(|p| p.email.eq_ignore_ascii_case(who)).map(|p| p.status);
     assert_eq!(mine(&ev, &b.me), Some(Partstat::NeedsAction));
     let inv = Invitation { method: "REQUEST".into(), event: ev, sequence: 0, raw: serde_json::Value::Null };
-    b.send(Command::RespondInvite { invite: Box::new(inv), status: Partstat::Accepted, in_reply_to: None });
+    b.send(Command::RespondInvite { invite: Box::new(inv), status: Partstat::Accepted, in_reply_to: None, answer: Default::default() });
     let Event::InviteAnswered { delivery, .. } = b.wait("InviteAnswered", |e| match e {
         Event::InviteFailed { error, .. } => panic!("ответ: {error}"),
         Event::InviteAnswered { .. } => true,

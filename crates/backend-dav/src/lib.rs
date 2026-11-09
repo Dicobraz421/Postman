@@ -403,14 +403,16 @@ impl Dav {
     }
 
     /// Ответ на приглашение своей копией (сервер шлёт REPLY организатору). `false` — копии нет (приглашение пришло
-    /// письмом мимо сервера): отвечать письмом.
-    pub async fn respond(&self, uid: &str, around: Span, status: Partstat) -> Result<bool, Error> {
+    /// письмом мимо сервера): отвечать письмом. `quiet` (T2-15: «без ответа» или комментарий — его сервер в REPLY не
+    /// кладёт) — `SCHEDULE-AGENT=CLIENT` у организатора: сервер не рассылает.
+    pub async fn respond(&self, uid: &str, around: Span, status: Partstat, quiet: bool) -> Result<bool, Error> {
         let window = Span::new(around.start - 86_400, around.end.max(around.start) + 86_400);
         let marker = format!("UID:{uid}");
         for c in self.event_calendars() {
             let found = self.client.calendar_query(&c.href, "VEVENT", Some(window)).await?;
             let Some(copy) = found.into_iter().find(|r| r.data.lines().any(|l| l.trim_end() == marker)) else { continue };
             let Some(answered) = postman_calendar::ics::with_partstat(&copy.data, &self.me, status) else { return Ok(false) };
+            let answered = postman_calendar::ics::with_schedule_agent(&answered, quiet);
             let pre = match (&copy.schedule_tag, &copy.etag) {
                 (Some(t), _) => Precondition::ScheduleTag(t),
                 (None, Some(e)) => Precondition::Etag(e),
@@ -782,8 +784,21 @@ impl Areas for Dav {
         Box::pin(self.command(cmd, ctx))
     }
 
-    fn respond<'a>(&'a mut self, invite: &'a postman_calendar::Invitation, status: Partstat) -> BoxFuture<'a, CoreResult<bool>> {
-        Box::pin(async move { Dav::respond(self, &invite.event.uid, invite.event.span, status).await.map_err(shown) })
+    fn respond<'a>(
+        &'a mut self,
+        invite: &'a postman_calendar::Invitation,
+        status: Partstat,
+        answer: &'a postman_core::invite::Answer,
+    ) -> BoxFuture<'a, CoreResult<postman_core::invite::Responded>> {
+        use postman_core::invite::Responded;
+        Box::pin(async move {
+            let quiet = answer.keep_copy_only();
+            match Dav::respond(self, &invite.event.uid, invite.event.span, status, quiet).await.map_err(shown)? {
+                false => Ok(Responded::NoCopy),
+                true if quiet => Ok(Responded::Kept),
+                true => Ok(Responded::Sent),
+            }
+        })
     }
 
     fn flush_tasks<'a>(&'a mut self, ctx: AreaCtx<'a>) -> BoxFuture<'a, CoreResult<()>> {

@@ -299,10 +299,10 @@ impl Client {
         set_error(&v, "notUpdated", calendar_id, "Calendar/set")
     }
 
-    pub async fn reply(&self, event_id: &str, participant_id: &str, status: &str) -> Result<()> {
+    pub async fn reply(&self, event_id: &str, participant_id: &str, status: &str, send: bool) -> Result<()> {
         let mut patch = Map::new();
         patch.insert(format!("participants/{participant_id}/participationStatus"), json!(status));
-        self.update_event(event_id, patch, true).await
+        self.update_event(event_id, patch, send).await
     }
 
     /// Занятость по адресам, расширение The Post (S8-46): источник выбирает сервер.

@@ -8,13 +8,14 @@ pub use postman_core::invite::reply_draft;
 use postman_jmap::Client;
 
 /// Попробовать ответить через календарь сервера. `None` — события там нет (или меня в нём нет).
-pub async fn via_server(client: &Client, inv: &Invitation, me: &str, status: Partstat) -> postman_jmap::Result<Option<()>> {
+/// `send: false` (T2-15: «без ответа» или комментарий — его ответ сервера не несёт) — статус без рассылки.
+pub async fn via_server(client: &Client, inv: &Invitation, me: &str, status: Partstat, send: bool) -> postman_jmap::Result<Option<()>> {
     if !client.has(postman_jmap::CALENDARS) {
         return Ok(None);
     }
     let Some(ev) = client.event_by_uid(&inv.event.uid).await? else { return Ok(None) };
     let (Some(id), Some(pid)) = (ev["id"].as_str(), participant_id(&ev, me)) else { return Ok(None) };
-    client.reply(id, &pid, partstat_json(status)).await?;
+    client.reply(id, &pid, partstat_json(status), send).await?;
     Ok(Some(()))
 }
 

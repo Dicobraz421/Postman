@@ -217,6 +217,27 @@ invite-changed-time = time
 invite-changed-place = location
 invite-changed-title = subject
 invite-done-accepted = You accepted
+invite-more = Response options
+invite-more-all = More responses
+invite-with-comment = { $s ->
+    [accepted] Accept with a comment…
+    [tentative] Tentative with a comment…
+   *[declined] Decline with a comment…
+}
+invite-no-reply = { $s ->
+    [accepted] Accept without replying
+    [tentative] Tentative without replying
+   *[declined] Decline without replying
+}
+invite-comment-title = { $s ->
+    [accepted] Accept — comment to the organizer
+    [tentative] Tentative — comment to the organizer
+   *[declined] Decline — comment to the organizer
+}
+invite-comment-placeholder = For example: I will be 10 minutes late
+invite-comment-send = Send
+invite-comment-cancel = Cancel
+invite-sample-comment = I have a court hearing then — can we move it to Thursday?
 invite-done-tentative = You answered "Tentative"
 invite-done-declined = You declined
 invite-route = The reply goes through the server calendar · from invite.ics, parsed in the sandbox

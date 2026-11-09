@@ -23,6 +23,7 @@
 //! - **Изменения** — опрос `SyncFolderItems` календаря и контактов по таймеру синхронизации и по событиям сервера →
 //!   `CalendarChanged`, `ContactsLoaded`.
 
+use postman_core::invite::{Answer, Responded};
 use std::collections::HashMap;
 
 use postman_calendar::{Busy, Event, EventStatus, Invitation, Partstat, Span};
@@ -466,24 +467,31 @@ impl EwsAreas {
 
     /// Ответ на приглашение по встрече в календаре около приглашения ([`pick`]); встречи нет — `false` (ответ письмом).
     /// Приглашение на серию — ответ всей серии (по экземпляру сервер ответил бы только ему), на один экземпляр — ему.
-    pub async fn answer(&mut self, invite: &Invitation, status: Partstat) -> Result<bool, Error> {
-        let Some(reply) = reply(status) else { return Ok(false) };
+    /// `answer` (T2-15): комментарий — текст ответа Exchange, «без ответа» — [`Client::respond_quietly`].
+    pub async fn answer(&mut self, invite: &Invitation, status: Partstat, answer: &Answer) -> Result<Responded, Error> {
+        let Some(reply) = reply(status) else { return Ok(Responded::NoCopy) };
         let ev = &invite.event;
         self.events(ev.span.start - AROUND, ev.span.end.max(ev.span.start) + AROUND).await?;
         let found = pick(self.items.iter().map(|(id, k)| (id.as_str(), k.kind, &k.event)), &ev.id, &ev.uid, ev.span.start)
             .map(|(id, kind)| (ItemId { id: id.to_owned(), change_key: self.items.get(id).and_then(|k| k.change_key.clone()) }, kind));
-        let Some((mut id, kind)) = found else { return Ok(false) };
+        let Some((mut id, kind)) = found else { return Ok(Responded::NoCopy) };
         if !for_instance(invite)
             && matches!(kind, ItemKind::Occurrence | ItemKind::Exception)
             && let Some(master) = self.client.master_of(&id).await?
         {
             id = master.id;
         }
-        self.client.respond(&id, reply, None, true).await?;
+        let done = if answer.silent {
+            self.client.respond_quietly(&id, reply).await?;
+            Responded::Kept
+        } else {
+            self.client.respond(&id, reply, answer.comment(), true).await?;
+            Responded::Sent
+        };
         // Ответ меняет встречу (у «Отклонить» — убирает): эту серию — перечитать.
         let uid = self.items.get(&id.id).map(|k| k.event.uid.clone()).unwrap_or_else(|| ev.uid.clone());
         self.items.retain(|item, k| *item != id.id && !(!uid.is_empty() && k.event.uid.eq_ignore_ascii_case(&uid)));
-        Ok(true)
+        Ok(done)
     }
 
     /// Люди справочника по строке страницей с `offset` и есть ли ещё: `FindPeople`, сервер его не знает —
@@ -618,8 +626,13 @@ impl Areas for EwsAreas {
         Box::pin(self.command(cmd, ctx))
     }
 
-    fn respond<'a>(&'a mut self, invite: &'a Invitation, status: Partstat) -> BoxFuture<'a, postman_core::model::Result<bool>> {
-        Box::pin(async move { self.answer(invite, status).await.map_err(crate::core_error) })
+    fn respond<'a>(
+        &'a mut self,
+        invite: &'a Invitation,
+        status: Partstat,
+        answer: &'a Answer,
+    ) -> BoxFuture<'a, postman_core::model::Result<Responded>> {
+        Box::pin(async move { self.answer(invite, status, answer).await.map_err(crate::core_error) })
     }
 
     /// Задач по EWS у Postman нет (`Features` их не объявляет) — шагу поручения нечего отправлять.
