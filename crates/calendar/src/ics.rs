@@ -77,6 +77,16 @@ impl NewEvent<'_> {
                 l.push(format!("ATTENDEE{};ROLE={role};PARTSTAT=NEEDS-ACTION;RSVP=TRUE;SCHEDULE-AGENT=SERVER:mailto:{email}", cn(name)));
             }
         }
+        // Моё напоминание (T2-08б): VALARM в моей копии; приглашения участникам сервер собирает сам.
+        if let Some(secs) = self.alert_secs.filter(|s| *s > 0) {
+            l.extend([
+                "BEGIN:VALARM".to_string(),
+                "ACTION:DISPLAY".into(),
+                format!("DESCRIPTION:{}", text(self.title)),
+                format!("TRIGGER:-{}", crate::format_duration(secs)),
+                "END:VALARM".into(),
+            ]);
+        }
         l.extend(["END:VEVENT".to_string(), "END:VCALENDAR".into()]);
         Ok(join(&l))
     }
@@ -461,6 +471,7 @@ mod tests {
     fn meeting_is_a_vevent_scheduled_by_the_server() {
         let attendees = [("User 2", "user2@itt.test", false), ("Переговорная", "room@itt.test", true)];
         let e = NewEvent {
+            alert_secs: None,
             uid: "u1@postman",
             calendar_id: "",
             title: "Планёрка; итоги",
@@ -480,6 +491,12 @@ mod tests {
         assert!(lines.iter().any(|l| l.starts_with("ATTENDEE;CN=\"User 2\";ROLE=REQ-PARTICIPANT;") && l.contains("SCHEDULE-AGENT=SERVER")));
         assert!(lines.iter().any(|l| l.contains("ROLE=OPT-PARTICIPANT") && l.ends_with("mailto:room@itt.test")));
         // Без участников — просто событие: ни организатора, ни рассылки.
+        assert!(!ics.contains("VALARM"));
+        // Моё напоминание (T2-08б) — VALARM в моей копии.
+        let remind = NewEvent { alert_secs: Some(600), ..e };
+        let ics = remind.to_ics(0).unwrap();
+        assert!(ics.contains("BEGIN:VALARM\r\nACTION:DISPLAY\r\n"), "{ics}");
+        assert!(ics.contains("TRIGGER:-PT10M\r\nEND:VALARM\r\nEND:VEVENT"), "{ics}");
         let alone = NewEvent { attendees: &[], ..e };
         assert!(!alone.to_ics(0).unwrap().contains("ORGANIZER"));
     }
@@ -522,6 +539,7 @@ mod tests {
     }
     fn meeting(attendees: &'static [(&'static str, &'static str, bool)]) -> NewEvent<'static> {
         NewEvent {
+            alert_secs: None,
             uid: "s1",
             calendar_id: "",
             title: "Планёрка, новая",

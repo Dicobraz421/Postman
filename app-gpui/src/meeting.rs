@@ -97,6 +97,9 @@ pub(crate) struct MeetingModel {
     /// «Начинать встречи на 5 мин позже» («Настройки → Календарь», T2-08): у новой встречи начало по сетке (:00, :15,
     /// :30, :45) сдвигается на 5 мин при отправке, конец — прежний. Правка своей встречи — без сдвига.
     pub(crate) late: bool,
+    /// Напоминание новой встречи, с («Настройки → Календарь → Напоминание по умолчанию», T2-08б): `Some(0)` — нет;
+    /// правка своей встречи — `None`, напоминание на сервере не трогаем.
+    pub(crate) reminder: Option<i64>,
     pub(crate) status: Status,
     /// Тикет отправки, итог которой ждём.
     sending: Option<u64>,
@@ -256,6 +259,7 @@ impl MeetingModel {
             description: String::new(),
             from: None,
             late: false,
+            reminder: None,
             status: Status::None,
             sending: None,
             editing: None,
@@ -373,6 +377,7 @@ impl MeetingModel {
         let required = self.people();
         let optional = self.optional_people().into_iter().filter(|(_, e)| !required.iter().any(|(_, r)| r.eq_ignore_ascii_case(e))).collect();
         Ok(Meeting {
+            reminder_secs: self.reminder,
             uid,
             title: self.title.trim().to_string(),
             location: self.location.trim().to_string(),
@@ -524,6 +529,7 @@ impl Mailer {
         let duration = cal.duration_secs();
         let mut model = model.unwrap_or_else(|| MeetingModel::new(default_start(&now), duration));
         model.late = cal.start_late && model.editing.is_none();
+        model.reminder = model.editing.is_none().then(|| i64::from(cal.reminder) * 60);
         self.meetings.pending.push(model);
         cx.notify();
     }

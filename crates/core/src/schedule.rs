@@ -29,6 +29,9 @@ pub struct Meeting {
     /// Организатор — адрес «От» вкладки встречи (S7-03б): по нему встреча уходит в свою учётную запись профиля, а
     /// организатором становится этот Identity; `None` — первый Identity основной учётной записи.
     pub from: Option<String>,
+    /// Моё напоминание до начала, с (T2-08б, «Настройки → Календарь → Напоминание по умолчанию»): `Some(0)` — без
+    /// напоминания, `None` — не трогать (как решит сервер).
+    pub reminder_secs: Option<i64>,
 }
 
 impl Meeting {
@@ -51,6 +54,7 @@ impl Meeting {
             duration_secs: self.duration_secs,
             organizer,
             attendees,
+            alert_secs: self.reminder_secs,
         }
     }
 
@@ -134,6 +138,7 @@ mod tests {
     #[test]
     fn meeting_becomes_an_invitation() {
         let m = Meeting {
+            reminder_secs: None,
             uid: "u1@postman".into(),
             title: "Планёрка".into(),
             location: "Переговорная 1".into(),

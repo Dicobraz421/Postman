@@ -206,6 +206,7 @@ fn ews_event_round_trip() {
             let (state, _) = sync_to_end(&mut c, None).await;
             let start = (now() / 3600 + 48) * 3600;
             let item = NewItem {
+                reminder_minutes: None,
                 title: format!("Проверка {tag}"),
                 description: "Строка 1\nСтрока 2".into(),
                 location: "Нигде".into(),
@@ -264,6 +265,7 @@ fn ews_recurring_series() {
             }
             let start = day.at(10, 0, 0, 0).to_zoned(tz).unwrap().timestamp().as_second();
             let item = NewItem {
+                reminder_minutes: None,
                 title: format!("Серия {tag}"),
                 description: String::new(),
                 location: String::new(),
@@ -307,6 +309,7 @@ fn ews_meeting_cycle() {
             let (mut c1, mut c2) = (client(&a).await, client(&b).await);
             let start = (now() / 3600 + 72) * 3600;
             let item = NewItem {
+                reminder_minutes: None,
                 title: format!("Встреча {tag}"),
                 description: "Проверка приглашений".into(),
                 location: String::new(),
