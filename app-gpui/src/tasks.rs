@@ -3051,6 +3051,8 @@ pub(crate) mod scenes {
         Scene::new("delegations-out", delegations, delegations_ready),
         // «Поручения» → «Мне поручили»: новые, в работе, на проверке.
         Scene::new("delegations-in", delegations, delegations_ready),
+        // Поручение, где я наблюдатель (T2-03): «Вы наблюдаете», «Поручитель: …», без кнопок.
+        Scene::new("delegation-watch", delegations, delegations_ready),
         // «Отправленные» с быстрым фильтром «Ждём»: письма моих невыполненных поручений и «Ждём ответа».
         Scene::new("quick-wait", quick_wait, quick_wait_ready),
         // Письмо-поручение: карточка поручения над текстом письма.
@@ -3129,7 +3131,11 @@ pub(crate) mod scenes {
         use postman_core::assign::Tab;
         m.set_section(Section::Tasks, cx);
         m.tasks.update(cx, |t, cx| {
-            if s.name == "delegations-out" {
+            if s.name == "delegation-watch" {
+                t.own_only = false;
+                t.set_tab(Tab::ByMe, cx);
+                t.select_title(d::WATCHED, cx);
+            } else if s.name == "delegations-out" {
                 t.own_only = false;
                 t.set_tab(Tab::ByMe, cx);
                 t.select_title(d::REVIEW, cx);

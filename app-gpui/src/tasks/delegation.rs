@@ -111,9 +111,32 @@ impl State {
     }
 }
 
+/// Текст комментария поручения строками: строки «- », «* », «• » — пунктами списка с точкой, как на макете
+/// `TaskAssigned` (разметку целиком не разбираем: текст чужой, разбор — только в воркере).
+fn comment_lines(text: &str, l: &Look) -> Div {
+    let rows = text.trim().lines().map(|line| {
+        let t = line.trim_end();
+        match t.trim_start().strip_prefix("- ").or_else(|| t.trim_start().strip_prefix("* ")).or_else(|| t.trim_start().strip_prefix("• ")) {
+            Some(item) => div()
+                .flex()
+                .gap(px(8.))
+                .child(div().mt(px(8.)).ml(px(4.)).size(px(4.)).flex_none().rounded_full().bg(l.text2()))
+                .child(div().min_w_0().child(item.to_owned())),
+            None => div().min_w_0().child(t.to_owned()),
+        }
+    });
+    div().flex().flex_col().gap(px(3.)).line_height(px(19.)).children(rows)
+}
+
 /// Кто я в поручении.
 fn owner_side(t: &Task, me: &str) -> bool {
     t.organizer().is_some_and(|o| o.email.eq_ignore_ascii_case(me))
+}
+
+/// Я только наблюдаю (T2-03, макет `TasksDelegated` — «Вы наблюдаете»): не поручивший и не исполнитель. Действий у
+/// наблюдателя нет: ядро отвечает на них `WrongSide`.
+pub(crate) fn watcher_side(t: &Task, me: &str) -> bool {
+    !owner_side(t, me) && assign::is_watched_by(t, me) && !assign::assignee(t).is_some_and(|w| w.email.eq_ignore_ascii_case(me))
 }
 
 /// Главное действие поручения для Space: что по макету залито акцентом.
@@ -770,7 +793,10 @@ impl TasksView {
     /// Space у поручения: главное действие стороны (принять результат, согласиться, принять, в работе, готово).
     /// `false` — у поручения его нет (Space ничего не делает).
     pub(crate) fn deleg_primary(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some((_, st, owner)) = self.delegation() else { return false };
+        let Some((t, st, owner)) = self.delegation() else { return false };
+        if watcher_side(&t, &self.me_email()) {
+            return true;
+        }
         if let Some(a) = primary(st, owner) {
             self.deleg_act(a, String::new(), cx);
         }
@@ -779,7 +805,10 @@ impl TasksView {
 
     /// Insert у поручения: срок — изменить (поручивший) или предложить (исполнитель).
     pub(crate) fn deleg_due(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some((_, st, owner)) = self.delegation() else { return false };
+        let Some((t, st, owner)) = self.delegation() else { return false };
+        if watcher_side(&t, &self.me_email()) {
+            return true;
+        }
         let edit = if owner { Edit::ChangeDue } else { Edit::Propose };
         let action = if owner { Action::ChangeDue } else { Action::ProposeDue };
         if assign::next(st, action).is_ok() {
@@ -931,8 +960,22 @@ impl TasksView {
         let me = self.me_email();
         let now = self.now();
         let tz = self.tz.clone();
-        let other = if owner { assign::assignee(t) } else { t.organizer() };
+        // Наблюдатель видит поручение, как поручивший (исполнитель, статус, лента шагов), но без действий.
+        let watch = !owner && watcher_side(t, &me);
+        let owner_view = owner || watch;
+        let other = if owner_view { assign::assignee(t) } else { t.organizer() };
         let other_name = other.map(|p| if p.name.is_empty() { p.email.clone() } else { p.name.clone() }).unwrap_or_default();
+        let owner_name = t.organizer().map(|p| if p.name.is_empty() { p.email.clone() } else { p.name.clone() }).unwrap_or_default();
+        let place = t.project.clone().unwrap_or_default();
+        let place = if watch {
+            if place.is_empty() {
+                tr!("assign-watch-owner", name = owner_name)
+            } else {
+                tr!("assign-watch-owner-in", name = owner_name, project = place)
+            }
+        } else {
+            place
+        };
         let chip = div()
             .h(px(22.))
             .px(px(8.))
@@ -942,7 +985,13 @@ impl TasksView {
             .bg(l.pm(Pm::Secondary))
             .text_color(l.pm(Pm::SecondaryFg))
             .whitespace_nowrap()
-            .child(tr!(if owner { "assign-chip-mine" } else { "assign-chip-theirs" }));
+            .child(tr!(if watch {
+                "assign-chip-watch"
+            } else if owner {
+                "assign-chip-mine"
+            } else {
+                "assign-chip-theirs"
+            }));
         let top = div()
             .flex()
             .items_center()
@@ -950,7 +999,7 @@ impl TasksView {
             .text_size(px(12.))
             .text_color(l.text2())
             .child(chip)
-            .child(div().flex_1().min_w_0().truncate().child(t.project.clone().unwrap_or_default()));
+            .child(div().flex_1().min_w_0().truncate().child(place));
         let title = div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).line_height(px(26.)).child(t.title.clone());
         let person = div()
             .flex()
@@ -959,7 +1008,7 @@ impl TasksView {
             .child(crate::calendar::avatar(&other_name, 32., &l))
             .child(
                 div().flex_1().min_w_0().flex().flex_col().child(div().font_weight(FontWeight::SEMIBOLD).truncate().child(other_name.clone())).child(
-                    div().text_size(px(12.)).text_color(l.text2()).child(tr!(if owner { "assign-role-assignee" } else { "assign-role-owner" })),
+                    div().text_size(px(12.)).text_color(l.text2()).child(tr!(if owner_view { "assign-role-assignee" } else { "assign-role-owner" })),
                 ),
             )
             .child(
@@ -968,7 +1017,7 @@ impl TasksView {
                     .items_center()
                     .gap(px(6.))
                     .child(status_circle(st, 20., &l))
-                    .child(div().text_size(px(12.)).child(status_text(st, owner))),
+                    .child(div().text_size(px(12.)).child(status_text(st, owner_view))),
             );
         let head = div().pt(px(16.)).px(px(20.)).flex().flex_col().gap(px(10.)).flex_none().child(top).child(title).child(person);
         let rib = div().mx(px(20.)).mt(px(14.)).flex_none().child(ribbon(t, st, owner, now, &tz, &l));
@@ -1029,37 +1078,42 @@ impl TasksView {
             Status::Proposed => Some((StepKind::Proposed, "assign-note-proposed")),
             Status::Declined => Some((StepKind::Declined, "assign-note-declined")),
             Status::InProgress => Some((StepKind::Returned, "assign-note-returned")),
-            Status::Waiting | Status::Accepted => Some((StepKind::Assigned, "assign-note-assigned")),
-            Status::Revoked => None,
+            Status::Waiting | Status::Accepted | Status::Revoked => None,
         };
-        let note = note_kind.and_then(|(k, head)| steps.iter().rev().find(|s| s.kind == k && !s.comment.is_empty()).map(|s| (head, s.clone()))).map(
-            |(head, s)| {
-                div()
-                    .mx(px(20.))
-                    .mt(px(12.))
-                    .p(px(12.))
-                    .flex_none()
-                    .flex()
-                    .flex_col()
-                    .gap(px(4.))
-                    .rounded(px(6.))
-                    .border_1()
-                    .border_color(l.stroke())
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(8.))
-                            .child(div().font_weight(FontWeight::SEMIBOLD).child(tr!(head)))
-                            .child(div().text_size(px(12.)).text_color(l.text2()).child(when(s.at, now, &tz))),
-                    )
-                    .child(div().line_height(px(19.)).child(s.comment.clone()))
-            },
-        );
+        // Описание поручения (комментарий поручившего) — во всех статусах (T2-05, макет `TaskAssigned`), заметка шага —
+        // под ним.
+        let assigned =
+            steps.iter().find(|s| s.kind == StepKind::Assigned && !s.comment.trim().is_empty()).map(|s| ("assign-note-assigned", s.clone()));
+        let step_note = note_kind.and_then(|(k, head)| steps.iter().rev().find(|s| s.kind == k && !s.comment.is_empty()).map(|s| (head, s.clone())));
+        let notes = assigned.into_iter().chain(step_note).map(|(head, s)| {
+            div()
+                .mx(px(20.))
+                .mt(px(12.))
+                .p(px(12.))
+                .flex_none()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .rounded(px(6.))
+                .border_1()
+                .border_color(l.stroke())
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(8.))
+                        .child(div().font_weight(FontWeight::SEMIBOLD).child(tr!(head)))
+                        .child(div().text_size(px(12.)).text_color(l.text2()).child(when(s.at, now, &tz))),
+                )
+                .child(comment_lines(&s.comment, &l))
+        });
+        let notes: Vec<_> = notes.collect();
         // Кнопки — по статусу и стороне (макеты).
         let mut b1: Vec<Stateful<Div>> = Vec::new();
         let mut b2: Vec<Stateful<Div>> = Vec::new();
         let mut done_text: Option<String> = None;
-        if owner {
+        if watch {
+            // Наблюдатель: кнопок нет.
+        } else if owner {
             match st {
                 Status::Done => {
                     b1.push(self.deleg_button("assign-accept-result", tr!("assign-accept-result"), true, Action::AcceptResult, &l, cx));
@@ -1187,7 +1241,7 @@ impl TasksView {
             .child(head)
             .child(rib)
             .child(fields)
-            .children(note)
+            .children(notes)
             .children(form)
             .children(buttons)
             .child(history)

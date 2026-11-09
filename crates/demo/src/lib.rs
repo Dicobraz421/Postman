@@ -1356,7 +1356,18 @@ pub mod delegations {
                 (6, 18),
                 today,
                 now,
-                &[(30, PETROV, K::Assigned, ""), (28, VOLKOV, K::Accepted, ""), (3, VOLKOV, K::Started, "")],
+                &[
+                    (
+                        30,
+                        PETROV,
+                        K::Assigned,
+                        "Обнови регламент под новый SLA:
+- сроки реакции L1–L3
+- кто эскалирует ночью",
+                    ),
+                    (28, VOLKOV, K::Accepted, ""),
+                    (3, VOLKOV, K::Started, ""),
+                ],
             )),
             letter_task(today),
         ];
