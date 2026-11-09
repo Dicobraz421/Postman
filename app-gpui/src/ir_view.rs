@@ -429,17 +429,18 @@ fn fit(w: f32, h: f32, col: f32) -> (f32, f32) {
 fn text(items: &[Inline], key: &str, hits: &Hits, l: &Look) -> AnyElement {
     let (mut text, mut hl, mut links) = (String::new(), Vec::new(), Vec::new());
     flatten(items, &mut text, &mut hl, &mut links, l);
+    let visible: Vec<String> = links.iter().map(|(r, _, _)| text.get(r.clone()).unwrap_or_default().to_owned()).collect();
     let (styled, at) = hit_text(text, hl, hits, l);
     let layout = styled.layout().clone();
     let el = if links.is_empty() {
         styled.into_any_element()
     } else {
         let ranges: Vec<_> = links.iter().map(|(r, _, _)| r.clone()).collect();
-        let hrefs: Vec<String> = links.into_iter().map(|(_, h, _)| h).collect();
+        let hrefs: Vec<(String, bool)> = links.into_iter().map(|(_, h, s)| (h, s)).collect();
         InteractiveText::new(SharedString::from(key.to_string()), styled)
             .on_click(ranges, move |ix, _window, cx| {
-                if let Some(h) = hrefs.get(ix) {
-                    cx.open_url(h);
+                if let Some((h, suspicious)) = hrefs.get(ix) {
+                    open_link(h, *suspicious, visible.get(ix).map(String::as_str).unwrap_or_default(), cx);
                 }
             })
             .into_any_element()
@@ -448,6 +449,26 @@ fn text(items: &[Inline], key: &str, hits: &Hits, l: &Look) -> AnyElement {
         Some(at) => reveal_at(el, layout, at, hits),
         None => el,
     }
+}
+
+/// Переход по ссылке письма. Текст ссылки похож на другой адрес («Предупреждать о несовпадении текста и адреса»,
+/// T2-07, макет `SettingsSecurity`): не открывать сразу, а показать настоящий адрес тостом с «Перейти» — без окна
+/// подтверждения. Выключено — как обычная ссылка.
+pub fn open_link(href: &str, suspicious: bool, visible: &str, cx: &mut App) {
+    if !(suspicious && crate::prefs::get(cx).reading.warn_link_mismatch) {
+        cx.open_url(href);
+        return;
+    }
+    let host = url_host(href);
+    let text = tr!("reading-link-mismatch", shown = visible.trim().trim_start_matches('⚠').to_owned(), host = host);
+    let target = href.to_owned();
+    let go = pets_ui::ToastAction::new(tr!("reading-link-go"), move |_, cx| cx.open_url(&target));
+    crate::notices::push_action_anywhere(cx, pets_ui::Level::Warning, text, go);
+}
+
+/// Хост адреса для показа; не разобрался — адрес целиком.
+fn url_host(href: &str) -> String {
+    href.split_once("://").map_or(href, |(_, r)| r).split(['/', '?', '#']).next().unwrap_or(href).to_owned()
 }
 
 /// gpui требует непересекающиеся выделения по возрастанию: ссылка поверх жирного и т.п. сливаем.

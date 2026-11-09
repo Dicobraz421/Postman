@@ -182,6 +182,7 @@ impl Mailer {
             }
             n
         });
+        cx.set_global(crate::notices::Shared(toasts.downgrade()));
         let summary = cx.new(|_| crate::bulk::SummaryView::new());
         let cal = cx.new(|cx| calendar::CalendarView::new(window, cx));
         let worker = reading.read(cx).worker.clone();

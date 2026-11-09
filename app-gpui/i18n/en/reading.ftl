@@ -48,3 +48,5 @@ reading-weekday = { $d ->
     [5] Sat
    *[6] Sun
 }
+reading-link-mismatch = The link text says “{ $shown }”, but it leads to { $host }. Go to the real address?
+reading-link-go = Go

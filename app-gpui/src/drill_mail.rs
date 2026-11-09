@@ -46,6 +46,11 @@ macro_rules! until {
     };
 }
 
+const LINK: &[Input] = &[Input::Run(|_, _, _, cx| {
+    crate::ir_view::open_link("https://evil.example/login", true, "https://bank.example/secure", cx);
+    Ok(())
+})];
+
 const fn scene(name: &'static str, ready: screens::Ready, input: &'static [Input]) -> Scene {
     Scene::new(name, start, ready).input(input).on_request()
 }
@@ -55,6 +60,9 @@ const fn from(name: &'static str, enter: screens::Enter, ready: screens::Ready, 
 }
 
 const SCENES: &[Scene] = &[
+    // T2-07: подменённая ссылка («https://bank.example/secure» ведёт на evil.example) не открывается сразу — тост с
+    // настоящим адресом и «Перейти».
+    scene("mail-t207-link", |_, m, cx| m.toasts.read(cx).latest().is_some_and(|t| t.contains("evil.example")), LINK),
     // Раздел 6, шаги 4, 5: щелчок по тосту закрывает его и не выбирает письмо; 🔔 — история, счётчик обнулён; Esc закрывает.
     scene("mail-06-toast", toast_ready, TOAST),
     // Раздел 7, шаги 1, 7: курсор в «Кому»; Ctrl+Enter: «Не отправлено», тост, текст на месте. Раздел 35, шаг 4: Alt+S не отправляет.
