@@ -94,6 +94,9 @@ pub(crate) struct MeetingModel {
     pub(crate) description: String,
     /// «От» (S7-03б): адрес организатора — учётная запись профиля, куда уходит встреча; `None` — основная.
     pub(crate) from: Option<String>,
+    /// «Начинать встречи на 5 мин позже» («Настройки → Календарь», T2-08): у новой встречи начало по сетке (:00, :15,
+    /// :30, :45) сдвигается на 5 мин при отправке, конец — прежний. Правка своей встречи — без сдвига.
+    pub(crate) late: bool,
     pub(crate) status: Status,
     /// Тикет отправки, итог которой ждём.
     sending: Option<u64>,
@@ -147,6 +150,9 @@ pub(crate) fn parse_time(s: &str) -> Option<Time> {
 }
 
 /// Начало новой встречи по умолчанию: ближайшие полчаса в рабочее время, иначе 10:00 следующего рабочего дня.
+/// Сдвиг начала «на 5 мин позже», с.
+const LATE: i64 = 5 * 60;
+
 pub(crate) fn default_start(now: &jiff::Zoned) -> DateTime {
     let mins = i64::from(now.hour()) * 60 + i64::from(now.minute());
     let next = (mins / 30 + 1) * 30;
@@ -249,9 +255,20 @@ impl MeetingModel {
             optional: String::new(),
             description: String::new(),
             from: None,
+            late: false,
             status: Status::None,
             sending: None,
             editing: None,
+        }
+    }
+
+    /// Начало и длительность, с которыми встреча уйдёт: с «на 5 мин позже» — сдвинутые.
+    pub(crate) fn sent_time(&self, start: DateTime) -> (DateTime, i64) {
+        let on_grid = start.minute() % 15 == 0 && start.second() == 0;
+        if self.late && self.editing.is_none() && on_grid && self.duration > LATE * 2 {
+            (start.checked_add(jiff::Span::new().seconds(LATE)).unwrap_or(start), self.duration - LATE)
+        } else {
+            (start, self.duration)
         }
     }
 
@@ -344,6 +361,7 @@ impl MeetingModel {
             return Err(Status::BadAddresses(bad));
         }
         let start = self.start_at(today).ok_or_else(|| Status::BadTime(format!("{} {}", self.date.trim(), self.start.trim())))?;
+        let (start, duration) = self.sent_time(start);
         // Зона без имени IANA (редко на Windows) — время в UTC: сервер его поймёт.
         let (start, time_zone) = match tz.iana_name() {
             Some(name) => (start, name.to_string()),
@@ -361,7 +379,7 @@ impl MeetingModel {
             description: self.description.trim().to_string(),
             start,
             time_zone,
-            duration_secs: self.duration,
+            duration_secs: duration,
             attendees: required,
             optional,
             from: self.from.clone(),
@@ -502,8 +520,11 @@ impl Mailer {
         self.load_address_book(cx);
         let now = jiff::Zoned::now();
         // Длительность новой встречи — «Настройки → Календарь» (S5-20).
-        let duration = crate::prefs::get(cx).calendar.duration_secs();
-        self.meetings.pending.push(model.unwrap_or_else(|| MeetingModel::new(default_start(&now), duration)));
+        let cal = crate::prefs::get(cx).calendar;
+        let duration = cal.duration_secs();
+        let mut model = model.unwrap_or_else(|| MeetingModel::new(default_start(&now), duration));
+        model.late = cal.start_late && model.editing.is_none();
+        self.meetings.pending.push(model);
         cx.notify();
     }
 
@@ -1728,6 +1749,15 @@ impl MeetingView {
                     .child(end),
             )
             .child(div().ml(px(4.)).text_size(px(12.)).text_color(l.text2()).child(duration_text(self.model.duration)))
+            .children(self.late_note().map(|t| div().ml(px(8.)).text_size(px(12.)).text_color(l.text2()).child(t)))
+    }
+
+    /// «Начнётся в 10:05» у времени, если встреча уйдёт со сдвигом «на 5 мин позже» (T2-08).
+    fn late_note(&self) -> Option<String> {
+        let today = jiff::Zoned::now().date();
+        let start = self.model.start_at(today)?;
+        let (sent, _) = self.model.sent_time(start);
+        (sent != start).then(|| tr!("meeting-late", time = sent.strftime("%H:%M").to_string()))
     }
 
     fn description_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2793,6 +2823,20 @@ mod tests {
         let at = "2026-10-22T15:30:00Z".parse::<jiff::Timestamp>().unwrap().as_second();
         m.set_slot(Span::new(at, at + 5400), &tz);
         assert_eq!((m.date.as_str(), m.start.as_str(), m.duration), ("22.10.2026", "15:30", 5400));
+    }
+
+    /// «На 5 мин позже» (T2-08): начало по сетке сдвигается, конец прежний; правка своей встречи и не по сетке — нет.
+    #[test]
+    fn late_start_keeps_the_end() {
+        let start: jiff::civil::DateTime = "2026-10-20T10:00:00".parse().unwrap();
+        let mut m = MeetingModel::new(start, 1800);
+        assert_eq!(m.sent_time(start), (start, 1800), "выключено — как есть");
+        m.late = true;
+        assert_eq!(m.sent_time(start), ("2026-10-20T10:05:00".parse().unwrap(), 1500));
+        let odd: jiff::civil::DateTime = "2026-10-20T10:07:00".parse().unwrap();
+        assert_eq!(m.sent_time(odd), (odd, 1800), "не по сетке — как есть");
+        m.duration = 600;
+        assert_eq!(m.sent_time(start), (start, 600), "короткая — как есть");
     }
 
     #[test]
