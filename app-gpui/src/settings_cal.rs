@@ -375,7 +375,7 @@ impl SettingsView {
             .text_size(px(11.))
             .text_color(l.text2())
             .child(tr!("settings-cal-recommended"));
-        let late_badges = div().flex().items_center().gap_2().child(recommended).child(stored(l));
+        let late_badges = div().flex().items_center().gap_2().child(recommended);
         let late_hint = if c.start_late { tr!("settings-cal-late-on") } else { tr!("settings-cal-late-off") };
         let optional_hint = if c.with_optional { tr!("settings-cal-optional-on") } else { tr!("settings-cal-optional-off") };
         div()

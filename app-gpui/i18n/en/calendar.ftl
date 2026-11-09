@@ -274,6 +274,7 @@ meeting-link-change = Free/busy link for { $email }
 meeting-link-set = Set link
 meeting-link-loading = Loading free/busy from the link…
 meeting-link-failed = Free/busy link is unavailable
+meeting-late = starts at { $time } — 5 min late
 meeting-link-title = Free/busy link for { $email }
 meeting-link-placeholder = https://… — FBURL or an .ics calendar
 meeting-link-bad = Needs an https:// link with a server name
