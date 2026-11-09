@@ -310,6 +310,7 @@ fn invite(uid: &str) -> postman_calendar::Invitation {
         status: postman_calendar::Partstat::NeedsAction,
     };
     let event = postman_calendar::Event {
+        time_zone: None,
         private: false,
         recurrence: None,
         alert_secs: None,

@@ -175,6 +175,38 @@ pub(crate) fn zone_label(tz: &TimeZone) -> String {
     if short.is_empty() || short.starts_with(['+', '-']) { utc } else { format!("{short} ({utc})") }
 }
 
+/// «Время организатора» (T2-17): у встречи свой пояс и в нём другой сдвиг, чем у меня, — «16:00–18:00 ·
+/// Yekaterinburg (UTC+5)». Весь день и «плавающее» время — `None`.
+pub(crate) fn organizer_time(e: &Event, mine: &TimeZone) -> Option<String> {
+    if e.all_day {
+        return None;
+    }
+    let name = e.time_zone.as_deref()?;
+    let theirs = TimeZone::get(name).ok()?;
+    let at = jiff::Timestamp::from_second(e.span.start).ok()?;
+    let (a, b) = (theirs.to_offset(at), mine.to_offset(at));
+    if a == b {
+        return None;
+    }
+    let secs = a.seconds();
+    let (sign, abs) = if secs < 0 { ('−', -secs) } else { ('+', secs) };
+    let utc = if abs % 3600 == 0 { format!("UTC{sign}{}", abs / 3600) } else { format!("UTC{sign}{}:{:02}", abs / 3600, abs % 3600 / 60) };
+    let range = format!("{}–{}", hm(e.span.start, &theirs), hm(e.span.end, &theirs));
+    // Город пояса, а не весь идентификатор: «Asia/Yekaterinburg» → «Yekaterinburg».
+    let city = name.rsplit('/').next().unwrap_or(name).replace('_', " ");
+    Some(tr!("cal-details-organizer-time", time = range, zone = format!("{city} ({utc})")))
+}
+
+/// Кому «Написать участникам»: все участники и организатор, кроме меня.
+fn write_list(e: &Event, me: Option<&str>) -> Vec<Address> {
+    e.participants
+        .iter()
+        .filter(|p| p.attendee || p.owner)
+        .filter(|p| !me.is_some_and(|m| p.email.eq_ignore_ascii_case(m)) && !p.email.is_empty())
+        .map(|p| Address::new(&p.name, &p.email))
+        .collect()
+}
+
 /// Диапазон недели в заголовке: «19–23 октября 2026», через месяц — «29 сентября – 3 октября 2026».
 pub(crate) fn range_label(first: Date, last: Date) -> String {
     let month = |d: Date| tr!("cal-month-of", m = d.month());
@@ -1207,6 +1239,15 @@ impl CalendarView {
         self.how = Default::default();
         cx.emit(CalendarAction::Respond { event: Box::new(e.clone()), status, answer });
         cx.notify();
+    }
+
+    /// Ctrl+Shift+R (T2-17): «Написать участникам» открытого события; некому — ничего.
+    pub(crate) fn write_participants(&mut self, cx: &mut Context<Self>) {
+        let Some(e) = self.selected.and_then(|i| self.events.get(i)) else { return };
+        let to = write_list(e, self.me.as_deref());
+        if !to.is_empty() && e.participants.iter().filter(|p| p.attendee || p.owner).count() > 1 {
+            cx.emit(CalendarAction::Write(to));
+        }
     }
 
     /// Меню ▾ кнопки ответа (T2-15).
@@ -2854,7 +2895,8 @@ impl CalendarView {
                 let primary = s == Partstat::Accepted;
                 let b = if primary { crate::buttons::primary(id, l) } else { crate::buttons::secondary(id, l) };
                 let ink = crate::buttons::ink(primary, l);
-                b.flex_1()
+                // По подписи, а не поровну: «Под вопросом» длиннее остальных и иначе обрезается.
+                b.flex_auto()
                     .px(px(6.))
                     .min_w_0()
                     .overflow_hidden()
@@ -2988,6 +3030,13 @@ impl CalendarView {
                     .child(div().text_size(px(12.)).text_color(l.text2()).child(format!("{} · {}", duration_text(e.span.len()), zone_label(tz))))
                     .into_any_element(),
             ))
+            // Время организатора (T2-17): пояс встречи с другим сдвигом, чем мой, — его часы и пояс.
+            .when_some(organizer_time(e, tz), |d, t| d.child(row(g::GLOBE, div().text_color(l.text2()).child(t).into_any_element())))
+            // Моё напоминание (T2-17): «за 15 мин», «в начале»; не известно — строки нет.
+            .when_some(e.alert_secs, |d, s| {
+                let text = if s > 0 { tr!("cal-details-reminder", time = duration_text(s)) } else { tr!("cal-details-reminder-start") };
+                d.child(row(crate::chrome::glyph::RINGER, div().child(text).into_any_element()))
+            })
             // Правило известно (T2-13) — «Каждый вторник», иначе — что повторяется.
             .when(e.recurring || e.recurrence.is_some(), |d| {
                 let text = e
@@ -3101,11 +3150,7 @@ impl CalendarView {
                 .when(external, |d| d.child(chip_outline(tr!("cal-external"), l)))
                 .child(status_glyph(status, l))
         });
-        let write: Vec<Address> = people
-            .iter()
-            .filter(|p| !me.is_some_and(|m| p.email.eq_ignore_ascii_case(m)) && !p.email.is_empty())
-            .map(|p| Address::new(&p.name, &p.email))
-            .collect();
+        let write = write_list(e, me);
         let has_people = people.len() > 1;
         div()
             .id("event-details")
@@ -3144,13 +3189,17 @@ impl CalendarView {
                 )))
             })
             .when(!write.is_empty() && has_people, |d| {
-                d.child(div().flex_1()).child(
+                d.child(div().flex_1()).child(crate::keytips::command(
                     crate::buttons::secondary("write-all", l)
                         .justify_center()
                         .child(icon(g::MAIL, 14.))
                         .child(tr!("cal-write-participants"))
                         .on_click(cx.listener(move |_, _, _, cx| cx.emit(CalendarAction::Write(write.clone())))),
-                )
+                    "calendar.write_participants",
+                    Some(tr!("cal-write-participants")),
+                    l,
+                    cx,
+                ))
             })
     }
 }
@@ -3511,6 +3560,7 @@ fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
     .on_action(cx.listener(|this, _: &calendar::ViewWorkWeek, _, cx| this.calendar_view(postman_core::prefs::CalendarView::WorkWeek, cx)))
     .on_action(cx.listener(|this, _: &calendar::ViewWeek, _, cx| this.calendar_view(postman_core::prefs::CalendarView::Week, cx)))
     .on_action(cx.listener(|this, _: &calendar::ViewMonth, _, cx| this.calendar_view(postman_core::prefs::CalendarView::Month, cx)))
+    .on_action(cx.listener(|this, _: &calendar::WriteParticipants, _, cx| this.cal.update(cx, |c, cx| c.write_participants(cx))))
 }
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
@@ -3519,7 +3569,7 @@ const TEXTS: &[pets_i18n::Resource] = &[("ru", include_str!("../i18n/ru/calendar
 // Имя — область действий (`calendar::…`), как в id команд: так обработчики читаются и их находит `docs/PARITY.md`.
 #[allow(clippy::module_inception)]
 pub(crate) mod calendar {
-    gpui_kit::actions!(calendar, [NewMeeting, PrevWeek, NextWeek, Today, ViewDay, ViewWorkWeek, ViewWeek, ViewMonth]);
+    gpui_kit::actions!(calendar, [NewMeeting, PrevWeek, NextWeek, Today, ViewDay, ViewWorkWeek, ViewWeek, ViewMonth, WriteParticipants]);
 }
 
 /// Команды части (`commands.rs`: контексты и `cmd`).
@@ -3536,6 +3586,8 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("calendar.view_work_week", &["2"], CALENDAR),
         cmd("calendar.view_week", &["3"], CALENDAR),
         cmd("calendar.view_month", &["4"], CALENDAR),
+        // «Написать участникам» открытого события (T2-17, макет `Calendar`): как «Ответить всем» в Outlook.
+        cmd("calendar.write_participants", &["ctrl-shift-r"], CALENDAR),
     ]
 };
 
@@ -3758,6 +3810,22 @@ pub(crate) mod scenes {
 
 #[cfg(test)]
 mod tests {
+
+    /// «У организатора» (T2-17): другой сдвиг — строка есть; тот же сдвиг или пояса нет — строки нет.
+    #[test]
+    fn organizer_time_only_for_another_offset() {
+        use jiff::tz::TimeZone;
+        let mut e = postman_demo::calendar::my_events().into_iter().next().unwrap();
+        e.all_day = false;
+        e.span = postman_calendar::Span::new(1_794_560_400, 1_794_564_000); // 2026-11-13 09:00–10:00 UTC
+        let msk = TimeZone::get("Europe/Moscow").unwrap();
+        e.time_zone = Some("Asia/Yekaterinburg".into());
+        assert!(super::organizer_time(&e, &msk).is_some());
+        e.time_zone = Some("Europe/Moscow".into());
+        assert_eq!(super::organizer_time(&e, &msk), None);
+        e.time_zone = None;
+        assert_eq!(super::organizer_time(&e, &msk), None);
+    }
 
     /// Событие в последние минуты дня: места меньше подписи, окно не падает.
     #[test]

@@ -90,6 +90,9 @@ pub struct Event {
     pub recurrence: Option<String>,
     /// Частное (T2-14): JSCalendar `privacy` не `public`, iCalendar `CLASS:PRIVATE`, EWS `Sensitivity` Private.
     pub private: bool,
+    /// Пояс встречи (IANA, JSCalendar `timeZone`, T2-17) — «время организатора» в подробностях; `None` — не известен
+    /// или «плавающее» время.
+    pub time_zone: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -220,6 +223,7 @@ impl Event {
             alert_secs: if raw.use_default_alerts == Some(true) { None } else { alert_before_start(&raw.alerts) },
             recurrence: rule.as_ref().and_then(crate::rrule::to_rrule),
             private: raw.privacy.as_deref().is_some_and(|p| p != "public"),
+            time_zone: raw.time_zone,
         })
     }
 

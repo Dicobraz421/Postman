@@ -129,6 +129,9 @@ cal-organizer = организатор
 cal-optional = необязательный
 cal-external = Внешний
 cal-write-participants = Написать участникам
+cal-details-reminder = Напоминание за { $time }
+cal-details-reminder-start = Напоминание в начале встречи
+cal-details-organizer-time = У организатора: { $time } · { $zone }
 
 # Вкладка встречи.
 meeting-title-new = Новая встреча

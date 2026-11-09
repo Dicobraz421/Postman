@@ -20,7 +20,8 @@ SUMMARY:Обсуждение пилота SIEM
 LOCATION:Teams
 DTSTART;TZID=Russian Standard Time:20261021T110000
 DTEND;TZID=Russian Standard Time:20261021T120000
-DESCRIPTION:Повестка: сроки и состав пилота
+DESCRIPTION:Повестка: сроки и состав пилота\nПрисоединиться к собранию Teams: 
+ https://teams.microsoft.com/l/meetup-join/19%3ameeting_pilot%40thread.v2/0
 STATUS:CONFIRMED
 END:VEVENT
 END:VCALENDAR
