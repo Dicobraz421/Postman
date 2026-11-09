@@ -1630,7 +1630,7 @@ impl Ews {
                     notify(Event::Error(e));
                 }
             }
-            Command::RespondInvite { invite, status, in_reply_to } => self.respond_invite(*invite, status, in_reply_to, notify).await,
+            Command::RespondInvite { invite, status, in_reply_to, answer } => self.respond_invite(*invite, status, in_reply_to, answer, notify).await,
             Command::Delegate { uid, ticket, .. } => {
                 notify(Event::Delegated { ticket, uid, error: Some("no tasks on the server".into()), scheduled: Vec::new() });
             }
@@ -1758,26 +1758,32 @@ impl Ews {
         inv: postman_calendar::Invitation,
         status: postman_calendar::Partstat,
         in_reply_to: Option<String>,
+        answer: postman_core::invite::Answer,
         notify: &impl Fn(Event),
     ) {
+        use postman_core::invite::{Delivery, Responded, delivery};
         let uid = inv.event.uid.clone();
+        let mut done = Responded::NoCopy;
         if let Some(a) = self.areas.as_mut() {
-            match a.answer(&inv, status).await {
-                Ok(true) => {
-                    notify(Event::InviteAnswered { uid, status, delivery: postman_core::invite::Delivery::Server });
-                    notify(Event::CalendarChanged);
-                    return;
-                }
-                Ok(false) => {}
+            match a.answer(&inv, status, &answer).await {
+                Ok(d) => done = d,
                 Err(e) => return notify(Event::InviteFailed { uid, error: e.to_string() }),
             }
         }
+        if done != Responded::NoCopy {
+            notify(Event::CalendarChanged);
+        }
+        let imported = match delivery(done, &answer) {
+            Ok(delivery) => return notify(Event::InviteAnswered { uid, status, delivery }),
+            Err(imported) => imported,
+        };
         let me = Address::new("", &self.email);
-        let Some(draft) = postman_core::invite::reply_draft(&inv, &me, status, in_reply_to, jiff::Timestamp::now().as_second()) else {
+        let now = jiff::Timestamp::now().as_second();
+        let Some(draft) = postman_core::invite::reply_draft(&inv, &me, status, answer.comment(), in_reply_to, now) else {
             return notify(Event::InviteFailed { uid, error: "the invitation has no organizer".into() });
         };
         match self.send(draft, None).await {
-            Ok(()) => notify(Event::InviteAnswered { uid, status, delivery: postman_core::invite::Delivery::Mail { imported: false } }),
+            Ok(()) => notify(Event::InviteAnswered { uid, status, delivery: Delivery::Mail { imported } }),
             Err(e) => notify(Event::InviteFailed { uid, error: e.to_string() }),
         }
     }

@@ -14,13 +14,14 @@ use gpui_kit::*;
 use jiff::tz::TimeZone;
 use pets_i18n::tr;
 use postman_calendar::{Event, Invitation, Partstat, Span, layout_day};
-use postman_core::invite::{Change, InviteState, Known, Outdated, Seen, classify, conflicts};
+use postman_core::invite::{Answer, Change, InviteState, Known, Outdated, Seen, classify, conflicts};
 use postman_core::sync::Event as SyncEvent;
 
 use crate::calendar::{FIRST_HOUR, HOURS, add_days, day_start, duration_text, g, hm, zoned};
 use crate::chrome::icon;
 use crate::reading::{ReadingEvent, ReadingPane, SyncRequest};
 use crate::roles::{Look, Pm};
+use gpui_kit::component::input::{Input, InputState};
 
 /// Лента дня: часов в окне карточки, высота часа, ширина боковой панели (макет Г1 и вариант с панелью справа).
 const CARD_HOURS: i64 = 6;
@@ -50,11 +51,22 @@ pub(crate) struct Card {
     pub(crate) changing: bool,
     /// Снимки: «сейчас» — здесь, а не по часам.
     pub(crate) clock: Option<i64>,
+    /// Меню ▾ и поле комментария (T2-15).
+    pub(crate) how: Choice,
 }
 
 impl Card {
     pub(crate) fn loading(blob_id: String) -> Self {
-        Self { state: State::Loading { blob_id }, answer: None, sending: None, day: None, day_pending: None, changing: false, clock: None }
+        Self {
+            state: State::Loading { blob_id },
+            answer: None,
+            sending: None,
+            day: None,
+            day_pending: None,
+            changing: false,
+            clock: None,
+            how: Choice::default(),
+        }
     }
 
     pub(crate) fn invitation(&self) -> Option<&Invitation> {
@@ -122,6 +134,7 @@ impl Card {
         }
         let Some(inv) = self.invitation().cloned() else { return };
         self.clock = Some(inv.event.span.start - 86_400);
+        self.how = Choice::default();
         match which {
             "answered" => self.answer = Some(Seen::of(&inv, Partstat::Accepted)),
             "updated" => {
@@ -378,7 +391,8 @@ fn length_chip(secs: i64, l: &Look) -> Div {
 
 /// Кнопки ответа: «Принять» — заливка, «Под вопросом» и «Отклонить» — тонированные, у всех — значок в круге; клавиша
 /// (A / T / N в схеме «Одиночные клавиши») — подсказкой «Название (клавиша)» и KeyTips, не в тексте кнопки (S5-18).
-fn answer_buttons(card: &Card, side: bool, l: &Look, cx: &mut Context<ReadingPane>) -> Vec<Stateful<Div>> {
+/// У каждой — ▾ «… с комментарием» / «… без ответа организатору» (T2-15, [`split`]).
+fn answer_buttons(card: &Card, side: bool, l: &Look, cx: &mut Context<ReadingPane>) -> Vec<Div> {
     let sending = card.sending;
     [
         ("invite-accept", "cal-accept", "invite.accept", Partstat::Accepted),
@@ -396,16 +410,18 @@ fn answer_buttons(card: &Card, side: bool, l: &Look, cx: &mut Context<ReadingPan
         let ink = crate::buttons::ink(primary, l);
         let b = b
             // Узкая панель: кнопка сужается, подпись — с многоточием (`shell` кнопки не сжимается).
-            .when(!side, |d| d.flex_grow(1.).flex_shrink(1.).min_w_0().overflow_hidden().max_w(px(160.)).px(px(8.)))
-            .when(sending.is_some(), |d| d.opacity(if sending == Some(s) { 1. } else { 0.5 }))
+            .when(!side, |d| d.min_w_0().overflow_hidden().px(px(8.)))
             .child(status_mark(s, ink))
             .child(div().min_w_0().truncate().child(tr!(key)))
             .on_click(cx.listener(move |this, _, _, cx| {
                 if sending.is_none() {
-                    this.answer_invite(s, cx);
+                    this.answer_invite(s, Answer::default(), cx);
                 }
             }));
-        crate::keytips::command(b, command, Some(tr!(key)), l, cx)
+        let b = crate::keytips::command(b, command, Some(tr!(key)), l, cx);
+        split(b, s, primary, &card.how, l, cx, ReadingPane::answer_toggle, ReadingPane::answer_pick)
+            .when(!side, |d| d.flex_grow(1.).flex_shrink(1.).max_w(px(176.)))
+            .when(sending.is_some(), |d| d.opacity(if sending == Some(s) { 1. } else { 0.5 }))
     })
     .collect()
 }
@@ -640,7 +656,10 @@ pub(crate) fn render(card: &Card, me: Option<&str>, cx: &mut Context<ReadingPane
         })
         // Подпись уступает место первой: кнопки сужаются, когда она уже свёрнута.
         .child(route(p.answered.is_some(), "invite-route", &l).ml_auto().pl(px(8.)).flex_shrink(ROUTE_SHRINK));
-    frame().flex().flex_col().min_w_0().flex_none().child(details).child(day).child(actions).into_any_element()
+    let comment = comment_box(&card.how, &l, cx, ReadingPane::answer_send, ReadingPane::answer_cancel).map(|b| b.px(px(16.)).pb(px(16.)));
+    // Пишут комментарий — «Ваш день» свёрнут, чтобы поле было на виду под кнопками.
+    let day = comment.is_none().then_some(day);
+    frame().flex().flex_col().min_w_0().flex_none().child(details).children(day).child(actions).children(comment).into_any_element()
 }
 
 /// Боковая панель приглашения: подробности, кнопки столбиком, лента дня 8–19 (макет «Приглашение» с панелью
@@ -721,6 +740,7 @@ pub(crate) fn render_side(card: &Card, me: Option<&str>, cx: &mut Context<Readin
         ),
         _ => d
             .children(answer_buttons(card, true, &l, cx).into_iter().map(|b| b.text_size(px(13.))))
+            .children(comment_box(&card.how, &l, cx, ReadingPane::answer_send, ReadingPane::answer_cancel))
             .when(card.sending.is_some(), |d| d.child(div().text_color(l.text2()).child(tr!("reading-invite-sending")))),
     });
     let day = div()
@@ -1006,7 +1026,7 @@ impl ReadingPane {
         let me = self.me.clone();
         let can = self.reading.as_ref().and_then(|r| r.invite.as_ref()).is_some_and(|c| c.sending.is_none() && c.can_answer(me.as_deref()));
         if can {
-            self.answer_invite(status, cx);
+            self.answer_invite(status, Answer::default(), cx);
         }
         can
     }
@@ -1045,6 +1065,230 @@ fn demo_day(date: jiff::civil::Date, tz: &TimeZone) -> Vec<Event> {
         .collect()
 }
 
+// --- Как ответить (T2-15): ▾ у кнопки ответа, как в Outlook ---
+
+/// Что выбрано в меню ▾ кнопки ответа.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum How {
+    /// «… с комментарием»: поле под кнопками, текст уходит организатору.
+    Comment,
+    /// «… без ответа организатору»: только мой календарь.
+    Silent,
+}
+
+/// Меню ▾ и поле комментария у владельца кнопок (карточка письма, подробности события).
+#[derive(Default)]
+pub(crate) struct Choice {
+    /// Открыто меню ▾ этой кнопки.
+    pub(crate) menu: Option<Partstat>,
+    /// Поле комментария к этому ответу.
+    pub(crate) comment: Option<(Partstat, Entity<InputState>)>,
+}
+
+impl Choice {
+    /// Выбор в меню: «без ответа» — готовый ответ; «с комментарием» — открыть поле (фокус в нём), ответа ещё нет.
+    pub(crate) fn pick(&mut self, s: Partstat, how: How, window: &mut Window, cx: &mut App) -> Option<Answer> {
+        self.menu = None;
+        match how {
+            How::Silent => {
+                self.comment = None;
+                Some(Answer { comment: None, silent: true })
+            }
+            How::Comment => {
+                let input = cx.new(|cx| InputState::new(window, cx).placeholder(tr!("invite-comment-placeholder")));
+                input.update(cx, |i, cx| i.focus(window, cx));
+                self.comment = Some((s, input));
+                None
+            }
+        }
+    }
+
+    /// «Отправить» у поля: ответ с его текстом.
+    pub(crate) fn take_comment(&mut self, cx: &App) -> Option<(Partstat, Answer)> {
+        let (s, input) = self.comment.take()?;
+        let text = input.read(cx).value().to_string();
+        Some((s, Answer { comment: Some(text), silent: false }))
+    }
+}
+
+/// Кнопка ответа с ▾ справа (одна кнопка с разделителем) и меню ▾. `main` — уже собранная кнопка (её щелчок — ответ
+/// сразу); `pick` — пункт меню; `toggle` — открыть/закрыть меню этой кнопки.
+pub(crate) fn split<T: 'static>(
+    main: Stateful<Div>,
+    s: Partstat,
+    primary: bool,
+    choice: &Choice,
+    l: &Look,
+    cx: &mut Context<T>,
+    toggle: fn(&mut T, Option<Partstat>, &mut Context<T>),
+    pick: fn(&mut T, Partstat, How, &mut Window, &mut Context<T>),
+) -> Div {
+    let n = match s {
+        Partstat::Accepted => 0,
+        Partstat::Tentative => 1,
+        _ => 2,
+    };
+    let id = |name: &'static str| ElementId::NamedInteger(name.into(), n);
+    let open = choice.menu == Some(s);
+    let chevron = if primary { crate::buttons::primary(id("invite-more"), l) } else { crate::buttons::secondary(id("invite-more"), l) };
+    let chevron = chevron
+        .flex_none()
+        .w(px(24.))
+        .px(px(0.))
+        .justify_center()
+        .rounded_l(px(0.))
+        .border_l_1()
+        .border_color(l.c(pets_ui::theme::Role::StrokeDivider))
+        .child(icon(g::DOWN, 10.).text_color(crate::buttons::ink(primary, l)))
+        .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(tr!("invite-more")).build(window, cx))
+        .on_click(cx.listener(move |this, _, _, cx| toggle(this, if open { None } else { Some(s) }, cx)));
+    let menu = open.then(|| {
+        let state = postman_calendar::partstat_json(s);
+        let item = |how: How, key: &'static str, cx: &mut Context<T>| {
+            crate::composer::menu_item(
+                ElementId::NamedInteger(if how == How::Comment { "invite-comment" } else { "invite-silent" }.into(), n),
+                l,
+                false,
+            )
+            .child(tr!(key, s = state))
+            .on_click(cx.listener(move |this, _, window, cx| pick(this, s, how, window, cx)))
+        };
+        deferred(
+            crate::composer::menu_box("invite-more-menu", l)
+                .top(px(36.))
+                // У первой кнопки — от её левого края, у остальных — от правого: меню не уходит за край панели.
+                .when(n > 0, |d| d.left_auto().right_0())
+                .child(item(How::Comment, "invite-with-comment", cx))
+                .child(item(How::Silent, "invite-no-reply", cx))
+                .on_mouse_down_out(cx.listener(move |this, _, _, cx| toggle(this, None, cx))),
+        )
+        .with_priority(1)
+    });
+    div().relative().flex().min_w_0().child(main.rounded_r(px(0.)).flex_1()).child(chevron).children(menu)
+}
+
+/// «Другие ответы ▾» над тремя кнопками (узкая панель подробностей события): меню со всеми шестью вариантами.
+/// Открытое меню — `Choice::menu == Some(NeedsAction)`.
+pub(crate) fn more_all<T: 'static>(
+    choice: &Choice,
+    l: &Look,
+    cx: &mut Context<T>,
+    toggle: fn(&mut T, Option<Partstat>, &mut Context<T>),
+    pick: fn(&mut T, Partstat, How, &mut Window, &mut Context<T>),
+) -> Div {
+    let open = choice.menu == Some(Partstat::NeedsAction);
+    let button = div()
+        .id("invite-more-all")
+        .children(crate::screens::spot("invite-more-all"))
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .px(px(6.))
+        .h(px(24.))
+        .rounded(px(4.))
+        .text_size(px(12.))
+        .text_color(l.accent_text())
+        .cursor_pointer()
+        .hover(|d| d.bg(l.hover()))
+        .child(tr!("invite-more-all"))
+        .child(icon(g::DOWN, 10.))
+        .on_click(cx.listener(move |this, _, _, cx| toggle(this, if open { None } else { Some(Partstat::NeedsAction) }, cx)));
+    let menu = open.then(|| {
+        let mut items = Vec::new();
+        for (n, s) in [Partstat::Accepted, Partstat::Tentative, Partstat::Declined].into_iter().enumerate() {
+            let state = postman_calendar::partstat_json(s);
+            for (how, key, name) in [(How::Comment, "invite-with-comment", "invite-comment"), (How::Silent, "invite-no-reply", "invite-silent")] {
+                items.push(
+                    crate::composer::menu_item(ElementId::NamedInteger(name.into(), n as u64), l, false)
+                        .child(tr!(key, s = state))
+                        .on_click(cx.listener(move |this, _, window, cx| pick(this, s, how, window, cx))),
+                );
+            }
+        }
+        deferred(
+            crate::composer::menu_box("invite-more-menu", l)
+                .top(px(28.))
+                .left_auto()
+                .right_0()
+                .children(items)
+                .on_mouse_down_out(cx.listener(move |this, _, _, cx| toggle(this, None, cx))),
+        )
+        .with_priority(1)
+    });
+    div().relative().flex_none().child(button).children(menu)
+}
+
+/// Поле комментария под кнопками: «Отправить» — ответ с текстом, «Отмена» — закрыть.
+pub(crate) fn comment_box<T: 'static>(
+    choice: &Choice,
+    l: &Look,
+    cx: &mut Context<T>,
+    send: fn(&mut T, &mut Window, &mut Context<T>),
+    cancel: fn(&mut T, &mut Context<T>),
+) -> Option<Div> {
+    let (s, input) = choice.comment.as_ref()?;
+    let state = postman_calendar::partstat_json(*s);
+    Some(
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("invite-comment-title", s = state)))
+            .child(Input::new(input))
+            .child(
+                div()
+                    .flex()
+                    .gap(px(8.))
+                    .child(
+                        crate::buttons::primary("invite-comment-send", l)
+                            .child(tr!("invite-comment-send"))
+                            .on_click(cx.listener(move |this, _, window, cx| send(this, window, cx))),
+                    )
+                    .child(
+                        crate::buttons::secondary("invite-comment-cancel", l)
+                            .child(tr!("invite-comment-cancel"))
+                            .on_click(cx.listener(move |this, _, _, cx| cancel(this, cx))),
+                    ),
+            ),
+    )
+}
+
+impl ReadingPane {
+    fn card_mut(&mut self) -> Option<&mut Card> {
+        self.reading.as_mut().and_then(|r| r.invite.as_mut())
+    }
+
+    fn answer_toggle(&mut self, menu: Option<Partstat>, cx: &mut Context<Self>) {
+        if let Some(c) = self.card_mut() {
+            c.how.menu = menu;
+        }
+        cx.notify();
+    }
+
+    fn answer_pick(&mut self, s: Partstat, how: How, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(c) = self.card_mut() else { return };
+        if let Some(answer) = c.how.pick(s, how, window, cx) {
+            self.answer_invite(s, answer, cx);
+        }
+        cx.notify();
+    }
+
+    fn answer_send(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(c) = self.card_mut() else { return };
+        if let Some((s, answer)) = c.how.take_comment(cx) {
+            self.answer_invite(s, answer, cx);
+        }
+        cx.notify();
+    }
+
+    fn answer_cancel(&mut self, cx: &mut Context<Self>) {
+        if let Some(c) = self.card_mut() {
+            c.how.comment = None;
+        }
+        cx.notify();
+    }
+}
+
 /// Опись части (ADR 0005, `parts.rs`).
 pub(crate) const PART: crate::part::Part =
     crate::part::Part { name: "invite", commands: COMMANDS, handlers, scenes: scenes::SCENES, reset: Some(scenes::reset), ..crate::part::Part::NONE };
@@ -1077,7 +1321,9 @@ const COMMANDS: &[pets_commands::Command] = {
 /// Сцены `--screens` приглашений (ADR 0005).
 pub(crate) mod scenes {
     use gpui_kit::*;
+    use pets_i18n::tr;
     use postman_cache::BodyRow;
+    use postman_calendar::Partstat;
 
     use crate::Mailer;
     use crate::screens::{self, Scene};
@@ -1090,6 +1336,10 @@ pub(crate) mod scenes {
         Scene::new("invite-updated", state, state_ready).continues(),
         Scene::new("invite-cancelled", state, state_ready).continues(),
         Scene::new("invite-outdated", state, state_ready).continues(),
+        // Меню ▾ у «Принять» (T2-15): «… с комментарием», «… без ответа организатору».
+        Scene::new("invite-answer-menu", menu, state_ready).continues(),
+        // «Отклонить с комментарием…»: поле под кнопками, «Отправить» / «Отмена».
+        Scene::new("invite-comment", comment, state_ready).continues(),
         // Приглашение боковой панелью справа (S5-24, «Настройки → Чтение»): строка над письмом, панель — рядом.
         Scene::new("invite-side", state, state_ready).continues(),
     ];
@@ -1137,6 +1387,30 @@ pub(crate) mod scenes {
                 c.screen_state(which);
             }
             cx.notify();
+        });
+        Ok(())
+    }
+
+    fn menu(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.reading.update(cx, |r, cx| {
+            if let Some(c) = r.reading.as_mut().and_then(|r| r.invite.as_mut()) {
+                c.screen_state("new");
+                c.how.menu = Some(Partstat::Accepted);
+            }
+            cx.notify();
+        });
+        Ok(())
+    }
+
+    fn comment(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.reading.update(cx, |r, cx| {
+            if let Some(c) = r.reading.as_mut().and_then(|r| r.invite.as_mut()) {
+                c.screen_state("new");
+            }
+            r.answer_pick(Partstat::Declined, super::How::Comment, window, cx);
+            if let Some((_, input)) = r.reading.as_ref().and_then(|r| r.invite.as_ref()).and_then(|c| c.how.comment.as_ref()) {
+                input.update(cx, |i, cx| i.set_value(tr!("invite-sample-comment"), window, cx));
+            }
         });
         Ok(())
     }

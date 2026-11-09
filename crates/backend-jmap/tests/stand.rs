@@ -239,7 +239,7 @@ async fn invitation_round_trip() {
 
     // Ответ — тем же путём, что «Принять» в приложении (`postman_backend_jmap::invite::via_server`).
     let pid = participant_id(&theirs, &b.email).expect("себя среди участников");
-    b.client.reply(&their_id, &pid, postman_calendar::partstat_json(Partstat::Accepted)).await.unwrap();
+    b.client.reply(&their_id, &pid, postman_calendar::partstat_json(Partstat::Accepted), true).await.unwrap();
 
     eventually("ответ у организатора", || async {
         let mine = a.client.event_by_uid(&uid).await.ok().flatten()?;

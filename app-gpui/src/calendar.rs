@@ -314,6 +314,7 @@ pub(crate) enum CalendarAction {
     Respond {
         event: Box<Event>,
         status: Partstat,
+        answer: postman_core::invite::Answer,
     },
     /// Письмо участникам встречи.
     Write(Vec<Address>),
@@ -427,6 +428,8 @@ pub(crate) struct CalendarView {
     pub(crate) owner_names: bool,
     /// Ответ ушёл, итога нет: (uid, ответ).
     answering: Option<(String, Partstat)>,
+    /// Меню ▾ и поле комментария у кнопок ответа (T2-15).
+    how: crate::invite_card::Choice,
     /// Своя встреча (S7-07б): что спрашиваем одной строкой у подробностей — серию или подтверждение отмены.
     own: Option<Own>,
     /// Отмена, итог которой ждём: тикет.
@@ -542,6 +545,7 @@ impl CalendarView {
             owner_colors: cal.owner_colors,
             owner_names: cal.owner_names,
             answering: None,
+            how: Default::default(),
             own: None,
             cancelling: None,
             changing: false,
@@ -1194,13 +1198,39 @@ impl CalendarView {
         cx.notify();
     }
 
-    fn respond(&mut self, i: usize, status: Partstat, cx: &mut Context<Self>) {
+    fn respond(&mut self, i: usize, status: Partstat, answer: postman_core::invite::Answer, cx: &mut Context<Self>) {
         let Some(e) = self.events.get(i) else { return };
         if self.answering.is_some() {
             return;
         }
         self.answering = Some((e.uid.clone(), status));
-        cx.emit(CalendarAction::Respond { event: Box::new(e.clone()), status });
+        self.how = Default::default();
+        cx.emit(CalendarAction::Respond { event: Box::new(e.clone()), status, answer });
+        cx.notify();
+    }
+
+    /// Меню ▾ кнопки ответа (T2-15).
+    fn answer_toggle(&mut self, menu: Option<Partstat>, cx: &mut Context<Self>) {
+        self.how.menu = menu;
+        cx.notify();
+    }
+
+    fn answer_pick(&mut self, s: Partstat, how: crate::invite_card::How, window: &mut Window, cx: &mut Context<Self>) {
+        if let (Some(answer), Some(i)) = (self.how.pick(s, how, window, cx), self.selected) {
+            self.respond(i, s, answer, cx);
+        }
+        cx.notify();
+    }
+
+    fn answer_send(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        if let (Some((s, answer)), Some(i)) = (self.how.take_comment(cx), self.selected) {
+            self.respond(i, s, answer, cx);
+        }
+        cx.notify();
+    }
+
+    fn answer_cancel(&mut self, cx: &mut Context<Self>) {
+        self.how.comment = None;
         cx.notify();
     }
 
@@ -2826,12 +2856,14 @@ impl CalendarView {
                 let ink = crate::buttons::ink(primary, l);
                 b.flex_1()
                     .px(px(6.))
+                    .min_w_0()
+                    .overflow_hidden()
                     .justify_center()
                     .text_size(px(12.))
                     .when(answering.is_some(), |d| d.opacity(if sending { 1. } else { 0.5 }))
                     .child(crate::invite_card::status_mark(s, ink))
-                    .child(tr!(key))
-                    .on_click(cx.listener(move |this, _, _, cx| this.respond(i, s, cx)))
+                    .child(div().min_w_0().truncate().child(tr!(key)))
+                    .on_click(cx.listener(move |this, _, _, cx| this.respond(i, s, Default::default(), cx)))
             };
             div()
                 .flex()
@@ -2841,7 +2873,18 @@ impl CalendarView {
                 .px(px(20.))
                 .py(px(12.))
                 .bg(l.base())
-                .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("cal-invited-by", name = from)))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).text_color(l.text2()).child(tr!("cal-invited-by", name = from)))
+                        // «Другие ответы ▾» (T2-15): «… с комментарием» / «… без ответа организатору» — панель узкая, одно
+                        // меню на все три кнопки.
+                        .when(answering.is_none(), |d| {
+                            d.child(crate::invite_card::more_all(&self.how, l, cx, Self::answer_toggle, Self::answer_pick))
+                        }),
+                )
                 .child(
                     div()
                         .flex()
@@ -2850,6 +2893,7 @@ impl CalendarView {
                         .child(button("tentative", "cal-tentative-answer", Partstat::Tentative, cx))
                         .child(button("decline", "cal-decline", Partstat::Declined, cx)),
                 )
+                .children(crate::invite_card::comment_box(&self.how, l, cx, Self::answer_send, Self::answer_cancel))
                 .when(answering.is_some(), |d| d.child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("reading-invite-sending"))))
         });
         // Своя встреча (S7-07б, решение владельца 2026-10-23): «Изменить» — вкладка встречи с её полями, «Отменить
@@ -3266,7 +3310,7 @@ impl crate::Mailer {
             CalendarAction::Publish(items) => Command::Publish { items: *items },
             CalendarAction::Unpublish(id) => Command::Unpublish { id: id.clone() },
             CalendarAction::Unshare(email) => Command::UnshareCalendar { email: email.clone() },
-            CalendarAction::Respond { event, status } => Command::RespondInvite {
+            CalendarAction::Respond { event, status, answer } => Command::RespondInvite {
                 invite: Box::new(Invitation {
                     method: "REQUEST".into(),
                     sequence: event.sequence,
@@ -3275,6 +3319,7 @@ impl crate::Mailer {
                 }),
                 status: *status,
                 in_reply_to: None,
+                answer: answer.clone(),
             },
             CalendarAction::Write(to) => {
                 self.open_compose(Draft { to: to.clone(), ..Default::default() }, cx);
@@ -3507,6 +3552,8 @@ pub(crate) mod scenes {
         Scene::new("calendar", week, week_ready).live(),
         // Календарь с подробностями самого людного события (S3-05).
         Scene::new("event", event, event_ready).live(),
+        // Приглашение в подробностях (T2-15): меню ▾ после кнопок — «… с комментарием», «… без ответа» у каждого ответа.
+        Scene::new("calendar-answer-menu", answer_menu, week_ready),
         // Своя встреча с участниками (S7-07б): в подробностях — «Изменить» и «Отменить встречу».
         Scene::new("event-organizer", own, event_ready),
         // «Отменить встречу» у своей повторяющейся встречи: строка «Только эту / Всю серию / Не отменять».
@@ -3587,6 +3634,15 @@ pub(crate) mod scenes {
     fn event(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
         m.cal.update(cx, |c, cx| c.select_busiest(cx));
         m.set_section(Section::Calendar, cx);
+        Ok(())
+    }
+
+    fn answer_menu(s: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        week(s, m, window, cx)?;
+        m.cal.update(cx, |c, cx| {
+            c.how.menu = Some(postman_calendar::Partstat::NeedsAction);
+            cx.notify();
+        });
         Ok(())
     }
 

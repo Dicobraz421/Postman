@@ -20,20 +20,70 @@ pub enum Delivery {
     Server,
     /// Ответ письмом; `imported` — событие добавлено в мой календарь.
     Mail { imported: bool },
+    /// «… без ответа организатору» (T2-15): ответ не ушёл; `saved` — статус записан в мой календарь.
+    Silent { saved: bool },
+}
+
+/// Как ответить (T2-15, меню ▾ у «Принять / Под вопросом / Отклонить», как в Outlook).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Answer {
+    /// «… с комментарием»: текст организатору (пустой — без комментария).
+    pub comment: Option<String>,
+    /// «… без ответа организатору»: только мой календарь.
+    pub silent: bool,
+}
+
+impl Answer {
+    /// Комментарий, если он есть и не пустой.
+    pub fn comment(&self) -> Option<&str> {
+        self.comment.as_deref().map(str::trim).filter(|c| !c.is_empty())
+    }
+
+    /// Ответ сервером не годится: комментарий в ответ сервера JMAP/CalDAV не попадает — копию правим без рассылки, а
+    /// ответ шлём письмом сами. «Без ответа» — тоже без рассылки.
+    pub fn keep_copy_only(&self) -> bool {
+        self.silent || self.comment().is_some()
+    }
+}
+
+/// Что сделала область с ответом (`Areas::respond`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Responded {
+    /// Моей копии встречи на сервере нет — отвечать письмом.
+    NoCopy,
+    /// Статус в копии изменён, ответ организатору отправил сервер (с комментарием, если сервер его умеет — EWS).
+    Sent,
+    /// Статус в копии изменён без рассылки: «без ответа» — всё, с комментарием — ответ письмом.
+    Kept,
+}
+
+/// Итог ответа по тому, что сделала область, — общий путь бэкендов: `Sent` — сервер; `Kept`/`NoCopy` и «без
+/// ответа» — без письма; иначе — письмо (`mail`), `imported` — копия уже есть.
+pub fn delivery(done: Responded, answer: &Answer) -> Result<Delivery, bool> {
+    match (done, answer.silent) {
+        (Responded::Sent, _) => Ok(Delivery::Server),
+        (Responded::Kept, true) => Ok(Delivery::Silent { saved: true }),
+        (Responded::NoCopy, true) => Ok(Delivery::Silent { saved: false }),
+        // Письмо организатору: `Err(imported)`.
+        (Responded::Kept, false) => Err(true),
+        (Responded::NoCopy, false) => Err(false),
+    }
 }
 
 /// Письмо-ответ организатору с частью `text/calendar; method=REPLY`.
-pub fn reply_draft(inv: &Invitation, me: &Address, status: Partstat, in_reply_to: Option<String>, now: i64) -> Option<Draft> {
+/// `comment` — «… с комментарием» (T2-15): текст письма и `COMMENT` в ответе.
+pub fn reply_draft(inv: &Invitation, me: &Address, status: Partstat, comment: Option<&str>, in_reply_to: Option<String>, now: i64) -> Option<Draft> {
     let org = inv.event.organizer().filter(|o| !o.email.is_empty())?;
     let subject = reply_subject(&inv.event.title, status);
+    let comment = comment.map(str::trim).filter(|c| !c.is_empty());
     Some(Draft {
         from: me.clone(),
         to: vec![Address::new(&org.name, &org.email)],
-        markdown: subject.clone(),
+        markdown: comment.map_or_else(|| subject.clone(), str::to_owned),
         subject,
         references: in_reply_to.iter().cloned().collect(),
         in_reply_to,
-        calendar: Some(CalendarPart { method: "REPLY".into(), ics: imip_reply(inv, (&me.name, &me.email), status, now) }),
+        calendar: Some(CalendarPart { method: "REPLY".into(), ics: imip_reply(inv, (&me.name, &me.email), status, comment, now) }),
         ..Default::default()
     })
 }
@@ -272,13 +322,30 @@ mod tests {
     #[test]
     fn reply_goes_to_organizer() {
         let me = Address::new("Я", "me@corp.example");
-        let d = reply_draft(&inv(), &me, Partstat::Tentative, Some("m1@partner.example".into()), 0).unwrap();
+        let d = reply_draft(&inv(), &me, Partstat::Tentative, None, Some("m1@partner.example".into()), 0).unwrap();
         assert_eq!(d.to, vec![Address::new("Иван", "ivan@partner.example")]);
         assert_eq!(d.subject, "Под вопросом: Созвон");
         assert_eq!(d.references, ["m1@partner.example"]);
         let cal = d.calendar.unwrap();
         assert_eq!(cal.method, "REPLY");
         assert!(cal.ics.contains("PARTSTAT=TENTATIVE"), "{}", cal.ics);
+        // С комментарием (T2-15): он — текст письма и COMMENT.
+        let d = reply_draft(&inv(), &me, Partstat::Declined, Some("  В это время — суд "), None, 0).unwrap();
+        assert_eq!(d.markdown, "В это время — суд");
+        assert!(d.calendar.unwrap().ics.contains("COMMENT:В это время — суд\r\n"));
+    }
+
+    /// Итог ответа (T2-15): сервер, без ответа, письмом.
+    #[test]
+    fn delivery_by_area_result() {
+        let silent = Answer { comment: None, silent: true };
+        let note = Answer { comment: Some("опоздаю".into()), silent: false };
+        assert_eq!(delivery(Responded::Sent, &note), Ok(Delivery::Server));
+        assert_eq!(delivery(Responded::Kept, &silent), Ok(Delivery::Silent { saved: true }));
+        assert_eq!(delivery(Responded::NoCopy, &silent), Ok(Delivery::Silent { saved: false }));
+        assert_eq!(delivery(Responded::Kept, &note), Err(true));
+        assert_eq!(delivery(Responded::NoCopy, &Answer::default()), Err(false));
+        assert!(note.keep_copy_only() && silent.keep_copy_only() && !Answer { comment: Some(" ".into()), silent: false }.keep_copy_only());
     }
 
     #[test]

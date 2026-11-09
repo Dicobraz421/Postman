@@ -1023,9 +1023,9 @@ async fn handle(
                 Err(e) => notify(Event::BlobFailed { blob_id, error: e.to_string() }),
             }
         }
-        Command::RespondInvite { invite, status, in_reply_to } => {
+        Command::RespondInvite { invite, status, in_reply_to, answer } => {
             let uid = invite.event.uid.clone();
-            notify(match respond_invite(accounts, cache, identities, send_as, &invite, status, in_reply_to).await {
+            notify(match respond_invite(accounts, cache, identities, send_as, &invite, (status, in_reply_to, &answer)).await {
                 Ok(delivery) => Event::InviteAnswered { uid, status, delivery },
                 Err(e) => Event::InviteFailed { uid, error: e.to_string() },
             });
@@ -1980,8 +1980,7 @@ async fn respond_invite(
     identities: &[Identity],
     send_as: &[SendAs],
     inv: &Invitation,
-    status: Partstat,
-    in_reply_to: Option<String>,
+    (status, in_reply_to, answer): (Partstat, Option<String>, &postman_core::invite::Answer),
 ) -> postman_jmap::Result<Delivery> {
     let client = &accounts.own.client;
     // Отвечаем от того адреса, на который пришло приглашение (их может быть несколько).
@@ -1991,13 +1990,29 @@ async fn respond_invite(
         .or(identities.first())
         .ok_or_else(|| postman_jmap::Error::Protocol("no Identity on the server to send from".into()))?;
     let me = Address::new(&identity.name, &identity.email);
-    if invite::via_server(client, inv, &me.email, status).await?.is_some() {
-        return Ok(Delivery::Server);
+    use postman_core::invite::{Responded, delivery};
+    let quiet = answer.keep_copy_only();
+    let done = match invite::via_server(client, inv, &me.email, status, !quiet).await? {
+        None => Responded::NoCopy,
+        Some(()) if quiet => Responded::Kept,
+        Some(()) => Responded::Sent,
+    };
+    match delivery(done, answer) {
+        Ok(Delivery::Silent { saved: false }) => {
+            // Копии нет — положить в мой календарь без рассылки, как при ответе письмом.
+            let saved = invite::import(client, inv, &me.email, status).await.unwrap_or(false);
+            return Ok(Delivery::Silent { saved });
+        }
+        Ok(d) => return Ok(d),
+        Err(_) => {}
     }
     let now = jiff::Timestamp::now().as_second();
-    let draft = invite::reply_draft(inv, &me, status, in_reply_to, now)
+    let draft = invite::reply_draft(inv, &me, status, answer.comment(), in_reply_to, now)
         .ok_or_else(|| postman_jmap::Error::Protocol("the invitation has no organizer".into()))?;
     send(accounts, cache, send_as, &draft, None, Release::Now).await?;
+    if done == Responded::Kept {
+        return Ok(Delivery::Mail { imported: true });
+    }
     // Ответ ушёл — дальше только своя копия; её сбой не повод слать ответ повторно.
     let imported = invite::import(client, inv, &me.email, status).await.unwrap_or(false);
     Ok(Delivery::Mail { imported })

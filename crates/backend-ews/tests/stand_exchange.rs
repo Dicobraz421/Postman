@@ -421,7 +421,12 @@ fn exchange_meeting_cycle() {
     assert!(same_uid, "UID приглашения в письме ≠ UID встречи: карточка письма не найдёт встречу");
 
     // «Принять» из карточки письма: ответ — сервером (по встрече с этим UID), не письмом.
-    lb.send(Command::RespondInvite { invite: Box::new(inv), status: postman_calendar::Partstat::Accepted, in_reply_to: message_id });
+    lb.send(Command::RespondInvite {
+        invite: Box::new(inv),
+        status: postman_calendar::Partstat::Accepted,
+        in_reply_to: message_id,
+        answer: Default::default(),
+    });
     let Event::InviteAnswered { delivery, .. } = lb.wait("InviteAnswered", |e| match e {
         Event::InviteFailed { error, .. } => panic!("ответ не ушёл ({} символов ошибки)", error.len()),
         Event::InviteAnswered { .. } => true,
@@ -482,7 +487,12 @@ fn exchange_series_invite() {
     let id = rt.block_on(c1.create(None, &item, postman_ews::Notify::All)).unwrap();
     let (inv, message_id) = invite_in_mail(&lb, &tag);
     assert!(inv.event.recurring, "приглашение на серию");
-    lb.send(Command::RespondInvite { invite: Box::new(inv), status: postman_calendar::Partstat::Accepted, in_reply_to: message_id });
+    lb.send(Command::RespondInvite {
+        invite: Box::new(inv),
+        status: postman_calendar::Partstat::Accepted,
+        in_reply_to: message_id,
+        answer: Default::default(),
+    });
     let answered = |e: &Event| matches!(e, Event::InviteAnswered { .. } | Event::InviteFailed { .. });
     let Event::InviteAnswered { delivery, .. } = lb.wait("InviteAnswered", answered) else { panic!("ответ на серию не ушёл") };
     assert_eq!(delivery, postman_core::invite::Delivery::Server);

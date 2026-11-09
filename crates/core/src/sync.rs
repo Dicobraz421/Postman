@@ -160,11 +160,13 @@ pub enum Command {
         name: String,
         mime: String,
     },
-    /// Ответить на приглашение из письма; `in_reply_to` — Message-ID письма с приглашением.
+    /// Ответить на приглашение из письма; `in_reply_to` — Message-ID письма с приглашением; `answer` — с комментарием
+    /// или без ответа организатору (T2-15).
     RespondInvite {
         invite: Box<Invitation>,
         status: Partstat,
         in_reply_to: Option<String>,
+        answer: crate::invite::Answer,
     },
     /// Приглашение, пришедшее только письмом (iMIP, RFC 6047; T2-08в): положить в мой календарь как «не ответил»
     /// (`NEEDS-ACTION`), без ответа организатору → `CalendarChanged`. Сервер, который разбирает приглашения сам

@@ -27,6 +27,7 @@ use std::sync::{Arc, mpsc};
 use postman_cache::Cache;
 use postman_calendar::{Invitation, Owner, Partstat};
 
+use crate::invite::{Answer, Responded};
 use crate::model::{Error, Features};
 use crate::sync::{Account, Command, Event, Index, SyncError, UnboundedSender};
 
@@ -129,9 +130,9 @@ pub trait Areas {
     /// Команда области (неделя, поиск в календаре, занятость, встреча, задачи, контакты); `Some` — не её, вернуть.
     fn handle<'a>(&'a mut self, cmd: Command, ctx: AreaCtx<'a>) -> BoxFuture<'a, Option<Command>>;
 
-    /// Ответ на приглашение своей копией на сервере (ответ организатору шлёт сервер); `false` — копии нет, отвечать
-    /// письмом.
-    fn respond<'a>(&'a mut self, invite: &'a Invitation, status: Partstat) -> BoxFuture<'a, Result<bool, Error>>;
+    /// Ответ на приглашение своей копией на сервере (ответ организатору шлёт сервер); `answer` — с комментарием или
+    /// без ответа (T2-15): чего сервер не умеет, то копия без рассылки ([`Responded::Kept`]), ответ — письмом.
+    fn respond<'a>(&'a mut self, invite: &'a Invitation, status: Partstat, answer: &'a Answer) -> BoxFuture<'a, Result<Responded, Error>>;
 
     /// Правки задач из кэша — на сервер (шаг поручения, S6-09).
     fn flush_tasks<'a>(&'a mut self, ctx: AreaCtx<'a>) -> BoxFuture<'a, Result<(), Error>>;

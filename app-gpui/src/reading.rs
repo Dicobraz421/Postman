@@ -194,6 +194,7 @@ pub(crate) enum SyncRequest {
         invite: Box<Invitation>,
         status: Partstat,
         in_reply_to: Option<String>,
+        answer: postman_core::invite::Answer,
     },
     /// Беседа с сервера (ключ цепочки).
     Thread(String),
@@ -210,8 +211,8 @@ impl SyncRequest {
     pub(crate) fn command(&self) -> Command {
         match self {
             SyncRequest::Blob(a) => Command::Blob { blob_id: a.blob_id.clone(), name: a.name.clone(), mime: a.mime.clone() },
-            SyncRequest::RespondInvite { invite, status, in_reply_to } => {
-                Command::RespondInvite { invite: invite.clone(), status: *status, in_reply_to: in_reply_to.clone() }
+            SyncRequest::RespondInvite { invite, status, in_reply_to, answer } => {
+                Command::RespondInvite { invite: invite.clone(), status: *status, in_reply_to: in_reply_to.clone(), answer: answer.clone() }
             }
             SyncRequest::Thread(key) => Command::Thread(key.clone()),
             SyncRequest::Events { from, to } => Command::Events { from: *from, to: *to },
@@ -415,6 +416,8 @@ impl ReadingPane {
                     Delivery::Server => tr!("reading-invite-sent-server"),
                     Delivery::Mail { imported: true } => tr!("reading-invite-sent-imported"),
                     Delivery::Mail { imported: false } => tr!("reading-invite-sent-mail"),
+                    Delivery::Silent { saved: true } => tr!("reading-invite-silent-saved"),
+                    Delivery::Silent { saved: false } => tr!("reading-invite-silent"),
                 };
                 cx.emit(ReadingEvent::Toast(Toast::Success, text));
                 if let Some(row) = letter.filter(|_| crate::prefs::get(cx).calendar.delete_answered) {
@@ -758,7 +761,8 @@ impl ReadingPane {
     }
 
     /// Кнопка карточки приглашения. Демо — «нужен сервер», статус не меняется.
-    pub(crate) fn answer_invite(&mut self, status: Partstat, cx: &mut Context<Self>) {
+    /// `answer` — с комментарием или без ответа организатору (T2-15).
+    pub(crate) fn answer_invite(&mut self, status: Partstat, answer: postman_core::invite::Answer, cx: &mut Context<Self>) {
         if !self.live {
             cx.emit(ReadingEvent::NeedsServer);
             return;
@@ -768,7 +772,8 @@ impl ReadingPane {
         let Some(card) = &mut r.invite else { return };
         let Some(inv) = card.invitation().cloned() else { return };
         card.sending = Some(status);
-        cx.emit(ReadingEvent::Sync(SyncRequest::RespondInvite { invite: Box::new(inv), status, in_reply_to }));
+        card.how = Default::default();
+        cx.emit(ReadingEvent::Sync(SyncRequest::RespondInvite { invite: Box::new(inv), status, in_reply_to, answer }));
         cx.notify();
     }
 
@@ -987,7 +992,23 @@ impl Render for ReadingPane {
         };
         // Приглашение боковой панелью справа (S5-24, «Настройки → Чтение»): над письмом — строка, панель — рядом.
         let side = r.invite.as_ref().and_then(|c| invite_card::render_side(c, self.me.as_deref(), cx));
-        // Лента беседы — на месте письма (вложения и приглашение — у письма в обычном виде).
+        let strip = self.ribbon(r, cx);
+        let card = r.invite.as_ref().map(|c| invite_card::render(c, self.me.as_deref(), cx)).or_else(|| {
+            // Письмо-поручение: карточка над текстом; своя копия задачи — из раздела «Задачи».
+            let inc = r.task_mail.as_ref()?;
+            let copy = self.tasks.as_ref().and_then(|t| t.upgrade()).and_then(|t| t.read(cx).tasks.iter().find(|x| x.uid == inc.task.uid).cloned());
+            let me = self.me.clone().unwrap_or_default();
+            let tz = crate::prefs::get(cx).calendar.zone();
+            let weak = cx.entity().downgrade();
+            let uid = inc.task.uid.clone();
+            let on = move |action: Option<postman_calendar::assign::Action>, _: &mut Window, cx: &mut App| {
+                let uid = uid.clone();
+                let _ = weak.update(cx, |_, cx| cx.emit(ReadingEvent::TaskAction { uid, action }));
+            };
+            Some(crate::tasks::mail_card(inc, copy.as_ref(), &me, &tz, cx, on))
+        });
+        // Лента беседы — на месте письма; вложения и карточка открытого письма (приглашение, поручение) — над ней:
+        // лента включена по умолчанию (T2-14), без карточки на приглашение не ответить.
         if let Some(feed) = feed {
             let main = div()
                 .id("reading")
@@ -1003,11 +1024,12 @@ impl Render for ReadingPane {
                 .children(seal_card)
                 .children(scheduled)
                 .children(bar)
+                .children(strip)
+                .children(card)
                 .child(feed)
                 .child(quick_reply(&r.row, self.me.as_deref(), &l, cx));
             return with_side(main, side);
         }
-        let strip = self.ribbon(r, cx);
         // Открыт просмотр вложения — он на месте текста письма и карточки приглашения (DESIGN «Вложения»).
         if let Some(p) = &r.preview {
             let pane = self.preview_pane(p, window, cx);
@@ -1030,20 +1052,6 @@ impl Render for ReadingPane {
                 .child(pane)
                 .into_any_element();
         }
-        let card = r.invite.as_ref().map(|c| invite_card::render(c, self.me.as_deref(), cx)).or_else(|| {
-            // Письмо-поручение: карточка над текстом; своя копия задачи — из раздела «Задачи».
-            let inc = r.task_mail.as_ref()?;
-            let copy = self.tasks.as_ref().and_then(|t| t.upgrade()).and_then(|t| t.read(cx).tasks.iter().find(|x| x.uid == inc.task.uid).cloned());
-            let me = self.me.clone().unwrap_or_default();
-            let tz = crate::prefs::get(cx).calendar.zone();
-            let weak = cx.entity().downgrade();
-            let uid = inc.task.uid.clone();
-            let on = move |action: Option<postman_calendar::assign::Action>, _: &mut Window, cx: &mut App| {
-                let uid = uid.clone();
-                let _ = weak.update(cx, |_, cx| cx.emit(ReadingEvent::TaskAction { uid, action }));
-            };
-            Some(crate::tasks::mail_card(inc, copy.as_ref(), &me, &tz, cx, on))
-        });
         let body: AnyElement = match &r.doc {
             None => div().text_color(l.text2()).child("…").into_any_element(),
             Some(doc) => {

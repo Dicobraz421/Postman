@@ -122,7 +122,8 @@ pub fn reply_subject(title: &str, s: Partstat) -> String {
 }
 
 /// Ответ организатору: iCalendar METHOD:REPLY с моим PARTSTAT (RFC 5546 §3.2.3).
-pub fn imip_reply(inv: &Invitation, me: (&str, &str), status: Partstat, now: i64) -> String {
+/// `comment` — «… с комментарием» (T2-15): свойство `COMMENT` (RFC 5546 §3.2.3).
+pub fn imip_reply(inv: &Invitation, me: (&str, &str), status: Partstat, comment: Option<&str>, now: i64) -> String {
     let utc = |t: i64| jiff::Timestamp::from_second(t).map(|t| t.strftime("%Y%m%dT%H%M%SZ").to_string()).unwrap_or_default();
     let e = &inv.event;
     let org = e.organizer();
@@ -144,6 +145,9 @@ pub fn imip_reply(inv: &Invitation, me: (&str, &str), status: Partstat, now: i64
     }
     let (name, email) = me;
     lines.push(format!("ATTENDEE;PARTSTAT={}{}:mailto:{email}", partstat_ical(status), cn(name)));
+    if let Some(c) = comment.map(str::trim).filter(|c| !c.is_empty()) {
+        lines.push(format!("COMMENT:{}", text(c)));
+    }
     lines.extend(["END:VEVENT".to_string(), "END:VCALENDAR".into()]);
     lines.iter().map(|l| fold(l)).collect::<Vec<_>>().join("\r\n") + "\r\n"
 }
@@ -216,7 +220,7 @@ mod tests {
     #[test]
     fn reply_is_valid_ical() {
         let inv = invite();
-        let ics = imip_reply(&inv, ("Я", "me@corp.example"), Partstat::Accepted, 1_792_000_000);
+        let ics = imip_reply(&inv, ("Я", "me@corp.example"), Partstat::Accepted, None, 1_792_000_000);
         assert!(ics.contains("METHOD:REPLY\r\n"));
         assert!(ics.contains("UID:u-1@partner.example\r\n"));
         assert!(ics.contains("SEQUENCE:2\r\n"));
@@ -243,7 +247,9 @@ mod tests {
         // «Russian Standard Time» = UTC+3: 11:00 по Москве — 08:00 UTC.
         assert_eq!(inv.event.span.start, jiff::civil::date(2026, 10, 21).at(8, 0, 0, 0).to_zoned(TimeZone::UTC).unwrap().timestamp().as_second());
         assert_eq!(inv.event.span.end - inv.event.span.start, 3600);
-        let reply = imip_reply(&inv, ("Я", "me@corp.example"), Partstat::Accepted, 0);
+        let reply = imip_reply(&inv, ("Я", "me@corp.example"), Partstat::Accepted, None, 0);
+        let with = imip_reply(&inv, ("Я", "me@corp.example"), Partstat::Declined, Some("Буду в отпуске; пришлю Анну"), 0);
+        assert!(with.contains("COMMENT:Буду в отпуске\\; пришлю Анну\r\n"), "{with}");
         assert!(reply.contains("UID:040000008200E00074C5B7101A82E008000000001@partner.example"));
         // Наш ответ разбирается тем же парсером.
         let back = postman_worker::parse_calendar(reply.as_bytes()).unwrap();

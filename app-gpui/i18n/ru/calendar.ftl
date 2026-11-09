@@ -217,6 +217,27 @@ invite-changed-time = время
 invite-changed-place = место
 invite-changed-title = тему
 invite-done-accepted = Вы приняли
+invite-more = Как ответить
+invite-more-all = Другие ответы
+invite-with-comment = { $s ->
+    [accepted] Принять с комментарием…
+    [tentative] Под вопросом с комментарием…
+   *[declined] Отклонить с комментарием…
+}
+invite-no-reply = { $s ->
+    [accepted] Принять без ответа организатору
+    [tentative] Под вопросом без ответа организатору
+   *[declined] Отклонить без ответа организатору
+}
+invite-comment-title = { $s ->
+    [accepted] Принять — комментарий организатору
+    [tentative] Под вопросом — комментарий организатору
+   *[declined] Отклонить — комментарий организатору
+}
+invite-comment-placeholder = Например: опоздаю на 10 минут
+invite-comment-send = Отправить
+invite-comment-cancel = Отмена
+invite-sample-comment = В это время у меня суд, предлагаю перенести на четверг
 invite-done-tentative = Вы ответили «Под вопросом»
 invite-done-declined = Вы отклонили
 invite-route = Ответ уйдёт через календарь сервера · из invite.ics, разобран в песочнице

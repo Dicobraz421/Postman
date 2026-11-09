@@ -1147,6 +1147,22 @@ impl Client {
         parse::all_ok(&self.call("CreateItem", &body).await?)
     }
 
+    /// Ответить без ответа организатору (T2-15, «… без ответа» Outlook): ответ сохраняется (`SaveOnly`) — сервер
+    /// ставит статус во встрече, — и сохранённый ответ удаляется, чтобы не лежал в «Черновиках».
+    pub async fn respond_quietly(&mut self, id: &ItemId, reply: Reply) -> Result<()> {
+        let el = reply.element();
+        let body =
+            format!(r#"<m:CreateItem MessageDisposition="SaveOnly"><m:Items><{el}>{}</{el}></m:Items></m:CreateItem>"#, id.xml("t:ReferenceItemId"));
+        let resp = self.call("CreateItem", &body).await?;
+        parse::all_ok(&resp)?;
+        // Сервер вернул сохранённый ответ — убрать; не вернул — нечего.
+        if let Ok(saved) = parse::created(&resp) {
+            let del = format!(r#"<m:DeleteItem DeleteType="HardDelete"><m:ItemIds>{}</m:ItemIds></m:DeleteItem>"#, saved.xml("t:ItemId"));
+            parse::all_ok(&self.call("DeleteItem", &del).await?)?;
+        }
+        Ok(())
+    }
+
     /// Свои объекты по строке в теме (метка `[postman-test …]`, тема приглашения) в стандартной папке — не больше
     /// `max`. Только id: содержимое писем здесь не читается.
     pub async fn find_by_subject(&mut self, folder: WellKnown, text: &str, max: u32) -> Result<Vec<ItemId>> {

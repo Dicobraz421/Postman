@@ -292,6 +292,25 @@ pub fn with_partstat(ics: &str, me: &str, status: Partstat) -> Option<String> {
     found.then(|| join(&lines))
 }
 
+/// Кто рассылает ответы из моей копии встречи (RFC 6638 §7.1, T2-15): `client` — `SCHEDULE-AGENT=CLIENT` у
+/// `ORGANIZER`, сервер ответ не шлёт («без ответа организатору» или ответ письмом с комментарием); иначе параметр
+/// снимается — ответ шлёт сервер. Нет `ORGANIZER` — копия как есть.
+pub fn with_schedule_agent(ics: &str, client: bool) -> String {
+    let lines: Vec<String> = unfold(ics)
+        .into_iter()
+        .map(|l| match split(&l) {
+            Some((head, value)) if is(head, "ORGANIZER") => {
+                let head: Vec<&str> = head.split(';').filter(|p| !p.to_ascii_uppercase().starts_with("SCHEDULE-AGENT=")).collect();
+                let head = head.join(";");
+                let head = if client { set_param(&head, "SCHEDULE-AGENT", "CLIENT") } else { head };
+                format!("{head}:{value}")
+            }
+            _ => l,
+        })
+        .collect();
+    join(&lines)
+}
+
 // --- Правка и отмена своей встречи (организатор, S7-07б) ---
 
 /// Что править в ресурсе встречи CalDAV.
@@ -629,6 +648,10 @@ mod tests {
         assert!(lines.iter().any(|l| l.starts_with("ATTENDEE;CN=\"Me\";PARTSTAT=ACCEPTED:") && !l.contains("RSVP")), "{lines:?}");
         assert!(lines.contains(&"ATTENDEE;PARTSTAT=ACCEPTED:mailto:other@x".to_string()));
         assert!(with_partstat(ics, "nobody@x", Partstat::Declined).is_none());
+        // Без рассылки сервером (T2-15): у организатора SCHEDULE-AGENT=CLIENT; обратно — параметр снят.
+        let quiet = with_schedule_agent(&out, true);
+        assert!(unfold(&quiet).contains(&"ORGANIZER;SCHEDULE-AGENT=CLIENT:mailto:a@x".to_string()), "{quiet}");
+        assert!(unfold(&with_schedule_agent(&quiet, false)).contains(&"ORGANIZER:mailto:a@x".to_string()));
     }
 
     #[test]

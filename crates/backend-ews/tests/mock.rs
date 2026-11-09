@@ -342,7 +342,9 @@ fn invite_reply_by_uid_or_by_mail() {
     let answered = |e: &Event| matches!(e, Event::InviteAnswered { .. } | Event::InviteFailed { .. });
 
     let n = log.lock().unwrap().len();
-    live.commands.send(Command::RespondInvite { invite: Box::new(invite(MEETING_UID)), status: accepted, in_reply_to: None }).unwrap();
+    live.commands
+        .send(Command::RespondInvite { invite: Box::new(invite(MEETING_UID)), status: accepted, in_reply_to: None, answer: Default::default() })
+        .unwrap();
     let Event::InviteAnswered { delivery, uid, .. } = live.wait("InviteAnswered", answered) else { panic!("ответ не ушёл") };
     assert_eq!((delivery, uid.as_str()), (postman_core::invite::Delivery::Server, MEETING_UID));
     let sent = requests(&log, n, "CreateItem");
@@ -356,7 +358,14 @@ fn invite_reply_by_uid_or_by_mail() {
 
     let n = log.lock().unwrap().len();
     let other = invite("not-in-calendar@example.test");
-    live.commands.send(Command::RespondInvite { invite: Box::new(other), status: accepted, in_reply_to: Some("<inv@example.test>".into()) }).unwrap();
+    live.commands
+        .send(Command::RespondInvite {
+            invite: Box::new(other),
+            status: accepted,
+            in_reply_to: Some("<inv@example.test>".into()),
+            answer: Default::default(),
+        })
+        .unwrap();
     let Event::InviteAnswered { delivery, .. } = live.wait("InviteAnswered", answered) else { panic!("ответ письмом не ушёл") };
     assert_eq!(delivery, postman_core::invite::Delivery::Mail { imported: false });
     let sent = requests(&log, n, "CreateItem");
