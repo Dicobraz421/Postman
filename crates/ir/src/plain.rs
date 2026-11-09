@@ -1,6 +1,6 @@
 use crate::{Align, Block, Document, Inline};
 
-/// text/plain -> IR: абзацы по пустым строкам, строки с `>` — цитаты.
+/// text/plain -> IR: абзацы по пустым строкам, строки с `>` — цитаты, адреса — ссылки ([`crate::autolink`], T2-01).
 pub fn from_plain(text: &str) -> Document {
     let lines: Vec<&str> = text.lines().collect();
     let mut blocks = blocks(&lines, 0);
@@ -35,7 +35,7 @@ fn blocks(lines: &[&str], depth: usize) -> Vec<Block> {
             if !para.is_empty() {
                 para.push(Inline::LineBreak);
             }
-            para.push(Inline::text(line));
+            para.extend(crate::autolink(line));
         }
         i += 1;
     }
@@ -52,5 +52,15 @@ mod tests {
         let d = from_plain("Привет\nмир\n\n> старое\n>> совсем старое\nответ");
         assert_eq!(d.blocks.len(), 3);
         assert!(matches!(&d.blocks[1], Block::Quote(inner) if matches!(inner[1], Block::Quote(_))));
+    }
+
+    #[test]
+    fn links_in_plain_text() {
+        let d = from_plain(
+            "Встреча: https://telemost.yandex.ru/j/1
+до связи",
+        );
+        let Block::Paragraph { content, .. } = &d.blocks[0] else { panic!("абзац") };
+        assert!(content.iter().any(|i| matches!(i, Inline::Link { href, .. } if href == "https://telemost.yandex.ru/j/1")));
     }
 }

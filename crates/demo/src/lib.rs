@@ -990,6 +990,10 @@ pub mod calendar {
             },
         ]);
         v.push(results);
+        // Онлайн-встреча (T2-01): ссылки в описании, как их отдаёт Exchange текстом, — «Подключиться» и нажимаемые ссылки.
+        if let Some(call) = v.iter_mut().find(|e| e.uid == "e2@corp.example") {
+            call.description = "Повестка: статус внедрения, план на квартал.\nМатериалы: https://wiki.corp.example/projects/vector\n\nПрисоединиться к собранию Microsoft Teams<https://teams.microsoft.com/l/meetup-join/19%3ameeting_demo%40thread.v2/0>".into(); // i18n-ok: демо-данные
+        }
         // На весь день, два дня: четверг и пятница.
         let mut conference = event("e15", "Выездной семинар", 3, (0, 0), 2 * 24 * 60, "Конгресс-центр", false, Invited(Accepted), "clients");
         conference.all_day = true;

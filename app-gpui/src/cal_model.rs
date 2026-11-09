@@ -9,6 +9,48 @@ use jiff::tz::TimeZone;
 use postman_calendar::{Event, Participant, Partstat};
 use postman_core::prefs::{CalendarView, WeekStart};
 
+/// Хосты видеовстреч (T2-01, макет `Calendar` — строка «Подключиться»): Teams, Zoom, Телемост, Google Meet, Webex,
+/// Jitsi, Контур.Толк, TrueConf, SaluteJazz, VK Звонки, МТС Линк; и любой хост вида `meet.*` (свой сервер видеосвязи).
+const VIDEO_HOSTS: [&str; 14] = [
+    "teams.microsoft.com",
+    "teams.live.com",
+    "zoom.us",
+    "telemost.yandex.ru",
+    "telemost.360.yandex.ru",
+    "meet.google.com",
+    "webex.com",
+    "meet.jit.si",
+    "ktalk.ru",
+    "trueconf.ru",
+    "salutejazz.ru",
+    "jazz.sber.ru",
+    "calls.vk.com",
+    "mts-link.ru",
+];
+
+/// Ссылка на видеовстречу события: первая ссылка видеосервиса в месте, затем в описании; иначе — первая ссылка в месте
+/// (место — ссылка: встреча онлайн). Ссылка из одного описания без видеосервиса — не видеовстреча.
+pub(crate) fn meeting_link(e: &Event) -> Option<String> {
+    let video = |h: &str| {
+        let h = h.to_ascii_lowercase();
+        h.starts_with("meet.") || VIDEO_HOSTS.iter().any(|v| h == *v || h.ends_with(&format!(".{v}")))
+    };
+    let place = postman_ir::find_links(&e.location);
+    let all = place
+        .iter()
+        .chain(postman_ir::find_links(&e.description).iter())
+        .find(|(_, c)| c.host.as_deref().is_some_and(video))
+        .map(|(_, c)| c.href.clone());
+    all.or_else(|| place.into_iter().find(|(_, c)| c.host.is_some()).map(|(_, c)| c.href))
+}
+
+/// Место — это одна ссылка (и она уже показана строкой «Подключиться»): строку места не повторяем.
+pub(crate) fn place_is_link(e: &Event, link: &str) -> bool {
+    let t = e.location.trim();
+    let found = postman_ir::find_links(t);
+    found.len() == 1 && found[0].0 == (0..t.len()) && found[0].1.href == link
+}
+
 /// Недель в месяце — не больше (месяц с понедельника 31-го числа на 6 строк).
 pub(crate) const MAX_WEEKS: usize = 6;
 
@@ -350,5 +392,21 @@ mod tests {
         assert!(matches(&e, "corp.example"));
         assert!(!matches(&e, "siem бюджет"), "все слова запроса");
         assert!(!matches(&e, "  "));
+    }
+
+    #[test]
+    fn meeting_links() {
+        let mut e = ev("x", "2026-11-09T10:00:00Z", "2026-11-09T11:00:00Z", false);
+        assert_eq!(meeting_link(&e), None);
+        e.description = "Повестка: https://wiki.example.ru/x\nПрисоединиться<https://teams.microsoft.com/l/meetup-join/19%3a1>".into();
+        assert_eq!(meeting_link(&e).as_deref(), Some("https://teams.microsoft.com/l/meetup-join/19%3a1"));
+        e.description = "Повестка: https://wiki.example.ru/x".into();
+        assert_eq!(meeting_link(&e), None, "ссылка описания без видеосервиса — не видеовстреча");
+        e.location = "https://meet.ittask.ru/vektor-soc".into();
+        assert_eq!(meeting_link(&e).as_deref(), Some("https://meet.ittask.ru/vektor-soc"));
+        assert!(place_is_link(&e, "https://meet.ittask.ru/vektor-soc"));
+        e.location = "Переговорная 2 · https://us02web.zoom.us/j/1".into();
+        assert_eq!(meeting_link(&e).as_deref(), Some("https://us02web.zoom.us/j/1"));
+        assert!(!place_is_link(&e, "https://us02web.zoom.us/j/1"));
     }
 }
