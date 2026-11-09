@@ -419,7 +419,7 @@ fn answer_buttons(card: &Card, side: bool, l: &Look, cx: &mut Context<ReadingPan
                 }
             }));
         let b = crate::keytips::command(b, command, Some(tr!(key)), l, cx);
-        split(b, s, primary, &card.how, l, cx, ReadingPane::answer_toggle, ReadingPane::answer_pick)
+        split(b, s, primary, &card.how, l, cx, (ReadingPane::answer_toggle, ReadingPane::answer_pick))
             .when(!side, |d| d.flex_grow(1.).flex_shrink(1.).max_w(px(176.)))
             .when(sending.is_some(), |d| d.opacity(if sending == Some(s) { 1. } else { 0.5 }))
     })
@@ -1111,6 +1111,32 @@ impl Choice {
     }
 }
 
+/// Открыть/закрыть меню ▾ (`None` — закрыть).
+pub(crate) type Toggle<T> = fn(&mut T, Option<Partstat>, &mut Context<T>);
+/// Пункт меню ▾: ответ и как.
+pub(crate) type Pick<T> = fn(&mut T, Partstat, How, &mut Window, &mut Context<T>);
+
+/// Цвет значка ответа в меню: принять — зелёный, отклонить — красный, под вопросом — как текст.
+fn answer_ink(s: Partstat, l: &Look) -> Hsla {
+    match s {
+        Partstat::Accepted => l.pm(Pm::OkFg),
+        Partstat::Declined => l.error(),
+        _ => l.text2(),
+    }
+}
+
+/// Пункт меню ▾: значок ответа в его цвете и подпись.
+fn answer_item<T: 'static>(s: Partstat, n: u64, how: How, l: &Look, cx: &mut Context<T>, pick: Pick<T>) -> Stateful<Div> {
+    let (key, name) = match how {
+        How::Comment => ("invite-with-comment", "invite-comment"),
+        How::Silent => ("invite-no-reply", "invite-silent"),
+    };
+    crate::composer::menu_item(ElementId::NamedInteger(name.into(), n), l, false)
+        .child(status_mark(s, answer_ink(s, l)))
+        .child(tr!(key, s = postman_calendar::partstat_json(s)))
+        .on_click(cx.listener(move |this, _, window, cx| pick(this, s, how, window, cx)))
+}
+
 /// Кнопка ответа с ▾ справа (одна кнопка с разделителем) и меню ▾. `main` — уже собранная кнопка (её щелчок — ответ
 /// сразу); `pick` — пункт меню; `toggle` — открыть/закрыть меню этой кнопки.
 pub(crate) fn split<T: 'static>(
@@ -1120,8 +1146,7 @@ pub(crate) fn split<T: 'static>(
     choice: &Choice,
     l: &Look,
     cx: &mut Context<T>,
-    toggle: fn(&mut T, Option<Partstat>, &mut Context<T>),
-    pick: fn(&mut T, Partstat, How, &mut Window, &mut Context<T>),
+    (toggle, pick): (Toggle<T>, Pick<T>),
 ) -> Div {
     let n = match s {
         Partstat::Accepted => 0,
@@ -1143,23 +1168,13 @@ pub(crate) fn split<T: 'static>(
         .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(tr!("invite-more")).build(window, cx))
         .on_click(cx.listener(move |this, _, _, cx| toggle(this, if open { None } else { Some(s) }, cx)));
     let menu = open.then(|| {
-        let state = postman_calendar::partstat_json(s);
-        let item = |how: How, key: &'static str, cx: &mut Context<T>| {
-            crate::composer::menu_item(
-                ElementId::NamedInteger(if how == How::Comment { "invite-comment" } else { "invite-silent" }.into(), n),
-                l,
-                false,
-            )
-            .child(tr!(key, s = state))
-            .on_click(cx.listener(move |this, _, window, cx| pick(this, s, how, window, cx)))
-        };
         deferred(
             crate::composer::menu_box("invite-more-menu", l)
                 .top(px(36.))
                 // У первой кнопки — от её левого края, у остальных — от правого: меню не уходит за край панели.
                 .when(n > 0, |d| d.left_auto().right_0())
-                .child(item(How::Comment, "invite-with-comment", cx))
-                .child(item(How::Silent, "invite-no-reply", cx))
+                .child(answer_item(s, n, How::Comment, l, cx, pick))
+                .child(answer_item(s, n, How::Silent, l, cx, pick))
                 .on_mouse_down_out(cx.listener(move |this, _, _, cx| toggle(this, None, cx))),
         )
         .with_priority(1)
@@ -1169,13 +1184,7 @@ pub(crate) fn split<T: 'static>(
 
 /// «Другие ответы ▾» над тремя кнопками (узкая панель подробностей события): меню со всеми шестью вариантами.
 /// Открытое меню — `Choice::menu == Some(NeedsAction)`.
-pub(crate) fn more_all<T: 'static>(
-    choice: &Choice,
-    l: &Look,
-    cx: &mut Context<T>,
-    toggle: fn(&mut T, Option<Partstat>, &mut Context<T>),
-    pick: fn(&mut T, Partstat, How, &mut Window, &mut Context<T>),
-) -> Div {
+pub(crate) fn more_all<T: 'static>(choice: &Choice, l: &Look, cx: &mut Context<T>, toggle: Toggle<T>, pick: Pick<T>) -> Div {
     let open = choice.menu == Some(Partstat::NeedsAction);
     let button = div()
         .id("invite-more-all")
@@ -1194,15 +1203,15 @@ pub(crate) fn more_all<T: 'static>(
         .child(icon(g::DOWN, 10.))
         .on_click(cx.listener(move |this, _, _, cx| toggle(this, if open { None } else { Some(Partstat::NeedsAction) }, cx)));
     let menu = open.then(|| {
-        let mut items = Vec::new();
+        // Три группы — по ответу: значок в его цвете у каждого пункта, между группами — черта (владелец 2026-11-09:
+        // «а то сливается»).
+        let mut items: Vec<AnyElement> = Vec::new();
         for (n, s) in [Partstat::Accepted, Partstat::Tentative, Partstat::Declined].into_iter().enumerate() {
-            let state = postman_calendar::partstat_json(s);
-            for (how, key, name) in [(How::Comment, "invite-with-comment", "invite-comment"), (How::Silent, "invite-no-reply", "invite-silent")] {
-                items.push(
-                    crate::composer::menu_item(ElementId::NamedInteger(name.into(), n as u64), l, false)
-                        .child(tr!(key, s = state))
-                        .on_click(cx.listener(move |this, _, window, cx| pick(this, s, how, window, cx))),
-                );
+            if n > 0 {
+                items.push(div().h(px(1.)).my(px(4.)).mx(px(6.)).bg(l.c(pets_ui::theme::Role::StrokeDivider)).into_any_element());
+            }
+            for how in [How::Comment, How::Silent] {
+                items.push(answer_item(s, n as u64, how, l, cx, pick).into_any_element());
             }
         }
         deferred(
