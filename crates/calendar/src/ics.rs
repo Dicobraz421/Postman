@@ -62,10 +62,22 @@ impl NewEvent<'_> {
             "SEQUENCE:0".into(),
             format!("SUMMARY:{}", text(self.title)),
         ];
+        // Весь день (T2-14): даты без времени, конец — следующий день после последнего.
+        if self.all_day {
+            let first = self.start.date();
+            let days = (self.duration_secs.max(86_400) / 86_400).max(1);
+            let last = first.checked_add(jiff::Span::new().days(days)).unwrap_or(first);
+            l[6] = format!("DTSTART;VALUE=DATE:{}", first.strftime("%Y%m%d"));
+            l[7] = format!("DTEND;VALUE=DATE:{}", last.strftime("%Y%m%d"));
+        }
+        if self.private {
+            l.push("CLASS:PRIVATE".into());
+        }
         // Повтор (T2-13): DTSTART — в UTC, а дни правила — по местному времени встречи; встреча около полуночи в UTC
-        // приходится на другой день — дни недели и числа месяца сдвигаются на эту разницу.
+        // приходится на другой день — дни недели и числа месяца сдвигаются на эту разницу (у «весь день» — дата та же).
         if let Some(rule) = self.recurrence {
             let local = self.start.date();
+            let start = if self.all_day { self.start.to_zoned(TimeZone::UTC).map_or(start, |z| z.timestamp().as_second()) } else { start };
             let utc = jiff::Timestamp::from_second(start).map(|t| t.to_zoned(TimeZone::UTC).date()).unwrap_or(local);
             l.push(format!("RRULE:{}", crate::rrule::shift_days(rule, (utc - local).get_days())));
         }
@@ -536,6 +548,8 @@ mod tests {
     fn meeting_is_a_vevent_scheduled_by_the_server() {
         let attendees = [("User 2", "user2@itt.test", false), ("Переговорная", "room@itt.test", true)];
         let e = NewEvent {
+            private: false,
+            all_day: false,
             recurrence: None,
             alert_secs: None,
             uid: "u1@postman",
@@ -563,6 +577,10 @@ mod tests {
         let ics = remind.to_ics(0).unwrap();
         assert!(ics.contains("BEGIN:VALARM\r\nACTION:DISPLAY\r\n"), "{ics}");
         assert!(ics.contains("TRIGGER:-PT10M\r\nEND:VALARM\r\nEND:VEVENT"), "{ics}");
+        // Весь день и частная (T2-14).
+        let day = NewEvent { all_day: true, private: true, duration_secs: 86_400, ..e };
+        let ics = day.to_ics(0).unwrap();
+        assert!(ics.contains("DTSTART;VALUE=DATE:20261021\r\nDTEND;VALUE=DATE:20261022\r\n") && ics.contains("CLASS:PRIVATE\r\n"), "{ics}");
         // Повтор (T2-13): RRULE; встреча в 01:00 по Москве — в UTC это вторник 22:00 накануне: дни сдвигаются.
         let weekly = NewEvent { recurrence: Some("FREQ=WEEKLY;BYDAY=WE"), ..e };
         assert!(weekly.to_ics(0).unwrap().contains("RRULE:FREQ=WEEKLY;BYDAY=WE\r\n"));
@@ -631,6 +649,8 @@ mod tests {
     }
     fn meeting(attendees: &'static [(&'static str, &'static str, bool)]) -> NewEvent<'static> {
         NewEvent {
+            private: false,
+            all_day: false,
             recurrence: None,
             alert_secs: None,
             uid: "s1",

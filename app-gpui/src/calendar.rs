@@ -105,6 +105,7 @@ pub(crate) mod g {
     pub(crate) const HIDDEN: char = '\u{ED1A}';
     pub(crate) const INFO: char = '\u{E946}';
     pub(crate) const VIDEO: char = '\u{E714}';
+    pub(crate) const LOCK: char = '\u{E72E}';
 }
 
 /// Короткое имя дня недели: 0 — понедельник.
@@ -2476,6 +2477,8 @@ impl CalendarView {
                     .gap(px(4.))
                     .min_w_0()
                     .font_weight(FontWeight::SEMIBOLD)
+                    // Частное (T2-14, макет `Calendar`) — замок перед темой.
+                    .when(e.private, |d| d.child(icon(g::LOCK, 10.)))
                     .child(div().min_w_0().truncate().child(e.title.clone()))
                     .when(e.recurring, |d| d.child(icon(g::REPEAT, 10.).opacity(0.8))),
             )
@@ -2801,7 +2804,15 @@ impl CalendarView {
                     .child(chip),
             )
             .child(icon_button("details-close", g::CANCEL, l).on_click(cx.listener(|this, _, _, cx| this.close_details(cx))));
-        let title = div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).line_height(px(26.)).child(e.title.clone());
+        let title = div()
+            .flex()
+            .items_start()
+            .gap(px(8.))
+            .text_size(px(20.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .line_height(px(26.))
+            .when(e.private, |d| d.child(icon(g::LOCK, 18.).mt(px(4.))))
+            .child(e.title.clone());
         // Ответ на приглашение: полоса во всю ширину панели; кнопки — пока ответа нет или по «Изменить ответ».
         // «Принять» — заливка, остальные — тонированные, у всех — значок (DESIGN «Календарь и контакты»).
         let invited = !owner && mine.is_some();
@@ -2941,6 +2952,10 @@ impl CalendarView {
                     .and_then(postman_core::recur::rule_of_rrule)
                     .map_or_else(|| tr!("cal-details-recurring"), |r| crate::tasks::repeat_text(&r));
                 d.child(row(g::REPEAT, div().child(text).into_any_element()))
+            })
+            // Частное событие коллеги (T2-14): подробностей нет — так решил владелец.
+            .when(e.private && e.owner.is_some(), |d| {
+                d.child(row(g::LOCK, div().text_color(l.text2()).child(tr!("cal-private-other")).into_any_element()))
             })
             .when(opened::is_busy_block(e), |d| {
                 d.child(row(

@@ -638,6 +638,8 @@ mod tests {
 
     fn meeting(attendees: Vec<(String, String)>) -> Meeting {
         Meeting {
+            private: false,
+            all_day: false,
             recurrence: None,
             reminder_secs: None,
             uid: "u1".into(),
@@ -734,6 +736,7 @@ mod tests {
 
     fn ev(uid: &str, start: i64) -> Event {
         Event {
+            private: false,
             recurrence: None,
             alert_secs: None,
             id: String::new(),

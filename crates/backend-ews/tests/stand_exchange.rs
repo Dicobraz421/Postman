@@ -290,6 +290,8 @@ fn exchange_calendar_and_people() {
     let start = jiff::Timestamp::from_second((now() / 3600 + 48) * 3600).unwrap();
     let local = start.to_zoned(jiff::tz::TimeZone::get("Europe/Moscow").unwrap()).datetime();
     let meeting = Meeting {
+        private: false,
+        all_day: false,
         recurrence: None,
         reminder_secs: None,
         uid: String::new(),
@@ -384,6 +386,8 @@ fn exchange_meeting_cycle() {
     let local = start.to_zoned(jiff::tz::TimeZone::get(tz).unwrap()).datetime();
     let (from, to) = (start.as_second() - 86_400, start.as_second() + 86_400);
     let meeting = Meeting {
+        private: false,
+        all_day: false,
         recurrence: None,
         reminder_secs: None,
         uid: String::new(),
@@ -459,6 +463,7 @@ fn exchange_series_invite() {
     let day = jiff::Timestamp::now().to_zoned(tz.clone()).date().checked_add(jiff::ToSpan::days(8)).unwrap();
     let start = day.at(11, 0, 0, 0).to_zoned(tz).unwrap().timestamp().as_second();
     let item = postman_ews::NewItem {
+        private: false,
         reminder_minutes: None,
         title: format!("Серия {tag}"),
         description: String::new(),
@@ -509,6 +514,7 @@ fn exchange_recurring_in_week() {
     let start = day.at(9, 0, 0, 0).to_zoned(tz).unwrap().timestamp().as_second();
     let title = format!("Серия {tag}");
     let item = postman_ews::NewItem {
+        private: false,
         reminder_minutes: None,
         title: title.clone(),
         description: String::new(),
@@ -598,6 +604,8 @@ fn exchange_meeting_edit_through_commands() {
     let (from, to) = (start - 86_400, start + 4 * 86_400);
     let peer = test_recipient(&b.email);
     let meeting = |title: &str, at: i64| Meeting {
+        private: false,
+        all_day: false,
         recurrence: None,
         reminder_secs: None,
         uid: String::new(),
@@ -632,6 +640,7 @@ fn exchange_meeting_edit_through_commands() {
     let mut c1 = Client::new(&rt0.block_on(ews_url(&a)), postman_backend_ews::auth(&a.user, &a.password)).unwrap();
     let day = jiff::Timestamp::from_second(start).unwrap().to_zoned(zone.clone()).date();
     let item = postman_ews::NewItem {
+        private: false,
         reminder_minutes: None,
         title: stitle.clone(),
         description: String::new(),

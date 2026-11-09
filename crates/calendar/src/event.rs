@@ -88,6 +88,8 @@ pub struct Event {
     /// Правило повтора серии — RRULE RFC 5545 ([`crate::rrule`], T2-13); `None` — не повторяется или правило не
     /// известно (у экземпляра серии Exchange его нет — тогда только `recurring`).
     pub recurrence: Option<String>,
+    /// Частное (T2-14): JSCalendar `privacy` не `public`, iCalendar `CLASS:PRIVATE`, EWS `Sensitivity` Private.
+    pub private: bool,
 }
 
 #[derive(Deserialize)]
@@ -131,6 +133,7 @@ struct Raw {
     #[serde(default)]
     alerts: HashMap<String, Value>,
     use_default_alerts: Option<bool>,
+    privacy: Option<String>,
 }
 
 /// Напоминание до начала из `alerts` JSCalendar: первое `OffsetTrigger` от начала со сдвигом назад (или ровно в начало).
@@ -216,6 +219,7 @@ impl Event {
             // Умолчания календаря (`useDefaultAlerts`) клиенту не видны — тогда напоминание не известно.
             alert_secs: if raw.use_default_alerts == Some(true) { None } else { alert_before_start(&raw.alerts) },
             recurrence: rule.as_ref().and_then(crate::rrule::to_rrule),
+            private: raw.privacy.as_deref().is_some_and(|p| p != "public"),
         })
     }
 
@@ -387,6 +391,10 @@ pub struct NewEvent<'a> {
     pub attendees: &'a [(&'a str, &'a str, bool)],
     /// Повтор серии — RRULE (T2-13); `None` — одна встреча.
     pub recurrence: Option<&'a str>,
+    /// Весь день (T2-14): `start` — полночь дня, `duration_secs` — целые сутки.
+    pub all_day: bool,
+    /// Частная (T2-14): у тех, кому открыт мой календарь, — только «занят».
+    pub private: bool,
     /// Моё напоминание до начала, с (T2-08б): `Some(0)` — без напоминания, `None` — как решит сервер. Личное:
     /// в JSCalendar `alerts` — свойство пользователя, участникам не уходит.
     pub alert_secs: Option<i64>,
@@ -446,6 +454,16 @@ impl NewEvent<'_> {
         if let Some(rule) = self.recurrence.and_then(crate::rrule::from_rrule) {
             v["recurrenceRules"] = Value::Array(vec![rule]);
         }
+        if self.all_day {
+            // Весь день — «плавающее» время без пояса (RFC 8984 §5.1.1).
+            v["showWithoutTime"] = Value::Bool(true);
+            v["start"] = json_str(self.start.date().strftime("%Y-%m-%dT00:00:00").to_string());
+            v["duration"] = json_str(format_duration(self.duration_secs.max(86_400) / 86_400 * 86_400));
+            v["timeZone"] = Value::Null;
+        }
+        if self.private {
+            v["privacy"] = Value::String("private".into());
+        }
         if let Some(secs) = self.alert_secs {
             v["useDefaultAlerts"] = Value::Bool(false);
             if secs > 0 {
@@ -458,6 +476,10 @@ impl NewEvent<'_> {
         }
         v
     }
+}
+
+fn json_str(s: String) -> Value {
+    Value::String(s)
 }
 
 /// Секунды → `PnDTnHnMnS` (без нулевых частей).
@@ -494,6 +516,8 @@ mod new_event_tests {
     #[test]
     fn roundtrip_through_parser() {
         let ev = NewEvent {
+            private: false,
+            all_day: false,
             recurrence: None,
             alert_secs: None,
             uid: "u1",
@@ -524,6 +548,15 @@ mod new_event_tests {
         let series = NewEvent { recurrence: Some("FREQ=WEEKLY;BYDAY=WE"), ..ev_clone(&ev) }.to_jmap();
         assert_eq!(series["recurrenceRules"][0]["frequency"], "weekly");
         assert_eq!(Event::from_jmap(&series, &TimeZone::UTC).unwrap().recurrence.as_deref(), Some("FREQ=WEEKLY;BYDAY=WE"));
+        // Весь день и частная (T2-14): дата без пояса, сутки; `privacy`.
+        let day = NewEvent { all_day: true, private: true, ..ev_clone(&ev) }.to_jmap();
+        assert_eq!(
+            (day["showWithoutTime"].clone(), day["start"].clone(), day["duration"].clone()),
+            (Value::Bool(true), "2026-10-21T00:00:00".into(), "P1D".into())
+        );
+        assert!(day["timeZone"].is_null() && day["privacy"] == "private");
+        let back = Event::from_jmap(&day, &TimeZone::UTC).unwrap();
+        assert!(back.all_day && back.private);
         let none = NewEvent { alert_secs: Some(0), ..ev_clone(&ev) }.to_jmap();
         assert!(none.get("alerts").is_none() && none["useDefaultAlerts"] == false);
         // Stalwart: организатор и адреса — по черновику JMAP Calendars, без replyTo/sendTo.
