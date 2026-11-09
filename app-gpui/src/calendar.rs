@@ -38,6 +38,7 @@ use crate::cal_model::{self as model, MonthItem};
 use crate::chrome::icon;
 use crate::roles::{Look, Pm};
 
+mod opened;
 mod subscriptions;
 pub(crate) use subscriptions::name_of_key;
 
@@ -315,6 +316,15 @@ pub(crate) enum CalendarAction {
         ticket: u64,
     },
     Toast(Toast, String),
+    /// Занятость открытых из справочника календарей (T2-02): `Command::Availability`.
+    Busy {
+        ticket: u64,
+        emails: Vec<String>,
+        from: i64,
+        to: i64,
+    },
+    /// Поиск сотрудника в справочнике сервера (поле «Открыть календарь коллеги»).
+    FindPeople(String),
 }
 
 /// Что спрашиваем о своей встрече строкой у подробностей (S7-07б).
@@ -350,6 +360,11 @@ pub(crate) struct CalendarView {
     sub_input: Entity<InputState>,
     sub_open: bool,
     sub_bad: bool,
+    /// Календари коллег, открытые из справочника (T2-02), тикет их запроса занятости и выбор сотрудника.
+    opened: Vec<opened::Opened>,
+    opened_ticket: Option<u64>,
+    picker: opened::Picker,
+    pick_input: Entity<InputState>,
     tz: TimeZone,
     /// Вид и опорная дата: по ней — дни вида (`cal_model::days`).
     pub(crate) view: View,
@@ -451,6 +466,15 @@ impl CalendarView {
             }
             _ => {}
         });
+        let pick_input = cx.new(|cx| InputState::new(window, cx).placeholder(tr!("cal-open-placeholder")));
+        let on_pick = cx.subscribe_in(&pick_input, window, |this: &mut Self, state, ev: &InputEvent, window, cx| match ev {
+            InputEvent::Change => {
+                let text = state.read(cx).value().to_string();
+                this.pick_typed(&text, cx);
+            }
+            InputEvent::PressEnter { .. } => this.pick_accept(None, window, cx),
+            _ => {}
+        });
         let search = cx.new(|cx| InputState::new(window, cx).placeholder(tr!("cal-search-placeholder")));
         let on_search = cx.subscribe_in(&search, window, |this: &mut Self, state, ev: &InputEvent, _, cx| match ev {
             InputEvent::Change => {
@@ -532,7 +556,11 @@ impl CalendarView {
             sub_input,
             sub_open: false,
             sub_bad: false,
-            _subscriptions: vec![on_share, on_search, on_sub, on_prefs],
+            opened: Vec::new(),
+            opened_ticket: None,
+            picker: opened::Picker::default(),
+            pick_input,
+            _subscriptions: vec![on_share, on_search, on_sub, on_prefs, on_pick],
         }
     }
 
@@ -584,6 +612,7 @@ impl CalendarView {
         self.anchor = self.now_zoned().date();
         self.month = self.anchor.first_of_month();
         self.subs_go_live(cx);
+        self.opened_ticket = None;
         cx.notify();
     }
 
@@ -621,6 +650,7 @@ impl CalendarView {
     /// Перечитать период с сервера (раздел открыт, период сменился, создана встреча).
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
         self.load_subs(cx);
+        self.ask_opened(cx);
         if !self.live {
             return;
         }
@@ -637,6 +667,9 @@ impl CalendarView {
     /// Поток синхронизации не принял команду: ждать нечего.
     pub(crate) fn not_sent(&mut self, cx: &mut Context<Self>) {
         self.pending = None;
+        if self.opened_ticket.is_some() {
+            self.opened_failed(cx);
+        }
         self.answering = None;
         self.cancelling = None;
         self.searching = None;
@@ -779,6 +812,14 @@ impl CalendarView {
                 cx.emit(CalendarAction::Access);
                 cx.emit(CalendarAction::Toast(Toast::Success, text));
             }
+            SyncEvent::Availability { ticket, people, error, .. } if self.opened_ticket == Some(*ticket) => match error {
+                Some(e) => {
+                    tracing::info!("opened calendars: availability failed: {e}");
+                    self.opened_failed(cx);
+                }
+                None => self.opened_answer(people, cx),
+            },
+            SyncEvent::PeopleFound { .. } | SyncEvent::DirectoryLoaded(_) => self.pick_refresh(cx),
             SyncEvent::CalendarAccess(list) => self.access = list.clone(),
             SyncEvent::Publications(list) => self.publications = list.clone(),
             SyncEvent::Published { url } => self.published = Some(url.clone()),
@@ -1452,7 +1493,7 @@ impl CalendarView {
         let mut colleagues: Vec<AnyElement> = self
             .colleagues
             .iter()
-            .filter(|o| !o.email.starts_with("ics:"))
+            .filter(|o| !o.email.starts_with("ics:") && !self.is_opened(&o.key()))
             .enumerate()
             .map(|(n, o)| {
                 let key = o.key();
@@ -1491,6 +1532,7 @@ impl CalendarView {
                 .child(div().min_w_0().truncate().child(c.name.clone()))
         });
         let subs = self.subscription_rows(&l, cx);
+        let opened_rows = self.opened_rows(&l, cx);
         let share = if self.share_open {
             div()
                 .flex()
@@ -1565,7 +1607,9 @@ impl CalendarView {
             .child(title("cal-group-mine"))
             .child(mine)
             .children(my_others)
-            .when(!colleagues.is_empty(), |d| d.child(title("cal-group-colleagues")).children(colleagues))
+            .child(title("cal-group-colleagues"))
+            .children(colleagues)
+            .child(opened_rows)
             .child(title("cal-group-subscriptions"))
             .child(subs)
             .child(title("cal-group-categories"))
@@ -1755,6 +1799,148 @@ impl CalendarView {
     }
 
     /// Группа «Подписки»: календари по ссылке и «Добавить» строкой, без диалога (S8-44).
+    /// Открытые из справочника календари (T2-02, макет `Calendar`): строка как у коллеги; сервер не дал занятость — значок
+    /// «скрыто», имя приглушено и «Занятость скрыта» второй строкой. Ниже — «Открыть календарь коллеги» и выбор
+    /// сотрудника на месте (поле и подсказки справочника, без диалога).
+    fn opened_rows(&self, l: &Look, cx: &mut Context<Self>) -> Div {
+        let mut rows: Vec<AnyElement> = Vec::new();
+        for (n, o) in self.opened.iter().enumerate().filter(|(_, o)| self.is_opened(&o.key())) {
+            let key = o.key();
+            let denied = o.denied();
+            let shown = !self.hidden.contains(&key);
+            let color = l.cat(self.calendar_color(&key)).dot;
+            let toggle = key.clone();
+            let mark = if denied {
+                div().size(px(16.)).flex_none().text_color(l.text3()).child(icon(g::HIDDEN, 14.))
+            } else {
+                div()
+                    .size(px(16.))
+                    .flex_none()
+                    .rounded(px(4.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .border_1()
+                    .border_color(color)
+                    .when(shown, |d| d.bg(color).text_color(l.on_accent()).child(icon(g::CHECK, 10.)))
+            };
+            let check = div()
+                .id(("cal-opened-check", n))
+                .relative()
+                .children(crate::screens::spot(("cal-opened-check", n)))
+                .flex_none()
+                .cursor_pointer()
+                .child(mark)
+                .when(denied, |d| d.tooltip(|window, cx| crate::screens::tip(tr!("cal-fb-hidden-tip"), window, cx)))
+                .on_click(cx.listener(move |this, _, _, cx| this.toggle_calendar(&toggle, cx)));
+            rows.push(self.calendar_row(("cal-opened", n), key.clone(), o.shown_name(), check, l, cx).into_any_element());
+            if denied {
+                rows.push(
+                    div().pl(px(34.)).mt(px(-8.)).pb(px(4.)).text_size(px(11.)).text_color(l.text3()).child(tr!("cal-fb-hidden")).into_any_element(),
+                );
+            }
+            if self.color_menu.as_deref() == Some(key.as_str()) {
+                let k = key.clone();
+                rows.push(
+                    div()
+                        .pl(px(34.))
+                        .pb(px(6.))
+                        .child(
+                            div()
+                                .id(("cal-opened-close", n))
+                                .relative()
+                                .children(crate::screens::spot(("cal-opened-close", n)))
+                                .cursor_pointer()
+                                .text_size(px(12.))
+                                .text_color(l.accent_text())
+                                .hover(|d| d.underline())
+                                .child(tr!("cal-open-close"))
+                                .on_click(cx.listener(move |this, _, _, cx| this.close_colleague(&k, cx))),
+                        )
+                        .into_any_element(),
+                );
+            }
+        }
+        let add = if self.picker.open {
+            let suggest: Vec<AnyElement> = self
+                .picker
+                .suggest
+                .iter()
+                .enumerate()
+                .map(|(i, (name, email))| {
+                    let on = i == self.picker.cursor;
+                    let shown = if name.is_empty() { email.clone() } else { name.clone() };
+                    div()
+                        .id(("cal-pick", i))
+                        .relative()
+                        .children(crate::screens::spot(("cal-pick", i)))
+                        .px(px(8.))
+                        .py(px(4.))
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .when(on, |d| d.bg(l.picked()))
+                        .when(!on, |d| d.hover(|d| d.bg(l.hover())))
+                        .flex()
+                        .flex_col()
+                        .child(div().truncate().child(shown))
+                        .when(!name.is_empty(), |d| d.child(div().truncate().text_size(px(11.)).text_color(l.text2()).child(email.clone())))
+                        .on_click(cx.listener(move |this, _, window, cx| this.pick_accept(Some(i), window, cx)))
+                        .into_any_element()
+                })
+                .collect();
+            let (down, up) = (cx.entity(), cx.entity());
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .px(px(8.))
+                .pt(px(4.))
+                .child(
+                    div()
+                        .child(Input::new(&self.pick_input))
+                        .capture_action(move |_: &MoveDown, _, cx| down.update(cx, |c, cx| c.pick_move(1, cx)))
+                        .capture_action(move |_: &MoveUp, _, cx| up.update(cx, |c, cx| c.pick_move(-1, cx))),
+                )
+                .children(suggest)
+                .when(self.picker.bad, |d| d.child(div().text_size(px(12.)).text_color(l.error()).child(tr!("cal-open-bad"))))
+                .child(
+                    div().flex().gap(px(6.)).child(
+                        crate::buttons::secondary("cal-pick-cancel", l)
+                            .child(tr!("cal-share-cancel"))
+                            .on_click(cx.listener(|this, _, window, cx| this.pick_close(window, cx))),
+                    ),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .id("cal-open-colleague")
+                .relative()
+                .children(crate::screens::spot("cal-open-colleague"))
+                .h(px(30.))
+                .px(px(8.))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .text_size(px(12.))
+                .text_color(l.accent_text())
+                .cursor_pointer()
+                .hover(|d| d.bg(l.hover()))
+                .rounded(px(4.))
+                .child(icon(g::ADD, 12.))
+                .child(tr!("cal-open-colleague"))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.picker.open = true;
+                    this.pick_input.update(cx, |s, cx| {
+                        s.set_value("", window, cx);
+                        s.focus(window, cx);
+                    });
+                    cx.notify();
+                }))
+                .into_any_element()
+        };
+        div().flex().flex_col().gap(px(2.)).children(rows).child(add)
+    }
+
     fn subscription_rows(&self, l: &Look, cx: &mut Context<Self>) -> Div {
         let mut rows: Vec<AnyElement> = Vec::new();
         for (n, s) in self.subs.iter().enumerate() {
@@ -2708,6 +2894,7 @@ impl CalendarView {
                     .into_any_element(),
             ))
             .when(e.recurring, |d| d.child(row(g::REPEAT, div().child(tr!("cal-details-recurring")).into_any_element())))
+            .when(opened::is_busy_block(e), |d| d.child(row(g::HIDDEN, div().text_color(l.text2()).child(tr!("cal-fb-only")).into_any_element())))
             .when(show_place, |d| d.child(row(g::PIN, crate::ir_view::linked_text(e.location.trim(), "event-place", cx))))
             .when_some(join, |d, link| {
                 let open = link.clone();
@@ -3040,6 +3227,13 @@ impl crate::Mailer {
                 self.toasts.update(cx, |t, cx| t.push(*level, text.clone(), cx));
                 return;
             }
+            CalendarAction::Busy { ticket, emails, from, to } => {
+                Command::Availability { ticket: *ticket, emails: emails.clone(), from: *from, to: *to, sender: None }
+            }
+            CalendarAction::FindPeople(text) => {
+                self.find_people(text, cx);
+                return;
+            }
         };
         let respond = matches!(action, CalendarAction::Respond { .. });
         let cancel = matches!(action, CalendarAction::Cancel { .. });
@@ -3236,6 +3430,10 @@ pub(crate) mod scenes {
         Scene::new("calendar-month", view, view_ready),
         // Поиск над панелью события: найденное списком с датами (демо — по всем событиям).
         Scene::new("calendar-search", search, search_ready),
+        // Календари коллег из справочника (T2-02, макет `Calendar`): занятость Сидорова блоками, у Орлова — «Занятость
+        // скрыта»; открыт блок занятости. Затем — выбор сотрудника: поле и подсказки справочника.
+        Scene::new("calendar-opened", opened, opened_ready),
+        Scene::new("calendar-pick", pick, pick_ready),
     ];
 
     /// Запрос снимка `calendar-search`: место нескольких встреч демо (планёрки, демо продукта, итоги недели).
@@ -3297,6 +3495,39 @@ pub(crate) mod scenes {
         m.cal.update(cx, |c, cx| c.select_titled("Созвон с заказчиком", cx)); // i18n-ok: тема в демо-данных
         m.set_section(Section::Calendar, cx);
         Ok(())
+    }
+
+    fn opened(s: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        week(s, m, window, cx)?;
+        // i18n-ok: демо-сотрудники
+        let list = [("Сидоров Игорь", "i.sidorov@corp.example"), ("Орлов Дмитрий", "d.orlov@corp.example")];
+        m.cal.update(cx, |c, cx| c.open_demo_colleagues(&list, cx));
+        Ok(())
+    }
+
+    fn opened_ready(s: &Scene, m: &Mailer, cx: &App) -> bool {
+        let c = m.cal.read(cx);
+        week_ready(s, m, cx) && c.busy_blocks() > 0 && c.opened_state().iter().any(|(_, denied)| *denied) && c.selected()
+    }
+
+    fn pick(s: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        week(s, m, window, cx)?;
+        let now = jiff::Timestamp::now().as_second();
+        {
+            use postman_core::contacts::Source::Directory;
+            let mut book = m.compose.book.borrow_mut();
+            book.touch("Сидоров Игорь", "i.sidorov@corp.example", Directory, 1, now); // i18n-ok: демо-сотрудник
+            book.touch("Сидоренко Павел", "p.sidorenko@corp.example", Directory, 1, now); // i18n-ok: демо-сотрудник
+        }
+        m.cal.update(cx, |c, cx| {
+            c.open_demo_colleagues(&[], cx);
+            c.pick_with("сид", window, cx); // i18n-ok: ввод сцены
+        });
+        Ok(())
+    }
+
+    fn pick_ready(s: &Scene, m: &Mailer, cx: &App) -> bool {
+        week_ready(s, m, cx) && m.cal.read(cx).pick_suggestions() > 0
     }
 
     fn own(s: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {

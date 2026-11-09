@@ -237,6 +237,17 @@ invite-side-strip-hint = Details and reply are in the panel on the right
 invite-now = Now { $time }
 cal-group-colleagues = Colleagues’ calendars
 cal-colleague-calendar = Calendar: { $name }
+cal-open-colleague = Open a colleague’s calendar
+cal-open-placeholder = Employee name or address
+cal-open-bad = Pick an employee from the suggestions or type an address
+cal-open-already = Calendar is already open: { $name }
+cal-open-close = Close calendar
+cal-fb-busy = Busy
+cal-fb-tentative = Tentative
+cal-fb-away = Out of office
+cal-fb-hidden = Availability hidden
+cal-fb-hidden-tip = The server returned no availability: the calendar is not shared with you or the employee was not found. This does not mean free.
+cal-fb-only = Only availability is visible: the colleague did not share details
 cal-chip-colleague = Colleague’s calendar
 cal-color-change = Calendar color
 

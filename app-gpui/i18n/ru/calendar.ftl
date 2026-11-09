@@ -237,6 +237,17 @@ invite-side-strip-hint = Подробности и ответ — в панел�
 invite-now = Сейчас { $time }
 cal-group-colleagues = Календари коллег
 cal-colleague-calendar = Календарь: { $name }
+cal-open-colleague = Открыть календарь коллеги
+cal-open-placeholder = Имя или адрес сотрудника
+cal-open-bad = Выберите сотрудника из подсказок или введите адрес
+cal-open-already = Календарь уже открыт: { $name }
+cal-open-close = Закрыть календарь
+cal-fb-busy = Занят
+cal-fb-tentative = Под вопросом
+cal-fb-away = Вне офиса
+cal-fb-hidden = Занятость скрыта
+cal-fb-hidden-tip = Сервер не дал занятость: календарь вам не открыт или сотрудник не найден. Это не «свободен».
+cal-fb-only = Видна только занятость: подробности коллега не открыл
 cal-chip-colleague = Календарь коллеги
 cal-color-change = Цвет календаря
 

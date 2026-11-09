@@ -867,6 +867,9 @@ pub struct Calendar {
     pub free_busy_links: std::collections::BTreeMap<String, String>,
     /// Календари по ссылке `.ics` (S8-44).
     pub subscriptions: Vec<CalendarSubscription>,
+    /// Календари коллег, открытые из справочника (T2-02): занятость — запросом занятости сервера, как в Outlook
+    /// «Открыть календарь → из адресной книги».
+    pub opened_calendars: Vec<OpenedCalendar>,
     /// Как часто обновлять подписки, мин ([`SUBSCRIPTION_MINUTES`]).
     pub subscription_minutes: u16,
     /// События коллег — цветом календаря владельца; имя владельца в событии (S5-22).
@@ -888,6 +891,13 @@ pub struct Calendar {
 pub struct CalendarSubscription {
     pub url: String,
     /// Имя: из `X-WR-CALNAME`, пока не пришло — пусто.
+    pub name: String,
+}
+
+/// Календарь коллеги, открытый из справочника (T2-02).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenedCalendar {
+    pub email: String,
     pub name: String,
 }
 
@@ -913,6 +923,7 @@ impl Default for Calendar {
             free_color: FreeColor::Brand,
             free_busy_links: std::collections::BTreeMap::new(),
             subscriptions: Vec::new(),
+            opened_calendars: Vec::new(),
             subscription_minutes: 60,
             owner_colors: true,
             owner_names: true,
@@ -1374,6 +1385,7 @@ mod tests {
                 free_color: FreeColor::Slate,
                 free_busy_links: std::collections::BTreeMap::new(),
                 subscriptions: Vec::new(),
+                opened_calendars: vec![OpenedCalendar { email: "i.sidorov@corp.example".into(), name: "Сидоров Игорь".into() }],
                 subscription_minutes: 60,
                 owner_colors: false,
                 owner_names: false,

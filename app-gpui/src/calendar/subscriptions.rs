@@ -121,6 +121,7 @@ impl CalendarView {
     pub(crate) fn start_subscriptions(&mut self, worker: Arc<Mutex<Client>>, cx: &mut Context<Self>) {
         self.worker = Some(worker);
         self.subs = crate::prefs::get(cx).calendar.subscriptions.into_iter().map(Sub::new).collect();
+        self.load_opened_prefs(cx);
         // Первый проход — после создания окна: живой ящик включается уже потом (`go_live`), а демо-проход писал бы своё и
         // считал подписку проверенной.
         cx.spawn(async move |this, cx| {
@@ -213,6 +214,7 @@ impl CalendarView {
         self.events.extend(self.subs.iter().flat_map(|s| s.events.iter().cloned()));
         self.colleagues.retain(|o| !is_sub_owner(o));
         self.colleagues.extend(self.subs.iter().map(Sub::owner));
+        self.mix_opened();
         self.selected = open.and_then(|(uid, start)| self.events.iter().position(|e| e.uid == uid && e.span.start == start));
         self.remember_colors(cx);
         cx.notify();
