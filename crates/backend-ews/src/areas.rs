@@ -731,6 +731,7 @@ mod tests {
 
     fn ev(uid: &str, start: i64) -> Event {
         Event {
+            alert_secs: None,
             id: String::new(),
             uid: uid.into(),
             calendar_ids: Vec::new(),

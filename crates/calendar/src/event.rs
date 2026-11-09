@@ -83,6 +83,8 @@ pub struct Event {
     pub sequence: i64,
     /// Чей календарь: `None` — мой, иначе — коллеги, открывшего его мне (S5-22).
     pub owner: Option<Owner>,
+    /// Моё напоминание: за сколько секунд до начала (T2-08б); `None` — нет или не известно.
+    pub alert_secs: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -122,6 +124,30 @@ struct Raw {
     #[serde(default)]
     categories: HashMap<String, bool>,
     sequence: Option<i64>,
+    /// Напоминания (RFC 8984 `alerts`): первое со сдвигом от начала — `Event::alert_secs`.
+    #[serde(default)]
+    alerts: HashMap<String, Value>,
+    use_default_alerts: Option<bool>,
+}
+
+/// Напоминание до начала из `alerts` JSCalendar: первое `OffsetTrigger` от начала со сдвигом назад (или ровно в начало).
+fn alert_before_start(alerts: &HashMap<String, Value>) -> Option<i64> {
+    alerts
+        .values()
+        .filter_map(|a| {
+            let t = a.get("trigger")?;
+            let offset = t.get("offset").and_then(Value::as_str)?;
+            let from_start = t.get("relativeTo").and_then(Value::as_str).is_none_or(|r| r == "start");
+            let kind = t.get("@type").and_then(Value::as_str).unwrap_or("OffsetTrigger");
+            if kind != "OffsetTrigger" || !from_start {
+                return None;
+            }
+            match offset.strip_prefix('-') {
+                Some(d) => parse_duration(d).ok(),
+                None => parse_duration(offset.trim_start_matches('+')).ok().filter(|s| *s == 0),
+            }
+        })
+        .min()
 }
 
 impl Event {
@@ -174,6 +200,8 @@ impl Event {
             },
             sequence: raw.sequence.unwrap_or(0),
             owner: None,
+            // Умолчания календаря (`useDefaultAlerts`) клиенту не видны — тогда напоминание не известно.
+            alert_secs: if raw.use_default_alerts == Some(true) { None } else { alert_before_start(&raw.alerts) },
         })
     }
 
@@ -466,6 +494,12 @@ mod new_event_tests {
         let with = NewEvent { alert_secs: Some(900), ..NewEvent { attendees: &[], ..ev_clone(&ev) } }.to_jmap();
         assert_eq!(with["alerts"]["a1"]["trigger"]["offset"], "-PT15M");
         assert_eq!(with["useDefaultAlerts"], false);
+        // Разбор: напоминание до начала — из `alerts`; умолчания календаря — не известно.
+        let back = Event::from_jmap(&with, &TimeZone::UTC).unwrap();
+        assert_eq!(back.alert_secs, Some(900));
+        let mut defaults = with.clone();
+        defaults["useDefaultAlerts"] = Value::Bool(true);
+        assert_eq!(Event::from_jmap(&defaults, &TimeZone::UTC).unwrap().alert_secs, None);
         let none = NewEvent { alert_secs: Some(0), ..ev_clone(&ev) }.to_jmap();
         assert!(none.get("alerts").is_none() && none["useDefaultAlerts"] == false);
         // Stalwart: организатор и адреса — по черновику JMAP Calendars, без replyTo/sendTo.

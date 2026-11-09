@@ -80,6 +80,7 @@ fn dir(live: bool) -> PathBuf {
 
 fn event_of(sub: &Sub, e: IcsEvent) -> Event {
     Event {
+        alert_secs: None,
         id: format!("{}-{}-{}", sub.key(), e.uid, e.start),
         uid: format!("{}-{}", sub.id, e.uid),
         calendar_ids: Vec::new(),
@@ -122,6 +123,7 @@ impl CalendarView {
         self.worker = Some(worker);
         self.subs = crate::prefs::get(cx).calendar.subscriptions.into_iter().map(Sub::new).collect();
         self.load_opened_prefs(cx);
+        self.start_reminders(cx);
         // Первый проход — после создания окна: живой ящик включается уже потом (`go_live`), а демо-проход писал бы своё и
         // считал подписку проверенной.
         cx.spawn(async move |this, cx| {

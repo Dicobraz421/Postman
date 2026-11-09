@@ -40,6 +40,8 @@ pub const EVENT_PROPERTIES: &[&str] = &[
     "keywords",
     "categories",
     "sequence",
+    "alerts",
+    "useDefaultAlerts",
 ];
 
 #[derive(Debug, Clone, Deserialize)]
