@@ -1000,7 +1000,8 @@ impl Render for ReadingPane {
                 .children(seal_card)
                 .children(scheduled)
                 .children(bar)
-                .child(feed);
+                .child(feed)
+                .child(quick_reply(&r.row, self.me.as_deref(), &l, cx));
             return with_side(main, side);
         }
         let strip = self.ribbon(r, cx);
@@ -1052,6 +1053,7 @@ impl Render for ReadingPane {
                 col.children(ir_view::blocks_marked(&doc.blocks, "doc", &r.images, &hits, self.column.get(), cx)).into_any_element()
             }
         };
+        let quick_reply = r.doc.is_some().then(|| quick_reply(&r.row, self.me.as_deref(), &l, cx));
         // Текст ещё не пришёл — совпадения только в теме.
         let n = hits.seen();
         self.hits.set(n);
@@ -1075,9 +1077,39 @@ impl Render for ReadingPane {
             .children(card)
             .children(matches)
             .children(lock_line)
-            .child(body);
+            .child(body)
+            .children(quick_reply);
         with_side(main, side)
     }
+}
+
+/// «Ответить — Имя» внизу письма и ленты (T2-14, макет `QuickD`): то же, что Ctrl+R — ответ в области чтения над
+/// письмом.
+fn quick_reply(row: &postman_cache::EmailRow, me: Option<&str>, l: &crate::roles::Look, cx: &App) -> Stateful<Div> {
+    let who = if row.from_name.trim().is_empty() { row.from_addr.clone() } else { row.from_name.clone() };
+    // Своё письмо (беседа из «Отправленных»): имени себя не пишем.
+    let mine = me.is_some_and(|m| row.from_addr.eq_ignore_ascii_case(m));
+    let text = if mine { tr!("reading-quick-reply-tip") } else { tr!("reading-quick-reply", name = who) };
+    let key = crate::keytips::key("mail.reply", cx);
+    div()
+        .id("quick-reply")
+        .children(crate::screens::spot("quick-reply"))
+        .mt(px(8.))
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .px(px(12.))
+        .py(px(10.))
+        .rounded(px(6.))
+        .border_1()
+        .border_color(l.stroke())
+        .text_color(l.text2())
+        .cursor_text()
+        .hover(|d| d.border_color(l.accent()))
+        .child(crate::icons::icon(crate::icons::REPLY, 16., l.text2()))
+        .child(div().flex_1().min_w_0().truncate().child(text))
+        .tooltip(move |window, cx| crate::screens::tip(crate::keytips::with_key(tr!("reading-quick-reply-tip"), key.clone()), window, cx))
+        .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::actions::mail::Reply), cx))
 }
 
 /// Письмо и боковая панель приглашения справа (S5-24); без панели — письмо как есть.

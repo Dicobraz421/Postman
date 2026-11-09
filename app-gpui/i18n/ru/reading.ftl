@@ -50,3 +50,5 @@ reading-weekday = { $d ->
 }
 reading-link-mismatch = Текст ссылки — «{ $shown }», а ведёт она на { $host }. Перейти по настоящему адресу?
 reading-link-go = Перейти
+reading-quick-reply = Ответить — { $name }
+reading-quick-reply-tip = Ответить
