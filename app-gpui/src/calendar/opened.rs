@@ -9,13 +9,14 @@
 
 use gpui_kit::*;
 use pets_i18n::tr;
-use postman_calendar::{Busy, BusyKind, Event, EventStatus, FreeBusy, Owner, Span};
+use postman_calendar::{Busy, BusyKind, BusyNote, Event, EventStatus, FreeBusy, Owner, Span};
 use postman_core::prefs::OpenedCalendar;
 
 use super::{CalendarAction, CalendarView};
 
-/// Ключ блока занятости в `Event::id`.
+/// Ключ блока занятости в `Event::id`; у блока с темой и местом от сервера — ещё `NOTED`.
 const PREFIX: &str = "fb:";
+const NOTED: &str = "n:";
 /// Подсказок под полем выбора — не больше.
 const SUGGESTIONS: usize = 6;
 /// Подсказки — с этой длины набранного.
@@ -27,13 +28,15 @@ pub(super) struct Opened {
     pub(super) name: String,
     /// Занятость показанного периода; `None` — сервер не дал (нет доступа, не найден) или ещё не пришла.
     busy: Option<Vec<Busy>>,
+    /// Тема и место интервалов, где сервер их дал (T2-02б).
+    notes: Vec<BusyNote>,
     /// Ответ сервера пришёл: `busy: None` теперь значит «нет доступа».
     pub(super) answered: bool,
 }
 
 impl Opened {
     fn new(c: OpenedCalendar) -> Self {
-        Self { email: c.email, name: c.name, busy: None, answered: false }
+        Self { email: c.email, name: c.name, busy: None, notes: Vec::new(), answered: false }
     }
 
     pub(super) fn key(&self) -> String {
@@ -68,6 +71,11 @@ pub(crate) fn is_busy_block(e: &Event) -> bool {
     e.id.starts_with(PREFIX)
 }
 
+/// У блока есть тема или место от сервера (T2-02б).
+pub(crate) fn has_note(e: &Event) -> bool {
+    e.id.strip_prefix(PREFIX).is_some_and(|r| r.starts_with(NOTED))
+}
+
 fn title(kind: BusyKind) -> String {
     match kind {
         BusyKind::Busy => tr!("cal-fb-busy"),
@@ -77,13 +85,14 @@ fn title(kind: BusyKind) -> String {
 }
 
 fn event_of(o: &Opened, b: &Busy) -> Event {
+    let note = o.notes.iter().find(|n| n.span == b.span);
     Event {
-        id: format!("{PREFIX}{}-{}-{}", o.key(), b.span.start, b.span.end),
+        id: format!("{PREFIX}{}{}-{}-{}", if note.is_some() { NOTED } else { "" }, o.key(), b.span.start, b.span.end),
         uid: format!("{PREFIX}{}-{}", o.key(), b.span.start),
         calendar_ids: Vec::new(),
-        title: title(b.kind),
+        title: note.map(|n| n.subject.clone()).filter(|s| !s.is_empty()).unwrap_or_else(|| title(b.kind)),
         description: String::new(),
-        location: String::new(),
+        location: note.map(|n| n.location.clone()).unwrap_or_default(),
         span: b.span,
         all_day: false,
         status: if b.kind == BusyKind::Tentative { EventStatus::Tentative } else { EventStatus::Confirmed },
@@ -134,11 +143,12 @@ impl CalendarView {
     }
 
     /// Ответ занятости: свой тикет — разложить по календарям.
-    pub(super) fn opened_answer(&mut self, people: &[(String, Option<Vec<Busy>>)], cx: &mut Context<Self>) {
+    pub(super) fn opened_answer(&mut self, people: &[(String, Option<Vec<Busy>>)], notes: &[(String, Vec<BusyNote>)], cx: &mut Context<Self>) {
         self.opened_ticket = None;
         for o in &mut self.opened {
             o.answered = true;
             o.busy = people.iter().find(|(e, _)| e.eq_ignore_ascii_case(&o.email)).and_then(|(_, b)| b.clone());
+            o.notes = notes.iter().find(|(e, _)| e.eq_ignore_ascii_case(&o.email)).map(|(_, n)| n.clone()).unwrap_or_default();
         }
         self.apply_subs(cx);
     }
@@ -284,6 +294,22 @@ impl CalendarView {
         self.pick_typed(text, cx);
     }
 
+    /// Сцена: тема и место у блоков открытого календаря `email`, как их даёт Exchange (вид `Detailed`).
+    pub(crate) fn demo_notes(&mut self, email: &str, cx: &mut Context<Self>) {
+        for o in self.opened.iter_mut().filter(|o| o.email.eq_ignore_ascii_case(email)) {
+            o.notes = o
+                .busy
+                .iter()
+                .flatten()
+                .take(2)
+                .map(|b| BusyNote { span: b.span, subject: "Аудит доступа".into(), location: "Переговорная 2".into() })
+                .collect(); // i18n-ok: демо-данные
+        }
+        self.apply_subs(cx);
+        self.selected = self.events.iter().position(|e| is_busy_block(e) && !e.location.is_empty());
+        cx.notify();
+    }
+
     /// Сцена: открыть календари `list` (имя, адрес) заново и показать первый блок занятости в подробностях.
     pub(crate) fn open_demo_colleagues(&mut self, list: &[(&str, &str)], cx: &mut Context<Self>) {
         for key in self.opened.iter().map(Opened::key).collect::<Vec<_>>() {
@@ -304,7 +330,7 @@ impl CalendarView {
 
 #[cfg(test)]
 mod tests {
-    use super::{Busy, BusyKind, EventStatus, Opened, OpenedCalendar, Span, event_of, is_busy_block};
+    use super::{Busy, BusyKind, BusyNote, EventStatus, Opened, OpenedCalendar, Span, event_of, is_busy_block};
 
     /// Блок занятости — только для чтения, владелец — коллега, «под вопросом» — статусом события.
     #[test]
@@ -316,5 +342,10 @@ mod tests {
         assert_eq!(e.owner.as_ref().map(|w| (w.key(), w.name.clone())), Some(("m.ivanova@corp.example".into(), "M.Ivanova@corp.example".into())));
         assert!(e.participants.is_empty() && e.description.is_empty());
         assert!(!o.denied(), "ответа ещё нет — не «скрыта»");
+        // Тема и место от сервера (Exchange `Detailed`) — в блоке вместо «Занят».
+        let mut o = o;
+        o.notes = vec![BusyNote { span: Span::new(10, 20), subject: "Планёрка".into(), location: "Переговорная 1".into() }];
+        let e = event_of(&o, &Busy { span: Span::new(10, 20), kind: BusyKind::Busy });
+        assert_eq!((e.title.as_str(), e.location.as_str()), ("Планёрка", "Переговорная 1"));
     }
 }
