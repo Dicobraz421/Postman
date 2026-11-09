@@ -107,7 +107,7 @@ panic = "deny"
 [patch.crates-io]
 # Патч Windows-платформы gpui (шейдеры в exe, кадры по запросу, живой ресайз) — общий для приложений Pets:
 # github.com/Dicobraz/pets, crates/pets-gpui-windows.
-gpui-pre-windows = { git = "https://github.com/Dicobraz/pets", rev = "3386ca8af977ca3f405b070cf568fce9d1241d8a" }
+gpui-pre-windows = { git = "https://github.com/Dicobraz/pets", rev = "c5194c9619b551ab5fba3fce5910536e41eb2385" }
 
 # Отладочная информация только для своего кода: target/debug не раздувается до десятков ГБ.
 [profile.dev]

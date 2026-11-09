@@ -154,6 +154,15 @@ pub(crate) fn notify(title: &str, body: &str) -> Result<(), String> {
     sys::shell::notify(title, body)
 }
 
+/// Уведомление Windows о новом письме (T2-10): `sound` — звук «Новое письмо», иначе молча.
+pub(crate) fn notify_with(title: &str, body: &str, sound: bool) -> Result<(), String> {
+    if screening() {
+        HELD_NOTICES.lock().unwrap_or_else(PoisonError::into_inner).push((title.to_owned(), body.to_owned()));
+        return Ok(());
+    }
+    sys::shell::notify_with(title, body, sound)
+}
+
 /// Какие уведомления показал бы Windows.
 pub(crate) fn notified() -> Vec<(String, String)> {
     HELD_NOTICES.lock().unwrap_or_else(PoisonError::into_inner).clone()

@@ -29,3 +29,5 @@ notices-empty = No notifications.
 notices-log = Error details are in the Windows Application log (source Postman).
 notices-left = { $n } s
 notices-more = +{ $n } more
+newmail-title = New messages: { $n }
+newmail-more = and { $n } more

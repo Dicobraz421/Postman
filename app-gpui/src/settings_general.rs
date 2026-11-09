@@ -239,9 +239,9 @@ impl SettingsView {
                 l,
             ))
             .child(group(tr!("settings-notify-group"), l))
-            .child(stored_row(tr!("settings-notify"), Some(notify_hint), seg_group(notifies, l), l))
+            .child(row(tr!("settings-notify"), Some(notify_hint), seg_group(notifies, l), l))
             .when(on, |d| {
-                d.child(stored_row(tr!("settings-quiet"), Some(tr!("settings-quiet-hint")), quiet, l)).child(stored_row(
+                d.child(row(tr!("settings-quiet"), Some(tr!("settings-quiet-hint")), quiet, l)).child(row(
                     tr!("settings-sound"),
                     Some(tr!("settings-sound-hint")),
                     toggle("settings-sound", g.sound, l).on_click(cx.listener(|_, _, _, cx| {
@@ -252,7 +252,7 @@ impl SettingsView {
                 ))
             })
             .child(group(tr!("settings-updates-group"), l))
-            .child(stored_row(
+            .child(row(
                 tr!("settings-channel"),
                 Some(tr!(if g.channel == Channel::Stable { "settings-channel-stable-hint" } else { "settings-channel-preview-hint" })),
                 seg_group(channels, l),
