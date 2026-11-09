@@ -60,7 +60,11 @@ pub fn rule_of(t: &Task) -> Option<Rule> {
     if let Some(n) = t.repeat_after {
         return Some(Rule::AfterDone(n));
     }
-    let r = t.recurrence.as_ref()?;
+    rule_of_value(t.recurrence.as_ref()?)
+}
+
+/// Правило из `recurrenceRule` JSCalendar (задачи и встречи, T2-13).
+pub fn rule_of_value(r: &Value) -> Option<Rule> {
     let interval = r["interval"].as_u64().unwrap_or(1).max(1) as u32;
     // Ограничения и уточнения вне подмножества — правило как есть.
     let has = |k: &str| r.get(k).is_some_and(|v| !v.is_null());
@@ -103,7 +107,16 @@ pub fn set_rule(t: &mut Task, rule: Option<Rule>) {
         None => {}
         Some(Rule::AfterDone(n)) => t.repeat_after = Some(n.max(1)),
         Some(Rule::Other(v)) => t.recurrence = Some(v),
-        Some(Rule::Every { freq, interval }) => {
+        Some(rule @ Rule::Every { .. }) => t.recurrence = rule_value(&rule),
+    }
+}
+
+/// `recurrenceRule` JSCalendar правила (`Every`, `Other`); «после выполнения» у встречи не бывает — `None`.
+pub fn rule_value(rule: &Rule) -> Option<Value> {
+    match rule {
+        Rule::AfterDone(_) => None,
+        Rule::Other(v) => Some(v.clone()),
+        Rule::Every { freq, interval } => {
             let mut r = match freq {
                 Freq::Daily => json!({ "frequency": "daily" }),
                 Freq::Weekdays => {
@@ -119,12 +132,21 @@ pub fn set_rule(t: &mut Task, rule: Option<Rule>) {
                 Freq::Monthly(d) => json!({ "frequency": "monthly", "byMonthDay": [d] }),
                 Freq::Yearly => json!({ "frequency": "yearly" }),
             };
-            if interval > 1 {
+            if *interval > 1 {
                 r["interval"] = json!(interval);
             }
-            t.recurrence = Some(r);
+            Some(r)
         }
     }
+}
+
+/// Правило RRULE модели событий (T2-13): из него — подпись, из подписи — RRULE.
+pub fn rule_of_rrule(s: &str) -> Option<Rule> {
+    rule_of_value(&postman_calendar::rrule::from_rrule(s)?)
+}
+
+pub fn rrule_of_rule(rule: &Rule) -> Option<String> {
+    postman_calendar::rrule::to_rrule(&rule_value(rule)?)
 }
 
 /// Последний день месяца.
@@ -295,6 +317,17 @@ pub fn snooze_until(s: Snooze, now: i64, morning: jiff::civil::Time, tz: &TimeZo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Правило встречи (T2-13): RRULE ↔ `Rule` — то, что выбирают в «Повтор ▾» и показывают подписью.
+    #[test]
+    fn meeting_rules_through_rrule() {
+        let weekly = Rule::Every { freq: Freq::Weekly(vec![Weekday::Tuesday]), interval: 1 };
+        assert_eq!(rrule_of_rule(&weekly).as_deref(), Some("FREQ=WEEKLY;BYDAY=TU"));
+        assert_eq!(rule_of_rrule("FREQ=WEEKLY;BYDAY=TU"), Some(weekly));
+        assert_eq!(rule_of_rrule("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR"), Some(Rule::Every { freq: Freq::Weekdays, interval: 1 }));
+        assert!(matches!(rule_of_rrule("FREQ=WEEKLY;COUNT=5"), Some(Rule::Other(_))), "с концом серии — особое правило");
+        assert_eq!(rrule_of_rule(&Rule::AfterDone(3)), None);
+    }
     use jiff::civil::date;
     use postman_calendar::Alert;
 

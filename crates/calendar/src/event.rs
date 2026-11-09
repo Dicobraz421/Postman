@@ -85,6 +85,9 @@ pub struct Event {
     pub owner: Option<Owner>,
     /// Моё напоминание: за сколько секунд до начала (T2-08б); `None` — нет или не известно.
     pub alert_secs: Option<i64>,
+    /// Правило повтора серии — RRULE RFC 5545 ([`crate::rrule`], T2-13); `None` — не повторяется или правило не
+    /// известно (у экземпляра серии Exchange его нет — тогда только `recurring`).
+    pub recurrence: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -171,6 +174,15 @@ impl Event {
             }
         };
         let participants = raw.participants.values().map(participant).collect();
+        // Правило серии: RFC 8984 — массив (первое), JSCalendar 2.0 — одно.
+        let rule = raw
+            .recurrence_rules
+            .as_ref()
+            .and_then(|r| r.as_array())
+            .and_then(|a| a.first())
+            .or(raw.recurrence_rule.as_ref())
+            .filter(|r| r.is_object())
+            .cloned();
         let location = raw.locations.values().filter_map(|l| l.get("name").and_then(Value::as_str)).collect::<Vec<_>>().join("; ");
         Ok(Event {
             id: raw.id,
@@ -191,7 +203,8 @@ impl Event {
                 _ => FreeBusy::Busy,
             },
             participants,
-            recurring: [raw.recurrence_rules, raw.recurrence_rule].into_iter().flatten().any(|r| !r.is_null()) || raw.recurrence_id.is_some(),
+            recurring: [raw.recurrence_rules.as_ref(), raw.recurrence_rule.as_ref()].into_iter().flatten().any(|r| !r.is_null())
+                || raw.recurrence_id.is_some(),
             keywords: {
                 let mut k: Vec<String> = raw.keywords.into_iter().chain(raw.categories).filter(|(_, on)| *on).map(|(k, _)| k).collect();
                 k.sort();
@@ -202,6 +215,7 @@ impl Event {
             owner: None,
             // Умолчания календаря (`useDefaultAlerts`) клиенту не видны — тогда напоминание не известно.
             alert_secs: if raw.use_default_alerts == Some(true) { None } else { alert_before_start(&raw.alerts) },
+            recurrence: rule.as_ref().and_then(crate::rrule::to_rrule),
         })
     }
 
@@ -371,6 +385,8 @@ pub struct NewEvent<'a> {
     pub organizer: (&'a str, &'a str),
     /// (имя, адрес, необязательный)
     pub attendees: &'a [(&'a str, &'a str, bool)],
+    /// Повтор серии — RRULE (T2-13); `None` — одна встреча.
+    pub recurrence: Option<&'a str>,
     /// Моё напоминание до начала, с (T2-08б): `Some(0)` — без напоминания, `None` — как решит сервер. Личное:
     /// в JSCalendar `alerts` — свойство пользователя, участникам не уходит.
     pub alert_secs: Option<i64>,
@@ -427,6 +443,9 @@ impl NewEvent<'_> {
         if !self.location.is_empty() {
             v["locations"] = serde_json::json!({ "l1": { "@type": "Location", "name": self.location } });
         }
+        if let Some(rule) = self.recurrence.and_then(crate::rrule::from_rrule) {
+            v["recurrenceRules"] = Value::Array(vec![rule]);
+        }
         if let Some(secs) = self.alert_secs {
             v["useDefaultAlerts"] = Value::Bool(false);
             if secs > 0 {
@@ -475,6 +494,7 @@ mod new_event_tests {
     #[test]
     fn roundtrip_through_parser() {
         let ev = NewEvent {
+            recurrence: None,
             alert_secs: None,
             uid: "u1",
             calendar_id: "cal",
@@ -500,6 +520,10 @@ mod new_event_tests {
         let mut defaults = with.clone();
         defaults["useDefaultAlerts"] = Value::Bool(true);
         assert_eq!(Event::from_jmap(&defaults, &TimeZone::UTC).unwrap().alert_secs, None);
+        // Повтор (T2-13): RRULE модели ↔ `recurrenceRules` JSCalendar.
+        let series = NewEvent { recurrence: Some("FREQ=WEEKLY;BYDAY=WE"), ..ev_clone(&ev) }.to_jmap();
+        assert_eq!(series["recurrenceRules"][0]["frequency"], "weekly");
+        assert_eq!(Event::from_jmap(&series, &TimeZone::UTC).unwrap().recurrence.as_deref(), Some("FREQ=WEEKLY;BYDAY=WE"));
         let none = NewEvent { alert_secs: Some(0), ..ev_clone(&ev) }.to_jmap();
         assert!(none.get("alerts").is_none() && none["useDefaultAlerts"] == false);
         // Stalwart: организатор и адреса — по черновику JMAP Calendars, без replyTo/sendTo.

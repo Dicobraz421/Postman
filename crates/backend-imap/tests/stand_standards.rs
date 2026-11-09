@@ -225,6 +225,7 @@ fn clean_letters(marker: &str) {
 fn meeting(uid: &str, title: &str, start: i64, attendees: Vec<(String, String)>) -> Meeting {
     let local = jiff::Timestamp::from_second(start).unwrap().to_zoned(jiff::tz::TimeZone::UTC).datetime();
     Meeting {
+        recurrence: None,
         reminder_secs: None,
         uid: uid.into(),
         title: title.into(),

@@ -80,6 +80,7 @@ fn dir(live: bool) -> PathBuf {
 
 fn event_of(sub: &Sub, e: IcsEvent) -> Event {
     Event {
+        recurrence: None,
         alert_secs: None,
         id: format!("{}-{}-{}", sub.key(), e.uid, e.start),
         uid: format!("{}-{}", sub.id, e.uid),

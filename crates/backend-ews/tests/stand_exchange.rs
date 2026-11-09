@@ -290,6 +290,7 @@ fn exchange_calendar_and_people() {
     let start = jiff::Timestamp::from_second((now() / 3600 + 48) * 3600).unwrap();
     let local = start.to_zoned(jiff::tz::TimeZone::get("Europe/Moscow").unwrap()).datetime();
     let meeting = Meeting {
+        recurrence: None,
         reminder_secs: None,
         uid: String::new(),
         title: title.clone(),
@@ -383,6 +384,7 @@ fn exchange_meeting_cycle() {
     let local = start.to_zoned(jiff::tz::TimeZone::get(tz).unwrap()).datetime();
     let (from, to) = (start.as_second() - 86_400, start.as_second() + 86_400);
     let meeting = Meeting {
+        recurrence: None,
         reminder_secs: None,
         uid: String::new(),
         title: title.clone(),
@@ -596,6 +598,7 @@ fn exchange_meeting_edit_through_commands() {
     let (from, to) = (start - 86_400, start + 4 * 86_400);
     let peer = test_recipient(&b.email);
     let meeting = |title: &str, at: i64| Meeting {
+        recurrence: None,
         reminder_secs: None,
         uid: String::new(),
         title: title.into(),

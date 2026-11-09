@@ -927,6 +927,7 @@ pub mod calendar {
             ],
         };
         Event {
+            recurrence: None,
             alert_secs: Some(15 * 60),
             id: id.into(),
             uid: format!("{id}@corp.example"),
@@ -952,6 +953,7 @@ pub mod calendar {
         let weekly = |id: &str, day| {
             let mut e = event(id, "Планёрка отдела", day, (9, 30), 30, "Переговорная 1", false, Invited(Accepted), "team");
             e.recurring = true;
+            e.recurrence = Some("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR".into());
             e
         };
         let mut v = vec![

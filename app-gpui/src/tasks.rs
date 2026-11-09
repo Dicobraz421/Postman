@@ -2620,7 +2620,7 @@ fn remind_text(t: &Trigger) -> String {
 }
 
 /// «Каждый день», «По будням», «Каждую неделю: пн, чт», «Каждый месяц, 20-го», «Через 7 д после выполнения».
-fn repeat_text(r: &Rule) -> String {
+pub(crate) fn repeat_text(r: &Rule) -> String {
     match r {
         Rule::AfterDone(n) => tr!("tasks-repeat-after", n = i64::from(*n)),
         Rule::Other(_) => tr!("tasks-repeat-other"),

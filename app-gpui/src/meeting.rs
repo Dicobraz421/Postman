@@ -100,6 +100,8 @@ pub(crate) struct MeetingModel {
     /// Напоминание новой встречи, с («Настройки → Календарь → Напоминание по умолчанию», T2-08б): `Some(0)` — нет;
     /// правка своей встречи — `None`, напоминание на сервере не трогаем.
     pub(crate) reminder: Option<i64>,
+    /// Повтор новой встречи («Повтор ▾», макет `Meeting`, T2-13); правка своей встречи — не меняем.
+    pub(crate) repeat: Option<postman_core::recur::Rule>,
     pub(crate) status: Status,
     /// Тикет отправки, итог которой ждём.
     sending: Option<u64>,
@@ -260,6 +262,7 @@ impl MeetingModel {
             from: None,
             late: false,
             reminder: None,
+            repeat: None,
             status: Status::None,
             sending: None,
             editing: None,
@@ -377,6 +380,7 @@ impl MeetingModel {
         let required = self.people();
         let optional = self.optional_people().into_iter().filter(|(_, e)| !required.iter().any(|(_, r)| r.eq_ignore_ascii_case(e))).collect();
         Ok(Meeting {
+            recurrence: self.repeat.as_ref().and_then(postman_core::recur::rrule_of_rule),
             reminder_secs: self.reminder,
             uid,
             title: self.title.trim().to_string(),
@@ -750,6 +754,8 @@ pub(crate) struct MeetingView {
     /// «От» (S7-03б): адреса моих учётных записей и открыто ли меню.
     senders: Vec<(String, String)>,
     from_menu: bool,
+    /// Открыт выбор повтора.
+    repeat_menu: bool,
     busy: Availability,
     /// Строка ссылки занятости (S8-42): адрес, для которого она открыта, поле, ссылка не годится.
     link_for: Option<String>,
@@ -860,6 +866,7 @@ impl MeetingView {
             me: open.me,
             senders: open.senders,
             from_menu: false,
+            repeat_menu: false,
             busy: Availability::default(),
             link_for: None,
             link_input,
@@ -1586,6 +1593,70 @@ impl MeetingView {
             .with_priority(1)
         });
         Some(Self::field_row(&l).relative().child(Self::label(tr!("shared-compose-from"))).child(div().child(button)).children(menu))
+    }
+
+    /// «Повтор ▾» (макет `Meeting`, T2-13): не повторяется, каждый день, по будням, каждую неделю (день начала), каждый
+    /// месяц (число начала), каждый год. У правки своей встречи — нет: серия меняется на сервере как есть.
+    fn repeat_button(&self, cx: &mut Context<Self>) -> Option<Div> {
+        if self.model.editing.is_some() {
+            return None;
+        }
+        use postman_core::recur::{Freq, Rule};
+        let l = crate::roles::look(cx);
+        let start = self.model.start_at(self.today()).map(|d| d.date()).unwrap_or_else(|| self.today());
+        let every = |freq| Rule::Every { freq, interval: 1 };
+        let options: Vec<Option<Rule>> = vec![
+            None,
+            Some(every(Freq::Daily)),
+            Some(every(Freq::Weekdays)),
+            Some(every(Freq::Weekly(vec![start.weekday()]))),
+            Some(every(Freq::Monthly(start.day()))),
+            Some(every(Freq::Yearly)),
+        ];
+        let text = |r: &Option<Rule>| r.as_ref().map_or_else(|| tr!("meeting-repeat-none"), crate::tasks::repeat_text);
+        let button = div()
+            .id("meeting-repeat")
+            .relative()
+            .children(crate::screens::spot("meeting-repeat"))
+            .h(px(32.))
+            .px(px(12.))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .rounded(px(4.))
+            .border_1()
+            .border_color(l.stroke())
+            .cursor_pointer()
+            .hover(|d| d.bg(l.hover()))
+            .child(icon(g::REPEAT, 14.))
+            .child(text(&self.model.repeat))
+            .child(icon(crate::chrome::glyph::CHEVRON, 10.).text_color(l.text2()))
+            .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(tr!("meeting-repeat")).build(window, cx))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.repeat_menu = !this.repeat_menu;
+                cx.notify();
+            }));
+        let current = self.model.repeat.clone();
+        let menu = self.repeat_menu.then(|| {
+            let items = options.into_iter().enumerate().map(|(i, r)| {
+                let label = text(&r);
+                crate::composer::menu_item(ElementId::NamedInteger("meeting-repeat-item".into(), i as u64), &l, r == current).child(label).on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        this.model.repeat = r.clone();
+                        this.repeat_menu = false;
+                        cx.notify();
+                    }),
+                )
+            });
+            deferred(crate::composer::menu_box("meeting-repeat-menu", &l).top(px(36.)).left(px(0.)).children(items).on_mouse_down_out(cx.listener(
+                |this, _, _, cx| {
+                    this.repeat_menu = false;
+                    cx.notify();
+                },
+            )))
+            .with_priority(1)
+        });
+        Some(div().relative().child(button).children(menu))
     }
 
     /// Выбран адрес «От»: занятость — заново, путём его учётной записи.
@@ -2502,6 +2573,7 @@ impl Render for MeetingView {
                     .on_click(cx.listener(|this, _, window, cx| this.send(window, cx))),
             )
             .child(div().w(px(1.)).h(px(20.)).mx(px(4.)).bg(l.border()))
+            .children(self.repeat_button(cx))
             .child(
                 div()
                     .h(px(32.))
@@ -2634,12 +2706,29 @@ pub(crate) mod scenes {
         Scene::new("assistant", assistant, ready).continues(),
         // Внешний участник с занятостью по ссылке (S8-42): строка помечена «по ссылке».
         Scene::new("meeting-link", link, link_ready).continues(),
+        // «Повтор ▾» (T2-13, макет `Meeting`): выбран «По будням», меню открыто.
+        Scene::new("meeting-repeat", repeat, repeat_ready).continues(),
     ];
 
     fn meeting(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
         m.set_section(Section::Calendar, cx);
         m.open_meeting_screen(cx);
         Ok(())
+    }
+
+    fn repeat(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        use postman_core::recur::{Freq, Rule};
+        let Some(v) = m.meetings.last() else { return Err("no meeting tab".into()) };
+        v.update(cx, |v, cx| {
+            v.model.repeat = Some(Rule::Every { freq: Freq::Weekdays, interval: 1 });
+            v.repeat_menu = true;
+            cx.notify();
+        });
+        Ok(())
+    }
+
+    fn repeat_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.meetings.last().is_some_and(|v| v.read(cx).repeat_menu && v.read(cx).ready())
     }
 
     fn slot(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
@@ -2792,6 +2881,7 @@ mod tests {
             status: Partstat::Accepted,
         };
         let e = CalEvent {
+            recurrence: None,
             alert_secs: None,
             id: "e1".into(),
             uid: "uid-1".into(),

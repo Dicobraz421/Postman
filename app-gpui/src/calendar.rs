@@ -2933,7 +2933,15 @@ impl CalendarView {
                     .child(div().text_size(px(12.)).text_color(l.text2()).child(format!("{} · {}", duration_text(e.span.len()), zone_label(tz))))
                     .into_any_element(),
             ))
-            .when(e.recurring, |d| d.child(row(g::REPEAT, div().child(tr!("cal-details-recurring")).into_any_element())))
+            // Правило известно (T2-13) — «Каждый вторник», иначе — что повторяется.
+            .when(e.recurring || e.recurrence.is_some(), |d| {
+                let text = e
+                    .recurrence
+                    .as_deref()
+                    .and_then(postman_core::recur::rule_of_rrule)
+                    .map_or_else(|| tr!("cal-details-recurring"), |r| crate::tasks::repeat_text(&r));
+                d.child(row(g::REPEAT, div().child(text).into_any_element()))
+            })
             .when(opened::is_busy_block(e), |d| {
                 d.child(row(
                     g::HIDDEN,

@@ -8,6 +8,7 @@ mod freebusy;
 pub mod ics;
 mod invite;
 mod layout;
+pub mod rrule;
 mod task;
 
 pub use event::{Event, EventStatus, FreeBusy, NewEvent, Owner, Participant, Partstat, format_duration, parse_duration};
