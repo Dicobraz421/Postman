@@ -1,7 +1,8 @@
-//! Занятость (`GetUserAvailability`, вид `FreeBusy`) → интервалы [`postman_calendar::Busy`] для «Помощника
-//! планирования». Окно и ответ — в UTC (пояс запроса — UTC без перевода часов).
+//! Занятость (`GetUserAvailability`, вид `Detailed`) → интервалы [`postman_calendar::Busy`] для «Помощника
+//! планирования» и календарей коллег; тема и место — [`postman_calendar::BusyNote`], если права их дают (T2-02б): без
+//! прав сервер сам отвечает видом `FreeBusy`. Окно и ответ — в UTC (пояс запроса — UTC без перевода часов).
 
-use postman_calendar::{Busy, BusyKind, Span};
+use postman_calendar::{Busy, BusyKind, BusyNote, Span};
 
 use crate::calendar::parse_time;
 use crate::soap;
@@ -14,6 +15,8 @@ use crate::{Client, Error, Result};
 pub struct Availability {
     pub email: String,
     pub busy: Vec<Busy>,
+    /// Тема и место интервалов, где сервер их дал.
+    pub notes: Vec<BusyNote>,
     pub error: Option<String>,
 }
 
@@ -43,7 +46,7 @@ pub(crate) fn request(emails: &[&str], window: Span) -> String {
         })
         .collect();
     format!(
-        "<m:GetUserAvailabilityRequest>{UTC}<m:MailboxDataArray>{mailboxes}</m:MailboxDataArray><t:FreeBusyViewOptions><t:TimeWindow><t:StartTime>{}</t:StartTime><t:EndTime>{}</t:EndTime></t:TimeWindow><t:MergedFreeBusyIntervalInMinutes>30</t:MergedFreeBusyIntervalInMinutes><t:RequestedView>FreeBusy</t:RequestedView></t:FreeBusyViewOptions></m:GetUserAvailabilityRequest>",
+        "<m:GetUserAvailabilityRequest>{UTC}<m:MailboxDataArray>{mailboxes}</m:MailboxDataArray><t:FreeBusyViewOptions><t:TimeWindow><t:StartTime>{}</t:StartTime><t:EndTime>{}</t:EndTime></t:TimeWindow><t:MergedFreeBusyIntervalInMinutes>30</t:MergedFreeBusyIntervalInMinutes><t:RequestedView>Detailed</t:RequestedView></t:FreeBusyViewOptions></m:GetUserAvailabilityRequest>",
         local(window.start),
         local(window.end)
     )
@@ -61,25 +64,32 @@ pub(crate) fn parse(resp: &El, emails: &[&str]) -> Result<Vec<Availability>> {
                 Error::Ews { code, .. } => code,
                 e => return Err(e),
             };
-            out.push(Availability { email, busy: Vec::new(), error: Some(code) });
+            out.push(Availability { email, busy: Vec::new(), notes: Vec::new(), error: Some(code) });
             continue;
         }
-        let busy = r
-            .at(&["FreeBusyView", "CalendarEventArray"])
-            .into_iter()
-            .flat_map(|a| a.all("CalendarEvent"))
-            .filter_map(|e| {
-                let kind = match e.text_at(&["BusyType"])? {
-                    "Busy" => BusyKind::Busy,
-                    "Tentative" => BusyKind::Tentative,
-                    "OOF" => BusyKind::Unavailable,
-                    _ => return None, // Free, NoData
-                };
-                let span = Span::new(parse_time(e.text_at(&["StartTime"])?)?, parse_time(e.text_at(&["EndTime"])?)?);
-                Some(Busy { span, kind })
-            })
-            .collect();
-        out.push(Availability { email, busy, error: None });
+        let (mut busy, mut notes) = (Vec::new(), Vec::new());
+        for e in r.at(&["FreeBusyView", "CalendarEventArray"]).into_iter().flat_map(|a| a.all("CalendarEvent")) {
+            let kind = match e.text_at(&["BusyType"]) {
+                Some("Busy") => BusyKind::Busy,
+                Some("Tentative") => BusyKind::Tentative,
+                Some("OOF") => BusyKind::Unavailable,
+                _ => continue, // Free, NoData
+            };
+            let (Some(start), Some(end)) = (e.text_at(&["StartTime"]).and_then(parse_time), e.text_at(&["EndTime"]).and_then(parse_time)) else {
+                continue;
+            };
+            let span = Span::new(start, end);
+            busy.push(Busy { span, kind });
+            if let Some(d) = e.child("CalendarEventDetails") {
+                let private = d.text_at(&["IsPrivate"]) == Some("true");
+                let subject = if private { String::new() } else { d.text_at(&["Subject"]).unwrap_or_default().trim().to_owned() };
+                let location = if private { String::new() } else { d.text_at(&["Location"]).unwrap_or_default().trim().to_owned() };
+                if !subject.is_empty() || !location.is_empty() {
+                    notes.push(BusyNote { span, subject, location });
+                }
+            }
+        }
+        out.push(Availability { email, busy, notes, error: None });
     }
     Ok(out)
 }
@@ -116,6 +126,9 @@ mod tests {
         );
         assert_eq!(a[1].busy[0].kind, BusyKind::Unavailable);
         assert_eq!((a[2].email.as_str(), a[2].error.as_deref()), ("nobody@example.test", Some("ErrorMailRecipientNotFound")));
+        // Вид Detailed: тема и место; частное — без них.
+        assert_eq!(a[0].notes, [BusyNote { span: a[0].busy[0].span, subject: "Планёрка".into(), location: "Переговорная 1".into() }]);
+        assert!(a[1].notes.is_empty());
     }
 
     #[test]

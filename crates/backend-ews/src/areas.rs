@@ -46,7 +46,8 @@ pub const PEOPLE_FROM: usize = 3;
 const AROUND: i64 = 86_400;
 
 /// Занятость: моя и по адресам (`None` у адреса — нет данных), как у JMAP и CalDAV.
-pub type Availability = (Vec<Busy>, Vec<(String, Option<Vec<Busy>>)>);
+/// Моя занятость, занятость адресов (`None` — нет данных) и тема с местом интервалов, где сервер их дал (T2-02б).
+pub type Availability = (Vec<Busy>, Vec<(String, Option<Vec<Busy>>)>, Vec<(String, Vec<postman_calendar::BusyNote>)>);
 
 /// Встреча, которую уже видели: версия, вид (экземпляр серии или нет) и событие.
 #[derive(Debug, Clone)]
@@ -178,7 +179,8 @@ pub fn matching(events: Vec<Event>, text: &str) -> Vec<Event> {
 pub fn split_availability(mut all: Vec<postman_ews::Availability>, emails: &[String]) -> Availability {
     let me = if all.is_empty() { Vec::new() } else { all.remove(0).busy };
     let people = emails.iter().enumerate().map(|(i, e)| (e.clone(), all.get(i).and_then(|a| a.error.is_none().then(|| a.busy.clone())))).collect();
-    (me, people)
+    let notes = emails.iter().zip(&all).filter(|(_, a)| !a.notes.is_empty()).map(|(e, a)| (e.clone(), a.notes.clone())).collect();
+    (me, people, notes)
 }
 
 /// Что за приглашение: на один экземпляр серии (`recurrenceId` в JSCalendar) или на всю встречу.
@@ -526,11 +528,12 @@ impl EwsAreas {
                 Err(e) => SyncEvent::EventsFound { text, events: Vec::new(), error: Some(e.to_string()) },
             }),
             Command::Availability { ticket, emails, from, to, .. } => notify(match self.availability(&emails, from, to).await {
-                Ok((me, people)) => SyncEvent::Availability { ticket, me, people, error: None },
+                Ok((me, people, notes)) => SyncEvent::Availability { ticket, me, people, notes, error: None },
                 Err(e) => SyncEvent::Availability {
                     ticket,
                     me: Vec::new(),
                     people: emails.into_iter().map(|e| (e, None)).collect(),
+                    notes: Vec::new(),
                     error: Some(e.to_string()),
                 },
             }),
@@ -714,13 +717,15 @@ mod tests {
     #[test]
     fn availability_is_mine_then_theirs() {
         let busy = |s| vec![Busy { span: Span::new(s, s + 60), kind: postman_calendar::BusyKind::Busy }];
-        let a = |busy, error: Option<&str>| postman_ews::Availability { email: String::new(), busy, error: error.map(str::to_owned) };
-        let (me, people) = split_availability(
+        let a =
+            |busy, error: Option<&str>| postman_ews::Availability { email: String::new(), busy, notes: Vec::new(), error: error.map(str::to_owned) };
+        let (me, people, notes) = split_availability(
             vec![a(busy(1), None), a(busy(2), None), a(Vec::new(), Some("ErrorMailRecipientNotFound"))],
             &["b@example.test".into(), "x@example.test".into()],
         );
         assert_eq!(me, busy(1));
         assert_eq!(people, [("b@example.test".to_owned(), Some(busy(2))), ("x@example.test".to_owned(), None)]);
+        assert!(notes.is_empty());
     }
 
     fn ev(uid: &str, start: i64) -> Event {

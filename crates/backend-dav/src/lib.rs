@@ -802,11 +802,12 @@ impl Dav {
                 Err(e) => SyncEvent::EventsFound { text, events: Vec::new(), error: Some(e.to_string()) },
             }),
             Command::Availability { ticket, emails, from, to, .. } => notify(match self.availability(&emails, from, to).await {
-                Ok((me, people)) => SyncEvent::Availability { ticket, me, people, error: None },
+                Ok((me, people)) => SyncEvent::Availability { ticket, me, people, notes: Vec::new(), error: None },
                 Err(e) => SyncEvent::Availability {
                     ticket,
                     me: Vec::new(),
                     people: emails.into_iter().map(|e| (e, None)).collect(),
+                    notes: Vec::new(),
                     error: Some(e.to_string()),
                 },
             }),

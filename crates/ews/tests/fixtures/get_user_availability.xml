@@ -13,9 +13,9 @@
           <FreeBusyView>
             <FreeBusyViewType xmlns="http://schemas.microsoft.com/exchange/services/2006/types">FreeBusy</FreeBusyViewType>
             <CalendarEventArray xmlns="http://schemas.microsoft.com/exchange/services/2006/types">
-              <CalendarEvent><StartTime>2026-10-20T07:00:00</StartTime><EndTime>2026-10-20T08:00:00</EndTime><BusyType>Busy</BusyType></CalendarEvent>
+              <CalendarEvent><StartTime>2026-10-20T07:00:00</StartTime><EndTime>2026-10-20T08:00:00</EndTime><BusyType>Busy</BusyType><CalendarEventDetails><ID>AAA=</ID><Subject>Планёрка</Subject><Location>Переговорная 1</Location><IsMeeting>true</IsMeeting><IsRecurring>true</IsRecurring><IsException>false</IsException><IsReminderSet>true</IsReminderSet><IsPrivate>false</IsPrivate></CalendarEventDetails></CalendarEvent>
               <CalendarEvent><StartTime>2026-10-20T09:00:00</StartTime><EndTime>2026-10-20T10:00:00</EndTime><BusyType>Free</BusyType></CalendarEvent>
-              <CalendarEvent><StartTime>2026-10-20T11:00:00</StartTime><EndTime>2026-10-20T11:30:00</EndTime><BusyType>Tentative</BusyType></CalendarEvent>
+              <CalendarEvent><StartTime>2026-10-20T11:00:00</StartTime><EndTime>2026-10-20T11:30:00</EndTime><BusyType>Tentative</BusyType><CalendarEventDetails><Subject>Врач</Subject><Location>Поликлиника</Location><IsPrivate>true</IsPrivate></CalendarEventDetails></CalendarEvent>
             </CalendarEventArray>
             <WorkingHours xmlns="http://schemas.microsoft.com/exchange/services/2006/types">
               <TimeZone><Bias>-180</Bias><StandardTime><Bias>0</Bias><Time>00:00:00</Time><DayOrder>1</DayOrder><Month>1</Month><DayOfWeek>Sunday</DayOfWeek></StandardTime><DaylightTime><Bias>0</Bias><Time>00:00:00</Time><DayOrder>1</DayOrder><Month>1</Month><DayOfWeek>Sunday</DayOfWeek></DaylightTime></TimeZone>
