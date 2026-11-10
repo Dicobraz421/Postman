@@ -57,3 +57,6 @@ thread-feed-head = { $n ->
    *[many] { $n } писем
 } · { $people } · с { $since }
 thread-quote-from = ··· цитата из письма от { $who }, { $date }
+folders-favorites = Избранное
+folder-menu-favorite = В избранное
+folder-menu-unfavorite = Убрать из избранного

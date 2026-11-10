@@ -164,6 +164,8 @@ enum MenuItem {
     Delete,
     /// «Экспорт…» (S8-32).
     Export,
+    /// «В избранное» / «Убрать из избранного» (T2-33r).
+    Favorite,
 }
 
 /// Пункты меню папки: у локальной — ещё «Удалить».
@@ -171,9 +173,9 @@ fn menu_items(id: &str) -> &'static [MenuItem] {
     if id == crate::local::LOCAL {
         &[MenuItem::New, MenuItem::Export]
     } else if crate::local::is_local(id) {
-        &[MenuItem::New, MenuItem::Rename, MenuItem::Delete, MenuItem::Export]
+        &[MenuItem::New, MenuItem::Rename, MenuItem::Delete, MenuItem::Export, MenuItem::Favorite]
     } else {
-        &[MenuItem::New, MenuItem::Rename, MenuItem::Export]
+        &[MenuItem::New, MenuItem::Rename, MenuItem::Export, MenuItem::Favorite]
     }
 }
 
@@ -385,8 +387,64 @@ impl Folders {
                 }
             }
             MenuItem::Export => cx.emit(FolderEvent::Export(m.id)),
+            MenuItem::Favorite => {
+                let mut list = self.favorites(cx);
+                match list.iter().position(|f| *f == m.id) {
+                    Some(i) => {
+                        list.remove(i);
+                    }
+                    None => list.push(m.id),
+                }
+                crate::prefs::update(cx, |p| p.favorites = Some(list));
+            }
         }
         cx.notify();
+    }
+
+    /// «Избранное» (T2-33r): из настроек; не задано — «Входящие», «Отправленные», «Черновики» своей учётки.
+    pub(crate) fn favorites(&self, cx: &App) -> Vec<String> {
+        if let Some(list) = crate::prefs::get(cx).favorites {
+            return list;
+        }
+        ["inbox", "sent", "drafts"]
+            .iter()
+            .filter_map(|role| self.mailboxes.iter().find(|m| account_of(&m.id).is_none() && m.role.as_deref() == Some(role)).map(|m| m.id.clone()))
+            .collect()
+    }
+
+    /// Строка «Избранного»: значок, имя, непрочитанные; щелчок — папка, правая кнопка — её меню.
+    fn favorite_row(&self, m: &MailboxRow, l: &Look, cx: &mut Context<Self>) -> AnyElement {
+        let selected = self.results.is_none() && self.current.as_deref() == Some(&m.id);
+        let (id, menu) = (m.id.clone(), m.id.clone());
+        let (ico, tint) = folder_icon(m.role.as_deref());
+        let row_id = SharedString::from(format!("fav-{}", m.id));
+        div()
+            .id(row_id.clone())
+            .children(crate::screens::spot(row_id))
+            .h(px(row_h(l)))
+            .flex_none()
+            .pl(px(4.))
+            .pr(px(8.))
+            .rounded(l.px(Metric::RadiusControl))
+            .when(selected, |d| d.relative().bg(l.row_fill(self.focused)).child(strip(l.row_strip(self.focused))))
+            .when(!selected, |d| d.hover(|d| d.bg(l.row_hover())))
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .child(div().w(px(12.)).flex_none())
+            .child(icons::icon(ico, 20., tint.map_or(l.text(), |t| l.pm(t))).ml(px(-6.)))
+            .child(div().flex_1().min_w_0().truncate().child(shown_name(m)))
+            .when(m.unread > 0, |d| unread(d, m.unread, l))
+            .on_click(cx.listener(move |_, _, _, cx| cx.emit(FolderEvent::Open(id.clone()))))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    this.open_menu(menu.clone(), ev.position, cx);
+                }),
+            )
+            .into_any_element()
     }
 
     /// `folder.new`: новая папка в открытой (или верхнего уровня своего ящика).
@@ -503,6 +561,8 @@ impl Folders {
                 MenuItem::Rename => (crate::chrome::glyph::EDIT, "folder-menu-rename"),
                 MenuItem::Delete => (crate::chrome::glyph::DELETE, "local-delete"),
                 MenuItem::Export => (crate::export::EXPORT, "export-menu"),
+                MenuItem::Favorite if self.favorites(cx).contains(&m.id) => (crate::calendar::g::CANCEL, "folder-menu-unfavorite"),
+                MenuItem::Favorite => (crate::chrome::glyph::FLAG, "folder-menu-favorite"),
             };
             crate::bulk::menu_line(("folder-menu-item", k), l)
                 .when(m.cursor == k && !off, |d| d.bg(l.hover()))
@@ -985,6 +1045,27 @@ impl Render for Folders {
         }
         let edit = self.edit.as_ref().map(|e| e.what.clone());
         let mut rows: Vec<AnyElement> = Vec::new();
+        // «Избранное» (T2-33r, макет `Main`): над деревом, без вложенности; пусто — группы нет.
+        let favs: Vec<MailboxRow> = self.favorites(cx).iter().filter_map(|id| self.mailboxes.iter().find(|m| &m.id == id).cloned()).collect();
+        if !favs.is_empty() && self.results.is_none() {
+            rows.push(
+                div()
+                    .h(px(24.))
+                    .flex_none()
+                    .flex()
+                    .items_end()
+                    .pl(px(8.))
+                    .pb(px(2.))
+                    .text_size(px(12.))
+                    .text_color(l.text2())
+                    .child(tr!("folders-favorites"))
+                    .into_any_element(),
+            );
+            for m in &favs {
+                rows.push(self.favorite_row(m, &l, cx));
+            }
+            rows.push(div().h(px(1.)).mx(px(8.)).my(px(6.)).flex_none().bg(l.border()).into_any_element());
+        }
         for r in self.rows() {
             match r {
                 // Своя учётная запись — подписью над папками, без связи — с меткой «нет связи» (макет «Состояния»).
