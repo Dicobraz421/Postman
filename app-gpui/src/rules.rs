@@ -61,11 +61,11 @@ fn ops_for(f: Field) -> &'static [(Op, &'static str)] {
     if f == Field::Subject { &OPS[..2] } else { &OPS }
 }
 
-fn field_name(f: Field) -> String {
+pub(crate) fn field_name(f: Field) -> String {
     FIELDS.iter().find(|(x, _)| *x == f).map(|(_, k)| tr!(k)).unwrap_or_default()
 }
 
-fn op_name(o: Op) -> String {
+pub(crate) fn op_name(o: Op) -> String {
     OPS.iter().find(|(x, _)| *x == o).map(|(_, k)| tr!(k)).unwrap_or_default()
 }
 

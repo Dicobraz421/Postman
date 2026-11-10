@@ -153,6 +153,10 @@ pub(crate) struct Info {
     pub(crate) cache: Option<std::path::PathBuf>,
     /// Песочница последнего разбора письма («Безопасность», S5-30); `None` — ещё не разбирали.
     pub(crate) sandbox: Option<postman_worker::Level>,
+    /// Кэш писем своей учётной записи: счёт писем категорий, проверка правил (в фоне).
+    pub(crate) db: Option<postman_cache::Cache>,
+    /// Правила на сервере (авто-назначение категорий, T2-53); `None` — у сервера правил нет или ещё не пришли.
+    pub(crate) rules: Option<Vec<postman_core::rules::Rule>>,
 }
 
 /// Экрану почты.
@@ -171,6 +175,10 @@ pub(crate) enum SettingsEvent {
     RemoveExtra(String),
     /// Подписи и шаблоны учётной записи изменены: письму — новые подписи по умолчанию.
     AccountPrefs(postman_core::prefs::AccountPrefs),
+    /// Список правил изменён не в разделе «Правила» (авто-назначение категории): на сервер.
+    SaveRules(Vec<postman_core::rules::Rule>),
+    /// «Применить к уже полученным»: действия правила — подходящим письмам кэша.
+    ApplyRule(postman_core::rules::Rule),
 }
 
 pub(crate) struct SettingsView {
@@ -182,6 +190,8 @@ pub(crate) struct SettingsView {
     pub(crate) cat_edit: Option<crate::settings_cats::CatEdit>,
     /// Ключевое слово удалённой категории, снятие которого с писем ждёт подтверждения.
     pub(crate) cat_purge: Option<String>,
+    /// Писем у каждой категории (ключевое слово в нижнем регистре); `None` — ещё считаем.
+    pub(crate) cat_counts: Option<std::collections::HashMap<String, usize>>,
     pub(crate) keys: crate::settings_keys::KeysState,
     pub(crate) sign: crate::settings_sign::SignState,
     /// Карточка добавления аккаунта (её события слушает экран почты).
@@ -263,6 +273,7 @@ impl SettingsView {
             cats,
             cat_edit: None,
             cat_purge: None,
+            cat_counts: None,
             keys,
             sign,
             add: None,
@@ -287,6 +298,9 @@ impl SettingsView {
             _subscriptions: subscriptions,
         };
         v.read_os(cx);
+        if v.section == Section::Categories {
+            v.count_categories(cx);
+        }
         v.sign_load(cx);
         v.check_password(cx);
         v
@@ -307,6 +321,9 @@ impl SettingsView {
             self.scroll.set_offset(point(px(0.), px(0.)));
         }
         self.section = section;
+        if section == Section::Categories {
+            self.count_categories(cx);
+        }
         cx.emit(SettingsEvent::Opened(section));
         cx.notify();
     }
