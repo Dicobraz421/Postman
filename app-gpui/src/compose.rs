@@ -79,7 +79,7 @@ pub(crate) enum Status {
     },
     BadAddresses(Vec<String>),
     NoRecipients,
-    /// Отправка остановлена замечанием DLP «Перед отправкой».
+    /// Отправка остановлена замечанием «Перед отправкой» (нет сертификата шифрования).
     Blocked,
     /// Сервера нет (демо) или поток синхронизации остановился: текст остаётся в письме.
     NoServer(Purpose),
@@ -539,30 +539,17 @@ impl Model {
         self.text_checks.iter().chain(&self.recipient_checks).chain(&self.cert_checks).filter(|c| !self.dismissed.contains(&c.key()))
     }
 
-    /// Отправку держит замечание DLP.
+    /// Отправку держит замечание (нет сертификата шифрования).
     pub(crate) fn blocked(&self) -> bool {
         self.checks().any(Check::blocks_send)
     }
 
-    /// «Это не карта», «Игнорировать», «ОК», «Оставить».
+    /// «Игнорировать», «ОК», «Оставить».
     pub(crate) fn dismiss(&mut self, check: &Check) {
         self.dismissed.insert(check.key());
         if self.status == Status::Blocked && !self.blocked() {
             self.status = Status::None;
         }
-    }
-
-    /// «Замаскировать»: `true` — текст изменился (его надо показать в поле).
-    pub(crate) fn mask(&mut self, check: &Check) -> bool {
-        let next = checks::mask(&self.body, check);
-        if next == self.body {
-            return false;
-        }
-        self.set(Field::Body, next);
-        if self.status == Status::Blocked && !self.blocked() {
-            self.status = Status::None;
-        }
-        true
     }
 
     /// «Заменить адрес»: `from` → `to` в полях адресов (имя остаётся). `true` — поля изменились.
@@ -1533,7 +1520,7 @@ pub(crate) mod scenes {
         let before = screens::composer_before(m);
         screens::compose_tab(m).is_some_and(|c| {
             let c = c.read(cx);
-            Some(c.id) != before && c.drawn() && c.model.checks().count() >= 5
+            Some(c.id) != before && c.drawn() && c.model.checks().count() >= 4
         })
     }
 
@@ -1922,29 +1909,15 @@ mod tests {
         assert!(back.keywords(today).contains(&"other".to_string()), "чужие слова сохраняются");
     }
 
-    /// S5-06б: DLP держит отправку, пока номер не замаскирован или замечание не снято; остальное — подсказки.
+    /// S5-06б: проверки текста — подсказки, отправку не держат; DLP в клиенте нет (решение владельца 2026-11-11).
     #[test]
-    fn dlp_blocks_sending_until_masked_or_dismissed() {
+    fn text_checks_do_not_block_sending() {
         let mut m = model();
         fill(&mut m);
         m.set(Field::Body, "Карта 4111 1111 1111 1111. Договор во вложении.".into());
-        let kinds: Vec<bool> = m.checks().map(Check::blocks_send).collect();
-        assert_eq!(kinds, [true, false]);
-        assert!(m.begin(Purpose::Send, 1, Instant::now()).is_none());
-        assert_eq!(m.status, Status::Blocked);
-        assert!(m.begin(Purpose::Save, 2, Instant::now()).is_some(), "сохранять черновик можно");
-        m.refused();
-        let card = m.checks().next().cloned().unwrap();
-        assert!(m.mask(&card));
-        assert!(m.body.contains("4111 •••• •••• 1111"));
+        assert!(matches!(m.checks().collect::<Vec<_>>().as_slice(), [Check::MissingAttachment { .. }]), "номер карты — не замечание");
         assert!(!m.blocked());
-        // «Это не карта» снимает замечание для того же номера.
-        m.set(Field::Body, "5500 0055 5555 5559".into());
-        assert!(m.blocked());
-        let card = m.checks().next().cloned().unwrap();
-        m.dismiss(&card);
-        assert!(!m.blocked());
-        assert!(m.begin(Purpose::Send, 3, Instant::now()).is_some());
+        assert!(m.begin(Purpose::Send, 1, Instant::now()).is_some());
     }
 
     #[test]

@@ -19,7 +19,7 @@ use gpui_kit::*;
 use pets_i18n::tr;
 use pets_ui::theme::{Metric, Role};
 use postman_compose::{Address, Attachment, Draft, parse_addresses};
-use postman_core::checks::{self, Check, Secret};
+use postman_core::checks::{self, Check};
 use postman_core::marks;
 use postman_core::prefs::AccountPrefs;
 use postman_core::send_later::{self, Choice, Reject};
@@ -789,11 +789,6 @@ impl Composer {
     /// Действие замечания «Перед отправкой»: первое (`primary`) или второе.
     fn check_action(&mut self, check: Check, primary: bool, window: &mut Window, cx: &mut Context<Self>) {
         match (&check, primary) {
-            (Check::Card { .. } | Check::Secret { .. }, true) => {
-                if self.model.mask(&check) {
-                    self.sync_body(window, cx);
-                }
-            }
             (Check::MissingAttachment { .. }, true) => self.pick_files(cx),
             (Check::External { .. }, true) => self.to.update(cx, |s, cx| s.focus(window, cx)),
             (Check::NoCertificate { addresses, .. }, true) => {
@@ -1877,24 +1872,7 @@ impl Composer {
 
     /// Заголовок и описание замечания.
     fn check_texts(&self, c: &Check) -> (String, String, String, String) {
-        let external = self.model.recipients().iter().any(|a| checks::is_external(&a.email, &self.own));
         match c {
-            Check::Card { .. } => (
-                tr!("checks-card"),
-                if external { tr!("checks-card-external") } else { tr!("checks-card-detail") },
-                tr!("checks-mask"),
-                tr!("checks-not-card"),
-            ),
-            Check::Secret { kind, .. } => (
-                match kind {
-                    Secret::Password => tr!("checks-password"),
-                    Secret::Token => tr!("checks-token"),
-                    Secret::PrivateKey => tr!("checks-private-key"),
-                },
-                tr!("checks-secret-detail"),
-                tr!("checks-mask"),
-                tr!("checks-not-secret"),
-            ),
             Check::MissingAttachment { word } => {
                 (tr!("checks-attachment", word = word.clone()), tr!("checks-attachment-detail"), tr!("checks-attach"), tr!("checks-ignore"))
             }
@@ -1932,10 +1910,10 @@ impl Composer {
         }
     }
 
-    /// Замечание: знак, заголовок, описание, два действия. DLP — красной подложкой (роль безопасности).
+    /// Замечание: знак, заголовок, описание, два действия. Держащее отправку — красной подложкой (роль безопасности).
     fn check_item(&self, i: usize, c: &Check, compact: bool, l: &Look, cx: &mut Context<Self>) -> AnyElement {
         let (title, detail, a1, a2) = self.check_texts(c);
-        let dlp = c.blocks_send();
+        let blocks = c.blocks_send();
         let mark = div()
             .size(px(20.))
             .flex_none()
@@ -1945,8 +1923,8 @@ impl Composer {
             .rounded_full()
             .text_size(px(12.))
             .font_weight(FontWeight::SEMIBOLD)
-            .when(dlp, |d| d.bg(l.pm(Pm::ThreatDot)).text_color(l.pm(Pm::ThreatBg)).child("!"))
-            .when(!dlp, |d| d.border_1().border_color(l.text3()).text_color(l.text2()).child("i"));
+            .when(blocks, |d| d.bg(l.pm(Pm::ThreatDot)).text_color(l.pm(Pm::ThreatBg)).child("!"))
+            .when(!blocks, |d| d.border_1().border_color(l.text3()).text_color(l.text2()).child("i"));
         let action = |n: u64, text: String, primary: bool, c: Check, cx: &mut Context<Self>| {
             div()
                 .id(ElementId::NamedInteger(if primary { "check-a1".into() } else { "check-a2".into() }, n))
@@ -1985,16 +1963,16 @@ impl Composer {
             .flex()
             .flex_col()
             .gap(px(if compact { 2. } else { 6. }))
-            .child(div().text_size(px(13.)).line_height(px(18.)).when(dlp, |d| d.text_color(l.pm(Pm::ThreatFg))).child(title))
+            .child(div().text_size(px(13.)).line_height(px(18.)).when(blocks, |d| d.text_color(l.pm(Pm::ThreatFg))).child(title))
             .when(!compact, |d| d.child(div().text_size(px(12.)).text_color(l.text2()).child(detail)))
             .child(actions);
         div()
             .flex()
             .gap(px(10.))
-            .p(px(if dlp { 8. } else { 0. }))
-            .py(px(if dlp { 8. } else { 10. }))
-            .when(dlp, |d| d.my(px(4.)).rounded(px(6.)).bg(l.pm(Pm::ThreatBg)))
-            .when(!dlp && i > 0, |d| d.border_t_1().border_color(l.border()))
+            .p(px(if blocks { 8. } else { 0. }))
+            .py(px(if blocks { 8. } else { 10. }))
+            .when(blocks, |d| d.my(px(4.)).rounded(px(6.)).bg(l.pm(Pm::ThreatBg)))
+            .when(!blocks && i > 0, |d| d.border_t_1().border_color(l.border()))
             .child(mark)
             .child(text)
             .into_any_element()
@@ -2370,7 +2348,7 @@ pub(crate) mod scenes {
         }
     }
 
-    /// Письмо сцены `checks`: номер карты, «во вложении» без файла, внешние при «Конфиденциально», сменённый адрес.
+    /// Письмо сцены `checks`: «во вложении» без файла, внешние при «Конфиденциально», сменённый адрес.
     pub(crate) fn checks_draft() -> Draft {
         Draft {
             to: vec![
@@ -2378,7 +2356,7 @@ pub(crate) mod scenes {
                 Address::new("Ирина Лебедева", format!("i.lebedeva@{PARTNER}")), // i18n-ok: образец письма
             ],
             subject: "Коммерческое предложение — обновлённая редакция".into(), // i18n-ok: образец письма
-            markdown: "Сергей, Ирина, добрый день!\n\nНаправляю обновлённое предложение. Расчёт стоимости — во вложении.\n\nРеквизиты для договора: карта 4111 1111 1111 1111 — уточню у бухгалтерии.\n\nС уважением,\nПётр".into(), // i18n-ok: образец письма
+            markdown: "Сергей, Ирина, добрый день!\n\nНаправляю обновлённое предложение. Расчёт стоимости — во вложении.\n\nРеквизиты для договора уточню у бухгалтерии.\n\nС уважением,\nПётр".into(), // i18n-ok: образец письма
             keywords: vec![marks::CONFIDENTIAL.into(), "pm.cat.clients".into()],
             ..Default::default()
         }
