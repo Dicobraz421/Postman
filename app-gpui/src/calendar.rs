@@ -108,6 +108,8 @@ pub(crate) mod g {
     pub(crate) const LOCK: char = '\u{E72E}';
     /// «Открыть» в шапке подробностей (T2-21, макет `Calendar`).
     pub(crate) const OPEN: char = '\u{E8A7}';
+    /// «Отменить ответ» на приглашение (T2-22).
+    pub(crate) const UNDO: char = '\u{E7A7}';
 }
 
 /// Короткое имя дня недели: 0 — понедельник.
@@ -375,6 +377,8 @@ pub(crate) enum CalendarAction {
     },
     /// «Открыть» приглашения (T2-21): письмо с ним в почте (`invite-letter:<uid>` в хранилище).
     OpenLetter(String),
+    /// Когда пришло письмо-приглашение (T2-22): время — в `received`.
+    InviteTime(String),
     /// «Отменить встречу» (S7-07б): `Command::CancelMeeting` → `MeetingCancelled` или `MeetingFailed`.
     Cancel {
         event: Box<Event>,
@@ -413,6 +417,11 @@ struct Found {
 }
 
 pub(crate) struct CalendarView {
+    /// Адреса общих ящиков (T2-22): их календари — группой «Общие», а не среди коллег.
+    pub(crate) shared_boxes: Vec<String>,
+    /// Когда пришло письмо-приглашение (T2-22, «· Пн 15:02»): UID → время; о каких уже спрашивали.
+    pub(crate) received: std::collections::HashMap<String, i64>,
+    received_asked: std::collections::HashSet<String>,
     /// Кому открыт мой календарь (S8-43): список, спрашивали ли, «С подробностями» в строке открытия.
     access: Vec<postman_core::sync::Access>,
     access_asked: bool,
@@ -586,6 +595,9 @@ impl CalendarView {
             selected: None,
             want: None,
             me: Some(postman_demo::ME.to_string()),
+            shared_boxes: Vec::new(),
+            received: std::collections::HashMap::new(),
+            received_asked: std::collections::HashSet::new(),
             categories: crate::labels::default_table(),
             colors: Self::assigned(&colleagues, &cal.calendar_colors),
             colleagues,
@@ -1305,6 +1317,26 @@ impl CalendarView {
         if mine.is_some_and(|p| p.owner) || e.organizer().is_none() { Some(Opens::Edit) } else { mine.map(|_| Opens::Letter) }
     }
 
+    /// Строка состояния календаря (T2-22, макет): вид, событий в нём, ждут ответа, отклонённых скрыто, пояс.
+    pub(crate) fn status_text(&self) -> String {
+        let (from, to) = self.range();
+        let me = self.me.as_deref();
+        let shown = self.events.iter().filter(|e| e.span.start < to && e.span.end > from && !self.hidden(e));
+        let (mut n, mut waiting, mut declined) = (0, 0, 0);
+        for e in shown {
+            match my_part(e, me).map(|p| (p.owner, p.status)) {
+                Some((false, Partstat::Declined)) => declined += 1,
+                Some((false, Partstat::NeedsAction)) => {
+                    waiting += 1;
+                    n += 1;
+                }
+                _ => n += 1,
+            }
+        }
+        let view = VIEWS.iter().find(|v| v.0 == self.view).map_or_else(String::new, |v| tr!(v.2));
+        tr!("cal-status", view = view, n = n as i64, waiting = waiting as i64, declined = declined as i64, zone = zone_label(&self.tz))
+    }
+
     /// «Открыть (Enter)» выбранного события (T2-21).
     pub(crate) fn open_selected(&mut self, cx: &mut Context<Self>) {
         let Some(e) = self.selected.and_then(|i| self.events.get(i)) else { return };
@@ -1652,6 +1684,12 @@ impl CalendarView {
             .text_color(l.on_accent())
             .child(icon(g::CHECK, 10.));
         let mine = self.calendar_row("cal-mine", String::new(), tr!("cal-my-calendar"), check, &l, cx);
+        let listed: Vec<bool> = self
+            .colleagues
+            .iter()
+            .filter(|o| !o.email.starts_with("ics:") && !self.is_opened(&o.key()))
+            .map(|o| self.shared_boxes.iter().any(|b| b.eq_ignore_ascii_case(&o.email)))
+            .collect();
         let mut colleagues: Vec<AnyElement> = self
             .colleagues
             .iter()
@@ -1682,6 +1720,10 @@ impl CalendarView {
             .collect();
         // Календари других моих учётных записей (S7-03б) — под «Моим календарём».
         let my_others: Vec<AnyElement> = colleagues.drain(..self.mine.min(colleagues.len())).collect();
+        // Календари общих ящиков (T2-22, макет: «Общие» — календарь отдела) — своей группой.
+        let (shared, colleagues): (Vec<_>, Vec<_>) = colleagues.into_iter().zip(listed.into_iter().skip(self.mine)).partition(|(_, shared)| *shared);
+        let shared: Vec<AnyElement> = shared.into_iter().map(|(el, _)| el).collect();
+        let colleagues: Vec<AnyElement> = colleagues.into_iter().map(|(el, _)| el).collect();
         let cats = self.categories.visible().map(|c| {
             let color = l.cat(c.shown_color());
             div()
@@ -1769,6 +1811,7 @@ impl CalendarView {
             .child(title("cal-group-mine"))
             .child(mine)
             .children(my_others)
+            .when(!shared.is_empty(), |d| d.child(title("cal-group-shared")).children(shared))
             .child(title("cal-group-colleagues"))
             .children(colleagues)
             .child(opened_rows)
@@ -2587,7 +2630,17 @@ impl CalendarView {
             .when(selected, |d| d.shadow(glow(bar)))
             .cursor_pointer()
             .tooltip({
-                let tip = format!("{}, {}–{}", e.title, hm(e.span.start, tz), hm(e.span.end, tz));
+                // Макет: «Календарь <владелец>: тема, время — приглашение без ответа / под вопросом» (T2-22).
+                let base = format!("{}, {}–{}", e.title, hm(e.span.start, tz), hm(e.span.end, tz));
+                let base = match e.owner.as_ref() {
+                    Some(o) => tr!("cal-block-owner", owner = o.name.clone(), text = base),
+                    None => base,
+                };
+                let tip = match look {
+                    Shown::Pending => tr!("cal-block-pending", text = base),
+                    Shown::Tentative => tr!("cal-block-tentative", text = base),
+                    _ => base,
+                };
                 move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
             })
             .child(stripe)
@@ -2974,7 +3027,10 @@ impl CalendarView {
                         .flex()
                         .items_center()
                         .gap(px(8.))
-                        .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).text_color(l.text2()).child(tr!("cal-invited-by", name = from)))
+                        .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).text_color(l.text2()).child(match self.received.get(&e.uid) {
+                            Some(&at) => format!("{} · {}", tr!("cal-invited-by", name = from), crate::send_later::short(at)),
+                            None => tr!("cal-invited-by", name = from),
+                        }))
                         // «Другие ответы ▾» (T2-15): «… с комментарием» / «… без ответа организатору» — панель узкая, одно
                         // меню на все три кнопки.
                         .when(answering.is_none(), |d| {
@@ -3189,6 +3245,12 @@ impl CalendarView {
             } else {
                 String::new()
             };
+            // Внешний участник (T2-22, макет): домен — подписью, «alfa-client.ru · организатор».
+            let note = match p.email.split_once('@').map(|(_, d)| d.to_lowercase()).filter(|_| external) {
+                Some(d) if note.is_empty() => d,
+                Some(d) => format!("{d} · {note}"),
+                None => note,
+            };
             let status = if p.owner { Partstat::Accepted } else { p.status };
             div()
                 .h(px(34.))
@@ -3264,6 +3326,14 @@ impl CalendarView {
 
 impl Render for CalendarView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Приглашение в подробностях (T2-22): когда пришло письмо — спросить один раз (хранилище — в фоне, у экрана).
+        if let Some(e) = self.selected.and_then(|i| self.events.get(i))
+            && my_part(e, self.me.as_deref()).is_some_and(|p| !p.owner)
+            && e.organizer().is_some()
+            && self.received_asked.insert(e.uid.clone())
+        {
+            cx.emit(CalendarAction::InviteTime(e.uid.clone()));
+        }
         let days = self.days();
         let middle = if self.view == View::Month { self.month_grid(cx).into_any_element() } else { self.grid(&days, cx).into_any_element() };
         div().size_full().flex().min_w_0().text_size(px(13.)).child(self.side(cx)).child(middle).child(self.details(cx))
@@ -3406,6 +3476,27 @@ impl Render for CalendarBar {
 }
 
 impl crate::Mailer {
+    /// Когда пришло письмо-приглашение (T2-22): хранилище — в фоне; письма нет — строка без времени.
+    pub(crate) fn invite_time(&mut self, uid: String, cx: &mut Context<Self>) {
+        let cache = self.cache.clone();
+        let key = uid.clone();
+        let task = cx.background_spawn(async move {
+            let id = cache.state(&crate::meeting_row::letter_key(&key)).ok().flatten()?;
+            cache.rows_by_ids(&[id]).ok()?.pop().map(|r| r.received_at)
+        });
+        cx.spawn(async move |this, cx| {
+            if let Some(at) = task.await {
+                let _ = this.update(cx, |m, cx| {
+                    m.cal.update(cx, |c, cx| {
+                        c.received.insert(uid, at);
+                        cx.notify();
+                    })
+                });
+            }
+        })
+        .detach();
+    }
+
     /// «Открыть» приглашения в календаре (T2-21): письмо с ним — новой вкладкой почты, как письмо задачи; письма
     /// нет (не разбиралось, удалено) — тост.
     pub(crate) fn open_invite_letter(&mut self, uid: &str, cx: &mut Context<Self>) {
@@ -3445,6 +3536,10 @@ impl crate::Mailer {
             }
             CalendarAction::OpenLetter(uid) => {
                 self.open_invite_letter(uid, cx);
+                return;
+            }
+            CalendarAction::InviteTime(uid) => {
+                self.invite_time(uid.clone(), cx);
                 return;
             }
             CalendarAction::Edit { event, series } => {

@@ -541,7 +541,15 @@ impl Mailer {
     pub(crate) fn status_bar(&self, l: &Look, cx: &mut Context<Self>) -> Div {
         // Задачи (макет): слева — состояние синхронизации с точкой, затем «N задач из писем».
         let tasks = self.section == Section::Tasks && self.tabs.active().kind == TabKind::Main;
-        let status = if tasks { self.tasks.read(cx).status_text() } else { self.items_status(cx) };
+        // Календарь (T2-22, макет): вид, события, ждут ответа, отклонённых скрыто, пояс.
+        let calendar = self.section == Section::Calendar && self.tabs.active().kind == TabKind::Main;
+        let status = if tasks {
+            self.tasks.read(cx).status_text()
+        } else if calendar {
+            self.cal.read(cx).status_text()
+        } else {
+            self.items_status(cx)
+        };
         let (unread, open) = {
             let t = self.toasts.read(cx);
             (t.unread(), t.is_history_open())

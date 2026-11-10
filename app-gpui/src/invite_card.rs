@@ -1480,12 +1480,13 @@ fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
     root.on_action(cx.listener(|this, _: &invite::Accept, _, cx| this.invite_key(postman_calendar::Partstat::Accepted, cx)))
         .on_action(cx.listener(|this, _: &invite::Tentative, _, cx| this.invite_key(postman_calendar::Partstat::Tentative, cx)))
         .on_action(cx.listener(|this, _: &invite::Decline, _, cx| this.invite_key(postman_calendar::Partstat::Declined, cx)))
+        .on_action(cx.listener(|this, _: &invite::Undo, _, cx| this.invite_undo(cx)))
 }
 
 /// Ответ на приглашение в письме (S5-11): кнопки карточки; клавиши A / T / N — только в схеме «Одиночные клавиши»
 /// (S5-17).
 pub(crate) mod invite {
-    gpui_kit::actions!(invite, [Accept, Tentative, Decline]);
+    gpui_kit::actions!(invite, [Accept, Tentative, Decline, Undo]);
 }
 
 /// Команды части (`commands.rs`: контексты и `cmd`).
@@ -1497,6 +1498,8 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("invite.accept", &[], LIST),
         cmd("invite.tentative", &[], LIST),
         cmd("invite.decline", &[], LIST),
+        // Отменить ответ, который ещё не ушёл (T2-22, макет: «· Ctrl+Z — отменить»).
+        cmd("invite.undo", &["ctrl-z"], LIST),
     ]
 };
 

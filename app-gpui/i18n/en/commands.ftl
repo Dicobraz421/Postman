@@ -126,6 +126,7 @@ cmd-task-revoke = Take task back
 cmd-invite-accept = Accept invitation
 cmd-invite-tentative = Answer tentative
 cmd-invite-decline = Decline invitation
+cmd-invite-undo = Undo the invitation reply
 cmd-settings-vacation = Automatic replies
 cmd-settings-rules = Rules
 cmd-settings-calendar = Calendar settings

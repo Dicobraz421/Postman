@@ -102,6 +102,35 @@ impl Reading {
     }
 }
 
+/// Сколько ответ на приглашение ждёт отмены (T2-22): тост «Отменить» и Ctrl+Z.
+pub(crate) const ANSWER_UNDO: Duration = Duration::from_secs(5);
+
+fn next_answer_token() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// «Принято · Ctrl+Z — отменить» (макет «Приглашение в письме»); без ответа организатору и с комментарием — пометкой.
+/// `key` — клавиша команды «Отменить ответ» сейчас (её можно переназначить); нет клавиши — без пометки.
+pub(crate) fn answer_queued_text(status: Partstat, answer: &postman_core::invite::Answer, key: Option<String>) -> String {
+    let base = match status {
+        Partstat::Accepted => tr!("invite-queued-accepted"),
+        Partstat::Tentative => tr!("invite-queued-tentative"),
+        _ => tr!("invite-queued-declined"),
+    };
+    let how = if answer.silent {
+        format!(" · {}", tr!("invite-queued-silent"))
+    } else if answer.comment().is_some() {
+        format!(" · {}", tr!("invite-queued-comment"))
+    } else {
+        String::new()
+    };
+    match key {
+        Some(key) => tr!("invite-queued", answer = format!("{base}{how}"), key = key),
+        None => format!("{base}{how}"),
+    }
+}
+
 // --- область чтения ---
 
 pub(crate) struct ReadingPane {
@@ -126,6 +155,8 @@ pub(crate) struct ReadingPane {
     pub(crate) meetings_asked: HashSet<String>,
     pub(crate) meetings_wanted: HashMap<String, Vec<String>>,
     pub(crate) meetings_busy: usize,
+    /// Ответ на приглашение ждёт [`ANSWER_UNDO`] (T2-22, макет: «· Ctrl+Z — отменить»): номер и запрос.
+    pub(crate) pending_answer: Option<(u64, SyncRequest)>,
     /// Куда «Открыть» кладёт файл перед запуском системного приложения.
     pub(crate) open_dir: PathBuf,
     /// Картинки закрытого письма: убрать из атласа gpui при следующей отрисовке (S4-08). Сам gpui их не
@@ -168,6 +199,8 @@ const READING_INSET: f32 = 48.;
 /// Итог разбора и действий: уровень песочницы (строка состояния), тосты, запросы к серверу.
 pub(crate) enum ReadingEvent {
     Sandbox(Level),
+    /// Ответ на приглашение поставлен (T2-22): тост с «Отменить» на [`ANSWER_UNDO`].
+    AnswerQueued(String),
     /// Время встреч писем-приглашений (T2-18): в строки списка вместо превью.
     Meetings(Vec<(String, crate::meeting_row::When)>),
     Error(String),
@@ -252,6 +285,7 @@ impl ReadingPane {
             meetings_asked: HashSet::new(),
             meetings_wanted: HashMap::new(),
             meetings_busy: 0,
+            pending_answer: None,
             open_dir: data_dir().join("open"),
             retired: Vec::new(),
             feed: None,
@@ -932,8 +966,37 @@ impl ReadingPane {
         let Some(inv) = card.invitation().cloned() else { return };
         card.sending = Some(status);
         card.how = Default::default();
-        cx.emit(ReadingEvent::Sync(SyncRequest::RespondInvite { invite: Box::new(inv), status, in_reply_to, answer }));
+        // Ответ уходит через `ANSWER_UNDO` (T2-22): до этого тост «Отменить» и Ctrl+Z его забирают.
+        let text = answer_queued_text(status, &answer, crate::keytips::key("invite.undo", cx));
+        let token = next_answer_token();
+        self.pending_answer = Some((token, SyncRequest::RespondInvite { invite: Box::new(inv), status, in_reply_to, answer }));
+        cx.emit(ReadingEvent::AnswerQueued(text));
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(ANSWER_UNDO).await;
+            this.update(cx, |this, cx| {
+                if let Some((t, req)) = this.pending_answer.take() {
+                    if t == token {
+                        cx.emit(ReadingEvent::Sync(req));
+                    } else {
+                        this.pending_answer = Some((t, req));
+                    }
+                }
+            })
+            .ok();
+        })
+        .detach();
         cx.notify();
+    }
+
+    /// «Отменить» / Ctrl+Z (T2-22): ответ, который ещё не ушёл, — забрать; кнопки ответа снова видны.
+    pub(crate) fn undo_answer(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some((_, SyncRequest::RespondInvite { invite, .. })) = self.pending_answer.take() else { return false };
+        if let Some(card) = self.card_for(&invite.event.uid) {
+            card.sending = None;
+        }
+        cx.emit(ReadingEvent::Toast(Toast::Info, tr!("invite-answer-undone")));
+        cx.notify();
+        true
     }
 
     /// «Удалить из календаря» у отменённой встречи (T2-19): моя копия по UID — путём учётной записи. Демо — «нужен

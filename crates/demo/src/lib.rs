@@ -1080,6 +1080,8 @@ pub mod calendar {
         vec![
             Owner { email: "m.ivanova@corp.example".into(), name: "Иванова Мария".into() },
             Owner { email: "a.petrov@corp.example".into(), name: "Петров Алексей".into() },
+            // Календарь общего ящика (T2-22): в «Общих», а не среди коллег.
+            Owner { email: "sales@corp.example".into(), name: "Отдел продаж".into() },
         ]
     }
 
@@ -1110,6 +1112,7 @@ pub mod calendar {
             of(0, "c3", "Отпуск — подготовка", 4, (10, 0), 90, ""),
             of(1, "c4", "Звонок поставщику", 1, (10, 30), 60, "Teams"),
             of(1, "c5", "Совет директоров", 3, (16, 0), 90, "Зал совета"),
+            of(2, "c6", "Планёрка отдела продаж", 1, (9, 30), 30, "Переговорная 1"),
         ]
     }
 
