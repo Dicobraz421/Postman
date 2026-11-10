@@ -75,7 +75,7 @@ fn due_text(m: &Moment) -> String {
 }
 
 fn step(kind: StepKind, who: &str, comment: &str, due: Option<&Moment>, at: i64) -> Step {
-    Step { at, who: who.to_owned(), kind, comment: comment.trim().to_owned(), due: due.map(due_text) }
+    Step { comment: comment.trim().to_owned(), due: due.map(due_text), ..Step::new(kind, who, at) }
 }
 
 /// Поручить: задача становится поручением `input.to` (наблюдатели — по желанию), срок и комментарий (`input`) — в
@@ -410,6 +410,8 @@ pub enum Bucket {
     New,
     /// «На проверке» у автора — я отправил результат.
     Checking,
+    /// «Отклонённые» — я отклонил (макет «Поручено мне», T2-36): ждут решения автора, отдельно от новых.
+    Declined,
 }
 
 /// Группа поручения во вкладке по статусу.
@@ -422,6 +424,7 @@ pub fn bucket(st: Status, tab: Tab) -> Option<Bucket> {
         (Tab::ToMe, Status::Done) => Bucket::Checking,
         (_, Status::Accepted | Status::InProgress) => Bucket::InWork,
         (Tab::ByMe, _) => Bucket::Waiting,
+        (Tab::ToMe, Status::Declined) => Bucket::Declined,
         (Tab::ToMe, _) => Bucket::New,
     })
 }
@@ -430,7 +433,7 @@ pub fn bucket(st: Status, tab: Tab) -> Option<Bucket> {
 pub fn buckets(tab: Tab) -> &'static [Bucket] {
     match tab {
         Tab::ByMe => &[Bucket::Review, Bucket::InWork, Bucket::Waiting],
-        Tab::ToMe => &[Bucket::New, Bucket::InWork, Bucket::Checking],
+        Tab::ToMe => &[Bucket::New, Bucket::InWork, Bucket::Checking, Bucket::Declined],
     }
 }
 
@@ -733,10 +736,15 @@ mod tests {
         assert_eq!(names(&section(&list, me, Tab::ByMe, false, &tz)), by_me);
         assert_eq!(
             names(&section(&list, me, Tab::ToMe, true, &tz)),
-            [(Bucket::New, vec![d::LETTER, d::INCOMING]), (Bucket::InWork, vec!["Комментарии к статусу проектов"]),]
+            [
+                (Bucket::New, vec![d::LETTER, d::INCOMING]),
+                (Bucket::InWork, vec!["Комментарии к статусу проектов"]),
+                // Отклонённые мной — отдельной группой в конце (T2-36, макет «Поручено мне»).
+                (Bucket::Declined, vec![d::DECLINED_BY_ME]),
+            ]
         );
         let c = counts(&list, me, false);
-        assert_eq!(c, Counts { by_me: 5, by_me_shown: 6, to_me: 3, new: 2, review: 1, waiting: 4 });
+        assert_eq!(c, Counts { by_me: 5, by_me_shown: 6, to_me: 4, new: 2, review: 1, waiting: 4 });
         // Наблюдаю — не мне поручено и не я поручил; «Ждём» — только мои.
         let watched = list.iter().find(|t| t.title == d::WATCHED).unwrap();
         assert!(assign::is_watched_by(watched, me) && !waits(watched, me));

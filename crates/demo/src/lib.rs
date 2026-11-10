@@ -1233,6 +1233,8 @@ pub mod tasks {
         &[("Учесть правки юриста", true), ("Согласовать SLA", true), ("Обновить приложение 3", false), ("Сравнить с редакцией v2", false)];
     /// Фраза строки «Добавить задачу» (снимок `task-quickadd`).
     pub const QUICK: &str = "Отправить КП «Северу» завтра 10:00 #Клиенты !";
+    /// Новый проект «+» слева (снимок `tasks-project-new`).
+    pub const NEW_PROJECT: &str = "Бюджет 2027";
     /// Повторяется каждый месяц.
     pub const REPEAT: &str = "Продлить лицензии";
     /// «Когда-нибудь».
@@ -1279,6 +1281,10 @@ pub mod delegations {
     pub const WATCHED: &str = "Регламент реагирования на инциденты";
     /// Письмо-поручение (снимок `delegation-mail`).
     pub const LETTER: &str = "Подготовить вопросы к созвону с заказчиком";
+    /// Набор в поле исполнителя «Поручить» (снимок `delegate-suggest`): подсказки с должностью и загрузкой.
+    pub const SUGGEST: &str = "Пе";
+    /// Мне поручили, я отклонил (группа «Отклонённые»).
+    pub const DECLINED_BY_ME: &str = "Обновить шаблон отчёта об обследовании";
 
     pub const PETROV: (&str, &str) = ("Петров Алексей", "a.petrov@corp.example");
     pub const IVANOVA: (&str, &str) = ("Иванова Мария", "m.ivanova@corp.example");
@@ -1322,7 +1328,7 @@ pub mod delegations {
             t.percent = Some(if status == TaskPartstat::Completed { 100 } else { 40 });
         }
         for (ago, who, kind, comment) in steps {
-            assign::push_step(&mut t, Step { at: now - ago * HOUR, who: who.1.into(), kind: *kind, comment: (*comment).into(), due: None });
+            assign::push_step(&mut t, Step { comment: (*comment).into(), ..Step::new(*kind, who.1, now - ago * HOUR) });
         }
         t
     }
@@ -1419,18 +1425,34 @@ pub mod delegations {
                 ],
             )),
             letter_task(today),
+            // Мне поручили, я отклонил (T2-36, группа «Отклонённые» во «Мне поручили»).
+            task(
+                10,
+                DECLINED_BY_ME,
+                VOLKOV,
+                me,
+                P::Declined,
+                (2, 18),
+                today,
+                now,
+                &[(26, VOLKOV, K::Assigned, ""), (6, me, K::Declined, "Шаблон ведёт отдел качества — передайте, пожалуйста, им.")],
+            ),
         ];
+        // Результат с файлом (T2-33, макет «Поручил я»): письмо «Готово» пришло с вложением.
+        if let Some(t) = out.iter_mut().find(|t| t.uid == "demo-deleg-1@postman") {
+            let file = assign::StepFile { name: "Отчёт_обследование_v2.pdf".into(), size: 2_516_582 };
+            // Письма результата в демо-ящике нет: файл виден, открыть нечего.
+            assign::attach_mail(t, K::Finished, PETROV.1, "", vec![file]);
+        }
         // Предложенный срок — через неделю, с комментарием.
         if let Some(t) = out.iter_mut().find(|t| t.uid == "demo-deleg-4@postman") {
             assign::set_proposed(t, Some(&Moment::new(proposed, None)));
             assign::push_step(
                 t,
                 Step {
-                    at: now - 2 * HOUR,
-                    who: KUZNETSOVA.1.into(),
-                    kind: K::Proposed,
                     comment: "Жду ответа заказчика на разъяснения — раньше понедельника не соберу.".into(),
                     due: Some(proposed.strftime("%Y-%m-%dT%H:%M:%S").to_string()),
+                    ..Step::new(K::Proposed, KUZNETSOVA.1, now - 2 * HOUR)
                 },
             );
         }
@@ -1518,7 +1540,8 @@ pub mod delegations {
             seen.sort_unstable();
             seen.dedup();
             assert_eq!(seen, ["accepted", "declined", "done", "in-progress", "proposed", "waiting"]);
-            assert_eq!(list.iter().filter(|t| t.is_assigned_to(crate::ME)).count(), 3);
+            // Мне поручили: ждёт ответа, письмо-поручение, принято, отклонено мной.
+            assert_eq!(list.iter().filter(|t| t.is_assigned_to(crate::ME)).count(), 4);
             let ics = String::from_utf8(letter()).unwrap();
             assert!(ics.contains("METHOD:REQUEST") && ics.contains(crate::ME));
         }
