@@ -657,6 +657,16 @@ impl Mailer {
             self.forward_body_ready(&id, cx);
             self.load_body(id, false, cx);
         }
+        // Тела строк окна пришли (T2-18): у приглашений — время встречи вместо превью.
+        if !plan.index.is_empty() {
+            let rows: Vec<_> = {
+                let list = self.list.read(cx);
+                list.rows.1.iter().filter(|r| !list.meetings.contains_key(&r.id) && plan.index.contains(&r.id)).cloned().collect()
+            };
+            if !rows.is_empty() {
+                self.reading.update(cx, |r, cx| r.want_meetings(rows, cx));
+            }
+        }
         if let Some(x) = &self.live.extractor
             && !plan.index.is_empty()
         {

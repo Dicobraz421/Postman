@@ -51,6 +51,7 @@ mod live;
 mod local;
 mod mailer;
 mod meeting;
+mod meeting_row;
 mod menu;
 mod migration;
 mod newmail;

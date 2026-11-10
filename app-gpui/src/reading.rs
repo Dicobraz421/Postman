@@ -121,6 +121,11 @@ pub(crate) struct ReadingPane {
     pub(crate) in_flight: HashSet<String>,
     /// Приглашения, уже отправленные в календарь (UID): второй раз не просить.
     pub(crate) imported: HashSet<String>,
+    /// Время встреч для строк списка (T2-18, `meeting_row`): письма, о которых уже спросили; блоб `.ics` → письма;
+    /// сколько разборов в работе (снимки ждут, пока их нет).
+    pub(crate) meetings_asked: HashSet<String>,
+    pub(crate) meetings_wanted: HashMap<String, Vec<String>>,
+    pub(crate) meetings_busy: usize,
     /// Куда «Открыть» кладёт файл перед запуском системного приложения.
     pub(crate) open_dir: PathBuf,
     /// Картинки закрытого письма: убрать из атласа gpui при следующей отрисовке (S4-08). Сам gpui их не
@@ -163,6 +168,8 @@ const READING_INSET: f32 = 48.;
 /// Итог разбора и действий: уровень песочницы (строка состояния), тосты, запросы к серверу.
 pub(crate) enum ReadingEvent {
     Sandbox(Level),
+    /// Время встреч писем-приглашений (T2-18): в строки списка вместо превью.
+    Meetings(Vec<(String, crate::meeting_row::When)>),
     Error(String),
     Toast(Toast, String),
     /// Действию нужен сервер, а его нет (демо).
@@ -239,6 +246,9 @@ impl ReadingPane {
             drag: None,
             in_flight: HashSet::new(),
             imported: HashSet::new(),
+            meetings_asked: HashSet::new(),
+            meetings_wanted: HashMap::new(),
+            meetings_busy: 0,
             open_dir: data_dir().join("open"),
             retired: Vec::new(),
             feed: None,
@@ -624,6 +634,86 @@ impl ReadingPane {
         self.fetch(&a, cx);
     }
 
+    /// Строки списка без записи о встрече (T2-18): тело — из хранилища (живой ящик) или демо, без сети; приглашение во
+    /// вложениях — за байтами `.ics` (как у открытого письма). Тела ещё нет — спросим, когда придёт.
+    pub(crate) fn want_meetings(&mut self, rows: Vec<EmailRow>, cx: &mut Context<Self>) {
+        let rows: Vec<EmailRow> = rows.into_iter().filter(|r| self.meetings_asked.insert(r.id.clone())).collect();
+        if rows.is_empty() {
+            return;
+        }
+        let (cache, live) = (self.cache.clone(), self.live);
+        self.meetings_busy += 1;
+        let task = cx.background_spawn(async move {
+            let mut found = Vec::new();
+            let mut later = Vec::new();
+            for r in rows {
+                let body = if live { cache.body(&r.id).ok().flatten() } else { Some(postman_demo::body(&r.id)) };
+                let Some(body) = body else {
+                    later.push(r.id);
+                    continue;
+                };
+                // Не приглашение — в хранилище не пишем (запись на каждое письмо ящика); в этом запуске не спросим.
+                if let Some(a) = body.attachments.into_iter().find(attachments::is_invite) {
+                    found.push((r.id, a));
+                }
+            }
+            (found, later)
+        });
+        cx.spawn(async move |this, cx| {
+            let (found, later) = task.await;
+            this.update(cx, |this, cx| {
+                this.meetings_busy -= 1;
+                for id in later {
+                    this.meetings_asked.remove(&id);
+                }
+                for (id, a) in found {
+                    this.meetings_wanted.entry(a.blob_id.clone()).or_default().push(id);
+                    this.fetch(&a, cx);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Байты `.ics` для строк списка пришли: разбор в песочнице, итог — в хранилище и в список.
+    fn parse_meetings(&mut self, ids: Vec<String>, data: Arc<Vec<u8>>, cx: &mut Context<Self>) {
+        let (worker, cache) = (self.worker.clone(), self.cache.clone());
+        let tz = crate::prefs::get(cx).calendar.zone();
+        self.meetings_busy += 1;
+        let task = cx.background_spawn(async move {
+            let parsed = {
+                let mut w = worker.lock().unwrap_or_else(PoisonError::into_inner);
+                w.parse_calendar(&data)
+            };
+            // Песочница не ответила — не записываем: спросим в следующий запуск.
+            let v = parsed.ok()?;
+            let when = Invitation::from_worker(&v, &tz).ok().map(|inv| crate::meeting_row::When::of(&inv));
+            for id in &ids {
+                let _ = cache.set_state(&crate::meeting_row::key(id), &crate::meeting_row::encode(when.as_ref()));
+            }
+            Some(ids.into_iter().filter_map(|id| when.map(|w| (id, w))).collect::<Vec<_>>())
+        });
+        cx.spawn(async move |this, cx| {
+            let found = task.await;
+            this.update(cx, |this, cx| {
+                this.meetings_busy -= 1;
+                if let Some(found) = found.filter(|f| !f.is_empty()) {
+                    cx.emit(ReadingEvent::Meetings(found));
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Снимки (T2-18): разборы встреч для строк списка закончены.
+    pub(crate) fn meetings_idle(&self) -> bool {
+        self.meetings_busy == 0 && self.meetings_wanted.is_empty()
+    }
+
     /// Байты вложения: демо — сразу; живой ящик — из хранилища (в фоне), иначе с сервера.
     pub(crate) fn fetch(&mut self, a: &AttachmentRow, cx: &mut Context<Self>) {
         // Вложение расшифрованного письма (S5-12 Ф2) — из воркера по ключу сеанса.
@@ -667,6 +757,9 @@ impl ReadingPane {
 
     fn blob_ready(&mut self, blob_id: &str, data: Arc<Vec<u8>>, cx: &mut Context<Self>) {
         self.in_flight.remove(blob_id);
+        if let Some(ids) = self.meetings_wanted.remove(blob_id) {
+            self.parse_meetings(ids, data.clone(), cx);
+        }
         if self.smime_waits(blob_id) {
             self.smime_verify(data.clone(), cx);
         }
@@ -700,6 +793,8 @@ impl ReadingPane {
 
     fn blob_failed(&mut self, blob_id: &str, error: String, cx: &mut Context<Self>) {
         self.in_flight.remove(blob_id);
+        // Время встречи для списка — без тоста: строка останется с превью.
+        self.meetings_wanted.remove(blob_id);
         if self.smime_waits(blob_id)
             && let Some(id) = self.reading.as_ref().map(|r| r.row.id.clone())
         {
@@ -753,6 +848,7 @@ impl ReadingPane {
     fn parse_invite(&mut self, id: String, data: Arc<Vec<u8>>, cx: &mut Context<Self>) {
         let (worker, cache) = (self.worker.clone(), self.cache.clone());
         let tz = crate::prefs::get(cx).calendar.zone();
+        let id_bg = id.clone();
         let task = cx.background_spawn(async move {
             let parsed = {
                 let mut w = worker.lock().unwrap_or_else(PoisonError::into_inner);
@@ -764,6 +860,8 @@ impl ReadingPane {
                 return Ok(Err(Box::new(task)));
             }
             let inv = Invitation::from_worker(&v, &tz)?;
+            // Время встречи — и строке списка (T2-18).
+            let _ = cache.set_state(&crate::meeting_row::key(&id_bg), &crate::meeting_row::encode(Some(&crate::meeting_row::When::of(&inv))));
             let stored = cache.state(&invite_card::state_key(&inv.event.uid)).ok().flatten();
             let answer = stored.as_deref().and_then(invite_card::decode);
             Ok::<_, String>(Ok((inv, answer)))
@@ -782,6 +880,7 @@ impl ReadingPane {
                 let Some(card) = r.invite.as_mut() else { return };
                 match result {
                     Ok(Ok((inv, answer))) => {
+                        cx.emit(ReadingEvent::Meetings(vec![(id.clone(), crate::meeting_row::When::of(&inv))]));
                         card.state = State::Ready(Box::new(inv));
                         card.answer = answer;
                     }
