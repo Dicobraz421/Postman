@@ -1159,8 +1159,8 @@ impl TasksView {
                 ))
             })
             .child(field("assign-field-watchers", watchers.into_any_element()))
-            .when(!watch, |d| {
-                // Проект своей копии («В проект», T2-30, T2-34): у каждой стороны свой.
+            .when(!watch && self.open == Some(Field::Project), |d| {
+                // Проект своей копии — по «В проект» (T2-30, T2-34): у каждой стороны свой; проект и так виден в шапке.
                 let value = match &t.project {
                     Some(p) => div().truncate().child(p.clone()),
                     None => div().text_color(l.text3()).child(tr!("tasks-no-project")),
@@ -1175,7 +1175,7 @@ impl TasksView {
                         .child(field("tasks-field-project", value.into_any_element()))
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_field(Field::Project, cx))),
                 )
-                .when(self.open == Some(Field::Project), |d| d.child(self.project_options(t, &l, cx)))
+                .child(self.project_options(t, &l, cx))
             });
         // Письмо поручения (макеты): «Открыть» — во вкладке.
         let mail = self.mail_block(t, &l, cx);
