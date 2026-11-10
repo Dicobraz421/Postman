@@ -239,7 +239,7 @@ settings-nav-accounts-keywords = account server sign in password login tls certi
 settings-hint-accounts = Mailboxes in one window. Windows keeps the passwords, not Postman.
 settings-nav-categories = Categories
 settings-nav-categories-keywords = categories labels color colour key 1-9 palette
-settings-hint-categories = Name, color and key. Keys 1–9 put the category on the selected messages. The table is shared by all your devices.
+settings-hint-categories = Color and auto-assign rule. Keys 1–9 put the category on the selected messages. The table is shared by all your devices.
 settings-nav-quick = Quick filters and deadlines
 settings-nav-quick-keywords = quick filters tabs threats deadline waiting for reply mine expiring lifecycle archive newsletters codes
 settings-hint-quick = Tabs above the message list and what Postman does with messages over time.
@@ -372,6 +372,28 @@ settings-cat-rules = Color rules
 settings-cat-rules-1 = Red is for security threats only, amber — for deadlines only.
 settings-cat-rules-2 = A color close to one already taken in this table cannot be picked: such swatches are crossed out.
 settings-cat-rules-3 = In the dark theme label backgrounds are dimmed; the stripe keeps its color.
+settings-cat-auto = Auto-assign
+settings-cat-auto-manual = manually
+settings-cat-count = Messages
+settings-cat-auto-domains = Sender domain is one of
+settings-cat-auto-domains-placeholder = e.g. partner.com, vendor.com
+settings-cat-auto-words = Subject contains
+settings-cat-auto-words-placeholder = e.g. partner, reseller
+settings-cat-auto-complex = This category's rule is more complex — edit it in Settings → Rules.
+settings-cat-auto-name = Category “{ $name }”
+settings-cat-apply = Apply to messages already received
+settings-cat-apply-counting = Apply to messages already received — counting…
+settings-cat-apply-found = Apply to messages already received — { $n ->
+    [one] { $n } message matches
+   *[other] { $n } messages match
+}
+settings-preview-title = Preview
+settings-cat-preview-name = New category
+settings-cat-preview-initials = DW
+settings-cat-preview-from = Dmitry Wolf
+settings-cat-preview-subject = Partner program terms 2027
+settings-cat-preview-text = Here are the updated discounts and deal registration…
+settings-cat-preview-near = Next to it in the Category list:
 # Signatures and templates.
 settings-sign-group = Signatures
 settings-sign-add = Signature

@@ -244,7 +244,7 @@ settings-nav-accounts-keywords = аккаунт учётная запись се
 settings-hint-accounts = Почтовые ящики в одном окне. Пароли хранит Windows, а не Postman.
 settings-nav-categories = Категории
 settings-nav-categories-keywords = категории метки цвет клавиша 1-9 палитра
-settings-hint-categories = Имя, цвет и клавиша. Клавиши 1–9 ставят категорию на выбранные письма. Таблица общая для всех ваших устройств.
+settings-hint-categories = Цвет и правило авто-назначения. Клавиши 1–9 ставят категорию на выбранные письма. Таблица общая для всех ваших устройств.
 settings-nav-quick = Быстрые фильтры и сроки
 settings-nav-quick-keywords = быстрые фильтры закладки угрозы срок ждём ответа мне истекают жизненный цикл архив рассылки коды
 settings-hint-quick = Закладки над списком писем и что Postman делает с письмами со временем.
@@ -378,6 +378,29 @@ settings-cat-rules = Правила цвета
 settings-cat-rules-1 = Красный — только угрозы безопасности, янтарный — только сроки.
 settings-cat-rules-2 = Цвет, похожий на уже занятый в этой таблице, выбрать нельзя: такие образцы перечёркнуты.
 settings-cat-rules-3 = В тёмной теме подложки меток приглушаются, полоса остаётся того же цвета.
+settings-cat-auto = Авто-назначение
+settings-cat-auto-manual = вручную
+settings-cat-count = Писем
+settings-cat-auto-domains = Домен отправителя один из
+settings-cat-auto-domains-placeholder = например, partner.ru, vendor.ru
+settings-cat-auto-words = Тема содержит
+settings-cat-auto-words-placeholder = например, партнёр, дистрибьютор
+settings-cat-auto-complex = Правило этой категории сложнее — оно правится в «Настройки → Правила».
+settings-cat-auto-name = Категория «{ $name }»
+settings-cat-apply = Применить к уже полученным
+settings-cat-apply-counting = Применить к уже полученным — считаю…
+settings-cat-apply-found = Применить к уже полученным — подходит { $n ->
+    [one] { $n } письмо
+    [few] { $n } письма
+   *[other] { $n } писем
+}
+settings-preview-title = Предпросмотр
+settings-cat-preview-name = Новая категория
+settings-cat-preview-initials = ДВ
+settings-cat-preview-from = Дмитрий Волков
+settings-cat-preview-subject = Условия партнёрской программы 2027
+settings-cat-preview-text = Направляем обновлённые скидки и регистрацию сделок…
+settings-cat-preview-near = Рядом в списке «Категория»:
 # Подписи и шаблоны.
 settings-sign-group = Подписи
 settings-sign-add = Подпись

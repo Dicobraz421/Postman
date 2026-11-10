@@ -143,6 +143,13 @@ impl Mailer {
             identities,
             cache: self.account_cache(),
             sandbox: self.sandbox,
+            db: Some(self.cache.clone()),
+            // Демо — правила образца (как в разделе «Правила»).
+            rules: if self.backend.is_live() {
+                self.settings.rules.as_ref().map(|s| s.rules.clone())
+            } else {
+                Some(rules_sample(&folders.of(None).map(|m| (m.id.clone(), m.name.clone())).collect::<Vec<_>>()).rules)
+            },
         }
     }
 
@@ -223,6 +230,8 @@ impl Mailer {
                 self.remove_account(window, cx);
             }
             SettingsEvent::RemoveExtra(profile) => self.remove_extra(profile.clone(), cx),
+            SettingsEvent::SaveRules(rules) => self.save_rules(rules.clone(), false, cx),
+            SettingsEvent::ApplyRule(rule) => self.apply_rule(rule.clone(), cx),
         }
     }
 
@@ -547,6 +556,13 @@ impl Mailer {
     fn set_rules_state(&mut self, state: RulesState, saved: bool, cx: &mut Context<Self>) {
         self.settings.rules = Some(state.clone());
         let quiet = saved && std::mem::take(&mut self.rules_run.quiet);
+        if let Some(v) = &self.settings.view {
+            let rules = state.rules.clone();
+            v.update(cx, |v, cx| {
+                v.info.rules = Some(rules);
+                cx.notify();
+            });
+        }
         self.flush_waiting_rules(cx);
         self.rules_pass(cx);
         let warning = self.foreign_warning();
@@ -864,7 +880,7 @@ pub(crate) mod scenes {
             && m.settings.view.as_ref().is_some_and(|v| {
                 let v = v.read(cx);
                 match s.name {
-                    "settings-categories" => v.cat_edit.is_some(),
+                    "settings-categories" => v.cat_edit.as_ref().is_some_and(|e| e.found.is_some()) && v.cat_counts.is_some(),
                     "settings-accounts" => v.add.is_some(),
                     "settings-sign" => !v.sign.prefs.signatures.is_empty(),
                     _ => true,
@@ -874,8 +890,18 @@ pub(crate) mod scenes {
 
     fn categories(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
         m.open_settings(Some(S::Categories), window, cx);
+        // Новая категория с авто-назначением (T2-53): домены и слова темы, «Применить к уже полученным».
         if let Some(v) = m.settings.view.clone() {
-            v.update(cx, |v, cx| v.edit_category(None, window, cx));
+            v.update(cx, |v, cx| {
+                v.edit_category(None, window, cx);
+                if let Some(e) = &mut v.cat_edit {
+                    e.name.update(cx, |s, cx| s.set_value("Партнёры", window, cx)); // i18n-ok: образец категории
+                    e.domains.update(cx, |s, cx| s.set_value("softline-partner.ru, corp.example", window, cx));
+                    e.words.update(cx, |s, cx| s.set_value("партнёр, дистрибьютор", window, cx)); // i18n-ok: образец категории
+                    e.apply = true;
+                }
+                v.count_auto(cx);
+            });
         }
         Ok(())
     }
