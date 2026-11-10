@@ -51,3 +51,9 @@ thread-view-feed = Лента
 thread-view-stack = Стопка
 thread-view-outlook = Как Outlook
 thread-view-default = По умолчанию
+thread-feed-head = { $n ->
+    [one] { $n } письмо
+    [few] { $n } письма
+   *[many] { $n } писем
+} · { $people } · с { $since }
+thread-quote-from = ··· цитата из письма от { $who }, { $date }

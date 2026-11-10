@@ -48,3 +48,8 @@ thread-view-feed = Feed
 thread-view-stack = Stack
 thread-view-outlook = As in Outlook
 thread-view-default = Default
+thread-feed-head = { $n ->
+    [one] { $n } message
+   *[other] { $n } messages
+} · { $people } · since { $since }
+thread-quote-from = ··· quoted from { $who }, { $date }

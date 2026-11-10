@@ -45,6 +45,8 @@ pub(crate) struct Feed {
     pub(crate) open: HashSet<String>,
     pub(crate) quoted: HashSet<String>,
     pub(crate) to: HashMap<String, String>,
+    /// Вложения писем (T2-26, макет `ThreadChat`): имя и размер, по ключу письма (из тела).
+    pub(crate) atts: HashMap<String, Vec<(String, u64)>>,
 }
 
 impl Feed {
@@ -59,6 +61,7 @@ impl Feed {
             open: HashSet::new(),
             quoted: HashSet::new(),
             to: HashMap::new(),
+            atts: HashMap::new(),
         }
     }
 
@@ -227,8 +230,9 @@ impl ReadingPane {
                 // Тела нет — придёт с сервера (`ThreadReady`).
                 let Some(body) = body else { continue };
                 let to = body.to.iter().map(|a| if a.name.is_empty() { a.email.clone() } else { a.name.clone() }).collect::<Vec<_>>();
+                let atts: Vec<(String, u64)> = body.attachments.iter().filter(|a| !a.inline).map(|a| (a.name.clone(), a.size)).collect();
                 let mut w = worker.lock().unwrap_or_else(PoisonError::into_inner);
-                out.push((id, w.render(&request(body)), to.join(", ")));
+                out.push((id, w.render(&request(body)), to.join(", "), atts));
             }
             out
         });
@@ -236,10 +240,11 @@ impl ReadingPane {
             let docs = task.await;
             this.update(cx, |this, cx| {
                 let Some(f) = this.feed.as_mut().filter(|f| f.conv.thread == key) else { return };
-                for (id, doc, to) in docs {
+                for (id, doc, to, atts) in docs {
                     let doc = doc.unwrap_or_else(|e| postman_ir::from_plain(&tr!("reading-error", error = e)));
                     f.docs.insert(id.clone(), doc);
-                    f.to.insert(id, to);
+                    f.to.insert(id.clone(), to);
+                    f.atts.insert(id, atts);
                 }
                 f.rendering = false;
                 if std::mem::take(&mut f.again) {
@@ -308,7 +313,33 @@ impl ReadingPane {
         let today = jiff::Zoned::now().date();
         // Картинки `cid:` в ленте не грузим: на их месте подписи; письмо целиком — в обычном виде.
         let images = Images::new();
-        let mut col = div().flex().flex_col().gap_2();
+        // Шапка ленты (T2-26, макет `ThreadChat`): «4 письма · Ирина Смирнова, Вы · с 14 окт».
+        let name_of = |m: &feed::Message| {
+            if m.mine {
+                tr!("thread-me")
+            } else if m.row.from_name.is_empty() {
+                m.row.from_addr.clone()
+            } else {
+                m.row.from_name.clone()
+            }
+        };
+        let mut people: Vec<String> = Vec::new();
+        for m in &f.conv.messages {
+            let who = name_of(m);
+            if !people.contains(&who) {
+                people.push(who);
+            }
+        }
+        let since = f.conv.messages.iter().map(|m| m.row.received_at).min().map(day_month).unwrap_or_default();
+        let last_id = f.conv.messages.iter().max_by_key(|m| m.row.received_at).map(|m| m.row.id.clone());
+        let mut col = div().flex().flex_col().gap_2().child(
+            div().id("feed-head").children(crate::screens::spot("feed-head")).text_size(px(12.)).text_color(l.text2()).child(tr!(
+                "thread-feed-head",
+                n = f.conv.messages.len() as i64,
+                people = people.join(", "),
+                since = since
+            )),
+        );
         for item in &ordered(&f.conv.items, newest_first(cx)) {
             match *item {
                 Item::Day(day) => {
@@ -332,6 +363,9 @@ impl ReadingPane {
                     };
                     let doc = f.docs.get(&m.row.id);
                     let whole = self.quotes || feed::is_forward(&m.row.subject);
+                    // Цитата свёрнута (макет): «··· цитата из письма от X, 14 окт» — предыдущее письмо беседы.
+                    let earlier = f.conv.messages.iter().filter(|p| p.row.received_at < m.row.received_at).max_by_key(|p| p.row.received_at);
+                    let quote_from = earlier.map(|p| tr!("thread-quote-from", who = name_of(p), date = day_month(p.row.received_at)));
                     let body: AnyElement = match doc {
                         None => div().text_color(l.text2()).child("…").into_any_element(),
                         Some(d) => {
@@ -346,14 +380,37 @@ impl ReadingPane {
                                     d.child(
                                         div()
                                             .text_color(l.text2())
+                                            .text_size(px(12.))
                                             .children(crate::screens::spot(("feed-hidden", n)))
-                                            .child(tr!("thread-quotes-hidden")),
+                                            .child(quote_from.clone().unwrap_or_else(|| tr!("thread-quotes-hidden"))),
                                     )
                                 })
                                 .into_any_element()
                         }
                     };
                     let row = m.row.clone();
+                    // Вложения письма (макет): скрепка, имя, размер; щелчок — письмо целиком.
+                    let atts = f.atts.get(&m.row.id).cloned().unwrap_or_default();
+                    let att_row = (!atts.is_empty()).then(|| att_chips(&atts, &l));
+                    // «Ответить» / «Переслать» у последнего письма (макет).
+                    let last = last_id.as_deref() == Some(m.row.id.as_str());
+                    let respond = |key: &'static str, g: char, mode: Mode, row: EmailRow, cx: &mut Context<Self>| {
+                        crate::buttons::secondary((key, n), &l).h(px(26.)).px(px(8.)).text_size(px(12.)).child(icon(g, 12.)).child(tr!(key)).on_click(
+                            cx.listener(move |_, _, _, cx| {
+                                cx.stop_propagation();
+                                cx.emit(ReadingEvent::Respond(row.clone(), mode))
+                            }),
+                        )
+                    };
+                    let actions = last.then(|| {
+                        div().flex().gap(px(6.)).pt_1().child(respond("thread-reply", glyph::REPLY, Mode::Reply, m.row.clone(), cx)).child(respond(
+                            "thread-forward",
+                            glyph::FORWARD,
+                            Mode::Forward,
+                            m.row.clone(),
+                            cx,
+                        ))
+                    });
                     let card = div()
                         .id(("feed-msg", n))
                         .children(crate::screens::spot(("feed-msg", n)))
@@ -376,13 +433,48 @@ impl ReadingPane {
                                 .child(div().font_weight(FontWeight::SEMIBOLD).child(who))
                                 .child(div().text_color(l.text2()).child(crate::format_date(m.row.received_at))),
                         )
-                        .child(body);
-                    col = col.child(div().flex().w_full().when(m.mine, |d| d.justify_end()).child(card));
+                        .child(body)
+                        .children(att_row)
+                        .children(actions);
+                    // Аватар у чужих писем (макет): слева от письма.
+                    let face = (!m.mine).then(|| avatar(&who_name(m), 28., 11., &l).mt_1());
+                    col = col.child(div().flex().gap_2().items_start().w_full().when(m.mine, |d| d.justify_end()).children(face).child(card));
                 }
             }
         }
         Some(col.into_any_element())
     }
+}
+
+/// Вложения письма беседы (T2-26, макет): скрепка, имя, размер.
+fn att_chips(atts: &[(String, u64)], l: &crate::roles::Look) -> Div {
+    div().flex().flex_wrap().gap(px(6.)).pt_1().children(atts.iter().map(|(name, size)| {
+        div()
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .h(px(24.))
+            .px(px(8.))
+            .rounded(px(4.))
+            .border_1()
+            .border_color(l.border())
+            .text_size(px(12.))
+            .child(icon(glyph::ATTACH, 12.).text_color(l.text2()))
+            .child(div().max_w(px(220.)).truncate().child(name.clone()))
+            .child(div().text_color(l.text2()).child(crate::attachments::size_text(*size)))
+    }))
+}
+
+/// «14 окт» (T2-26, макет `ThreadChat`).
+fn day_month(ts: i64) -> String {
+    let Ok(t) = jiff::Timestamp::from_second(ts) else { return String::new() };
+    let d = t.to_zoned(jiff::tz::TimeZone::system()).date();
+    format!("{} {}", d.day(), tr!("invite-month-short", m = d.month()))
+}
+
+/// Имя для аватара: отправитель, иначе адрес.
+fn who_name(m: &feed::Message) -> String {
+    if m.row.from_name.is_empty() { m.row.from_addr.clone() } else { m.row.from_name.clone() }
 }
 
 // --- стопка (S5-05б) ---
@@ -690,12 +782,19 @@ impl ReadingPane {
             }
         };
         let strip = open.and_then(|r| self.ribbon(r, cx));
+        // Вложения раскрытого письма стопки (T2-26): у открытого — лента вложений, у остальных — их имена.
+        let atts = open
+            .is_none()
+            .then(|| self.feed.as_ref().and_then(|f| f.atts.get(&m.row.id)).filter(|a| !a.is_empty()).map(|a| att_chips(a, &l)))
+            .flatten();
         let invite = open.and_then(|r| r.invite.as_ref()).map(|c| crate::invite_card::render(c, self.me.as_deref(), cx));
         div()
             .flex()
             .flex_col()
             .child(head)
-            .child(div().pl(px(48.)).pt(px(10.)).pb(px(16.)).flex().flex_col().gap(px(12.)).children(strip).children(invite).child(body))
+            .child(
+                div().pl(px(48.)).pt(px(10.)).pb(px(16.)).flex().flex_col().gap(px(12.)).children(strip).children(invite).child(body).children(atts),
+            )
             .into_any_element()
     }
 
