@@ -93,6 +93,8 @@ pub fn import_event(inv: &Invitation, me: &str, status: Partstat, calendar_id: &
     let mut ev = inv.with_my_status(me, status);
     if let Some(o) = ev.as_object_mut() {
         o.remove("id");
+        // Своя копия — не чужой выпуск (`prodId` приглашения нужен только карточке, T2-20).
+        o.remove("prodId");
         o.insert("calendarIds".into(), json!({ calendar_id: true }));
     }
     ev

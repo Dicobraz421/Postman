@@ -56,6 +56,8 @@ pub(crate) struct Card {
     /// «Удалить из календаря» у отменённой (T2-19): запрос ушёл; итог — удалена (`true`) или копии не было.
     pub(crate) removing: bool,
     pub(crate) removed: Option<bool>,
+    /// Снимки (T2-20): приглашение считать внешним (`Some(true)`) или своим; `None` — по адресам.
+    pub(crate) screen_external: Option<bool>,
 }
 
 impl Card {
@@ -71,7 +73,18 @@ impl Card {
             how: Choice::default(),
             removing: false,
             removed: None,
+            screen_external: None,
         }
+    }
+
+    /// Внешнее приглашение (T2-20): организатор не из моего домена.
+    pub(crate) fn external(&self, me: Option<&str>) -> bool {
+        let dom = |a: &str| a.rsplit_once('@').map(|(_, d)| d.to_ascii_lowercase());
+        if let Some(x) = self.screen_external {
+            return x;
+        }
+        let (Some(org), Some(me)) = (self.invitation().and_then(|i| i.organizer_email()), me) else { return false };
+        matches!((dom(org), dom(me)), (Some(a), Some(b)) if a != b)
     }
 
     pub(crate) fn invitation(&self) -> Option<&Invitation> {
@@ -140,9 +153,13 @@ impl Card {
         let Some(inv) = self.invitation().cloned() else { return };
         self.clock = Some(inv.event.span.start - 86_400);
         self.how = Choice::default();
-        (self.removing, self.removed) = (false, None);
+        (self.removing, self.removed, self.screen_external) = (false, None, None);
         match which {
-            "answered" => self.answer = Some(Seen::of(&inv, Partstat::Accepted)),
+            // Полная карточка с ответом — у своего приглашения (у внешнего — строка, сцена `invite-external`).
+            "answered" => {
+                self.answer = Some(Seen::of(&inv, Partstat::Accepted));
+                self.screen_external = Some(false);
+            }
             "updated" => {
                 let mut seen = Seen::of(&inv, Partstat::Accepted);
                 if let Some(v) = seen.version.as_mut() {
@@ -162,6 +179,11 @@ impl Card {
             "outdated" => {
                 self.answer = None;
                 self.clock = Some(inv.event.span.end + 3600);
+            }
+            // Принято, приглашение внешнее (T2-20, макет «Приглашение · состояния»); выпустил Outlook (`PRODID` демо).
+            "external" => {
+                self.answer = Some(Seen::of(&inv, Partstat::Accepted));
+                self.screen_external = Some(true);
             }
             _ => self.answer = None,
         }
@@ -398,6 +420,80 @@ fn length_chip(secs: i64, l: &Look) -> Div {
 /// Кнопки ответа: «Принять» — заливка, «Под вопросом» и «Отклонить» — тонированные, у всех — значок в круге; клавиша
 /// (A / T / N в схеме «Одиночные клавиши») — подсказкой «Название (клавиша)» и KeyTips, не в тексте кнопки (S5-18).
 /// У каждой — ▾ «… с комментарием» / «… без ответа организатору» (T2-15, [`split`]).
+/// Строка 44 px ответа на внешнее приглашение (T2-20): листок, тема · время, метка «Внешнее приглашение · Google» и
+/// «ответ ушёл письмом организатору», справа — мой ответ и «Изменить ответ».
+fn external_row(e: &Event, inv: &Invitation, s: Partstat, tz: &TimeZone, l: &Look, cx: &mut Context<ReadingPane>) -> AnyElement {
+    let chip = match inv.producer() {
+        Some(p) => tr!("invite-external-from", from = p),
+        None => tr!("invite-external"),
+    };
+    div()
+        .id("invite-external")
+        .rounded(px(6.))
+        .border_1()
+        .border_color(l.c(pets_ui::theme::Role::StrokeCard))
+        .text_size(px(13.))
+        .h(px(44.))
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .pl(px(6.))
+        .pr(px(10.))
+        .child(date_tile(e.span, false, true, tz, l))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .line_height(px(17.))
+                // Тема жирным, время — подписью; не помещается — обрезается конец строки (макет).
+                .child(div().min_w_0().truncate().child({
+                    let text = format!("{} · {} · {}", e.title, short_date_title(e.span, tz), time_range(e.span, tz));
+                    let bold = HighlightStyle { font_weight: Some(FontWeight::SEMIBOLD), ..Default::default() };
+                    let gray = HighlightStyle { color: Some(l.text2()), ..Default::default() };
+                    let cut = e.title.len();
+                    StyledText::new(text.clone()).with_highlights([(0..cut, bold), (cut..text.len(), gray)])
+                }))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .min_w_0()
+                        .text_size(px(12.))
+                        .text_color(l.text2())
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .px(px(6.))
+                                .rounded(px(4.))
+                                .border_1()
+                                .border_color(l.border())
+                                .text_size(px(11.))
+                                .line_height(px(15.))
+                                .child(chip),
+                        )
+                        .child(div().min_w_0().flex_1().truncate().child(tr!("invite-external-replied"))),
+                ),
+        )
+        .child(done_text(s, l).text_size(px(12.)))
+        .child(
+            div()
+                .id("invite-change")
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .text_size(px(12.))
+                .text_color(l.accent_text())
+                .cursor_pointer()
+                .child(tr!("cal-change-answer"))
+                .child(icon(g::DOWN, 10.))
+                .on_click(change_answer(cx)),
+        )
+        .into_any_element()
+}
+
 /// «Удалить из календаря» у отменённой встречи (T2-19, макет «Приглашение · состояния»): моя копия — из календаря,
 /// организатору ничего не уходит.
 fn remove_button(removing: bool, l: &Look, cx: &mut Context<ReadingPane>) -> AnyElement {
@@ -573,6 +669,8 @@ pub(crate) fn render(card: &Card, me: Option<&str>, cx: &mut Context<ReadingPane
             return compact(reason, g::CLOCK, true, false, None);
         }
         InviteState::Info => return compact(tr!("reading-invite-head", method = inv.method.as_str()), g::INFO, false, false, None),
+        // Ответ на внешнее приглашение — строкой (макет «Принято · внешнее приглашение»): ответ ушёл письмом.
+        InviteState::Answered(s) if !card.changing && card.external(me) => return external_row(e, inv, *s, &tz, &l, cx),
         _ => {}
     }
     // Боковая панель (опция «Чтение»): над письмом — тонированная строка.
@@ -942,16 +1040,19 @@ fn timeline(card: &Card, inv: &Invitation, me: Option<&str>, tz: &TimeZone, side
     });
     let accepted = matches!(card.state_for(me), Some(InviteState::Answered(Partstat::Accepted)));
     let declined = matches!(card.state_for(me), Some(InviteState::Answered(Partstat::Declined)));
-    let blocks = card.day.as_ref().map(|day| day_blocks(e, day, me, window)).unwrap_or_default().into_iter().map(|b| {
+    let blocks = card.day.as_ref().map(|day| day_blocks(e, day, me, window)).unwrap_or_default().into_iter().enumerate().map(|(i, b)| {
         let (top, bottom) = (y(b.span.start), y(b.span.end));
+        let tip = block_tip(&b, e.span, tz);
         let invite = l.pm(Pm::DayAccepted);
         let gap = if b.columns > 1 { 2. } else { 0. };
         // Узкая колонка панели: время — второй строкой, если блок не короче двух строк; часовой блок — впритык, без зазоров.
         let two_lines = side && bottom - top >= 28.;
         div()
+            .id(("invite-block", i))
             .absolute()
             .top(px(top + 1.))
             .h(px((bottom - top - 2.).max(10.)))
+            .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx))
             .left(relative(b.column as f32 / b.columns as f32))
             .w(relative(b.span_columns as f32 / b.columns as f32))
             .px(px(gap))
@@ -1023,6 +1124,22 @@ fn timeline(card: &Card, inv: &Invitation, me: Option<&str>, tz: &TimeZone, side
 }
 
 /// «Чт 23 окт».
+/// Подсказка блока «Вашего дня» (T2-20, макет): «Тема · 11:00–12:00» и «· это приглашение» или «· пересекается с
+/// приглашением 11:30–12:00».
+pub(crate) fn block_tip(b: &Block, invite: Span, tz: &TimeZone) -> String {
+    let (title, time) = (b.title.clone(), time_range(b.span, tz));
+    match b.lane {
+        Lane::Invite => tr!("invite-block-invite", title = title, time = time),
+        Lane::Conflict => tr!("invite-block-overlap", title = title, time = time, overlap = time_range(common(b.span, invite), tz)),
+        Lane::Own => tr!("invite-block-own", title = title, time = time),
+    }
+}
+
+/// Общее время двух отрезков (пересекаются).
+fn common(a: Span, b: Span) -> Span {
+    Span::new(a.start.max(b.start), a.end.min(b.end))
+}
+
 fn short_date_title(span: Span, tz: &TimeZone) -> String {
     let Some(z) = zoned(span.start, tz) else { return String::new() };
     let d = z.date();
@@ -1401,6 +1518,8 @@ pub(crate) mod scenes {
         Scene::new("invite-updated", state, state_ready).continues(),
         Scene::new("invite-cancelled", state, state_ready).continues(),
         Scene::new("invite-outdated", state, state_ready).continues(),
+        // Принято, приглашение внешнее (T2-20): строкой «Внешнее приглашение · Google · ответ ушёл письмом».
+        Scene::new("invite-external", state, state_ready).continues(),
         // Меню ▾ у «Принять» (T2-15): «… с комментарием», «… без ответа организатору».
         Scene::new("invite-answer-menu", menu, state_ready).continues(),
         // «Отклонить с комментарием…»: поле под кнопками, «Отправить» / «Отмена».
@@ -1607,6 +1726,15 @@ mod tests {
         let (a, b) = (blocks.iter().find(|b| b.title == "Созвон").unwrap(), blocks.iter().find(|b| b.title == "Планёрка").unwrap());
         assert_eq!((a.columns, b.columns), (2, 2));
         assert_ne!(a.column, b.column);
+        // Подсказки блоков (T2-20, макет): тема и время; пересечение — с общим временем, встреча — «это приглашение».
+        let tip = |t: &str| super::block_tip(blocks.iter().find(|b| b.title == t).unwrap(), invite.span, &TimeZone::UTC);
+        // Переводов в тестах нет — `tr!` отдаёт ключ.
+        assert_eq!(
+            (tip("Планёрка"), tip("Созвон"), tip("Стендап")),
+            ("invite-block-overlap".into(), "invite-block-invite".into(), "invite-block-own".into())
+        );
+        let common = super::common(b.span, a.span);
+        assert_eq!((common.start, common.end), (b.span.start, a.span.end), "11:30–12:00");
         // Боковая панель — день 8–19; поздняя встреча — окно сдвигается, она целиком внутри.
         assert_eq!(day_window(invite.span, &TimeZone::UTC, true), (8, 11));
         let late = postman_calendar::Span::new(day0 + 22 * 3600, day0 + 23 * 3600 + 1800);
