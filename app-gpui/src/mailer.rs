@@ -237,6 +237,16 @@ impl Mailer {
             cx.subscribe(&list, |this, _, OpenRow(row), cx| this.open_letter(row.clone(), cx)),
             // Чип «Уточнить» (S5-10): условие — в строку поиска.
             cx.subscribe_in(&list, window, |this, _, crate::search::RefineChip(r), window, cx| this.refine(r, window, cx)),
+            cx.subscribe(&list, |this, _, crate::search::ScopeChip(folder), cx| {
+                this.set_scope(if *folder { crate::bar::Scope::Folder } else { crate::bar::Scope::All }, cx)
+            }),
+            cx.subscribe_in(&list, window, |this, list, _: &crate::search::ClearRefines, window, cx| {
+                let on: Vec<_> =
+                    list.read(cx).found.as_ref().map(|f| f.chips.iter().filter(|(_, on)| *on).map(|(r, _)| r.clone()).collect()).unwrap_or_default();
+                for r in on {
+                    this.refine(&r, window, cx);
+                }
+            }),
             cx.subscribe(&list, |this, _, NeedMore(mailbox), cx| this.load_more(mailbox.clone(), cx)),
             cx.subscribe(&list, |this, _, crate::list::WantMeetings(rows), cx| {
                 let rows = rows.clone();

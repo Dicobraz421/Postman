@@ -27,3 +27,5 @@ search-empty = Ничего не найдено. Уберите уточнени
 search-matches = Совпадение { $k } из { $n }
 search-matches-none = Совпадения: нет в тексте
 search-matches-query = «{ $query }»
+search-refine-only = только { $folder }
+search-clear-refines = Сбросить уточнения

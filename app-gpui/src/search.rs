@@ -82,6 +82,31 @@ pub(crate) struct RefineChip(pub(crate) Refine);
 
 impl EventEmitter<RefineChip> for crate::list::MailList {}
 
+/// Чип «только <папка>» (T2-27, макет `Search`): искать в текущей папке (`true`) или везде.
+pub(crate) struct ScopeChip(pub(crate) bool);
+
+impl EventEmitter<ScopeChip> for crate::list::MailList {}
+
+/// «Сбросить уточнения» (T2-27): снять все включённые чипы.
+pub(crate) struct ClearRefines;
+
+impl EventEmitter<ClearRefines> for crate::list::MailList {}
+
+/// Отрывок текста вокруг первого совпадения (T2-27, макет `Search`): начало дальше ~40 знаков — «…» и текст от
+/// границы слова перед совпадением.
+pub(crate) fn snippet(text: &str, marks: &[String]) -> String {
+    let lower = text.to_lowercase();
+    let hit = marks.iter().filter(|m| !m.is_empty()).filter_map(|m| lower.find(&m.to_lowercase())).min();
+    let Some(at) = hit else { return text.to_owned() };
+    // Позиции — по `lower`; у кириллицы длина в байтах та же, у редких букв — нет: тогда отрывка не режем.
+    if lower.len() != text.len() || at < 40 {
+        return text.to_owned();
+    }
+    let from = text[..at].char_indices().rev().nth(30).map_or(0, |(i, _)| i);
+    let from = text[from..at].find(' ').map_or(from, |s| from + s + 1);
+    format!("…{}", &text[from..])
+}
+
 /// Поиск по своим данным в фоне: слова — индексом (или кэшем, пока индекса нет), только условия — обходом папки
 /// или всех папок аккаунта; затем условия по кэшу.
 struct Local {
@@ -438,6 +463,25 @@ pub(crate) fn header(found: &Found, count: usize, l: &Look, cx: &mut Context<cra
         .child(div().flex_none().text_size(l.px(Metric::TypeCaption)).text_color(l.text2()).child(summary))
         .child(div().flex_1())
         .child(close);
+    // «только <папка>» (макет): включён — поиск в текущей папке, щелчок — везде.
+    let only = (!found.folder.is_empty()).then(|| {
+        let on = !found.all;
+        div()
+            .id("refine-folder")
+            .children(crate::screens::spot("refine-folder"))
+            .flex_none()
+            .h(px(24.))
+            .flex()
+            .items_center()
+            .px(px(6.))
+            .rounded(px(12.))
+            .text_size(px(11.))
+            .cursor_pointer()
+            .when(on, |d| d.bg(l.text()).text_color(l.panel()))
+            .when(!on, |d| d.bg(l.fill_passive()).border_1().border_color(l.stroke()).hover(|d| d.bg(l.hover())))
+            .child(tr!("search-refine-only", folder = found.folder.clone()))
+            .on_click(cx.listener(move |_, _, _, cx| cx.emit(ScopeChip(!on))))
+    });
     let chips = found.chips.iter().enumerate().map(|(i, (r, on))| {
         let r = r.clone();
         div()
@@ -473,6 +517,7 @@ pub(crate) fn header(found: &Found, count: usize, l: &Look, cx: &mut Context<cra
             .border_color(l.border())
             .child(div().flex_none().mr(px(2.)).text_size(px(11.)).text_color(l.text2()).child(tr!("search-refine")))
             .children(chips)
+            .children(only)
     });
     div().flex_none().flex().flex_col().border_b_1().border_color(l.border()).child(line).children(refine)
 }
@@ -663,5 +708,19 @@ pub(crate) mod scenes {
     fn next_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
         let r = m.reading.read(cx);
         r.hits.get() > 0 && r.hit == 0 && r.scroll.offset().y.abs() < px(1.)
+    }
+}
+
+#[cfg(test)]
+mod snippet_tests {
+    /// Отрывок (T2-27): совпадение далеко — «…» от слова перед ним; близко или нет — текст как есть.
+    #[test]
+    fn snippet_around_first_match() {
+        let text = "Коллеги, добрый день! Направляю материалы к обсуждению проекта и прошу посмотреть приложение Б до четверга";
+        let s = super::snippet(text, &["приложение".into()]);
+        assert!(s.starts_with('…') && s.contains("приложение Б"), "{s}");
+        assert!(!s.contains("Коллеги"));
+        assert_eq!(super::snippet(text, &["коллеги".into()]), text);
+        assert_eq!(super::snippet(text, &["нет-такого".into()]), text);
     }
 }
