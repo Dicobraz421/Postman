@@ -231,6 +231,11 @@ impl Mailer {
             }
             SettingsEvent::RemoveExtra(profile) => self.remove_extra(profile.clone(), cx),
             SettingsEvent::SaveRules(rules) => self.save_rules(rules.clone(), false, cx),
+            SettingsEvent::SyncNow => {
+                if !self.backend.send(Command::SyncNow) {
+                    self.not_sent(cx);
+                }
+            }
             SettingsEvent::ApplyRule(rule) => self.apply_rule(rule.clone(), cx),
         }
     }
@@ -766,6 +771,8 @@ pub(crate) mod scenes {
         Scene::new("settings-keys", keys, section_ready),
         // «Настройки → Аккаунты» с карточкой «Добавить аккаунт» на месте.
         Scene::new("settings-accounts", accounts, section_ready),
+        // «Аккаунты → Настроить» (T2-51): протокол в строке, параметры сервера, офлайн-кэш; «Синхронизировать».
+        Scene::new("settings-account-setup", account_setup, section_ready),
         // «Настройки → Быстрые фильтры и сроки».
         Scene::new("settings-quick", section, section_ready),
         // «Настройки → Чтение».
@@ -868,6 +875,7 @@ pub(crate) mod scenes {
             "settings-reading" => S::Reading,
             "settings-calendar" | "settings-calendar-free" => S::Calendar,
             "settings-sign" | "settings-sign-template" => S::Signatures,
+            "settings-account-setup" => S::Accounts,
             _ => S::Accounts,
         }
     }
@@ -886,6 +894,7 @@ pub(crate) mod scenes {
                     "settings-accounts" => v.add.is_some(),
                     "settings-sign" => !v.sign.prefs.signatures.is_empty(),
                     "settings-sign-template" => v.sign.edit.is_some(),
+                    "settings-account-setup" => v.account_open.is_some() && (v.info.cache.is_none() || v.cache_size.is_some()),
                     _ => true,
                 }
             })
@@ -951,6 +960,18 @@ pub(crate) mod scenes {
             v.update(cx, |v, cx| {
                 v.scroll.scroll_to_bottom();
                 cx.notify();
+            });
+        }
+        Ok(())
+    }
+
+    fn account_setup(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.open_settings(Some(S::Accounts), window, cx);
+        if let Some(v) = m.settings.view.clone() {
+            v.update(cx, |v, cx| {
+                v.add = None;
+                v.account_open = Some("main".into());
+                v.read_cache_size(cx);
             });
         }
         Ok(())

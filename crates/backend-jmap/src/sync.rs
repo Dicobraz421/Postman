@@ -413,6 +413,11 @@ async fn run(
                     }
                     continue;
                 }
+                // «Синхронизировать» (T2-51): сверка всех учётных записей сейчас — тем же шагом, что повтор.
+                if matches!(cmd, Command::SyncNow) {
+                    retry = Some(tokio::time::Instant::now());
+                    continue;
+                }
                 // Без связи правки писем — сразу в очередь: каждая попытка ждала бы тайм-аута сети.
                 if link.is_down()
                     && let Some(c) = cmd.replayable()
@@ -1234,8 +1239,8 @@ async fn handle(
             notify(Event::Withheld { ticket, too_late, error });
             notify_scheduled(accounts, send_as, notify).await;
         }
-        // «Повторить сейчас» — забота цикла синхронизации.
-        Command::Reconnect => {}
+        // «Повторить сейчас» и «Синхронизировать» — забота цикла синхронизации.
+        Command::Reconnect | Command::SyncNow => {}
         // Папки (T1-04в): `Mailbox/set`, затем папки заново; отказ сервера — `FolderFailed`.
         cmd @ (Command::CreateFolder { .. } | Command::RenameFolder { .. } | Command::MoveFolder { .. }) => {
             folder_command(accounts, cache, cmd, notify).await;

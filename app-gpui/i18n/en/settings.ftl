@@ -542,6 +542,24 @@ settings-account-revocation = Windows checks the server certificate and its revo
 settings-account-secrets = Passwords
 settings-account-secrets-1 = The password goes only to Windows Credential Manager, or nowhere.
 settings-account-secrets-2 = Postman writes only the server address and login to disk.
+settings-account-setup = Configure
+settings-account-setup-hide = Collapse
+settings-account-sync-now = Sync
+settings-account-syncing = syncing…
+settings-account-server = Server settings
+settings-account-protocol = Protocol
+settings-account-host = Server
+settings-account-port = Port
+settings-account-path = Path
+settings-account-tls-row = Encryption
+settings-account-tls-on = TLS 1.2+ (checked by Windows)
+settings-account-tls-off = no encryption
+settings-account-login = Login
+settings-account-sync = Synchronization
+settings-account-cache = Offline cache
+settings-account-cache-reading = counting…
+settings-account-cache-demo = demo — in memory
+settings-account-sync-note = Messages and attachments for offline work: message bodies are fetched ahead, attachments on opening.
 
 # General → Security (S5-08): where "Report phishing" forwards messages.
 settings-security-group = Security

@@ -1625,7 +1625,7 @@ impl Ews {
             cmd @ (Command::CreateFolder { .. } | Command::RenameFolder { .. } | Command::MoveFolder { .. }) => {
                 self.folder_command(cmd, notify).await
             }
-            Command::Reconnect => {
+            Command::Reconnect | Command::SyncNow => {
                 if let Err(e) = self.refresh_all(true, notify).await {
                     notify(Event::Error(e));
                 }
