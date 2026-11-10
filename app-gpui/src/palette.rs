@@ -589,6 +589,7 @@ pub(crate) fn command_icon(id: &str) -> Option<char> {
         "tab.close" | "compose.close" | "meeting.close" | "invite.decline" => CLOSE,
         "invite.undo" => crate::calendar::g::UNDO,
         "mail.pick" => crate::calendar::g::CHECK,
+        "search.save_filter" => SEARCH,
         "search.focus" | "palette.open" => SEARCH,
         "search.next_match" => DOWN,
         "search.prev_match" => UP,

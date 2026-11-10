@@ -72,6 +72,16 @@ pub struct Prefs {
     /// «Избранное» над деревом папок (T2-33r, макет `Main`): ключи папок по порядку; `None` — «Входящие»,
     /// «Отправленные», «Черновики» своей учётки.
     pub favorites: Option<Vec<String>>,
+    /// Свои быстрые фильтры (T2-38, решение владельца 2026-11-10): сохранённые поиски — закладками после пяти своих.
+    pub saved_filters: Vec<SavedFilter>,
+}
+
+/// Свой быстрый фильтр (T2-38): имя закладки и запрос поиска (язык строки поиска).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedFilter {
+    pub name: String,
+    pub query: String,
 }
 
 /// Схема клавиш.
@@ -105,6 +115,7 @@ impl Default for Prefs {
             viewers: Viewers::default(),
             session: Session::default(),
             favorites: None,
+            saved_filters: Vec::new(),
         }
     }
 }

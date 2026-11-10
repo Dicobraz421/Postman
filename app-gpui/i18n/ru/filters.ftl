@@ -45,3 +45,7 @@ filters-quick-hide = Скрыть быстрые фильтры
 filters-quick-hidden = Быстрые фильтры скрыты. Вернуть: Вид → Быстрые фильтры
 filters-menu-view = Вид
 filters-menu-quick = Быстрые фильтры
+filters-save-search = Сохранить как быстрый фильтр
+filters-saved = Быстрый фильтр «{ $name }» сохранён
+filters-saved-exists = Такой быстрый фильтр уже есть
+filters-saved-remove = Убрать быстрый фильтр
