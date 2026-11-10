@@ -424,6 +424,38 @@ impl Dav {
         Ok(false)
     }
 
+    /// «Удалить из календаря» у отменённой встречи (T2-19): моя копия с UID (около `around`) — из календаря. Отмена
+    /// экземпляра серии (`instance` — его начало) — только он: `EXDATE`, без рассылки (`SCHEDULE-AGENT=CLIENT`).
+    /// `false` — копии нет.
+    pub async fn remove_copy(&self, uid: &str, around: Span, instance: Option<i64>) -> Result<bool, Error> {
+        let window = Span::new(around.start - 86_400, around.end.max(around.start) + 86_400);
+        let marker = format!("UID:{uid}");
+        for c in self.event_calendars() {
+            let found = self.client.calendar_query(&c.href, "VEVENT", Some(window)).await?;
+            let Some(copy) = found.into_iter().find(|r| r.data.lines().any(|l| l.trim_end() == marker)) else { continue };
+            let pre = match (&copy.schedule_tag, &copy.etag) {
+                (Some(t), _) => Precondition::ScheduleTag(t),
+                (None, Some(e)) => Precondition::Etag(e),
+                (None, None) => Precondition::None,
+            };
+            match instance.filter(|_| postman_calendar::ics::is_series(&copy.data)) {
+                Some(start) => {
+                    let utc = jiff::Timestamp::from_second(start).map(|t| t.strftime("%Y%m%dT%H%M%SZ").to_string()).unwrap_or_default();
+                    let rid = postman_calendar::ics::instance_rid(&copy.data, &utc);
+                    let ics = postman_calendar::ics::without_instance(&copy.data, &rid, now())
+                        .ok_or_else(|| Error::Protocol("no series in the resource".into()))?;
+                    let ics = postman_calendar::ics::with_schedule_agent(&ics, true);
+                    self.client.put(&copy.href, Content::Calendar, &ics, pre).await?;
+                }
+                None => {
+                    self.client.delete(&copy.href, pre).await?;
+                }
+            }
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     /// Кому открыты мои календари (S8-43): чужие записи ACL; подробности — право `read` хотя бы в одном календаре.
     /// Адрес — из принципала; его может быть не видно (403) — тогда из пути.
     pub async fn calendar_access(&self) -> Result<Vec<Access>, Error> {
@@ -897,6 +929,19 @@ impl Dav {
                     Err(e) => SyncEvent::ContactFailed { ticket, error: e.to_string() },
                 });
                 self.load_contacts(notify).await;
+            }
+            Command::RemoveInvite { invite } => {
+                let uid = invite.event.uid.clone();
+                let instance = invite.raw.get("recurrenceId").is_some_and(|v| !v.is_null()).then_some(invite.event.span.start);
+                notify(match self.remove_copy(&uid, invite.event.span, instance).await {
+                    Ok(found) => {
+                        if found {
+                            notify(SyncEvent::CalendarChanged);
+                        }
+                        SyncEvent::InviteRemoved { uid, found }
+                    }
+                    Err(e) => SyncEvent::InviteFailed { uid, error: e.to_string() },
+                });
             }
             Command::ImportInvite { invite } => match self.import_invite(&invite.event).await {
                 Ok(true) => notify(SyncEvent::CalendarChanged),

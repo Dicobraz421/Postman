@@ -216,6 +216,8 @@ pub(crate) enum SyncRequest {
     },
     /// Приглашение только письмом — в мой календарь «не ответил» (T2-08в).
     ImportInvite(Box<Invitation>),
+    /// «Удалить из календаря» у отменённой встречи (T2-19).
+    RemoveInvite(Box<Invitation>),
 }
 
 impl SyncRequest {
@@ -228,6 +230,7 @@ impl SyncRequest {
             SyncRequest::Thread(key) => Command::Thread(key.clone()),
             SyncRequest::Events { from, to } => Command::Events { from: *from, to: *to },
             SyncRequest::ImportInvite(invite) => Command::ImportInvite { invite: invite.clone() },
+            SyncRequest::RemoveInvite(invite) => Command::RemoveInvite { invite: invite.clone() },
         }
     }
 }
@@ -471,9 +474,19 @@ impl ReadingPane {
                 }
                 cx.notify();
             }
+            Event::InviteRemoved { uid, found } => {
+                if let Some(card) = self.card_for(uid) {
+                    card.removing = false;
+                    card.removed = Some(*found);
+                }
+                let (level, text) = if *found { (Toast::Success, tr!("invite-removed")) } else { (Toast::Info, tr!("invite-remove-none")) };
+                cx.emit(ReadingEvent::Toast(level, text));
+                cx.notify();
+            }
             Event::InviteFailed { uid, error } => {
                 if let Some(card) = self.card_for(uid) {
                     card.sending = None;
+                    card.removing = false;
                 }
                 cx.emit(ReadingEvent::Toast(Toast::Error, tr!("reading-invite-failed", error = error.as_str())));
                 cx.notify();
@@ -515,6 +528,11 @@ impl ReadingPane {
             // Не ушло — попросим снова при следующем открытии письма.
             SyncRequest::ImportInvite(invite) => {
                 self.imported.remove(&invite.event.uid);
+            }
+            SyncRequest::RemoveInvite(invite) => {
+                if let Some(card) = self.card_for(&invite.event.uid) {
+                    card.removing = false;
+                }
             }
         }
         cx.notify();
@@ -909,6 +927,20 @@ impl ReadingPane {
         card.sending = Some(status);
         card.how = Default::default();
         cx.emit(ReadingEvent::Sync(SyncRequest::RespondInvite { invite: Box::new(inv), status, in_reply_to, answer }));
+        cx.notify();
+    }
+
+    /// «Удалить из календаря» у отменённой встречи (T2-19): моя копия по UID — путём учётной записи. Демо — «нужен
+    /// сервер».
+    pub(crate) fn remove_invite(&mut self, cx: &mut Context<Self>) {
+        if !self.live {
+            cx.emit(ReadingEvent::NeedsServer);
+            return;
+        }
+        let Some(card) = self.reading.as_mut().and_then(|r| r.invite.as_mut()) else { return };
+        let Some(inv) = card.invitation().cloned() else { return };
+        card.removing = true;
+        cx.emit(ReadingEvent::Sync(SyncRequest::RemoveInvite(Box::new(inv))));
         cx.notify();
     }
 
