@@ -3587,6 +3587,8 @@ impl crate::Mailer {
             }
             TasksAction::OpenWaiting => self.open_waiting(cx),
             TasksAction::NeedBook => {
+                // Книга собирается в фоне один раз (как для окна письма); форма «Поручить» видит её, когда готова.
+                self.load_address_book(cx);
                 let book = self.compose.book.clone();
                 let positions = self.contacts.read(cx).positions();
                 self.tasks.update(cx, |t, cx| {
