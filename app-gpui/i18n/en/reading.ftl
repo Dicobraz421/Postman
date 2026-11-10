@@ -58,3 +58,5 @@ reading-link-mismatch = The link text says “{ $shown }”, but it leads to { $
 reading-link-go = Go
 reading-quick-reply = Reply to { $name }
 reading-quick-reply-tip = Reply
+reading-external = External
+reading-add-category = + category
