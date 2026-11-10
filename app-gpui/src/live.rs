@@ -597,6 +597,14 @@ impl Mailer {
             self.remember(account, store, cx);
         }
         if let Some(s) = plan.status {
+            // Шаг «Проверка» первого запуска (T2-28): папка — в список, загрузка закончилась — к почте.
+            if let Some(panel) = self.live.signin.clone().filter(|p| p.read(cx).signed) {
+                match &s {
+                    Status::Loading { mailbox } => panel.update(cx, |p, cx| p.loading(mailbox.clone(), cx)),
+                    Status::Synced => self.live.signin = None,
+                    _ => {}
+                }
+            }
             if s == Status::Synced {
                 self.live.synced_at = Some(jiff::Zoned::now().strftime("%H:%M").to_string());
                 // Письма не менялись (IMAP с кэшем): `EmailsChanged` не будет, а сверка закончилась.
@@ -1041,7 +1049,12 @@ impl Mailer {
 
     /// Вход подтверждён сервером: адрес и логин — в файл, пароль — в диспетчер учётных данных (в фоне).
     fn remember(&mut self, account: Account, store: bool, cx: &mut Context<Self>) {
-        self.live.signin = None;
+        // Первый запуск (T2-28, макет `FirstRun`): шаг «Проверка» — панель остаётся до первой загрузки или «Открыть
+        // почту»; карточка в настройках — прочь сразу.
+        match self.live.signin.clone().filter(|p| p.read(cx).is_welcome()) {
+            Some(panel) => panel.update(cx, |p, cx| p.signed_in(cx)),
+            None => self.live.signin = None,
+        }
         // Аккаунт добавляли из настроек: карточка добавления там больше не нужна.
         self.signed_in(cx);
         let task = cx.background_spawn(async move { account::remember(&crate::data_dir(), &account, store) });
@@ -1169,6 +1182,10 @@ impl Mailer {
                 let _ = this.update_in(cx, |m, window, cx| m.submit_account(&panel, account, store, window, cx));
             })
             .detach();
+        }));
+        self._subscriptions.push(cx.subscribe(panel, |this, _, _: &crate::signin::Done, cx| {
+            this.live.signin = None;
+            cx.notify();
         }));
         self._subscriptions.push(cx.subscribe_in(panel, window, |this, _, _: &crate::signin::Cancel, _, cx| {
             this.cancel_add_account(cx);

@@ -2227,22 +2227,17 @@ const FIRST_RUN: &[Input] = &[
         m.show_signin(None, window, cx);
         Ok(())
     }),
-    until!(|m, cx| on_step(m, cx, Step::Server)),
+    until!(|m, cx| on_step(m, cx, Step::Address)),
     until!(|_, _| screens::spotted("signin-next").is_some()),
-    Input::Text("mail.example.test"),
-    Input::Press("signin-next"),
-    until!(|m, cx| on_step(m, cx, Step::Login)),
-    Input::Press("signin-back"),
+    Input::Text("drill@mail.example.test"),
+    // Вручную (T2-28): без поиска сервера по сети — сценарий не зависит от ответа DNS.
+    Input::Press("signin-manual"),
     until!(|m, cx| on_step(m, cx, Step::Server)),
+    Input::Press("signin-back"),
+    until!(|m, cx| on_step(m, cx, Step::Address)),
     Input::Press("signin-next"),
-    until!(|m, cx| on_step(m, cx, Step::Login)),
-    Input::Text("drill"),
-    Input::Press("signin-next"),
-    until!(|m, cx| on_step(m, cx, Step::Password)),
-    Input::Press("signin-edit-login"),
-    until!(|m, cx| on_step(m, cx, Step::Login)),
-    Input::Press("signin-next"),
-    until!(|m, cx| on_step(m, cx, Step::Password)),
+    until!(|m, cx| on_step(m, cx, Step::Server)),
+    until!(|_, _| screens::spotted("signin-store-never").is_some()),
     Input::Press("signin-store-never"),
     until!(|m, cx| signin(m, cx).is_some_and(|p| !p.store)),
     Input::Press("signin-store-windows"),
@@ -2255,7 +2250,7 @@ const FIRST_RUN: &[Input] = &[
 ];
 
 fn refused(_: &Scene, m: &Mailer, cx: &App) -> bool {
-    on_step(m, cx, Step::Password) && signin(m, cx).is_some_and(|p| p.error.is_some())
+    on_step(m, cx, Step::Server) && signin(m, cx).is_some_and(|p| p.error.is_some())
 }
 
 // T1-10, T1-10в: письмо Outlook демо: логотип с размером из HTML и большая картинка без него.

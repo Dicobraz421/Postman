@@ -2791,7 +2791,7 @@ const OWN_CERT: &[Input] = &[
 ];
 
 fn plain_login(_: &Scene, m: &Mailer, cx: &App) -> bool {
-    m.settings.add.as_ref().is_some_and(|p| p.read(cx).step == crate::signin::Step::Login)
+    m.settings.add.as_ref().is_some_and(|p| p.read(cx).step == crate::signin::Step::Server)
         && screens::spotted("signin-next").is_some()
         && screens::spotted("signin-windows").is_none()
 }
