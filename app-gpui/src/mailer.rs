@@ -116,6 +116,8 @@ pub(crate) struct Mailer {
     /// Вкладки (T2-11): записываются после восстановления прошлых (`restore_session`); последнее записанное.
     pub(crate) session_ready: bool,
     pub(crate) session_saved: Option<postman_core::prefs::Session>,
+    /// Черновик новой встречи (T2-23): хранится, если это не снимки и не бенч.
+    pub(crate) meeting_drafts: bool,
     /// Календарь — своя кэшируемая view (S3-05); окна новой встречи — `meeting.rs`.
     pub(crate) cal: Entity<calendar::CalendarView>,
     /// Командные строки календаря и контактов (S5-11) — на месте строки почты в своём разделе.
@@ -401,6 +403,7 @@ impl Mailer {
             main_section: None,
             session_ready: false,
             session_saved: None,
+            meeting_drafts: false,
             invite_waiting: false,
             keytips: Default::default(),
             keytips_task: None,
