@@ -825,6 +825,8 @@ pub(crate) struct Composers {
     pub(crate) prefs: postman_core::prefs::AccountPrefs,
     /// «Переслать вложениями» ждёт тела писем с сервера (T1-17).
     attach_wait: Option<AttachWait>,
+    /// Черновик ждёт тела с сервера, чтобы открыться на правку (T2-11).
+    pub(crate) edit_wait: Option<String>,
 }
 
 /// «Переслать вложениями» (T1-17): письма `ids`; у `missing` в кэше нет тела с `Email.blobId` — спрошены у сервера.
@@ -1006,8 +1008,10 @@ impl Composers {
 pub(crate) struct OpenAs {
     /// Ответ в области чтения на это письмо списка; `None` — вкладка.
     pub(crate) letter: Option<String>,
-    /// Черновик уже на сервере (вернулся после отмены отправки).
+    /// Черновик уже на сервере (вернулся после отмены отправки, открыт из «Черновиков»).
     pub(crate) server_id: Option<String>,
+    /// Вкладка — позади активной (T2-11: вкладки прошлого запуска).
+    pub(crate) behind: bool,
 }
 
 impl Mailer {
@@ -1028,7 +1032,7 @@ impl Mailer {
             }
             self.detach_inline(cx);
         }
-        self.open_draft(draft, OpenAs { letter: Some(letter), server_id: None }, cx);
+        self.open_draft(draft, OpenAs { letter: Some(letter), ..Default::default() }, cx);
     }
 
     /// Письмо — во вкладке или в области чтения. Полям ввода нужно окно: создаём после текущего обновления.
@@ -1089,11 +1093,58 @@ impl Mailer {
         self.compose.open.push(Opened { id, view, _events: events });
         match how.letter {
             Some(letter) => self.compose.inline = Some(Inline { id, letter }),
+            None if how.behind => {
+                self.tabs.open_behind(TabKind::Compose(id));
+            }
             None => {
                 self.tabs.open(TabKind::Compose(id));
             }
         }
         cx.notify();
+    }
+
+    /// Письмо — черновик (T2-11): метка `$draft` или папка «Черновики».
+    pub(crate) fn is_draft(&self, row: &postman_cache::EmailRow, cx: &App) -> bool {
+        row.has_keyword(postman_core::labels::DRAFT)
+            || self.folders.read(cx).mailboxes.iter().any(|b| b.role.as_deref() == Some("drafts") && row.mailbox_ids.contains(&b.id))
+    }
+
+    /// Черновик — во вкладку на правку (T2-11, Enter / двойной щелчок / «Продолжить»): уже открыт — его вкладка;
+    /// сохранение заменит версию на сервере. Тела ещё нет — откроется, когда придёт.
+    pub(crate) fn edit_draft(&mut self, row: postman_cache::EmailRow, cx: &mut Context<Self>) {
+        let open = self.compose.open.iter().find(|o| o.view.read(cx).model.server_id() == Some(row.id.as_str())).map(|o| o.id);
+        if let Some(id) = open {
+            let tab = self.tabs.iter().find(|t| t.kind == TabKind::Compose(id)).map(|t| t.id);
+            if tab.is_some_and(|t| self.tabs.activate(t)) {
+                self.refocus(cx);
+                cx.notify();
+            }
+            return;
+        }
+        let shown = self.reading.read(cx).reading.as_ref().filter(|r| r.row.id == row.id).and_then(|r| r.body.clone());
+        match shown.or_else(|| self.cache.body(&row.id).ok().flatten()) {
+            Some(body) => {
+                self.compose.edit_wait = None;
+                let id = row.id.clone();
+                let draft = crate::send_later::draft_of(self, row, body);
+                self.open_draft(draft, OpenAs { server_id: Some(id), ..Default::default() }, cx);
+            }
+            None => {
+                self.compose.edit_wait = Some(row.id.clone());
+                self.open_letter(row, cx);
+            }
+        }
+    }
+
+    /// Тело письма пришло: черновик ждал его — во вкладку (T2-11).
+    pub(crate) fn body_shown(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.compose.edit_wait.as_deref() != Some(id) {
+            return;
+        }
+        let row = self.reading.read(cx).reading.as_ref().map(|r| r.row.clone()).filter(|r| r.id == id);
+        if let Some(row) = row {
+            self.edit_draft(row, cx);
+        }
     }
 
     /// Письмо закрылось (отправлено, «Нет» в строке закрытия, удалён черновик): убрать вкладку или ответ.
@@ -1385,7 +1436,42 @@ pub(crate) mod scenes {
         Scene::new("compose-no-cert", no_cert, no_cert_ready),
         // Ответ в области чтения над письмом с цитатой (S3-02, S5-06б).
         Scene::new("reply-inline", reply, reply_ready).live(),
+        // Письмо из «Черновиков» (T2-11): полоса «Черновик — не отправлен · Продолжить», без быстрого ответа.
+        Scene::new("reading-draft", drafts, draft_ready).input(DRAFT_OPEN),
+        // «Продолжить» — черновик во вкладке письма; сохранение заменит версию на сервере.
+        Scene::new("draft-edit", stay, draft_tab_ready).input(&[screens::Input::Press("draft-edit")]).continues(),
     ];
+
+    fn drafts(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.set_section(Section::Mail, cx);
+        m.open_mailbox("drafts".into(), cx);
+        Ok(())
+    }
+
+    fn drafts_listed(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let list = m.list.read(cx);
+        list.mailbox.as_deref() == Some("drafts") && list.view.is_some() && !list.computing && screens::rows_loaded(list) && list.count > 0
+    }
+
+    fn open_first(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.list.update(cx, |l, cx| l.select(0, cx));
+        Ok(())
+    }
+
+    const DRAFT_OPEN: &[screens::Input] = &[screens::Input::Until(drafts_listed), screens::Input::Run(open_first)];
+
+    fn draft_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let r = m.reading.read(cx);
+        r.reading.as_ref().is_some_and(|x| x.row.id == postman_demo::DRAFT && x.doc.is_some()) && r.draft.as_deref() == Some(postman_demo::DRAFT)
+    }
+
+    fn stay(_: &Scene, _: &mut Mailer, _: &mut Window, _: &mut Context<Mailer>) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn draft_tab_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        screens::compose_tab(m).is_some_and(|c| c.read(cx).drawn() && c.read(cx).model.server_id() == Some(postman_demo::DRAFT))
+    }
 
     fn compose(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
         m.cal.update(cx, |c, cx| c.close_details(cx));

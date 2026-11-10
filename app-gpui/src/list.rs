@@ -403,6 +403,11 @@ pub(crate) struct OpenRow(pub(crate) EmailRow);
 
 impl EventEmitter<OpenRow> for MailList {}
 
+/// Двойной щелчок по письму (T2-11): черновик открывается на правку.
+pub(crate) struct Activate(pub(crate) EmailRow);
+
+impl EventEmitter<Activate> for MailList {}
+
 /// Флаг письма изменён пользователем (в кэше уже записан): живой ящик отдаёт его серверу (`Keyword`).
 pub(crate) struct Flagged {
     pub(crate) id: String,
@@ -1683,6 +1688,12 @@ pub(crate) fn list_row(
                 this.pick(i, true, cx);
             } else {
                 this.select(i, cx);
+                // Двойной щелчок (T2-11): черновик — во вкладку на правку.
+                if ev.click_count() >= 2
+                    && let Some(row) = this.row(i).cloned()
+                {
+                    cx.emit(Activate(row));
+                }
             }
         }))
         .on_mouse_down(

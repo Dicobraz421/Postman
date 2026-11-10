@@ -67,6 +67,8 @@ pub struct Prefs {
     pub layout: Layout,
     /// «Просмотр вложений» (S8-26): модули просмотра.
     pub viewers: Viewers,
+    /// Вкладки при закрытии (T2-11): «Открывать при запуске: Последняя вкладка» открывает их снова.
+    pub session: Session,
 }
 
 /// Схема клавиш.
@@ -98,6 +100,7 @@ impl Default for Prefs {
             keys_single: BTreeMap::new(),
             layout: Layout::default(),
             viewers: Viewers::default(),
+            session: Session::default(),
         }
     }
 }
@@ -638,6 +641,35 @@ impl Layout {
         let full = Layout { folders: Some(self.folders.unwrap_or(Self::FOLDERS)), list: Some(self.list.unwrap_or(Self::LIST)) }.clamp(width);
         (full.folders.unwrap_or(Self::FOLDERS), full.list.unwrap_or(Self::LIST))
     }
+}
+
+/// Вкладки окна (T2-11) — пишутся при каждой смене, если выбрано [`StartView::LastTabs`]. Главная вкладка —
+/// всегда первая: её раздел и папка — здесь, остальные — [`Session::tabs`] по порядку.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Session {
+    /// Раздел главной вкладки: `mail`, `calendar`, `contacts`, `tasks`; `None` — почта.
+    pub section: Option<String>,
+    /// Папка почты главной вкладки.
+    pub mailbox: Option<String>,
+    pub tabs: Vec<SavedTab>,
+    /// Активная: 0 — главная, иначе `tabs[active - 1]`.
+    pub active: usize,
+}
+
+/// Вкладка после главной. Новая встреча не сохраняется: её нет на сервере, пока не отправлена.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SavedTab {
+    /// Вкладка почты (Ctrl+T) на папке.
+    Mail {
+        mailbox: Option<String>,
+    },
+    Settings,
+    /// Письмо — черновик на сервере (ключ письма в кэше); без сохранённой версии вкладка не сохраняется.
+    Draft {
+        id: String,
+    },
 }
 
 // --- чтение ---
@@ -1182,6 +1214,26 @@ mod tests {
     }
 
     /// Настройки туда и обратно: всё, что поменяли, читается тем же.
+    /// T2-11: вкладки при закрытии — в файле и обратно; файл без них — пусто.
+    #[test]
+    fn session_round_trip() {
+        let d = dir();
+        let path = d.path().join(FILE);
+        let p = Prefs {
+            session: Session {
+                section: Some("calendar".into()),
+                mailbox: Some("inbox".into()),
+                tabs: vec![SavedTab::Mail { mailbox: Some("sent".into()) }, SavedTab::Settings, SavedTab::Draft { id: "d1".into() }],
+                active: 3,
+            },
+            ..Prefs::default()
+        };
+        p.save(&path).unwrap();
+        assert_eq!(Prefs::load(&path).unwrap(), p);
+        let old: Prefs = serde_json::from_str(r#"{"version":1}"#).unwrap();
+        assert_eq!(old.session, Session::default());
+    }
+
     #[test]
     fn prefs_round_trip() {
         let d = dir();

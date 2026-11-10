@@ -433,7 +433,6 @@ settings-nav-calendar = Календарь
 settings-nav-calendar-keywords = календарь встреча рабочая неделя дни часы пояс вид шаг длительность напоминание свободное время цвет приглашения коллеги
 settings-hint-calendar = Рабочее время, вид сетки, параметры новых встреч и цвета календарей коллег.
 settings-cal-reset = По умолчанию
-settings-cal-stored = сохраняется
 settings-cal-week-group = Рабочая неделя
 settings-cal-days = Рабочие дни
 settings-cal-days-hint = Остальные дни в сетке затенены и не попадают в «Раб. неделю».

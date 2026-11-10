@@ -763,6 +763,13 @@ impl Mailer {
         if self.section != crate::Section::Mail {
             return;
         }
+        // Enter на черновике (T2-11) — правка во вкладке.
+        if matches!(how, Fold::Toggle)
+            && let Some(row) = self.list.read(cx).selected_row().filter(|r| self.is_draft(r, cx))
+        {
+            self.edit_draft(row, cx);
+            return;
+        }
         if !self.list.update(cx, |l, cx| l.fold(how, cx)) {
             self.reading.update(cx, |r, cx| r.stack_fold(how, cx));
         }

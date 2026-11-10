@@ -901,6 +901,106 @@ impl Mailer {
         cx.notify();
     }
 
+    /// Вкладки окна сейчас (T2-11): раздел и папка главной, остальные по порядку. Новая встреча и письмо без
+    /// сохранённой версии не сохраняются — открыть их снова не из чего.
+    pub(crate) fn session(&self, cx: &App) -> postman_core::prefs::Session {
+        use postman_core::prefs::{SavedTab, Session};
+        let list = self.list.read(cx);
+        let mailbox =
+            |id: u64| if self.tabs.owner() == Some(id) { list.mailbox.clone() } else { self.tabs.saved(id).and_then(|s| s.mailbox.clone()) };
+        let section = self.main_section.unwrap_or(self.section);
+        let main = self.tabs.iter().find(|t| t.kind == TabKind::Main).map_or(0, |t| t.id);
+        let mut out = Session { section: (section != Section::Mail).then(|| section.key().to_owned()), mailbox: mailbox(main), ..Default::default() };
+        let active = self.tabs.active().id;
+        for t in self.tabs.iter() {
+            let saved = match t.kind {
+                TabKind::Main | TabKind::Meeting => continue,
+                TabKind::Mail => SavedTab::Mail { mailbox: mailbox(t.id) },
+                TabKind::Settings => SavedTab::Settings,
+                TabKind::Compose(id) => match self.compose.get(id).and_then(|c| c.read(cx).model.server_id().map(str::to_owned)) {
+                    Some(id) => SavedTab::Draft { id },
+                    None => continue,
+                },
+            };
+            out.tabs.push(saved);
+            if t.id == active {
+                out.active = out.tabs.len();
+            }
+        }
+        out
+    }
+
+    /// Вкладки сменились — в настройки (T2-11), если при запуске открывать последние; запись — в фоне.
+    pub(crate) fn keep_session(&mut self, cx: &mut Context<Self>) {
+        if !self.session_ready {
+            return;
+        }
+        let now = self.session(cx);
+        if self.session_saved.as_ref() == Some(&now) {
+            return;
+        }
+        self.session_saved = Some(now.clone());
+        cx.defer(move |cx| {
+            if crate::prefs::get(cx).general.start == postman_core::prefs::StartView::LastTabs {
+                crate::prefs::update(cx, |p| p.session = now);
+            }
+        });
+    }
+
+    /// Запуск (T2-11): «Открывать при запуске: Последняя вкладка» — вкладки прошлого запуска. Папки, которой больше
+    /// нет, и черновика, которого нет в кэше, — нет; черновики открываются последними (окну письма нужен кадр).
+    pub(crate) fn restore_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use postman_core::prefs::SavedTab;
+        self.session_ready = true;
+        let prefs = crate::prefs::get(cx);
+        if prefs.general.start != postman_core::prefs::StartView::LastTabs {
+            return;
+        }
+        let s = prefs.session;
+        let boxes: Vec<String> = self.folders.read(cx).mailboxes.iter().map(|b| b.id.clone()).collect();
+        let known = |m: &Option<String>| m.as_ref().is_none_or(|m| boxes.contains(m));
+        if let Some(m) = s.mailbox.clone().filter(|_| known(&s.mailbox)) {
+            self.open_mailbox(m, cx);
+        }
+        if let Some(section) = s.section.as_deref().and_then(Section::from_key) {
+            self.set_section(section, cx);
+        }
+        // Номер сохранённой вкладки → вкладка сейчас; черновики — потом.
+        let mut ids = vec![self.tabs.active().id];
+        let mut drafts = Vec::new();
+        for (i, t) in s.tabs.iter().enumerate() {
+            match t {
+                SavedTab::Mail { mailbox } => {
+                    let mailbox = mailbox.clone().filter(|_| known(mailbox));
+                    ids.push(self.tabs.restore_mail(MailState { mailbox, ..Default::default() }));
+                }
+                SavedTab::Settings => {
+                    let back = self.tabs.active().id;
+                    self.open_settings(None, window, cx);
+                    ids.push(self.tabs.iter().find(|t| t.kind == TabKind::Settings).map_or(0, |t| t.id));
+                    self.tabs.activate(back);
+                }
+                SavedTab::Draft { id } => {
+                    ids.push(0);
+                    drafts.push((i + 1, id.clone()));
+                }
+            }
+        }
+        if let Some(&id) = ids.get(s.active).filter(|_| !drafts.iter().any(|(i, _)| *i == s.active)) {
+            self.activate_tab(id, window, cx);
+        }
+        // Активный черновик — последним: его вкладка станет активной.
+        drafts.sort_by_key(|(i, _)| *i == s.active);
+        for (i, key) in drafts {
+            let Some(row) = self.cache.rows_by_ids(std::slice::from_ref(&key)).ok().and_then(|mut r| r.pop()) else { continue };
+            let Some(body) = self.cache.body(&key).ok().flatten() else { continue };
+            let draft = crate::send_later::draft_of(self, row, body);
+            let how = crate::compose::OpenAs { server_id: Some(key), behind: i != s.active, ..Default::default() };
+            self.open_draft(draft, how, cx);
+        }
+        cx.notify();
+    }
+
     /// Название вкладки почты: открытая папка или «Все папки».
     fn mail_tab_title(&self, id: u64, cx: &App) -> String {
         let list = self.list.read(cx);
