@@ -594,6 +594,10 @@ impl Mailer {
         let tasks = self.section == Section::Tasks && self.tabs.active().kind == TabKind::Main;
         // Календарь (T2-22, макет): вид, события, ждут ответа, отклонённых скрыто, пояс.
         let calendar = self.section == Section::Calendar && self.tabs.active().kind == TabKind::Main;
+        // Контакты (T2-46, макет): «Справочник обновлён 13:50» — после синхронизации.
+        let directory = (self.section == Section::Contacts && self.tabs.active().kind == TabKind::Main)
+            .then(|| self.contacts.read(cx).directory_status())
+            .flatten();
         let status = if tasks {
             self.tasks.read(cx).status_text()
         } else if calendar {
@@ -630,6 +634,7 @@ impl Mailer {
             .text_size(l.px(Metric::TypeCaption))
             .text_color(l.text2())
             .child(sync)
+            .children(directory)
             .children(self.accounts_status(cx))
             .child(div().flex_1())
             .child(status)

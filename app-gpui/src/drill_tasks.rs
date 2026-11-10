@@ -653,6 +653,8 @@ const FORM_TAB: &[Input] = &[
     until!(|m, cx| people(m, cx).editing()),
     Input::Text("Анна"), // i18n-ok: ввод сценария
     Input::Keys(&["tab"]),
+    Input::Text("Мария"), // i18n-ok: ввод сценария
+    Input::Keys(&["tab"]),
     Input::Text("Орг"), // i18n-ok: ввод сценария
     Input::Keys(&["tab"]),
     Input::Text("Глава"), // i18n-ok: ввод сценария
@@ -664,7 +666,7 @@ const FORM_TAB: &[Input] = &[
 
 fn form_filled(_: &Scene, m: &Mailer, cx: &App) -> bool {
     people(m, cx).form_text(cx).is_some_and(|f| {
-        f.name == "Анна" && f.organization == "Орг" && f.title == "Глава" && f.emails == "anna@example.test" && f.phones == "+7" // i18n-ok: ввод сценария
+        f.last == "Анна" && f.first == "Мария" && f.organization == "Орг" && f.title == "Глава" && f.emails == "anna@example.test" && f.phones == "+7" // i18n-ok: ввод сценария
     })
 }
 

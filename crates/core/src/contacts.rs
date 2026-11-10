@@ -315,10 +315,10 @@ fn translit(s: &str) -> String {
     out
 }
 
-/// Справочник для людей: сотрудники, переговорные и ресурсы с адресом (без групп), по имени для людей
+/// Справочник для людей: сотрудники, переговорные, ресурсы и группы (списки рассылки, T2-41) с адресом, по имени для людей
 /// (`description`, а без него — `name`: у Stalwart `name` — логин).
 pub fn directory(mut people: Vec<crate::model::Principal>) -> Vec<crate::model::Principal> {
-    people.retain(|p| p.kind != "group" && p.email.as_deref().is_some_and(|e| e.contains('@')));
+    people.retain(|p| p.email.as_deref().is_some_and(|e| e.contains('@')));
     people.sort_by_cached_key(|p| (p.display_name().to_lowercase(), p.email.clone()));
     people
 }
@@ -455,6 +455,7 @@ mod tests {
             login,
         ]);
         let names: Vec<&str> = people.iter().map(|p| p.display_name()).collect();
-        assert_eq!(names, ["Анна", "Борисов Иван", "Переговорная 3", "Щукин Алексей"]);
+        // Группа с адресом — список рассылки (T2-41): в справочнике, раздел «Списки рассылки».
+        assert_eq!(names, ["Анна", "Борисов Иван", "Все сотрудники", "Переговорная 3", "Щукин Алексей"]);
     }
 }

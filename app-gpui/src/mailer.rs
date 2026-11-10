@@ -219,7 +219,7 @@ impl Mailer {
         list.update(cx, |l, cx| l.set_waiting(waiting, cx));
         let subscriptions = vec![
             cx.subscribe(&tasks, |this, _, action: &crate::tasks::TasksAction, cx| this.on_tasks(action, cx)),
-            cx.subscribe(&contacts, |this, _, action: &crate::contacts::ContactsAction, cx| this.on_contacts(action, cx)),
+            cx.subscribe_in(&contacts, window, |this, _, action: &crate::contacts::ContactsAction, window, cx| this.on_contacts(action, window, cx)),
             cx.subscribe(&cal, |this, _, action: &calendar::CalendarAction, cx| this.on_calendar(action, cx)),
             on_search,
             cx.subscribe(&bar, |this, bar, ev: &BarEvent, cx| match ev {

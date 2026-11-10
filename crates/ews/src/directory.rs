@@ -24,8 +24,12 @@ pub struct Person {
     pub department: String,
     /// Рабочий, иначе мобильный, иначе первый из данных.
     pub phone: String,
+    /// Мобильный (`MobilePhone`, T2-44); у `FindPeople` — пусто.
+    pub mobile: String,
     pub company: String,
     pub office: String,
+    /// Руководитель (`Manager`, имя, T2-44); у `FindPeople` — пусто.
+    pub manager: String,
     /// Список рассылки (`PublicDL`), не человек.
     pub group: bool,
 }
@@ -67,6 +71,7 @@ fn person(r: &El) -> Option<Person> {
         .or(phones.first())
         .map(|(_, v)| (*v).to_owned())
         .unwrap_or_default();
+    let mobile = phones.iter().find(|(key, _)| *key == "MobilePhone").map(|(_, v)| (*v).to_owned()).unwrap_or_default();
     let name = match c(&["DisplayName"]) {
         n if !n.is_empty() => n,
         _ => mailbox.str_at(&["Name"]),
@@ -77,8 +82,10 @@ fn person(r: &El) -> Option<Person> {
         title: c(&["JobTitle"]),
         department: c(&["Department"]),
         phone,
+        mobile,
         company: c(&["CompanyName"]),
         office: c(&["OfficeLocation"]),
+        manager: c(&["Manager"]),
         group: mailbox.text_at(&["MailboxType"]) == Some("PublicDL"),
     })
 }
@@ -145,8 +152,10 @@ fn persona(p: &El) -> Option<Person> {
         department: first_value(p.child("Departments")),
         // Телефонов у GAL через `FindPeople` Exchange 2013 не отдаёт.
         phone: String::new(),
+        mobile: String::new(),
         company: p.str_at(&["CompanyName"]),
         office: first_value(p.child("OfficeLocations")),
+        manager: String::new(),
         group: p.text_at(&["PersonaType"]) == Some("DistributionList") || mail.text_at(&["MailboxType"]) == Some("PublicDL"),
     })
 }
@@ -286,12 +295,15 @@ mod tests {
                 title: "Ведущий инженер".into(),
                 department: "Отдел разработки".into(),
                 phone: "+7 495 000-00-01".into(),
+                mobile: "+7 900 000-00-01".into(),
                 company: "Пример".into(),
                 office: "Москва, 5 этаж".into(),
+                manager: "Иванов Иван".into(),
                 group: false,
             }
         );
         assert_eq!((p[1].email.as_str(), p[1].phone.as_str()), ("anton@example.test", "+7 900 000-00-02"));
+        assert_eq!((p[1].mobile.as_str(), p[1].manager.as_str()), ("+7 900 000-00-02", ""));
         assert!(p[2].group && p[2].email == "dev-team@example.test");
         assert_eq!(parse(&resp(include_bytes!("../tests/fixtures/resolve_names.xml")), 1).unwrap().len(), 1);
     }
@@ -337,8 +349,10 @@ mod tests {
                 title: "Ведущий инженер".into(),
                 department: "Отдел разработки".into(),
                 phone: String::new(),
+                mobile: String::new(),
                 company: "Пример".into(),
                 office: "Москва, 5 этаж".into(),
+                manager: String::new(),
                 group: false,
             }
         );

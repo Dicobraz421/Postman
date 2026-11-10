@@ -76,8 +76,9 @@ pub(crate) enum Place {
 impl Place {
     pub(crate) fn of(context: Option<&str>) -> Place {
         // «… && !Composer» — клавиши почты вне письма (письмо вкладкой и ответ в области чтения, S5-06б): это почта.
-        // «… && !TasksView» — клавиша всего окна, кроме «Задач» (Ctrl+N: письмо, в «Задачах» — задача).
-        let context = context.map(|c| c.replace("!Composer", "").replace("!ContextMenu", "").replace("!TasksView", ""));
+        // «… && !TasksView» — клавиша всего окна, кроме «Задач» (Ctrl+N: письмо, в «Задачах» — задача); так же
+        // «!ContactsView» (T2-43: Ctrl+N и Ctrl+Shift+Q в «Контактах» — свои).
+        let context = context.map(|c| c.replace("!Composer", "").replace("!ContextMenu", "").replace("!TasksView", "").replace("!ContactsView", ""));
         match context.as_deref() {
             Some(c) if c.contains("Palette") => Place::Palette,
             Some(c) if c.contains("Composer") => Place::Composer,

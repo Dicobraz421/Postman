@@ -9,6 +9,8 @@ pub struct Card<'a> {
     pub name: &'a str,
     pub emails: &'a [String],
     pub phones: &'a [String],
+    /// Мобильные (T2-44): `TEL;TYPE=cell`.
+    pub mobile: &'a [String],
     pub organization: &'a str,
     /// Должность.
     pub title: &'a str,
@@ -48,6 +50,9 @@ fn own_lines(c: &Card<'_>) -> Vec<String> {
     }
     for p in c.phones.iter().map(|p| p.trim()).filter(|p| !p.is_empty()) {
         l.push(format!("TEL:{}", text(p)));
+    }
+    for p in c.mobile.iter().map(|p| p.trim()).filter(|p| !p.is_empty()) {
+        l.push(format!("TEL;TYPE=cell:{}", text(p)));
     }
     if !c.organization.trim().is_empty() {
         l.push(format!("ORG:{}", text(c.organization)));
@@ -104,7 +109,7 @@ mod tests {
 
     fn card<'a>(emails: &'a [String], phones: &'a [String]) -> Card<'a> {
         Card {
-            uid: "c1", name: "Иван Петров", emails, phones, organization: "Рога и копыта", title: "Директор, отдел"
+            uid: "c1", name: "Иван Петров", emails, phones, mobile: &[], organization: "Рога и копыта", title: "Директор, отдел"
         }
     }
 
@@ -116,6 +121,8 @@ mod tests {
         assert!(v.contains("UID:c1\r\nFN:Иван Петров\r\nN:;Иван Петров;;;\r\n"));
         assert!(v.contains("EMAIL;PREF=1:ivan@example.test\r\nEMAIL:i@example.test\r\nTEL:+7 900\r\n"));
         assert!(v.contains("ORG:Рога и копыта\r\nTITLE:Директор\\, отдел\r\n"));
+        let mobile = vec!["+7 916".to_string()];
+        assert!(build(&Card { mobile: &mobile, ..card(&emails, &[]) }).contains("TEL;TYPE=cell:+7 916\r\n"), "мобильный (T2-44)");
         let nameless = build(&Card { name: "", ..card(&emails, &[]) });
         assert!(nameless.contains("FN:ivan@example.test\r\n"));
     }

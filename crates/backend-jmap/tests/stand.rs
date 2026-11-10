@@ -486,6 +486,7 @@ async fn contacts_are_edited_and_directory_is_listed() {
         name: format!("Стендов{stamp} Пётр"),
         emails: vec![format!("petr.{stamp}@example.com")],
         phones: vec!["+7 495 000-00-01".into()],
+        mobile: Vec::new(),
         organization: "ООО Стенд".into(),
         title: "Инженер".into(),
         free_busy: None,
