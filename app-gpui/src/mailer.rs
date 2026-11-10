@@ -283,6 +283,13 @@ impl Mailer {
                 }
                 ReadingEvent::Error(text) => this.toasts.update(cx, |t, cx| t.push(Toast::Error, text.clone(), cx)),
                 ReadingEvent::Toast(level, text) => this.toasts.update(cx, |t, cx| t.push(*level, text.clone(), cx)),
+                ReadingEvent::AnswerQueued(text) => {
+                    let reading = this.reading.downgrade();
+                    let action = pets_ui::ToastAction::new(tr!("bulk-undo"), move |_, cx| {
+                        let _ = reading.update(cx, |r, cx| r.undo_answer(cx));
+                    });
+                    this.toasts.update(cx, |t, cx| t.push_action(Toast::Success, text.clone(), action, cx));
+                }
                 ReadingEvent::NeedsServer => this.needs_server(cx),
                 ReadingEvent::WorkerFound => cx.notify(),
                 ReadingEvent::Open(row) => this.open_letter(row.clone(), cx),
@@ -607,6 +614,14 @@ impl Render for Mailer {
         self.sync_mail_tab(cx);
         // «Последняя вкладка» (T2-11): вкладки — в настройки при каждой смене.
         self.keep_session(cx);
+        // Общие ящики (T2-22): их календари — группой «Общие».
+        let boxes: Vec<String> = self.folders.read(cx).accounts.iter().filter(|a| !a.is_personal).map(|a| a.name.clone()).collect();
+        if self.cal.read(cx).shared_boxes != boxes {
+            self.cal.update(cx, |c, cx| {
+                c.shared_boxes = boxes;
+                cx.notify();
+            });
+        }
         // Ширины панелей (T1-05б): настройки или идущее перетаскивание, ужатые окном (сначала чтение, затем список).
         let avail = panes_room(f32::from(window.viewport_size().width));
         let (f, li) = self.split.layout.unwrap_or(crate::prefs::get(cx).layout).widths(avail);
@@ -952,6 +967,11 @@ impl Mailer {
     }
 
     /// Клавиши A / T / N: ответ на приглашение открытого письма (в «Почте»).
+    /// Ctrl+Z в «Почте» (T2-22): ответ на приглашение, который ещё не ушёл.
+    pub(crate) fn invite_undo(&mut self, cx: &mut Context<Self>) {
+        self.reading.update(cx, |r, cx| r.undo_answer(cx));
+    }
+
     pub(crate) fn invite_key(&mut self, status: postman_calendar::Partstat, cx: &mut Context<Self>) {
         if self.section == Section::Mail {
             self.reading.update(cx, |r, cx| r.invite_hotkey(status, cx));
