@@ -24,3 +24,5 @@ search-empty = Nothing found. Remove refinements or search everywhere.
 search-matches = Match { $k } of { $n }
 search-matches-none = Matches: none in the text
 search-matches-query = “{ $query }”
+search-refine-only = only { $folder }
+search-clear-refines = Clear refinements

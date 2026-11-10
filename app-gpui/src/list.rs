@@ -1437,7 +1437,28 @@ impl Render for MailList {
             // Где список в окне — для контекстного меню с клавиатуры (Shift+F10) у выбранной строки.
             .child(canvas(move |b, _, _| bounds.set(b), |_, _, _, _| {}).absolute().top_0().left_0().size_full());
         body = if nothing {
-            body.child(div().pt(px(40.)).px(px(24.)).flex().justify_center().text_color(l.text2()).child(tr!("search-empty")))
+            body.child(
+                div()
+                    .pt(px(40.))
+                    .px(px(24.))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(8.))
+                    .text_color(l.text2())
+                    .child(tr!("search-empty"))
+                    // «Сбросить уточнения» (T2-27, макет `Search`): есть включённые чипы.
+                    .when(self.found.as_ref().is_some_and(|f| f.chips.iter().any(|(_, on)| *on)), |d| {
+                        d.child(
+                            div()
+                                .id("search-clear-refines")
+                                .text_color(l.accent_text())
+                                .cursor_pointer()
+                                .child(tr!("search-clear-refines"))
+                                .on_click(cx.listener(|_, _, _, cx| cx.emit(crate::search::ClearRefines))),
+                        )
+                    }),
+            )
         } else if empty {
             let model = self.filters.clone();
             body.child(
@@ -1683,7 +1704,11 @@ pub(crate) fn list_row(
                 .child(crate::chrome::icon(crate::calendar::g::CALENDAR, 12.).flex_none())
                 .child(div().truncate().child(text)),
             None if encrypted => p.child(tr!("smime-list-preview")),
-            None => p.child(crate::search::marked(&r.preview, marks, l)),
+            // Поиск (T2-27): отрывок вокруг совпадения.
+            None => match marks {
+                Some(m) if !m.is_empty() => p.child(crate::search::marked(&crate::search::snippet(&r.preview, m), marks, l)),
+                _ => p.child(crate::search::marked(&r.preview, marks, l)),
+            },
         }
     });
     let lit = state.open || state.picked;
