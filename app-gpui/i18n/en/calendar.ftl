@@ -132,6 +132,9 @@ cal-write-participants = Email attendees
 cal-details-reminder = Reminder { $time } before
 cal-details-reminder-start = Reminder at the start
 cal-details-organizer-time = Organizer’s time: { $time } · { $zone }
+cal-open-event = Open
+cal-details-imip = Came by email — the reply will be mailed to the organizer
+cal-open-letter-none = The letter with this invitation is not in the mailbox
 
 # Meeting tab.
 meeting-title-new = New meeting

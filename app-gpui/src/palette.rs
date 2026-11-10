@@ -615,6 +615,7 @@ pub(crate) fn command_icon(id: &str) -> Option<char> {
         "calendar.view_work_week" | "calendar.view_week" => '\u{E8C0}',
         "calendar.view_month" => crate::calendar::g::CALENDAR,
         "calendar.write_participants" => crate::calendar::g::MAIL,
+        "calendar.open_event" => crate::calendar::g::OPEN,
         "view.filters" | "view.quick_filters" => FILTER,
         "view.sort_by_date" | "view.sort_by_sender" | "view.sort_by_size" => SORT,
         _ => return None,

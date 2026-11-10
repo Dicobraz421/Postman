@@ -106,6 +106,8 @@ pub(crate) mod g {
     pub(crate) const INFO: char = '\u{E946}';
     pub(crate) const VIDEO: char = '\u{E714}';
     pub(crate) const LOCK: char = '\u{E72E}';
+    /// «Открыть» в шапке подробностей (T2-21, макет `Calendar`).
+    pub(crate) const OPEN: char = '\u{E8A7}';
 }
 
 /// Короткое имя дня недели: 0 — понедельник.
@@ -195,6 +197,22 @@ pub(crate) fn organizer_time(e: &Event, mine: &TimeZone) -> Option<String> {
     // Город пояса, а не весь идентификатор: «Asia/Yekaterinburg» → «Yekaterinburg».
     let city = name.rsplit('/').next().unwrap_or(name).replace('_', " ");
     Some(tr!("cal-details-organizer-time", time = range, zone = format!("{city} ({utc})")))
+}
+
+/// «Открыть» события (T2-21).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Opens {
+    Edit,
+    Letter,
+}
+
+/// Организатор не из моего домена (T2-21): приглашение пришло письмом, ответ уйдёт ему письмом.
+pub(crate) fn external_organizer(e: &Event, me: Option<&str>) -> bool {
+    let dom = |a: &str| a.rsplit_once('@').map(|(_, d)| d.to_ascii_lowercase());
+    match (e.organizer().map(|o| o.email.as_str()).and_then(dom), me.and_then(dom)) {
+        (Some(a), Some(b)) => a != b,
+        _ => false,
+    }
 }
 
 /// Кому «Написать участникам»: все участники и организатор, кроме меня.
@@ -355,6 +373,8 @@ pub(crate) enum CalendarAction {
         event: Box<Event>,
         series: bool,
     },
+    /// «Открыть» приглашения (T2-21): письмо с ним в почте (`invite-letter:<uid>` в хранилище).
+    OpenLetter(String),
     /// «Отменить встречу» (S7-07б): `Command::CancelMeeting` → `MeetingCancelled` или `MeetingFailed`.
     Cancel {
         event: Box<Event>,
@@ -1275,6 +1295,26 @@ impl CalendarView {
         cx.notify();
     }
 
+    /// Что открывает «Открыть (Enter)» у события (T2-21): своя встреча — на правку, приглашение — письмо с ним;
+    /// подписка, календарь коллеги, занятость — ничего.
+    pub(crate) fn open_target(&self, e: &Event) -> Option<Opens> {
+        if subscriptions::is_subscription(e) || opened::is_busy_block(e) || (e.owner.is_some() && my_part(e, self.me.as_deref()).is_none()) {
+            return None;
+        }
+        let mine = my_part(e, self.me.as_deref());
+        if mine.is_some_and(|p| p.owner) || e.organizer().is_none() { Some(Opens::Edit) } else { mine.map(|_| Opens::Letter) }
+    }
+
+    /// «Открыть (Enter)» выбранного события (T2-21).
+    pub(crate) fn open_selected(&mut self, cx: &mut Context<Self>) {
+        let Some(e) = self.selected.and_then(|i| self.events.get(i)) else { return };
+        match self.open_target(e) {
+            Some(Opens::Edit) => self.own_step(Own::Edit, cx),
+            Some(Opens::Letter) => cx.emit(CalendarAction::OpenLetter(e.uid.clone())),
+            None => {}
+        }
+    }
+
     /// «Изменить» или «Отменить встречу» своей встречи: у повтора — сначала одной строкой «эту или всю серию», у
     /// отмены — подтверждение одной строкой (модальных окон нет).
     fn own_step(&mut self, step: Own, cx: &mut Context<Self>) {
@@ -1362,6 +1402,16 @@ impl CalendarView {
             mine.is_some_and(|p| p.owner) && e.participants.len() > 1 && e.span.start < to && e.span.end > from
         });
         self.own = cancel.then_some(Own::Cancel);
+        cx.notify();
+    }
+
+    /// Снимки (T2-21): организатор выбранного приглашения — из чужого домена.
+    pub(crate) fn screen_external_organizer(&mut self, cx: &mut Context<Self>) {
+        if let Some(e) = self.selected.and_then(|i| self.events.get_mut(i))
+            && let Some(o) = e.participants.iter_mut().find(|p| p.owner)
+        {
+            o.email = "a.petrov@partner.example".into();
+        }
         cx.notify();
     }
 
@@ -2874,6 +2924,10 @@ impl CalendarView {
                     .when(!outlined, |d| d.bg(l.fill()).text_color(l.text()))
                     .child(chip),
             )
+            .children(self.open_target(e).map(|_| {
+                let b = icon_button("details-open", g::OPEN, l).on_click(cx.listener(|this, _, _, cx| this.open_selected(cx)));
+                crate::keytips::command(b, "calendar.open_event", Some(tr!("cal-open-event")), l, cx)
+            }))
             .child(icon_button("details-close", g::CANCEL, l).on_click(cx.listener(|this, _, _, cx| this.close_details(cx))));
         let title = div()
             .flex()
@@ -3076,6 +3130,10 @@ impl CalendarView {
                                 .on_click(move |_, _, cx| cx.open_url(&open)),
                         ),
                 )
+            })
+            // Приглашение из чужого домена (T2-21, макет): пришло письмом (iMIP) — ответ уйдёт организатору письмом.
+            .when(!owner && mine.is_some() && external_organizer(e, me), |d| {
+                d.child(row(g::MAIL, div().text_size(px(12.)).text_color(l.text2()).child(tr!("cal-details-imip")).into_any_element()))
             })
             .when_some(conflict_text, |d, t| {
                 d.child(
@@ -3348,6 +3406,17 @@ impl Render for CalendarBar {
 }
 
 impl crate::Mailer {
+    /// «Открыть» приглашения в календаре (T2-21): письмо с ним — новой вкладкой почты, как письмо задачи; письма
+    /// нет (не разбиралось, удалено) — тост.
+    pub(crate) fn open_invite_letter(&mut self, uid: &str, cx: &mut Context<Self>) {
+        let id = self.cache.state(&crate::meeting_row::letter_key(uid)).ok().flatten();
+        let row = id.and_then(|id| self.cache.rows_by_ids(&[id]).ok()).and_then(|mut r| r.pop());
+        match row {
+            Some(row) => self.open_letter_tab(row, cx),
+            None => self.toasts.update(cx, |t, cx| t.push(Toast::Info, tr!("cal-open-letter-none"), cx)),
+        }
+    }
+
     /// Просьба календаря: команда синхронизации, вкладка встречи, письмо или тост. Нет сервера — «нужен сервер».
     pub(crate) fn on_calendar(&mut self, action: &CalendarAction, cx: &mut Context<Self>) {
         let command = match action {
@@ -3372,6 +3441,10 @@ impl crate::Mailer {
             },
             CalendarAction::Write(to) => {
                 self.open_compose(Draft { to: to.clone(), ..Default::default() }, cx);
+                return;
+            }
+            CalendarAction::OpenLetter(uid) => {
+                self.open_invite_letter(uid, cx);
                 return;
             }
             CalendarAction::Edit { event, series } => {
@@ -3561,6 +3634,7 @@ fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
     .on_action(cx.listener(|this, _: &calendar::ViewWeek, _, cx| this.calendar_view(postman_core::prefs::CalendarView::Week, cx)))
     .on_action(cx.listener(|this, _: &calendar::ViewMonth, _, cx| this.calendar_view(postman_core::prefs::CalendarView::Month, cx)))
     .on_action(cx.listener(|this, _: &calendar::WriteParticipants, _, cx| this.cal.update(cx, |c, cx| c.write_participants(cx))))
+    .on_action(cx.listener(|this, _: &calendar::OpenEvent, _, cx| this.cal.update(cx, |c, cx| c.open_selected(cx))))
 }
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
@@ -3569,7 +3643,7 @@ const TEXTS: &[pets_i18n::Resource] = &[("ru", include_str!("../i18n/ru/calendar
 // Имя — область действий (`calendar::…`), как в id команд: так обработчики читаются и их находит `docs/PARITY.md`.
 #[allow(clippy::module_inception)]
 pub(crate) mod calendar {
-    gpui_kit::actions!(calendar, [NewMeeting, PrevWeek, NextWeek, Today, ViewDay, ViewWorkWeek, ViewWeek, ViewMonth, WriteParticipants]);
+    gpui_kit::actions!(calendar, [NewMeeting, PrevWeek, NextWeek, Today, ViewDay, ViewWorkWeek, ViewWeek, ViewMonth, WriteParticipants, OpenEvent]);
 }
 
 /// Команды части (`commands.rs`: контексты и `cmd`).
@@ -3588,6 +3662,8 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("calendar.view_month", &["4"], CALENDAR),
         // «Написать участникам» открытого события (T2-17, макет `Calendar`): как «Ответить всем» в Outlook.
         cmd("calendar.write_participants", &["ctrl-shift-r"], CALENDAR),
+        // «Открыть» выбранного события (T2-21, макет `Calendar`): своя встреча — на правку, приглашение — письмо.
+        cmd("calendar.open_event", &["enter"], CALENDAR),
     ]
 };
 
@@ -3608,6 +3684,8 @@ pub(crate) mod scenes {
         Scene::new("calendar-answer-menu", answer_menu, week_ready),
         // Своя встреча с участниками (S7-07б): в подробностях — «Изменить» и «Отменить встречу».
         Scene::new("event-organizer", own, event_ready),
+        // Приглашение из чужого домена (T2-21): «Пришло письмом — ответ уйдёт организатору письмом», «Открыть».
+        Scene::new("event-imip", imip, week_ready),
         // «Отменить встречу» у своей повторяющейся встречи: строка «Только эту / Всю серию / Не отменять».
         Scene::new("event-cancel", own, event_ready),
         // Онлайн-встреча (T2-01): строка видеовстречи с «Подключиться», ссылки в описании нажимаются.
@@ -3686,6 +3764,12 @@ pub(crate) mod scenes {
     fn event(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
         m.cal.update(cx, |c, cx| c.select_busiest(cx));
         m.set_section(Section::Calendar, cx);
+        Ok(())
+    }
+
+    fn imip(s: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        week(s, m, window, cx)?;
+        m.cal.update(cx, |c, cx| c.screen_external_organizer(cx));
         Ok(())
     }
 
@@ -3810,6 +3894,26 @@ pub(crate) mod scenes {
 
 #[cfg(test)]
 mod tests {
+
+    /// «Пришло письмом» (T2-21): организатор из чужого домена; свой домен, нет организатора или меня — нет.
+    #[test]
+    fn external_organizer_by_domain() {
+        let org = |email: &str| postman_calendar::Participant {
+            name: String::new(),
+            email: email.into(),
+            owner: true,
+            attendee: true,
+            optional: false,
+            status: postman_calendar::Partstat::Accepted,
+        };
+        let mut e = postman_demo::calendar::my_events().into_iter().next().unwrap();
+        e.participants = vec![org("a.petrov@Partner.example")];
+        assert!(super::external_organizer(&e, Some("me@corp.example")));
+        assert!(!super::external_organizer(&e, Some("me@partner.example")), "домен — без регистра");
+        assert!(!super::external_organizer(&e, None));
+        e.participants.clear();
+        assert!(!super::external_organizer(&e, Some("me@corp.example")));
+    }
 
     /// «У организатора» (T2-17): другой сдвиг — строка есть; тот же сдвиг или пояса нет — строки нет.
     #[test]

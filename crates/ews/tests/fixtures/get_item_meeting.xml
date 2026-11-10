@@ -23,6 +23,7 @@
               <t:Start>2026-10-20T07:00:00Z</t:Start>
               <t:End>2026-10-20T08:00:00Z</t:End>
               <t:IsAllDayEvent>false</t:IsAllDayEvent>
+              <t:StartTimeZoneId>Ekaterinburg Standard Time</t:StartTimeZoneId>
               <t:LegacyFreeBusyStatus>Tentative</t:LegacyFreeBusyStatus>
               <t:Location>Переговорная 3</t:Location>
               <t:IsMeeting>true</t:IsMeeting>
