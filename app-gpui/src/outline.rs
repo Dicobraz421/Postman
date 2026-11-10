@@ -207,8 +207,9 @@ pub(crate) enum Fold {
 
 impl MailList {
     /// Беседы в списке открытой папки — при любом виде (T1-15; поиск — без бесед).
-    pub(crate) fn outlook_mode(&self, _: &App) -> bool {
-        self.search_ids.is_none() && self.mailbox.is_some()
+    pub(crate) fn outlook_mode(&self, cx: &App) -> bool {
+        // «Группировать письма в беседы» выключено (T2-54) — каждое письмо отдельной строкой.
+        self.search_ids.is_none() && self.mailbox.is_some() && crate::prefs::get(cx).reading.group
     }
 
     /// Вид папки — «Лента» или «Стопка» (T1-15): строка на беседу без раскрытия в списке.

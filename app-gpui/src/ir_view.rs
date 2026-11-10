@@ -437,10 +437,18 @@ fn text(items: &[Inline], key: &str, hits: &Hits, l: &Look) -> AnyElement {
     } else {
         let ranges: Vec<_> = links.iter().map(|(r, _, _)| r.clone()).collect();
         let hrefs: Vec<(String, bool)> = links.into_iter().map(|(_, h, s)| (h, s)).collect();
+        let (over, targets) = (ranges.clone(), hrefs.iter().map(|(h, _)| h.clone()).collect::<Vec<_>>());
         InteractiveText::new(SharedString::from(key.to_string()), styled)
             .on_click(ranges, move |ix, _window, cx| {
                 if let Some((h, suspicious)) = hrefs.get(ix) {
                     open_link(h, *suspicious, visible.get(ix).map(String::as_str).unwrap_or_default(), cx);
+                }
+            })
+            // Адрес ссылки под курсором — внизу панели чтения (T2-54, «Показывать адрес ссылки при наведении»).
+            .on_hover(move |ix, _, window, _| {
+                let href = ix.and_then(|i| over.iter().position(|r| r.contains(&i))).and_then(|k| targets.get(k).cloned());
+                if set_hovered(href) {
+                    window.refresh();
                 }
             })
             .into_any_element()
@@ -449,6 +457,26 @@ fn text(items: &[Inline], key: &str, hits: &Hits, l: &Look) -> AnyElement {
         Some(at) => reveal_at(el, layout, at, hits),
         None => el,
     }
+}
+
+thread_local! {
+    /// Адрес ссылки письма под курсором.
+    static HOVERED: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Ссылка под курсором сменилась: `true` — перерисовать.
+fn set_hovered(href: Option<String>) -> bool {
+    HOVERED.with(|h| {
+        let mut h = h.borrow_mut();
+        let changed = *h != href;
+        *h = href;
+        changed
+    })
+}
+
+/// Адрес ссылки письма под курсором (строка внизу панели чтения).
+pub(crate) fn hovered_link() -> Option<String> {
+    HOVERED.with(|h| h.borrow().clone())
 }
 
 /// Переход по ссылке письма. Текст ссылки похож на другой адрес («Предупреждать о несовпадении текста и адреса»,

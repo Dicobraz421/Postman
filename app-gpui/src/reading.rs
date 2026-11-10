@@ -1491,6 +1491,29 @@ pub(crate) fn sandbox_label(level: Level) -> String {
 
 /// Полоса «Помечено как фишинг» (T2-16): спам и подлинность отправителя решает сервер (SPF/DKIM/DMARC, антиспам);
 /// клиент только показывает его вердикт — `$phishing` или `pm.threat` у письма. Кнопок нет (решение 2026-11-09).
+/// Адрес ссылки под курсором — строкой у нижнего края панели чтения (T2-54, «Показывать адрес ссылки при
+/// наведении», как строка состояния браузера).
+pub(crate) fn link_line(l: &crate::roles::Look, cx: &App) -> Option<Div> {
+    let href = ir_view::hovered_link().filter(|_| crate::prefs::get(cx).reading.link_hover)?;
+    Some(
+        div()
+            .absolute()
+            .left(px(8.))
+            .bottom(px(6.))
+            .max_w(relative(0.9))
+            .px_2()
+            .py_0p5()
+            .rounded(l.px(pets_ui::theme::Metric::RadiusControl))
+            .border_1()
+            .border_color(l.c(pets_ui::theme::Role::StrokeCard))
+            .bg(l.c(pets_ui::theme::Role::LayerOverlay))
+            .text_size(px(12.))
+            .text_color(l.text2())
+            .truncate()
+            .child(href),
+    )
+}
+
 fn threat_strip(row: &EmailRow, l: &crate::roles::Look) -> Option<Stateful<Div>> {
     postman_core::filters::is_threat(&row.keywords).then(|| {
         div()
