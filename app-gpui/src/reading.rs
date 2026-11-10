@@ -250,8 +250,9 @@ pub(crate) enum ReadingEvent {
     EditDraft(EmailRow),
     /// «Ответить» или «Переслать» у письма стопки (S5-05б).
     Respond(EmailRow, postman_compose::Mode),
-    /// Письмо-поручение разобрано (S6-10): учесть его в своей копии задачи (шаг, комментарий, срок).
-    TaskMail(Box<postman_calendar::assign::Incoming>),
+    /// Письмо-поручение разобрано (S6-10): учесть его в своей копии задачи (шаг, комментарий, срок); ключ письма и
+    /// его вложения — к шагу (T2-33: вложение к результату).
+    TaskMail(Box<postman_calendar::assign::Incoming>, String, Vec<postman_calendar::assign::StepFile>),
     /// Кнопка карточки поручения в письме: действие над задачей `uid`; `None` — открыть её в «Задачах».
     TaskAction {
         uid: String,
@@ -966,7 +967,18 @@ impl ReadingPane {
                 if let Ok(Err(task)) = &result {
                     r.invite = None;
                     r.task_mail = Some(task.clone());
-                    cx.emit(ReadingEvent::TaskMail(task.clone()));
+                    let files = r
+                        .body
+                        .as_ref()
+                        .map(|b| {
+                            b.attachments
+                                .iter()
+                                .filter(|a| !a.inline && !attachments::is_invite(a))
+                                .map(|a| postman_calendar::assign::StepFile { name: a.name.clone(), size: a.size })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    cx.emit(ReadingEvent::TaskMail(task.clone(), id.clone(), files));
                     cx.notify();
                     return;
                 }

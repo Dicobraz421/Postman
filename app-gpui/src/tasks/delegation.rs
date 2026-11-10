@@ -15,13 +15,13 @@ use jiff::civil::Date;
 use jiff::tz::TimeZone;
 use pets_i18n::tr;
 use pets_ui::Level as Toast;
-use postman_calendar::assign::{self, Action, Incoming, Status, Step, StepKind};
-use postman_calendar::{Moment, Role, Task};
+use postman_calendar::assign::{self, Action, Incoming, Status, Step, StepFile, StepKind};
+use postman_calendar::{Moment, Role, Task, TaskPartstat};
 use postman_compose::Address;
 use postman_core::assign::{self as flow, Plan, Received};
 use postman_core::send_later::Scheduled;
 
-use super::{TasksAction, TasksView, add_days, day_of, g};
+use super::{Field, TasksAction, TasksView, add_days, day_of, g};
 use crate::chrome::icon;
 use crate::roles::{Look, Pm};
 
@@ -57,6 +57,8 @@ pub(crate) struct Held {
 /// Состояние форм поручения в разделе «Задачи».
 pub(crate) struct State {
     pub(crate) edit: Option<Edit>,
+    /// Название нового поручения (Ctrl+N в «Поручениях», T2-36).
+    pub(crate) title: Entity<InputState>,
     pub(crate) person: Entity<InputState>,
     pub(crate) watcher: Entity<InputState>,
     pub(crate) comment: Entity<InputState>,
@@ -76,6 +78,7 @@ impl State {
             let p = tr!(key);
             cx.new(|cx| InputState::new(window, cx).placeholder(p))
         };
+        let title = field("assign-form-title-placeholder", window, cx);
         let person = field("assign-form-person-placeholder", window, cx);
         let watcher = field("assign-form-watcher-placeholder", window, cx);
         let comment = field("assign-form-comment-placeholder", window, cx);
@@ -97,6 +100,7 @@ impl State {
         ];
         let s = Self {
             edit: None,
+            title,
             person,
             watcher,
             comment,
@@ -339,6 +343,11 @@ impl TasksView {
     }
 
     fn deleg_reset(&mut self, cx: &mut Context<Self>) {
+        // Новое поручение не отправлено (Отмена, Esc) — черновика нет.
+        if matches!(self.deleg.edit, Some(Edit::Assign { .. })) && self.draft.take().is_some() {
+            self.selected = None;
+            self.reshow(cx);
+        }
         let d = &mut self.deleg;
         d.edit = None;
         d.to = None;
@@ -374,6 +383,50 @@ impl TasksView {
                 t.due.as_ref().and_then(|d| d.date_in(&self.tz)).map(|d| (d - today).get_days() as i64).filter(|n| DUE_DAYS.contains(n)).or(Some(2));
         }
         cx.notify();
+    }
+
+    /// Ctrl+N в «Поручениях» (макет «Поручил я»): новое поручение — форма «Поручить» с полем названия, вкладка «Я
+    /// поручил». Отмена или Esc — ничего не создано.
+    pub(crate) fn new_delegation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_tab(flow::Tab::ByMe, cx);
+        self.deleg_open(Edit::Assign { reassign: false }, window, cx);
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let t = Task::new(&postman_core::tasks::new_uid(nanos), "", "");
+        self.selected = Some(t.uid.clone());
+        self.draft = Some(t);
+        self.deleg.due_days = Some(2);
+        self.deleg.title.update(cx, |s, cx| {
+            s.set_value("", window, cx);
+            s.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    /// Новое поручение (Ctrl+N) открыто.
+    pub(crate) fn drafting_delegation(&self) -> bool {
+        matches!(self.deleg.edit, Some(Edit::Assign { .. })) && self.draft.as_ref().is_some_and(|d| self.selected.as_ref() == Some(&d.uid))
+    }
+
+    /// Сколько моих открытых поручений у человека — загрузка в подсказках «Поручить» (макет: «2 в работе»).
+    pub(crate) fn load_of(&self, email: &str) -> usize {
+        let me = self.me_email();
+        self.tasks
+            .iter()
+            .filter(|t| t.is_delegated_by(&me) && assign::status(t).is_some_and(|s| !s.is_final()))
+            .filter(|t| assign::assignee(t).is_some_and(|a| a.email.eq_ignore_ascii_case(email)))
+            .count()
+    }
+
+    /// «Руководитель проектов · 2 в работе»: должность и загрузка; должности нет — адрес.
+    fn person_sub(&self, a: &Address) -> String {
+        let load = match self.load_of(&a.email) {
+            0 => tr!("assign-load-none"),
+            n => tr!("assign-load", n = n as i64),
+        };
+        match self.position_of(&a.email) {
+            Some(p) => format!("{p} · {load}"),
+            None => format!("{} · {load}", a.email),
+        }
     }
 
     /// «Поручить» (командная строка): своя задача без поручения; у отклонённого — «Поручить другому».
@@ -455,10 +508,22 @@ impl TasksView {
     }
 
     fn deleg_assign(&mut self, comment: String, cx: &mut Context<Self>) {
-        let (Some(t), Some(me)) = (self.selected_task().cloned(), self.me.clone()) else { return };
+        let (Some(mut t), Some(me)) = (self.selected_task().cloned(), self.me.clone()) else { return };
+        let fresh = self.drafting_delegation();
+        if fresh {
+            let title = self.deleg.title.read(cx).value().trim().to_string();
+            if title.is_empty() {
+                return cx.emit(TasksAction::Toast(Toast::Info, tr!("assign-form-title-first")));
+            }
+            t.title = title;
+        }
         let Some(to) = self.deleg.to.clone() else {
             return cx.emit(TasksAction::Toast(Toast::Info, tr!("assign-form-pick-first")));
         };
+        if fresh {
+            // Черновик становится поручением: сброс формы его не удаляет.
+            self.draft = None;
+        }
         let today = day_of(self.now(), &self.tz).unwrap_or_default();
         let due = self.deleg.due_days.map(|d| due_at(d, t.due.as_ref(), today));
         let watchers = self.deleg.watchers.clone();
@@ -833,10 +898,22 @@ impl TasksView {
     }
 
     /// Письмо iTIP открыто (область чтения): учесть его в своей копии — шаг с комментарием, предложенный срок.
-    pub(crate) fn receive_mail(&mut self, inc: &Incoming, cx: &mut Context<Self>) {
+    pub(crate) fn receive_mail(&mut self, inc: &Incoming, letter: &str, files: Vec<StepFile>, cx: &mut Context<Self>) {
         let Some(own) = self.tasks.iter().find(|t| t.uid == inc.task.uid).cloned() else { return };
-        if let Received::Applied(t) = flow::receive(&own, inc, self.now()) {
-            self.save(vec![*t], cx);
+        let mut t = match flow::receive(&own, inc, self.now()) {
+            Received::Applied(t) => *t,
+            Received::Same => own.clone(),
+            Received::Stale => return,
+        };
+        // «Готово» с файлом (T2-33, макет «Поручил я»): письмо и его вложения — к шагу результата.
+        if inc.method == "REPLY"
+            && !files.is_empty()
+            && let Some(s) = inc.sender().filter(|s| s.status == TaskPartstat::Completed)
+        {
+            assign::attach_mail(&mut t, StepKind::Finished, &s.email, letter, files);
+        }
+        if t != own {
+            self.save(vec![t], cx);
         }
     }
 
@@ -926,6 +1003,13 @@ impl TasksView {
         };
         let due = matches!(edit, Edit::Propose | Edit::ChangeDue);
         let comment = matches!(edit, Edit::Return | Edit::Decline | Edit::Propose);
+        // Подсказка у кнопок (макеты): что будет после отправки.
+        let hint = match edit {
+            Edit::Return => Some(tr!("assign-hint-return")),
+            Edit::Propose => Some(tr!("assign-hint-propose")),
+            Edit::Decline => Some(tr!("assign-hint-decline")),
+            Edit::ChangeDue | Edit::Assign { .. } => None,
+        };
         div()
             .mx(px(20.))
             .mt(px(12.))
@@ -947,7 +1031,8 @@ impl TasksView {
                     .child(
                         crate::buttons::button("assign-cancel", tr!("assign-cancel"), false, l)
                             .on_click(cx.listener(|this, _, _, cx| this.deleg_reset(cx))),
-                    ),
+                    )
+                    .children(hint.map(|h| div().self_center().text_size(px(12.)).text_color(l.text2()).child(h))),
             )
     }
 
@@ -1005,7 +1090,13 @@ impl TasksView {
             .child(crate::calendar::avatar(&other_name, 32., &l))
             .child(
                 div().flex_1().min_w_0().flex().flex_col().child(div().font_weight(FontWeight::SEMIBOLD).truncate().child(other_name.clone())).child(
-                    div().text_size(px(12.)).text_color(l.text2()).child(tr!(if owner_view { "assign-role-assignee" } else { "assign-role-owner" })),
+                    // Должность из справочника (макеты «Поручил я», «Поручено мне»); нет — роль в поручении.
+                    div().text_size(px(12.)).text_color(l.text2()).truncate().child(
+                        other
+                            .and_then(|p| self.position_of(&p.email))
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| tr!(if owner_view { "assign-role-assignee" } else { "assign-role-owner" })),
+                    ),
                 ),
             )
             .child(
@@ -1067,7 +1158,27 @@ impl TasksView {
                     div().text_color(l.pm(Pm::DeadlineFg)).font_weight(FontWeight::SEMIBOLD).child(p).into_any_element(),
                 ))
             })
-            .child(field("assign-field-watchers", watchers.into_any_element()));
+            .child(field("assign-field-watchers", watchers.into_any_element()))
+            .when(!watch, |d| {
+                // Проект своей копии («В проект», T2-30, T2-34): у каждой стороны свой.
+                let value = match &t.project {
+                    Some(p) => div().truncate().child(p.clone()),
+                    None => div().text_color(l.text3()).child(tr!("tasks-no-project")),
+                };
+                d.child(
+                    div()
+                        .id("deleg-project")
+                        .children(crate::screens::spot("deleg-project"))
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .hover(|d| d.bg(l.hover()))
+                        .child(field("tasks-field-project", value.into_any_element()))
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_field(Field::Project, cx))),
+                )
+                .when(self.open == Some(Field::Project), |d| d.child(self.project_options(t, &l, cx)))
+            });
+        // Письмо поручения (макеты): «Открыть» — во вкладке.
+        let mail = self.mail_block(t, &l, cx);
         // Заметка последнего шага: результат, предложенный срок, причина отказа, что доработать.
         let steps = assign::steps(t);
         let note_kind = match st {
@@ -1081,7 +1192,9 @@ impl TasksView {
         // под ним.
         let assigned =
             steps.iter().find(|s| s.kind == StepKind::Assigned && !s.comment.trim().is_empty()).map(|s| ("assign-note-assigned", s.clone()));
-        let step_note = note_kind.and_then(|(k, head)| steps.iter().rev().find(|s| s.kind == k && !s.comment.is_empty()).map(|s| (head, s.clone())));
+        let step_note = note_kind.and_then(|(k, head)| {
+            steps.iter().rev().find(|s| s.kind == k && (!s.comment.is_empty() || !s.files.is_empty())).map(|s| (head, s.clone()))
+        });
         let notes = assigned.into_iter().chain(step_note).map(|(head, s)| {
             div()
                 .mx(px(20.))
@@ -1102,6 +1215,7 @@ impl TasksView {
                         .child(div().text_size(px(12.)).text_color(l.text2()).child(when(s.at, now, &tz))),
                 )
                 .child(comment_lines(&s.comment, &l))
+                .when(!s.files.is_empty(), |d| d.child(self.step_files(&s, &l, cx)))
         });
         let notes: Vec<_> = notes.collect();
         // Кнопки — по статусу и стороне (макеты).
@@ -1238,11 +1352,41 @@ impl TasksView {
             .child(head)
             .child(rib)
             .child(fields)
+            .children(mail)
             .children(notes)
             .children(form)
             .children(buttons)
             .child(history)
             .into_any_element()
+    }
+
+    /// Вложения письма шага (результат с файлом): значок, имя, размер; щелчок — письмо с ними (файлы открываются там,
+    /// через песочницу).
+    fn step_files(&self, s: &Step, l: &Look, cx: &mut Context<Self>) -> Div {
+        let mail = s.mail.clone().filter(|m| !m.is_empty());
+        div().flex().flex_wrap().gap(px(6.)).pt(px(4.)).children(s.files.iter().enumerate().map(|(i, f)| {
+            let mail = mail.clone();
+            div()
+                .id(("step-file", i))
+                .children(crate::screens::spot(("step-file", i)))
+                .h(px(28.))
+                .px(px(8.))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .rounded(px(4.))
+                .border_1()
+                .border_color(l.stroke())
+                .text_size(px(12.))
+                .child(icon(g::ATTACH, 12.).text_color(l.text2()))
+                .child(div().max_w(px(220.)).truncate().child(f.name.clone()))
+                .child(div().text_color(l.text2()).child(crate::attachments::size_text(f.size)))
+                .when_some(mail, |d, m| {
+                    d.cursor_pointer()
+                        .hover(|d| d.bg(l.hover()))
+                        .on_click(cx.listener(move |_, _, _, cx| cx.emit(TasksAction::OpenLetter(m.clone()))))
+                })
+        }))
     }
 
     /// Форма «Поручить»: исполнитель из справочника, наблюдатели, срок, комментарий.
@@ -1271,7 +1415,7 @@ impl TasksView {
                         } else {
                             a.name.clone()
                         }))
-                        .child(div().text_size(px(12.)).text_color(l.text2()).truncate().child(a.email.clone())),
+                        .child(div().text_size(px(12.)).text_color(l.text2()).truncate().child(self.person_sub(a))),
                 )
                 .child(
                     div()
@@ -1309,8 +1453,32 @@ impl TasksView {
                             .cursor_pointer()
                             .when(i == 0, |d| d.bg(l.hover()))
                             .hover(|d| d.bg(l.hover()))
+                            .h(px(44.))
                             .child(crate::calendar::avatar(if a.name.is_empty() { &a.email } else { &a.name }, 24., &l))
-                            .child(div().flex_1().min_w_0().truncate().child(a.display()))
+                            .child(
+                                // Имя, ниже — должность (справочник); справа — загрузка (макет «Поручить»).
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .child(div().truncate().child(if a.name.is_empty() { a.email.clone() } else { a.name.clone() }))
+                                    .child(
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(l.text2())
+                                            .truncate()
+                                            .child(self.position_of(&a.email).map(str::to_owned).unwrap_or_else(|| a.email.clone())),
+                                    ),
+                            )
+                            .when(!watcher, |d| {
+                                let n = self.load_of(&a.email);
+                                d.child(div().flex_none().text_size(px(11.)).text_color(l.text3()).child(if n == 0 {
+                                    tr!("assign-load-none")
+                                } else {
+                                    tr!("assign-load", n = n as i64)
+                                }))
+                            })
                             .on_click(cx.listener(move |this, _, _, cx| this.deleg_pick(watcher, pick.clone(), cx)))
                     }),
                 )
@@ -1358,10 +1526,20 @@ impl TasksView {
                     .text_size(px(12.))
                     .text_color(l.text2())
                     .child(icon(g::DELEGATE, 14.))
-                    .child(tr!(if reassign { "assign-reassign" } else { "assign-form-title" }))
+                    .child(tr!(if reassign {
+                        "assign-reassign"
+                    } else if self.drafting_delegation() {
+                        "assign-form-title-new"
+                    } else {
+                        "assign-form-title"
+                    }))
                     .child(div().flex_1().min_w_0().truncate().child(t.project.clone().unwrap_or_default())),
             )
-            .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).line_height(px(26.)).child(t.title.clone()))
+            .child(if self.drafting_delegation() {
+                div().relative().children(crate::screens::spot("assign-title")).child(Input::new(&self.deleg.title)).into_any_element()
+            } else {
+                div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).line_height(px(26.)).child(t.title.clone()).into_any_element()
+            })
             .child(
                 div()
                     .flex()
@@ -1399,6 +1577,7 @@ impl TasksView {
                     .child(label("assign-form-comment"))
                     .child(div().relative().children(crate::screens::spot("assign-comment")).child(Input::new(&self.deleg.comment))),
             )
+            .children(self.mail_block(t, &l, cx).map(|b| b.mx(px(0.)).mt(px(0.))))
             .child(div().flex().items_center().gap(px(8.)).child(send).child(cancel))
             .child(div().text_size(px(12.)).text_color(l.text2()).child(note))
             .into_any_element()
