@@ -31,4 +31,23 @@ pub async fn import(client: &Client, inv: &Invitation, me: &str, status: Partsta
     Ok(true)
 }
 
+/// «Удалить из календаря» у отменённой встречи (T2-19): моя копия с UID приглашения — без рассылки. Отмена
+/// экземпляра серии (`recurrenceId` у приглашения) — только он (`excluded`). `false` — копии нет.
+pub async fn remove(client: &Client, inv: &Invitation) -> postman_jmap::Result<bool> {
+    if !client.has(postman_jmap::CALENDARS) {
+        return Ok(false);
+    }
+    let Some(ev) = client.event_by_uid(&inv.event.uid).await? else { return Ok(false) };
+    let Some(id) = ev["id"].as_str() else { return Ok(false) };
+    match inv.raw.get("recurrenceId").and_then(|v| v.as_str()).filter(|_| ev.get("recurrenceRule").is_some_and(|r| !r.is_null())) {
+        Some(rid) => {
+            let mut patch = serde_json::Map::new();
+            patch.insert(format!("recurrenceOverrides/{rid}"), serde_json::json!({ "excluded": true }));
+            client.update_event(id, patch, false).await?;
+        }
+        None => client.destroy_event(id, false).await?,
+    }
+    Ok(true)
+}
+
 // --- состояние карточки приглашения ---

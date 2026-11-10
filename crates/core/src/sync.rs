@@ -174,6 +174,12 @@ pub enum Command {
     ImportInvite {
         invite: Box<Invitation>,
     },
+    /// «Удалить из календаря» у отменённой встречи (T2-19, решение владельца 2026-11-10): моя копия встречи с UID
+    /// приглашения уходит из календаря без писем организатору → `InviteRemoved` (`found: false` — копии нет) или
+    /// `InviteFailed`; удалённая — ещё и `CalendarChanged`.
+    RemoveInvite {
+        invite: Box<Invitation>,
+    },
     /// События календаря в `[from, to)` (Unix-секунды), повторения разворачивает сервер → `EventsLoaded`.
     Events {
         from: i64,
@@ -748,6 +754,11 @@ pub enum Event {
     InviteFailed {
         uid: String,
         error: String,
+    },
+    /// Ответ на `RemoveInvite`: `found` — копия была и удалена.
+    InviteRemoved {
+        uid: String,
+        found: bool,
     },
     /// События календаря в `[from, to)` — без отменённых, по времени начала.
     /// События недели: мои и календарей коллег (`Event::owner`, S5-22); коллеги — все, кто открыл мне календарь.

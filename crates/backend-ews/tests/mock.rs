@@ -375,6 +375,29 @@ fn invite_reply_by_uid_or_by_mail() {
     assert!(!sent[0].contains("AcceptItem"));
 }
 
+/// «Удалить из календаря» у отменённой (T2-19): встреча с UID приглашения — `DeleteItem` в «Удалённые» без рассылки;
+/// встречи нет — `InviteRemoved { found: false }`, ничего не удаляется.
+#[test]
+fn cancelled_invite_removed_quietly() {
+    let (url, log) = server();
+    let live = ready(&url);
+    let removed = |e: &Event| matches!(e, Event::InviteRemoved { .. } | Event::InviteFailed { .. });
+
+    let n = log.lock().unwrap().len();
+    live.commands.send(Command::RemoveInvite { invite: Box::new(invite(MEETING_UID)) }).unwrap();
+    let Event::InviteRemoved { uid, found } = live.wait("InviteRemoved", removed) else { panic!("не удалена") };
+    assert_eq!((uid.as_str(), found), (MEETING_UID, true));
+    let del = requests(&log, n, "DeleteItem").pop().expect("DeleteItem");
+    assert!(del.contains(r#"DeleteType="MoveToDeletedItems""#) && del.contains(r#"SendMeetingCancellations="SendToNone""#), "{del}");
+    assert!(del.contains(r#"Id="AAMkADmeet""#), "{del}");
+
+    let n = log.lock().unwrap().len();
+    live.commands.send(Command::RemoveInvite { invite: Box::new(invite("not-in-calendar@example.test")) }).unwrap();
+    let Event::InviteRemoved { found, .. } = live.wait("InviteRemoved", removed) else { panic!("нет ответа") };
+    assert!(!found);
+    assert!(requests(&log, n, "DeleteItem").is_empty());
+}
+
 /// `GetItem` новой встречи: UID, который задал сервер.
 fn new_meeting(body: &str) -> Option<String> {
     (body.contains("<m:GetItem") && body.contains(r#"Id="AAMkADnew""#))

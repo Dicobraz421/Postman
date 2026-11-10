@@ -53,6 +53,9 @@ pub(crate) struct Card {
     pub(crate) clock: Option<i64>,
     /// Меню ▾ и поле комментария (T2-15).
     pub(crate) how: Choice,
+    /// «Удалить из календаря» у отменённой (T2-19): запрос ушёл; итог — удалена (`true`) или копии не было.
+    pub(crate) removing: bool,
+    pub(crate) removed: Option<bool>,
 }
 
 impl Card {
@@ -66,6 +69,8 @@ impl Card {
             changing: false,
             clock: None,
             how: Choice::default(),
+            removing: false,
+            removed: None,
         }
     }
 
@@ -135,6 +140,7 @@ impl Card {
         let Some(inv) = self.invitation().cloned() else { return };
         self.clock = Some(inv.event.span.start - 86_400);
         self.how = Choice::default();
+        (self.removing, self.removed) = (false, None);
         match which {
             "answered" => self.answer = Some(Seen::of(&inv, Partstat::Accepted)),
             "updated" => {
@@ -392,6 +398,24 @@ fn length_chip(secs: i64, l: &Look) -> Div {
 /// Кнопки ответа: «Принять» — заливка, «Под вопросом» и «Отклонить» — тонированные, у всех — значок в круге; клавиша
 /// (A / T / N в схеме «Одиночные клавиши») — подсказкой «Название (клавиша)» и KeyTips, не в тексте кнопки (S5-18).
 /// У каждой — ▾ «… с комментарием» / «… без ответа организатору» (T2-15, [`split`]).
+/// «Удалить из календаря» у отменённой встречи (T2-19, макет «Приглашение · состояния»): моя копия — из календаря,
+/// организатору ничего не уходит.
+fn remove_button(removing: bool, l: &Look, cx: &mut Context<ReadingPane>) -> AnyElement {
+    crate::buttons::secondary("invite-remove", l)
+        .flex_none()
+        .children(crate::screens::spot("invite-remove"))
+        .child(icon(g::DELETE, 12.))
+        .child(if removing { tr!("invite-removing") } else { tr!("invite-remove") })
+        .when(removing, |d| d.opacity(0.5))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            if !removing {
+                this.remove_invite(cx);
+            }
+        }))
+        .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(tr!("invite-remove-hint")).build(window, cx))
+        .into_any_element()
+}
+
 fn answer_buttons(card: &Card, side: bool, l: &Look, cx: &mut Context<ReadingPane>) -> Vec<Div> {
     let sending = card.sending;
     [
@@ -495,7 +519,7 @@ pub(crate) fn render(card: &Card, me: Option<&str>, cx: &mut Context<ReadingPane
     let e = &inv.event;
     let p = Parts::of(card, inv, me);
     // Компактная строка: отмена, устаревшее, прочие методы (макет «Приглашение · состояния»).
-    let compact = |reason: String, glyph: char, dim: bool, strike: bool| {
+    let compact = |reason: String, glyph: char, dim: bool, strike: bool, extra: Option<AnyElement>| {
         frame()
             .rounded(px(6.))
             .h(px(44.))
@@ -528,18 +552,27 @@ pub(crate) fn render(card: &Card, me: Option<&str>, cx: &mut Context<ReadingPane
                             .child(div().truncate().child(reason)),
                     ),
             )
+            .children(extra)
             .into_any_element()
     };
     match &p.state {
-        InviteState::Cancelled => return compact(tr!("invite-cancelled", organizer = p.organizer.clone()), g::CANCEL, true, true),
+        InviteState::Cancelled => {
+            let reason = match card.removed {
+                Some(true) => tr!("invite-removed"),
+                Some(false) => tr!("invite-remove-none"),
+                None => tr!("invite-cancelled", organizer = p.organizer.clone()),
+            };
+            let remove = card.removed.is_none().then(|| remove_button(card.removing, &l, cx));
+            return compact(reason, g::CANCEL, true, true, remove);
+        }
         InviteState::Outdated(why) => {
             let reason = match why {
                 Outdated::Newer => tr!("invite-outdated-newer"),
                 Outdated::Past => tr!("invite-outdated-past"),
             };
-            return compact(reason, g::CLOCK, true, false);
+            return compact(reason, g::CLOCK, true, false, None);
         }
-        InviteState::Info => return compact(tr!("reading-invite-head", method = inv.method.as_str()), g::INFO, false, false),
+        InviteState::Info => return compact(tr!("reading-invite-head", method = inv.method.as_str()), g::INFO, false, false, None),
         _ => {}
     }
     // Боковая панель (опция «Чтение»): над письмом — тонированная строка.

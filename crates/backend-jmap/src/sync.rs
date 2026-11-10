@@ -1030,6 +1030,18 @@ async fn handle(
                 Err(e) => Event::InviteFailed { uid, error: e.to_string() },
             });
         }
+        Command::RemoveInvite { invite } => {
+            let uid = invite.event.uid.clone();
+            notify(match invite::remove(client, &invite).await {
+                Ok(found) => {
+                    if found {
+                        notify(Event::CalendarChanged);
+                    }
+                    Event::InviteRemoved { uid, found }
+                }
+                Err(e) => Event::InviteFailed { uid, error: e.to_string() },
+            });
+        }
         Command::ImportInvite { invite } => {
             let me = identities.iter().find(|i| invite.my_status(&i.email).is_some()).map(|i| i.email.clone());
             if let Some(me) = me {

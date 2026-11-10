@@ -494,6 +494,26 @@ impl EwsAreas {
         Ok(done)
     }
 
+    /// «Удалить из календаря» у отменённой встречи (T2-19): встреча с UID около приглашения ([`pick`], отменённые
+    /// тоже) — в «Удалённые», без писем. Отмена серии — серия, экземпляра — он. `false` — встречи нет.
+    pub async fn remove(&mut self, invite: &Invitation) -> Result<bool, Error> {
+        let ev = &invite.event;
+        self.events(ev.span.start - AROUND, ev.span.end.max(ev.span.start) + AROUND).await?;
+        let found = pick(self.items.iter().map(|(id, k)| (id.as_str(), k.kind, &k.event)), "", &ev.uid, ev.span.start)
+            .map(|(id, kind)| (ItemId { id: id.to_owned(), change_key: self.items.get(id).and_then(|k| k.change_key.clone()) }, kind));
+        let Some((mut id, kind)) = found else { return Ok(false) };
+        if !for_instance(invite)
+            && matches!(kind, ItemKind::Occurrence | ItemKind::Exception)
+            && let Some(master) = self.client.master_of(&id).await?
+        {
+            id = master.id;
+        }
+        self.client.delete(std::slice::from_ref(&id), DeleteMode::MoveToDeletedItems, Notify::None).await?;
+        let uid = ev.uid.clone();
+        self.items.retain(|item, k| *item != id.id && !k.event.uid.eq_ignore_ascii_case(&uid));
+        Ok(true)
+    }
+
     /// Люди справочника по строке страницей с `offset` и есть ли ещё: `FindPeople`, сервер его не знает —
     /// `ResolveNames` (и дальше — только он; у него страниц нет — всё найденное сразу).
     pub async fn find_people(&mut self, text: &str, offset: u32) -> Result<(Vec<Principal>, bool), Error> {
@@ -611,6 +631,18 @@ impl EwsAreas {
             Command::CalendarAccess => notify(SyncEvent::CalendarAccess(Vec::new())),
             // Приглашения из писем Exchange кладёт в календарь сам.
             Command::ImportInvite { .. } => {}
+            Command::RemoveInvite { invite } => {
+                let uid = invite.event.uid.clone();
+                notify(match self.remove(&invite).await {
+                    Ok(found) => {
+                        if found {
+                            notify(SyncEvent::CalendarChanged);
+                        }
+                        SyncEvent::InviteRemoved { uid, found }
+                    }
+                    Err(e) => SyncEvent::InviteFailed { uid, error: e.to_string() },
+                });
+            }
             other => return Some(other),
         }
         None
