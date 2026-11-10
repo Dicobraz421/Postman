@@ -117,21 +117,80 @@ vacation-foreign-warning = The server has an active filter “{ $name }” not c
 rules-demo = Demo: rules live on the server — an account is required.
 rules-loading = Reading rules from the server…
 rules-unsupported = The server does not support rules (Sieve).
+rules-order-note = Rules run top to bottom. A rule with “Stop” ends processing of the next ones.
+rules-server = Run on the server where possible (Sieve)
+rules-server-on = Rules go to the server and work even when Postman is closed.
+rules-server-off = Postman runs the rules on new Inbox messages — only while it is running. Forwarding always runs on the server.
+rules-col-order = Order
+rules-col-rule = Rule
+rules-col-where = Where it runs · hits
+rules-where-server = on the server
+rules-where-app = in the app
+rules-where-hits = { $place } · { $n ->
+    [one] { $n } hit
+   *[other] { $n } hits
+} · { $when }
+rules-name = Name
+rules-name-placeholder = by conditions, if empty
+rules-conditions = Conditions
+rules-cond-add = Add condition
+rules-cond-or = Add “or” group
+rules-actions = Actions
+rules-act-add = Add action
+rules-options = Options
+rules-stop = Stop processing more rules
+rules-apply = Apply to existing messages
+rules-apply-counting = Apply to existing messages — counting…
+rules-apply-found = Apply to existing messages — { $n } found
+rules-test = Test on the last { $n } messages
+rules-test-result = { $n ->
+    [one] { $n } message matches
+   *[other] { $n } messages match
+} of { $seen }
+rules-test-show = show
+rules-test-hide = hide
+rules-op-contains = contains
+rules-op-not-contains = does not contain
+rules-op-domain = from domain
+rules-op-not-domain = not from domain
+rules-domain-placeholder = domain, e.g. example.com
+rules-folder-pick = Choose a folder
+rules-category-pick = Choose a category
+rules-redirect-note = The server forwards — even when Postman is closed.
+rules-tok-if = IF
+rules-tok-or = OR
+rules-tok-and = AND
+rules-tok-cond = { $field } { $op }
+rules-tok-move = folder
+rules-tok-redirect = forward to
+rules-tok-category = category
+rules-tok-stop = · stop
+rules-log = Rule log
+rules-log-all = Whole log
+rules-log-short = Collapse
+rules-log-empty = Hits of “in the app” rules and “Apply to existing” appear here. The server does not report its own hits.
+rules-log-yesterday = Yesterday
+rules-hint = Tip
+rules-hint-1 = Create a rule from a message: right-click → “Always move messages from this sender” or “Block sender”.
+rules-hint-2 = Change the order with the arrows left of a rule.
+rules-applied = Rule “{ $rule }” applied: { $n ->
+    [one] { $n } message
+   *[other] { $n } messages
+}
+rules-open = Rules
+rules-from-move-name = From { $sender } → “{ $folder }”
+rules-from-move-toast = Rule created: messages from { $sender } go to “{ $folder }”.
+rules-block-name = Blocked { $sender }
+rules-block-toast = Sender { $sender } blocked: their messages go to “{ $folder }”.
+rules-block-no-folder = No Junk or Deleted Items folder to block into.
 rules-empty = No rules yet.
 rules-all-off = All rules are off.
 rules-add = New rule
-rules-edit = Edit
 rules-delete = Delete
 rules-delete-confirm = Delete the rule?
 rules-cancel = Cancel
 rules-new-title = New rule
 rules-edit-title = Edit rule
-rules-if = If
-rules-contains = contains
-rules-then = then
-rules-category = Category
-rules-folder = Folder
-rules-address = Address
 rules-value-placeholder = text, e.g. “Report” or an address
 rules-address-placeholder = name@example.com
 rules-field-from = From
@@ -160,16 +219,9 @@ rules-foreign-title = Server scripts not created in Postman
 rules-foreign-hint = View only: Postman does not change them.
 rules-foreign-active = “{ $name }” — active
 rules-foreign-inactive = “{ $name }” — off
-rules-when-from = From contains “{ $value }”
-rules-when-to = To or Cc contains “{ $value }”
-rules-when-subject = Subject contains “{ $value }”
-rules-do-move = move to “{ $folder }”
 rules-do-read = mark as read
 rules-do-flag = flag
 rules-do-discard = delete without Deleted Items
-rules-do-category = set category “{ $category }”
-rules-do-redirect = forward to { $address }
-rules-line = { $when } → { $then }
 # The Settings tab (S5-09): sections, search, common buttons.
 settings-search = Find a setting
 settings-search-nothing = Nothing found

@@ -136,6 +136,8 @@ menu-move = Переместить
 menu-archive = Архив
 menu-delete = Удалить
 menu-phishing = Сообщить о фишинге
+menu-always-move = Всегда перемещать от этого отправителя
+menu-block = Заблокировать отправителя
 menu-on-selection = { $n ->
     [one] Выбрано { $n } письмо
     [few] Выбрано { $n } письма

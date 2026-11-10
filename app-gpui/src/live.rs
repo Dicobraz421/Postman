@@ -642,6 +642,7 @@ impl Mailer {
             self.live.synced = true;
             self.list.update(cx, |l, cx| l.refresh(cx));
             self.check_new_mail(cx);
+            self.rules_pass(cx);
             // Письма со сроком — задачи «Из почты» (S6-03).
             if self.section == crate::Section::Tasks {
                 self.tasks.update(cx, |t, cx| t.letters_changed(cx));

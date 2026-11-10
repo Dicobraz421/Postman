@@ -31,6 +31,7 @@ pub mod prefs;
 pub mod query;
 pub mod recur;
 pub mod render;
+pub mod rulerun;
 pub mod rules;
 pub mod schedule;
 pub mod send_later;

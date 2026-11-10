@@ -11,7 +11,7 @@ use postman_core::autoreply::{Audience, AutoReply, Text};
 use postman_core::categories;
 use postman_core::labels::Categories;
 use postman_core::model::VacationResponse;
-use postman_core::rules::{Action, Field, Rule};
+use postman_core::rules::{Action, Cond, Field, Op, Rule};
 use postman_core::settings::{Area, AutoReplySave, Foreign, Reply, Request, RulesState, Usage, WARN_PERCENT};
 use postman_core::sync::{Command, Event};
 
@@ -266,13 +266,16 @@ impl Mailer {
                     .visible()
                     .map(|c| (c.keyword.clone(), c.name.clone(), c.shown_color()))
                     .collect();
-                let panel = cx.new(|cx| RulesPanel::new(state, mailboxes, categories, live, window, cx));
+                let cache = Some(self.cache.clone());
+                let panel = cx.new(|cx| RulesPanel::new(state, mailboxes, categories, cache, live, window, cx));
                 let sub = cx.subscribe_in(&panel, window, |this, _, ev: &RulesEvent, _, cx| match ev {
                     RulesEvent::Save { rules, replace } => this.save_rules(rules.clone(), *replace, cx),
+                    RulesEvent::Apply(rule) => this.apply_rule(rule.clone(), cx),
                 });
                 self.settings._tab.push(sub);
                 self.settings.rules_panel = Some(panel.clone());
                 self.give_panel(section, panel.into(), cx);
+                self.rules_log(cx);
             }
             _ => {}
         }
@@ -543,6 +546,9 @@ impl Mailer {
 
     fn set_rules_state(&mut self, state: RulesState, saved: bool, cx: &mut Context<Self>) {
         self.settings.rules = Some(state.clone());
+        let quiet = saved && std::mem::take(&mut self.rules_run.quiet);
+        self.flush_waiting_rules(cx);
+        self.rules_pass(cx);
         let warning = self.foreign_warning();
         if let Some(p) = &self.settings.vacation_panel {
             p.update(cx, |p, cx| {
@@ -553,7 +559,7 @@ impl Mailer {
         match &self.settings.rules_panel {
             Some(p) if saved => p.update(cx, |p, cx| p.saved(state, cx)),
             Some(p) => p.update(cx, |p, cx| p.server_state(state, cx)),
-            None if saved => self.toasts.update(cx, |t, cx| t.push(Toast::Success, tr!("rules-saved"), cx)),
+            None if saved && !quiet => self.toasts.update(cx, |t, cx| t.push(Toast::Success, tr!("rules-saved"), cx)),
             None => {}
         }
     }
@@ -640,12 +646,31 @@ pub(crate) fn screen_sample() -> VacationResponse {
 /// Образец для демо и снимка `rules`: правила по папкам демо-ящика и чужой скрипт сервера.
 pub(crate) fn rules_sample(mailboxes: &[(String, String)]) -> RulesState {
     let (mailbox_id, name) = mailboxes.get(4).or(mailboxes.last()).cloned().unwrap_or_default();
-    let rule = |enabled, field, value: &str, action| Rule { enabled, field, value: value.into(), action };
+    let rule = Rule::simple;
+    // T2-50: правило с именем, «или» и «и», двумя действиями и «стоп»; правило «в приложении».
+    let invoices = Rule {
+        enabled: true,
+        name: "Счета от поставщиков".into(), // i18n-ok: образец правила
+        when: vec![
+            vec![Cond::contains(Field::Subject, "счёт"), Cond::contains(Field::Subject, "pdf")], // i18n-ok: образец правила
+            vec![Cond { field: Field::From, op: Op::NotDomain, value: "corp.example".into() }],
+        ],
+        actions: vec![Action::Flag, Action::MarkRead],
+        stop: true,
+        local: false,
+    };
+    let codes = Rule {
+        name: "Коды подтверждения".into(), // i18n-ok: образец правила
+        when: vec![vec![Cond::contains(Field::Subject, "код"), Cond::contains(Field::Subject, "code")]], // i18n-ok: образец правила
+        local: true,
+        ..rule(true, Field::Subject, "", Action::MarkRead)
+    };
     RulesState {
         rules: vec![
             rule(true, Field::Subject, "Тендер", Action::Category(postman_core::labels::category_keyword("tenders"))), // i18n-ok: образец правила (S5-26, снимок `rules` — его правка)
-            rule(true, Field::Subject, "Отчёт", Action::Move { mailbox_id, name }),                                    // i18n-ok: образец правила
-            rule(true, Field::From, "ci@corp.example", Action::MarkRead),
+            invoices,
+            rule(true, Field::Subject, "Отчёт", Action::Move { mailbox_id, name }), // i18n-ok: образец правила
+            codes,
             rule(true, Field::To, "director@corp.example", Action::Flag),
             rule(false, Field::Subject, "Розыгрыш", Action::Discard), // i18n-ok: образец правила
         ],
@@ -710,6 +735,9 @@ pub(crate) mod scenes {
         Scene::new("vacation", vacation, vacation_ready).live(),
         // Панель «Правила» (S4-07): демо — образец с редактором первого правила, живой ящик — правила с сервера.
         Scene::new("rules", rules, rules_ready).live(),
+        // Тот же редактор, прокручен вниз (T2-50): действия, «Остановить», «Применять к существующим», итог
+        // «Проверить на последних 100 письмах» со списком подходящих писем демо-ящика.
+        Scene::new("rules-test", rules_test, rules_test_ready),
         // Вкладка «Настройки», раздел «Общие» (S5-09).
         Scene::new("settings-general", section, section_ready),
         // «Настройки → Безопасность» (S5-30).
@@ -757,16 +785,46 @@ pub(crate) mod scenes {
 
     fn rules(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
         m.open_rules(window, cx);
-        // Демо: редактор первого правила открыт — снимок показывает и список, и редактор.
+        // Демо: редактор правила с именем, «или» и «и», двумя действиями открыт (T2-50) — снимок показывает и
+        // список, и редактор; журнал — образец (его же держит экран почты: чтение из кэша его дополнит).
         if let (false, Some(p)) = (m.backend.is_live(), m.settings.rules_panel.clone()) {
+            let now = jiff::Timestamp::now().as_second();
+            let entry = |ago: i64, rule: &str, subject: &str| crate::rules::LogEntry { at: now - ago, rule: rule.into(), subject: subject.into() };
+            let log = vec![
+                entry(120, "Коды подтверждения", "Ваш код входа: 48 31 07"),  // i18n-ok: образец журнала
+                entry(3_600, "Коды подтверждения", "Код для входа в портал"), // i18n-ok: образец журнала
+                entry(90_000, "Счета от поставщиков", "Счёт № 4812 от 17.10 на оплату"), // i18n-ok: образец журнала
+            ];
+            m.rules_run.log = Some(log.clone());
             p.update(cx, |p, cx| {
-                let first = p.state.as_ref().and_then(|s| s.rules.first().cloned());
-                if let Some(r) = first {
-                    p.edit(crate::rules::Draft::of(0, &r), cx);
+                let rich = p.state.as_ref().and_then(|s| s.rules.get(1).cloned());
+                p.set_log(log, cx);
+                if let Some(r) = rich {
+                    p.edit(crate::rules::Draft::of(1, &r), cx);
                 }
             });
         }
         Ok(())
+    }
+
+    fn rules_test(s: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        rules(s, m, window, cx)?;
+        if let Some(p) = m.settings.rules_panel.clone() {
+            p.update(cx, |p, cx| {
+                // «Отчёт» → папка: в демо-ящике такие письма есть.
+                if let Some(r) = p.state.as_ref().and_then(|s| s.rules.get(2).cloned()) {
+                    p.edit(crate::rules::Draft::of(2, &r), cx);
+                }
+                p.show_test = true;
+                p.run_matching(false, cx);
+                p.scroll.set_offset(point(px(0.), px(-300.)));
+            });
+        }
+        Ok(())
+    }
+
+    fn rules_test_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.settings.rules_panel.as_ref().is_some_and(|p| p.read(cx).test.is_some()) && screens::settings_on(m, S::Rules, cx)
     }
 
     fn rules_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {

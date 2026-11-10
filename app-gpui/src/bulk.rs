@@ -1394,6 +1394,8 @@ pub(crate) mod scenes {
         Scene::new("menu-due", menu_due, menu_ready).continues(),
         // «Сообщить о фишинге»: тост «Отменить» после сообщения и меню у другого письма на пункте с красной маской.
         Scene::new("phishing", phishing, menu_ready).continues(),
+        // «Всегда перемещать от этого отправителя ▸» (T2-50, макет `Bulk`): меню у одного письма, папки своего ящика.
+        Scene::new("menu-rule", menu_rule, menu_ready).continues(),
         // «Переслать вложениями» (T1-17): три письма выделения — новое письмо вкладкой с тремя вложениями .eml.
         Scene::new("forward-attached", forward_attached, forward_attached_ready),
     ];
@@ -1431,6 +1433,16 @@ pub(crate) mod scenes {
     fn menu_due(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
         m.open_menu_at_row(2, None, cx);
         m.screen_menu_sub(crate::menu::Sub::Due);
+        Ok(())
+    }
+
+    fn menu_rule(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.close_menu(cx);
+        m.list.update(cx, |l, cx| {
+            l.clear_selection(cx);
+        });
+        m.open_menu_at_row(1, None, cx);
+        m.screen_menu_sub(crate::menu::Sub::Rule);
         Ok(())
     }
 
