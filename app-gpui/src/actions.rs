@@ -400,7 +400,8 @@ const COMMANDS: &[pets_commands::Command] = {
         // Не Outlook (там Ctrl+F2…F12 по назначению): клавиши 1–9 — категории таблицы (DESIGN.md, «Настройки»).
         cmd("mail.categorize", &["1", "2", "3", "4", "5", "6", "7", "8", "9"], LIST),
         // В «Задачах» Ctrl+N — новая задача (`task.new`, S6 решение 6).
-        cmd("mail.new", &["ctrl-n"], Some("Mailer && !TasksView")),
+        // В «Задачах» Ctrl+N — задача, в «Контактах» — письмо выбранному (T2-43).
+        cmd("mail.new", &["ctrl-n"], Some("Mailer && !TasksView && !ContactsView")),
         cmd("mail.reply", &["ctrl-r"], MAIL),
         cmd("mail.reply_all", &["ctrl-shift-r"], MAIL),
         cmd("mail.forward", &["ctrl-f"], MAIL),

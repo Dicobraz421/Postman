@@ -29,9 +29,7 @@ contacts-kind-contact = Personal contact
 contacts-kind-person = Employee
 contacts-kind-room = Meeting room
 contacts-kind-resource = Resource
-contacts-name = Name
 contacts-emails = Email
-contacts-phones = Phones
 contacts-organization = Company
 contacts-title = Job title
 contacts-write = Write
@@ -55,8 +53,7 @@ contacts-form-new = New contact
 contacts-form-edit = Edit contact
 contacts-form-where = Saved to "My contacts" on the server
 contacts-form-where-demo = Demo: saved in this window only
-contacts-form-hint = Several addresses or phones — separated by “;”. Enter saves, Esc cancels. The name is one line, as in the list.
-contacts-name-placeholder = Full name
+contacts-form-hint = Lists show the name as “Last First”. Several addresses or phones — separated by “;”. Enter saves, Esc cancels.
 contacts-emails-placeholder = name@example.com; …
 contacts-phones-placeholder = +1 …; …
 contacts-save = Save
@@ -69,3 +66,43 @@ contacts-saved = Contact saved: { $name }
 contacts-deleted = Contact deleted: { $name }
 contacts-failed = Contacts: { $error }
 contacts-demo-local = Demo: contacts change in this window only, nothing goes to a server.
+# Mockup check T2-G (T2-40…T2-46).
+contacts-recent-mail = Recent mail
+contacts-all-mail = All mail
+contacts-no-mail = No mail yet.
+contacts-mail-loading = Looking for mail…
+contacts-you = You
+contacts-lists = Mailing lists
+contacts-lists-all = All lists
+contacts-kind-list = Mailing list
+contacts-list-members = The server does not list the members: mail to this address reaches everyone on the list.
+contacts-presence-me = it's you
+contacts-presence-free = { $f ->
+   *[other] free
+}
+contacts-presence-free-long = { $f ->
+   *[other] Free
+}
+contacts-presence-busy = { $f ->
+   *[other] busy
+} until { $time }
+contacts-presence-busy-long = { $f ->
+   *[other] Busy
+} until { $time }
+contacts-presence-away = away until { $time }
+contacts-presence-away-long = Out of office until { $time }
+contacts-presence-hidden = availability hidden
+contacts-presence-date = { $month } { $day }
+contacts-window = · next free slot { $from }–{ $to }
+contacts-meet-at = Meet at { $time }
+contacts-manager = Manager
+contacts-office = Office
+contacts-department = Department
+contacts-work-phone = Work phone
+contacts-mobile = Mobile
+contacts-last-name = Last name
+contacts-first-name = First name
+contacts-book = Address book
+contacts-layout-fixed = layout fixed: { $text }
+contacts-layout-reset = Clear search
+contacts-directory-updated = Directory updated { $time }

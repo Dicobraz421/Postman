@@ -3755,7 +3755,8 @@ pub(crate) mod calendar {
 const COMMANDS: &[pets_commands::Command] = {
     use crate::commands::{CALENDAR, cmd};
     &[
-        cmd("calendar.new_meeting", &["ctrl-shift-q"], None),
+        // В «Контактах» Ctrl+Shift+Q — встреча с выбранным (T2-43).
+        cmd("calendar.new_meeting", &["ctrl-shift-q"], Some("!ContactsView")),
         // DESIGN «Хоткеи»: период вида — PgUp / PgDn (id — с недели, S3-05), «Сегодня» — Home (Alt не используется; в
         // Outlook — Alt+↑/↓, Alt+Home). Виды — 1…4 вне полей ввода (S5-21; в Outlook — Ctrl+Alt+1…4, Alt не берём).
         cmd("calendar.prev_week", &["pageup"], CALENDAR),

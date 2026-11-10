@@ -588,6 +588,7 @@ impl Dav {
                 name: &card.name,
                 emails: &card.emails,
                 phones: &card.phones,
+                mobile: &card.mobile,
                 organization: &card.organization,
                 title: &card.title,
             };

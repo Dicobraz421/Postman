@@ -29,9 +29,7 @@ contacts-kind-contact = Личный контакт
 contacts-kind-person = Сотрудник
 contacts-kind-room = Переговорная
 contacts-kind-resource = Ресурс
-contacts-name = Имя
 contacts-emails = Электронная почта
-contacts-phones = Телефоны
 contacts-organization = Организация
 contacts-title = Должность
 contacts-write = Написать
@@ -55,8 +53,7 @@ contacts-form-new = Новый контакт
 contacts-form-edit = Изменить контакт
 contacts-form-where = Сохранится в «Мои контакты» на сервере
 contacts-form-where-demo = Демо: сохранится только в этом окне
-contacts-form-hint = Несколько адресов или телефонов — через «;». Enter — сохранить, Esc — отмена. Имя — одной строкой, как в списке: «Фамилия Имя».
-contacts-name-placeholder = Фамилия Имя
+contacts-form-hint = В списках имя показывается как «Фамилия Имя». Несколько адресов или телефонов — через «;». Enter — сохранить, Esc — отмена.
 contacts-emails-placeholder = name@example.com; …
 contacts-phones-placeholder = +7 …; …
 contacts-save = Сохранить
@@ -69,3 +66,47 @@ contacts-saved = Контакт сохранён: { $name }
 contacts-deleted = Контакт удалён: { $name }
 contacts-failed = Контакты: { $error }
 contacts-demo-local = Демо: контакты меняются только в этом окне, на сервер ничего не уходит.
+# Сверка макета T2-G (T2-40…T2-46).
+contacts-recent-mail = Последняя переписка
+contacts-all-mail = Вся переписка
+contacts-no-mail = Переписки пока нет.
+contacts-mail-loading = Ищем переписку…
+contacts-you = Вы
+contacts-lists = Списки рассылки
+contacts-lists-all = Все списки
+contacts-kind-list = Список рассылки
+contacts-list-members = Состав списка сервер не сообщает: письмо на этот адрес получат все участники списка.
+contacts-presence-me = это вы
+contacts-presence-free = { $f ->
+    [yes] свободна
+   *[other] свободен
+}
+contacts-presence-free-long = { $f ->
+    [yes] Свободна
+   *[other] Свободен
+}
+contacts-presence-busy = { $f ->
+    [yes] занята
+   *[other] занят
+} до { $time }
+contacts-presence-busy-long = { $f ->
+    [yes] Занята
+   *[other] Занят
+} до { $time }
+contacts-presence-away = вне офиса до { $time }
+contacts-presence-away-long = Вне офиса до { $time }
+contacts-presence-hidden = занятость скрыта
+contacts-presence-date = { $day } { $month }
+contacts-window = · ближайшее окно { $from }–{ $to }
+contacts-meet-at = Встреча в { $time }
+contacts-manager = Руководитель
+contacts-office = Кабинет
+contacts-department = Отдел
+contacts-work-phone = Рабочий телефон
+contacts-mobile = Мобильный
+contacts-last-name = Фамилия
+contacts-first-name = Имя
+contacts-book = Адресная книга
+contacts-layout-fixed = раскладка исправлена: { $text }
+contacts-layout-reset = Сбросить поиск
+contacts-directory-updated = Справочник обновлён { $time }

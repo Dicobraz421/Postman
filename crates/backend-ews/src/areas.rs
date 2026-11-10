@@ -85,7 +85,8 @@ pub fn card(c: postman_ews::Contact) -> Option<ContactCard> {
         id: c.id.id,
         name: c.data.shown_name(),
         emails: c.data.emails,
-        phones: c.data.phones.into_iter().map(|p| p.number).collect(),
+        phones: c.data.phones.iter().filter(|p| p.kind != postman_ews::PhoneKind::Mobile).map(|p| p.number.clone()).collect(),
+        mobile: c.data.phones.iter().filter(|p| p.kind == postman_ews::PhoneKind::Mobile).map(|p| p.number.clone()).collect(),
         organization: c.data.company,
         title: c.data.job_title,
         free_busy: None,
@@ -93,21 +94,24 @@ pub fn card(c: postman_ews::Contact) -> Option<ContactCard> {
 }
 
 /// Карточка Postman → поля контакта Exchange поверх прежних (`base`: имя и фамилия, отдел, заметки, виды телефонов
-/// остаются): телефон на своём месте — с прежним видом, новый — рабочий, мобильный, домашний, другой.
+/// остаются): телефон на своём месте — с прежним видом, новый — рабочий, домашний, другой; мобильный (T2-44) —
+/// `MobilePhone`, второй мобильный — как прочие телефоны.
 pub fn contact_data(card: &ContactCard, base: Option<&postman_ews::ContactData>) -> postman_ews::ContactData {
     use postman_ews::{Phone, PhoneKind};
     let mut d = base.cloned().unwrap_or_default();
     d.display_name = card.name.trim().to_owned();
     d.emails = card.emails.iter().map(|e| e.trim().to_owned()).filter(|e| !e.is_empty()).take(postman_ews::contacts::MAX_EMAILS).collect();
-    let old: Vec<PhoneKind> = base.map(|b| b.phones.iter().map(|p| p.kind).collect()).unwrap_or_default();
-    let mut free = [PhoneKind::Business, PhoneKind::Mobile, PhoneKind::Home, PhoneKind::Other].into_iter().filter(|k| !old.contains(k));
-    d.phones = card
-        .phones
-        .iter()
-        .map(|n| n.trim())
-        .filter(|n| !n.is_empty())
+    let old: Vec<PhoneKind> = base.map(|b| b.phones.iter().map(|p| p.kind).filter(|k| *k != PhoneKind::Mobile).collect()).unwrap_or_default();
+    let mut free = [PhoneKind::Business, PhoneKind::Home, PhoneKind::Other].into_iter().filter(|k| !old.contains(k));
+    let trimmed = |list: &[String]| -> Vec<String> { list.iter().map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()).collect() };
+    let mut mobile = trimmed(&card.mobile).into_iter();
+    let first_mobile = mobile.next();
+    d.phones = trimmed(&card.phones)
+        .into_iter()
+        .chain(mobile)
         .enumerate()
-        .map(|(i, n)| Phone { kind: old.get(i).copied().or_else(|| free.next()).unwrap_or(PhoneKind::Other), number: n.to_owned() })
+        .map(|(i, n)| Phone { kind: old.get(i).copied().or_else(|| free.next()).unwrap_or(PhoneKind::Other), number: n })
+        .chain(first_mobile.map(|n| Phone { kind: PhoneKind::Mobile, number: n }))
         .collect();
     d.company = card.organization.trim().to_owned();
     d.job_title = card.title.trim().to_owned();
@@ -147,7 +151,7 @@ fn bad_time_zone(e: &Error) -> bool {
 }
 
 /// Человек справочника → `Principal` модели (как у JMAP): id — адрес, вид — человек или список рассылки; должность,
-/// отдел и телефон — из GAL.
+/// отдел, телефоны, кабинет и руководитель — из GAL (T2-44).
 pub fn principal(p: postman_ews::Person) -> Principal {
     Principal {
         id: p.email.to_lowercase(),
@@ -158,6 +162,9 @@ pub fn principal(p: postman_ews::Person) -> Principal {
         title: p.title,
         department: p.department,
         phone: p.phone,
+        mobile: p.mobile,
+        office: p.office,
+        manager: p.manager,
     }
 }
 
@@ -731,13 +738,18 @@ mod tests {
         };
         let c = card(Contact { id: ItemId::new("AAMk1"), folder_id: None, data: data.clone(), members: None }).unwrap();
         assert_eq!((c.id.as_str(), c.name.as_str(), c.organization.as_str(), c.title.as_str()), ("AAMk1", "Петрова Анна", "Пример", "Инженер"));
-        assert_eq!(c.phones, ["+7 900"]);
+        assert!(c.phones.is_empty());
+        assert_eq!(c.mobile, ["+7 900"], "мобильный — отдельно (T2-44)");
         assert!(card(Contact { id: ItemId::new("AAMk2"), folder_id: None, data: data.clone(), members: Some(vec![]) }).is_none(), "список рассылки");
 
         let edited = ContactCard { phones: vec!["+7 901".into(), "+7 495".into()], title: "Ведущий".into(), ..c };
         let d = contact_data(&edited, Some(&data));
         assert_eq!((d.given_name.as_str(), d.department.as_str(), d.notes.as_str()), ("Анна", "Разработка", "Коллега."), "прежние поля");
-        assert_eq!(d.phones.iter().map(|p| p.kind).collect::<Vec<_>>(), [PhoneKind::Mobile, PhoneKind::Business], "вид на месте, новый — рабочий");
+        assert_eq!(
+            d.phones.iter().map(|p| (p.kind, p.number.as_str())).collect::<Vec<_>>(),
+            [(PhoneKind::Business, "+7 901"), (PhoneKind::Home, "+7 495"), (PhoneKind::Mobile, "+7 900")],
+            "новый — рабочий, затем домашний; мобильный — `MobilePhone`"
+        );
         assert_eq!(d.job_title, "Ведущий");
         let new =
             contact_data(&ContactCard { name: " Борис ".into(), emails: vec![" ".into(), "b@example.test".into()], ..Default::default() }, None);
@@ -754,8 +766,12 @@ mod tests {
             title: "Инженер".into(),
             department: "Отдел разработки".into(),
             phone: "+7 495 000-00-01".into(),
+            mobile: "+7 916".into(),
+            office: "5 этаж".into(),
+            manager: "Борис".into(),
             ..Default::default()
         });
+        assert_eq!((p.mobile.as_str(), p.office.as_str(), p.manager.as_str()), ("+7 916", "5 этаж", "Борис"));
         assert_eq!(
             (p.id.as_str(), p.display_name(), p.email.as_deref(), p.kind.as_str()),
             ("anna@example.test", "Анна", Some("Anna@example.test"), "individual")

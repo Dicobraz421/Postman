@@ -10,7 +10,14 @@
 //! (`ContactsLoaded`, `DirectoryLoaded`), изменения — командами (`SaveContact`, `DeleteContact`), занятость —
 //! `Availability`.
 //!
+//! Сверка макета T2-G (T2-40…T2-46): «Последняя переписка» и «Вся переписка» в карточке (письма — из кэша в фоне),
+//! «Списки рассылки» (группы справочника), присутствие по занятости сегодня («занят до 15:00») в строке и карточке и
+//! «Встреча в 15:00» в ближайшее окно, «Руководитель» и «Кабинет», рабочий и мобильный телефоны, «Фамилия» и «Имя» в
+//! форме, Ctrl+N / Ctrl+Shift+Q / Ctrl+C, подсказка исправленной раскладки в поиске, «Справочник обновлён ЧЧ:ММ».
+//!
 //! Своя кэшируемая view: перерисовывается только по своему `notify`. С экраном говорит событиями [`ContactsAction`].
+
+use std::collections::{HashMap, HashSet};
 
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollbarMode;
@@ -20,6 +27,7 @@ use jiff::tz::TimeZone;
 use pets_i18n::tr;
 use pets_ui::Level as Toast;
 use pets_ui::theme::Metric;
+use postman_cache::EmailRow;
 use postman_calendar::{Busy, BusyKind, Span};
 use postman_compose::{Address, Draft, parse_addresses};
 use postman_core::contacts::AddressBook;
@@ -38,14 +46,23 @@ const HEAD_H: f32 = 26.;
 /// Занятость в карточке: часы дня.
 const DAY_FROM: i64 = 8;
 const DAY_TO: i64 = 20;
+/// Конец рабочего дня для ближайшего окна (T2-42), час.
+const WORK_END: i64 = 18;
+/// Ближайшее окно — не короче, с.
+const WINDOW_MIN: i64 = 30 * 60;
+/// «Последняя переписка» (T2-40): писем в карточке.
+pub(crate) const LETTERS: usize = 3;
+/// Занятость для строк справочника (T2-42): адресов в одном запросе.
+const PRESENCE_BATCH: usize = 50;
 
-/// Откуда список: личная адресная книга, справочник организации или «Часто пишу» (S5-25: адресаты переписки за
-/// 30 дней по частоте и давности, `AddressBook::frequent`).
+/// Откуда список: личная адресная книга, справочник организации, «Часто пишу» (S5-25: адресаты переписки за
+/// 30 дней по частоте и давности, `AddressBook::frequent`) или списки рассылки справочника (T2-41).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Source {
     Mine,
     Directory,
     Frequent,
+    Lists,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -57,6 +74,8 @@ pub(crate) enum Kind {
     /// Адресат переписки — ни в справочнике, ни в моих контактах («Часто пишу», S5-25): только чтение, можно добавить
     /// в мои контакты.
     Correspondent,
+    /// Список рассылки справочника (группа с адресом, T2-41): писать можно, состава сервер не даёт.
+    List,
 }
 
 impl Kind {
@@ -65,6 +84,7 @@ impl Kind {
         match kind {
             "location" => Kind::Room,
             "resource" => Kind::Resource,
+            "group" | "list" => Kind::List,
             _ => Kind::Person,
         }
     }
@@ -76,8 +96,16 @@ impl Kind {
             Kind::Room => "contacts-kind-room",
             Kind::Resource => "contacts-kind-resource",
             Kind::Correspondent => "contacts-kind-correspondent",
+            Kind::List => "contacts-kind-list",
         })
     }
+}
+
+/// Сведения справочника, которых нет в карточке (T2-44): руководитель и кабинет.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Office {
+    pub(crate) manager: String,
+    pub(crate) room: String,
 }
 
 /// Строка списка: карточка и слова для поиска (считаются один раз).
@@ -85,6 +113,8 @@ impl Kind {
 pub(crate) struct Entry {
     pub(crate) card: ContactCard,
     pub(crate) kind: Kind,
+    /// Руководитель и кабинет — у сотрудника справочника.
+    pub(crate) office: Office,
     keys: Vec<String>,
     /// Цифры телефонов: «495 123» находит «+7 (495) 123-45-67».
     digits: Vec<String>,
@@ -110,24 +140,31 @@ impl Entry {
             keys.extend(e.split_once('@').map(|(_, domain)| domain.to_string()));
             keys.push(e);
         }
-        let digits = card.phones.iter().map(|p| p.chars().filter(char::is_ascii_digit).collect()).collect();
-        Self { card, kind, keys, digits }
+        let digits = card.phones.iter().chain(&card.mobile).map(|p| p.chars().filter(char::is_ascii_digit).collect()).collect();
+        Self { card, kind, office: Office::default(), keys, digits }
     }
 
     /// Имя — ФИО из `description`, без него — `name` (у Stalwart это логин). Должность, отдел и телефон (S7-08) — в
     /// поля карточки: отдел — строкой «Организация» (подразделение там и у личных карточек: «Организация, отдел»).
+    /// Мобильный — отдельно (T2-44; рабочий у пути «рабочий, иначе мобильный» — без повтора), руководитель и кабинет —
+    /// в [`Office`].
     fn from_principal(p: Principal) -> Self {
         let name = p.display_name().to_owned();
+        let some = |s: &str| Some(s.trim().to_owned()).filter(|t| !t.is_empty());
+        let mobile = some(&p.mobile);
         let card = ContactCard {
             id: p.id,
             name,
             emails: p.email.into_iter().collect(),
-            phones: Some(p.phone.trim().to_owned()).filter(|t| !t.is_empty()).into_iter().collect(),
+            phones: some(&p.phone).filter(|t| Some(t) != mobile.as_ref()).into_iter().collect(),
+            mobile: mobile.into_iter().collect(),
             organization: p.department.trim().to_owned(),
             title: p.title.trim().to_owned(),
             free_busy: None,
         };
-        Self::new(card, Kind::of_principal(&p.kind))
+        let mut e = Self::new(card, Kind::of_principal(&p.kind));
+        e.office = Office { manager: p.manager.trim().to_owned(), room: p.office.trim().to_owned() };
+        e
     }
 
     /// Слово запроса: начало слова имени, организации, должности или адреса; номер — часть телефона.
@@ -265,6 +302,113 @@ fn sort(entries: &mut [Entry]) {
     entries.sort_by_cached_key(|e| (normalize(&e.name()), e.card.emails.first().cloned()));
 }
 
+// --- присутствие (T2-42): по занятости сегодня, без названий встреч ---
+
+/// Присутствие человека сейчас — по его занятости (у сервера нет состояния «в сети»: только календарь).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Presence {
+    /// Моя запись.
+    Me,
+    Free,
+    /// Занят (или под вопросом) до конца сплошного занятого куска.
+    Busy(i64),
+    /// Вне офиса до конца отсутствия.
+    Away(i64),
+    /// Занятость не видна (календарь мне не открыт, человек не найден).
+    Hidden,
+}
+
+/// Конец сплошного куска занятости вида `away` (или любой, кроме отсутствия), куда попадает `now`; `None` — сейчас
+/// не занят так.
+fn chain_end(busy: &[Busy], now: i64, away: bool) -> Option<i64> {
+    let fits = |b: &&Busy| (b.kind == BusyKind::Unavailable) == away;
+    let mut end = busy.iter().filter(fits).filter(|b| b.span.start <= now && now < b.span.end).map(|b| b.span.end).max()?;
+    // Встречи встык и внахлёст — один кусок.
+    while let Some(next) = busy.iter().filter(fits).filter(|b| b.span.start <= end && b.span.end > end).map(|b| b.span.end).max() {
+        end = next;
+    }
+    Some(end)
+}
+
+/// Присутствие по занятости `busy` (`None` — не видна) в момент `now`.
+pub(crate) fn presence(busy: Option<&[Busy]>, now: i64) -> Presence {
+    let Some(busy) = busy else { return Presence::Hidden };
+    if let Some(end) = chain_end(busy, now, true) {
+        return Presence::Away(end);
+    }
+    match chain_end(busy, now, false) {
+        Some(end) => Presence::Busy(end),
+        None => Presence::Free,
+    }
+}
+
+/// Ближайшее свободное окно сегодня не короче получаса (T2-42, «Встреча в 15:00»): с ближайших `:00`/`:30` после
+/// `now` до конца рабочего дня `day_end`. Отсутствие сегодня — окна нет. `day` — начало дня.
+pub(crate) fn next_window(busy: &[Busy], now: i64, day: i64, day_end: i64) -> Option<(i64, i64)> {
+    if busy.iter().any(|b| b.kind == BusyKind::Unavailable && b.span.end > now && b.span.start < day_end) {
+        return None;
+    }
+    let step = WINDOW_MIN;
+    let mut t = day + (now - day + step - 1).div_euclid(step) * step;
+    let mut segs: Vec<&Busy> = busy.iter().filter(|b| b.span.end > t && b.span.start < day_end).collect();
+    segs.sort_by_key(|b| b.span.start);
+    for b in segs {
+        if b.span.start - t >= WINDOW_MIN {
+            return Some((t, b.span.start));
+        }
+        t = t.max(b.span.end);
+    }
+    (day_end - t >= WINDOW_MIN).then_some((t, day_end))
+}
+
+/// Женская форма для «свободна», «занята» (по-русски): фамилия на -ова/-ева/-ина/-ая…, иначе имя на -а/-я (кроме
+/// мужских: Никита, Илья…). Имя — «Фамилия Имя».
+pub(crate) fn feminine(name: &str) -> bool {
+    let words: Vec<String> = name.split_whitespace().map(|w| w.to_lowercase()).collect();
+    let surname = words.first().map(String::as_str).unwrap_or_default();
+    let endings = ["ова", "ева", "ёва", "ина", "ына", "ая", "яя", "ская", "цкая"]; // i18n-ok: окончания фамилий
+    if endings.iter().any(|e| surname.ends_with(e)) {
+        return true;
+    }
+    let men = ["никита", "илья", "кузьма", "фома", "лука", "савва", "данила", "гаврила", "фока"]; // i18n-ok: мужские имена на -а/-я
+    words.get(1).is_some_and(|given| (given.ends_with('а') || given.ends_with('я')) && !men.contains(&given.as_str())) // i18n-ok: окончания имён
+}
+
+/// Письмо «Последней переписки» (T2-40): строка кэша, от меня ли, полоса и метка первой категории.
+#[derive(Clone, Debug)]
+pub(crate) struct Letter {
+    pub(crate) row: EmailRow,
+    pub(crate) mine: bool,
+    pub(crate) stripe: Option<&'static str>,
+    pub(crate) chip: Option<(String, &'static str)>,
+}
+
+/// Последние письма с адресатом `email` из строк кэша: от него или ему (в «Кому» и «Копии»), новые первыми, не больше
+/// `n`. Вызывается в фоне по всем строкам (`Cache::scan`).
+pub(crate) struct Latest {
+    email: String,
+    n: usize,
+    pub(crate) rows: Vec<EmailRow>,
+}
+
+impl Latest {
+    pub(crate) fn new(email: &str, n: usize) -> Self {
+        Self { email: email.to_lowercase(), n, rows: Vec::new() }
+    }
+
+    pub(crate) fn push(&mut self, row: EmailRow, to: &postman_cache::Recipients) {
+        let hit = row.from_addr.eq_ignore_ascii_case(&self.email) || to.to.iter().chain(&to.cc).any(|a| a.eq_ignore_ascii_case(&self.email));
+        if !hit || self.rows.iter().any(|r| r.id == row.id) {
+            return;
+        }
+        let at = self.rows.partition_point(|r| r.received_at >= row.received_at);
+        if at < self.n {
+            self.rows.insert(at, row);
+            self.rows.truncate(self.n);
+        }
+    }
+}
+
 /// Пункт контекстного меню строки (T1-23): действия карточки правой панели.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MenuItem {
@@ -382,12 +526,14 @@ pub(crate) fn items(entries: &[Entry], shown: &[usize], letters: bool) -> Vec<It
 
 // --- форма карточки (без gpui) ---
 
-/// Текст полей формы.
+/// Текст полей формы (T2-44): фамилия и имя отдельно (в списках — «Фамилия Имя»), рабочий и мобильный телефоны.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct FormText {
-    pub(crate) name: String,
+    pub(crate) last: String,
+    pub(crate) first: String,
     pub(crate) emails: String,
     pub(crate) phones: String,
+    pub(crate) mobile: String,
     pub(crate) organization: String,
     pub(crate) title: String,
 }
@@ -408,14 +554,24 @@ impl FormError {
 }
 
 impl FormText {
+    /// Поля карточки: имя «Фамилия Имя» — первое слово в «Фамилию», остальное в «Имя».
     pub(crate) fn of(card: &ContactCard) -> Self {
+        let name = card.name.trim();
+        let (last, first) = name.split_once(char::is_whitespace).map_or((name, ""), |(l, f)| (l, f.trim()));
         Self {
-            name: card.name.clone(),
+            last: last.to_owned(),
+            first: first.to_owned(),
             emails: card.emails.join("; "),
             phones: card.phones.join("; "),
+            mobile: card.mobile.join("; "),
             organization: card.organization.clone(),
             title: card.title.clone(),
         }
+    }
+
+    /// Имя одной строкой, как в списках: «Фамилия Имя».
+    pub(crate) fn name(&self) -> String {
+        [self.last.trim(), self.first.trim()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ")
     }
 
     /// Карточка из полей (`id` — прежней карточки, у новой пустой): адреса и телефоны — через `;` или `,`.
@@ -424,11 +580,13 @@ impl FormText {
         if let Some(b) = bad.into_iter().next() {
             return Err(FormError::BadEmail(b));
         }
+        let numbers = |s: &str| -> Vec<String> { s.split([';', ',']).map(str::trim).filter(|p| !p.is_empty()).map(str::to_string).collect() };
         let card = ContactCard {
             id: id.to_string(),
-            name: self.name.trim().to_string(),
+            name: self.name(),
             emails: ok.into_iter().map(|a| a.email).collect(),
-            phones: self.phones.split([';', ',']).map(str::trim).filter(|p| !p.is_empty()).map(str::to_string).collect(),
+            phones: numbers(&self.phones),
+            mobile: numbers(&self.mobile),
             organization: self.organization.trim().to_string(),
             title: self.title.trim().to_string(),
             free_busy: None,
@@ -444,9 +602,11 @@ impl FormText {
 struct Form {
     /// Прежняя карточка (правка); `None` — новая.
     old: Option<ContactCard>,
-    name: Entity<InputState>,
+    last: Entity<InputState>,
+    first: Entity<InputState>,
     emails: Entity<InputState>,
     phones: Entity<InputState>,
+    mobile: Entity<InputState>,
     organization: Entity<InputState>,
     title: Entity<InputState>,
     error: Option<String>,
@@ -455,7 +615,15 @@ struct Form {
 impl Form {
     fn text(&self, cx: &App) -> FormText {
         let v = |s: &Entity<InputState>| s.read(cx).value().to_string();
-        FormText { name: v(&self.name), emails: v(&self.emails), phones: v(&self.phones), organization: v(&self.organization), title: v(&self.title) }
+        FormText {
+            last: v(&self.last),
+            first: v(&self.first),
+            emails: v(&self.emails),
+            phones: v(&self.phones),
+            mobile: v(&self.mobile),
+            organization: v(&self.organization),
+            title: v(&self.title),
+        }
     }
 }
 
@@ -526,19 +694,30 @@ pub(crate) enum ContactsAction {
         id: String,
         ticket: u64,
     },
-    /// Занятость адреса на сутки (`Command::Availability`).
+    /// Занятость адресов на сутки (`Command::Availability`): карточка «Сегодня» и присутствие в строках (T2-42).
     Availability {
         ticket: u64,
-        email: String,
+        emails: Vec<String>,
         from: i64,
         to: i64,
     },
+    /// «Последняя переписка» с адресом (T2-40): письма из кэша в фоне → [`ContactsView::set_letters`].
+    Letters {
+        ticket: u64,
+        email: String,
+    },
+    /// «Вся переписка» (T2-40): поиск `with:<адрес>` в почте.
+    AllMail(String),
+    /// Новое письмо без адресата (Ctrl+N без выбранной записи).
+    WriteBlank,
     /// Поиск в справочнике по строке (`Command::FindPeople`, S7-08): у Exchange справочник — только поиском.
     FindPeople(String),
     /// Новое письмо с адресом.
     Write(Address),
-    /// Вкладка встречи с этим участником.
-    Meet(Address),
+    /// Письмо «Последней переписки» — вкладкой (T2-40).
+    OpenLetter(Box<EmailRow>),
+    /// Вкладка встречи с этим участником; начало — ближайшее окно (T2-42), иначе по умолчанию.
+    Meet(Address, Option<i64>),
     Toast(Toast, String),
 }
 
@@ -550,6 +729,24 @@ struct Today {
     busy: Option<Option<Vec<Busy>>>,
 }
 
+/// Занятость сотрудников справочника сегодня — присутствие в строках (T2-42): адрес (в нижнем регистре) → занятость
+/// (`None` — не видна); спрошенные адреса и тикеты; день, на который спрошено.
+#[derive(Default)]
+struct Presences {
+    busy: HashMap<String, Option<Vec<Busy>>>,
+    asked: HashSet<String>,
+    tickets: HashSet<u64>,
+    day: i64,
+}
+
+/// «Последняя переписка» выбранного (T2-40): адрес, тикет, письма (`None` — ещё ищем).
+#[derive(Default)]
+struct Mail {
+    email: String,
+    ticket: u64,
+    letters: Option<Vec<Letter>>,
+}
+
 pub(crate) struct ContactsView {
     /// Экран в фокусе (T1-D): выбранная строка — тоном акцента, иначе нейтральной заливкой.
     pub(crate) focused: bool,
@@ -557,6 +754,8 @@ pub(crate) struct ContactsView {
     source: Source,
     mine: Vec<Entry>,
     directory: Vec<Entry>,
+    /// Списки рассылки справочника (T2-41): группы с адресом.
+    lists: Vec<Entry>,
     /// «Часто пишу»: адресаты из адресной книги по частоте и строки списка из них (S5-25) в выбранном порядке (T1-24).
     frequent_src: Vec<Frequent>,
     frequent: Vec<Entry>,
@@ -593,6 +792,12 @@ pub(crate) struct ContactsView {
     /// Мой адрес: «Внешний» у чужих доменов, заголовок источников.
     me: Option<String>,
     today: Today,
+    presence: Presences,
+    mail: Mail,
+    /// Запрос набран в другой раскладке (T2-45): как его поняли — подсказкой у поиска.
+    layout: Option<String>,
+    /// Когда пришёл справочник (T2-46, «Справочник обновлён ЧЧ:ММ»), Unix-секунды.
+    directory_at: Option<i64>,
     /// Контекстное меню строки (T1-23).
     menu: Option<RowMenu>,
     /// Адреса, чьи подробности уже спрошены (`PersonDetails`): карточка спрашивает один раз.
@@ -621,7 +826,8 @@ impl ContactsView {
             live: false,
             source: Source::Directory,
             mine: demo_mine(),
-            directory: demo_directory(),
+            directory: demo_directory().into_iter().filter(|e| e.kind != Kind::List).collect(),
+            lists: demo_directory().into_iter().filter(|e| e.kind == Kind::List).collect(),
             frequent_src: Vec::new(),
             frequent: Vec::new(),
             order: Order::default(),
@@ -645,12 +851,17 @@ impl ContactsView {
             want_first: false,
             me: Some(postman_demo::ME.to_string()),
             today: Today::default(),
+            presence: Presences::default(),
+            mail: Mail::default(),
+            layout: None,
+            directory_at: Some(jiff::Timestamp::now().as_second()),
             menu: None,
             details_asked: std::collections::HashSet::new(),
             tz: crate::prefs::get(cx).calendar.zone(),
             _subscriptions: vec![on_search],
         };
         this.reshow();
+        this.ask_presence(cx);
         this
     }
 
@@ -659,6 +870,10 @@ impl ContactsView {
         self.live = true;
         self.mine.clear();
         self.directory.clear();
+        self.lists.clear();
+        self.presence = Presences::default();
+        self.mail = Mail::default();
+        self.directory_at = None;
         self.loading = true;
         self.loaded = false;
         self.selected = None;
@@ -696,6 +911,7 @@ impl ContactsView {
         self.loading = false;
         self.pending = None;
         self.today.ticket = None;
+        self.presence.tickets.clear();
         cx.notify();
     }
 
@@ -707,6 +923,7 @@ impl ContactsView {
             Source::Mine => &self.mine,
             Source::Directory => &self.directory,
             Source::Frequent => &self.frequent,
+            Source::Lists => &self.lists,
         }
     }
 
@@ -729,6 +946,35 @@ impl ContactsView {
         if let Some(id) = first {
             self.select(id, cx);
         }
+    }
+
+    /// Списки рассылки с первым выбранным (снимок `contacts-lists`).
+    pub(crate) fn show_lists(&mut self, cx: &mut Context<Self>) {
+        self.set_source(Source::Lists, cx);
+        if let Some(id) = self.lists.first().map(|e| e.card.id.clone()) {
+            self.select(id, cx);
+        }
+    }
+
+    /// Снимок `contacts-busy` (T2-42): Петров Алексей занят от «сейчас» ещё 40 мин, затем под вопросом; Сидоров — вне
+    /// офиса три дня. Занятость — от времени снимка, чтобы строки были видны в любой час.
+    pub(crate) fn screen_busy(&mut self, cx: &mut Context<Self>) {
+        let now = jiff::Timestamp::now().as_second();
+        let b = |from: i64, to: i64, kind| Busy { span: Span::new(now + from * 60, now + to * 60), kind };
+        let petrov = vec![b(-20, 40, BusyKind::Busy), b(100, 160, BusyKind::Tentative)];
+        self.set_source(Source::Directory, cx);
+        self.select_email("a.petrov@corp.example", cx);
+        self.presence.busy.insert("a.petrov@corp.example".into(), Some(petrov.clone()));
+        self.presence.busy.insert("i.sidorov@corp.example".into(), Some(vec![b(-60, 3 * 24 * 60, BusyKind::Unavailable)]));
+        self.today = Today { email: "a.petrov@corp.example".into(), ticket: None, busy: Some(Some(petrov)) };
+        cx.notify();
+    }
+
+    /// Снимки: набрать `text` в поиске раздела (как с клавиатуры).
+    pub(crate) fn screen_search(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.search.update(cx, |s, cx| s.set_value(text.to_owned(), window, cx));
+        self.query = text.to_owned();
+        self.refilter(cx);
     }
 
     /// Открыт «Часто пишу» и в нём выбрана строка.
@@ -790,13 +1036,24 @@ impl ContactsView {
     fn reshow(&mut self) {
         let ru = !pets_i18n::current().lang().starts_with("en");
         self.frequent = frequent(&self.frequent_src, &self.directory, &self.mine, self.order, ru);
+        self.layout = None;
         if self.searching() {
-            // По всем трём источникам: справочник, мои, адресаты переписки (кого нет ни там, ни там).
-            let groups: [(Source, Vec<Entry>); 3] = [
+            // По всем источникам: справочник, мои, адресаты переписки (кого нет ни там, ни там), списки рассылки.
+            let groups: [(Source, Vec<Entry>); 4] = [
                 (Source::Directory, self.directory.clone()),
                 (Source::Mine, self.mine.clone()),
                 (Source::Frequent, self.frequent.iter().filter(|e| e.kind == Kind::Correspondent).cloned().collect()),
+                (Source::Lists, self.lists.clone()),
             ];
+            // Другая раскладка (T2-45): набранное как есть не подходит никому, а в другой раскладке — подходит.
+            if let Some(fixed) = postman_core::fuzzy::other_layout(self.query.trim()) {
+                let words = |q: &str| -> Vec<String> { normalize(q).split_whitespace().map(str::to_string).collect() };
+                let (typed, other) = (words(&self.query), words(&fixed));
+                let any = |w: &[String]| groups.iter().flat_map(|(_, g)| g).any(|e| w.iter().all(|x| e.matches_word(x)));
+                if !any(&typed) && any(&other) {
+                    self.layout = Some(fixed);
+                }
+            }
             self.pool.clear();
             self.items.clear();
             for (source, entries) in groups {
@@ -821,7 +1078,106 @@ impl ContactsView {
 
     fn refilter(&mut self, cx: &mut Context<Self>) {
         self.reshow();
+        self.ask_presence(cx);
         cx.notify();
+    }
+
+    /// Присутствие сотрудников справочника (T2-42): занятость сегодня — пачками, по разу на адрес в день. Демо — из
+    /// демо-недели.
+    fn ask_presence(&mut self, cx: &mut Context<Self>) {
+        let day = jiff::Zoned::now().with_time_zone(self.tz.clone()).date();
+        let (from, to) = (day_start(day, &self.tz), day_start(add_days(day, 1), &self.tz));
+        if self.presence.day != from {
+            self.presence = Presences { day: from, ..Presences::default() };
+        }
+        let want: Vec<String> = self
+            .directory
+            .iter()
+            .filter(|e| e.kind == Kind::Person)
+            .filter_map(|e| e.card.emails.first().map(|m| m.to_lowercase()))
+            .filter(|m| !self.presence.asked.contains(m))
+            .collect();
+        if want.is_empty() {
+            return;
+        }
+        self.presence.asked.extend(want.iter().cloned());
+        if !self.live {
+            let demo = postman_demo::calendar::colleagues();
+            for m in want {
+                let busy = demo.iter().find(|(_, e, _)| e.eq_ignore_ascii_case(&m)).map(|(_, _, b)| shift_to_today(b.clone(), from, &self.tz));
+                self.presence.busy.insert(m, busy);
+            }
+            return;
+        }
+        for chunk in want.chunks(PRESENCE_BATCH) {
+            let ticket = self.ticket();
+            self.presence.tickets.insert(ticket);
+            cx.emit(ContactsAction::Availability { ticket, emails: chunk.to_vec(), from, to });
+        }
+    }
+
+    /// Присутствие записи (T2-42): моя — «это вы»; сотрудник — по занятости сегодня; `None` — не человек справочника
+    /// или ответа ещё нет.
+    fn presence_of(&self, e: &Entry) -> Option<Presence> {
+        let email = e.card.emails.first()?.to_lowercase();
+        if self.me.as_deref().is_some_and(|m| m.eq_ignore_ascii_case(&email)) {
+            return Some(Presence::Me);
+        }
+        if e.kind != Kind::Person {
+            return None;
+        }
+        let busy = self.presence.busy.get(&email)?;
+        Some(presence(busy.as_deref(), jiff::Timestamp::now().as_second()))
+    }
+
+    /// Ближайшее окно выбранного сегодня (T2-42): по занятости «Сегодня» или строки.
+    fn window_of(&self, e: &Entry) -> Option<(i64, i64)> {
+        if self.presence_of(e) == Some(Presence::Me) || e.kind != Kind::Person {
+            return None;
+        }
+        let email = e.card.emails.first()?;
+        let busy = match &self.today.busy {
+            Some(Some(b)) if self.today.email.eq_ignore_ascii_case(email) => b.as_slice(),
+            _ => self.presence.busy.get(&email.to_lowercase())?.as_deref()?,
+        };
+        let day = day_start(jiff::Zoned::now().with_time_zone(self.tz.clone()).date(), &self.tz);
+        next_window(busy, jiff::Timestamp::now().as_second(), day, day + WORK_END * 3600)
+    }
+
+    /// «Последняя переписка» выбранного (T2-40): письма с его адресом — из кэша, в фоне (экран).
+    fn ask_letters(&mut self, cx: &mut Context<Self>) {
+        let Some(e) = self.selected_entry() else { return };
+        let Some(email) = e.card.emails.first().cloned().filter(|_| !matches!(e.kind, Kind::Room | Kind::Resource)) else {
+            self.mail = Mail::default();
+            return;
+        };
+        if self.mail.email.eq_ignore_ascii_case(&email) {
+            return;
+        }
+        let ticket = self.ticket();
+        self.mail = Mail { email: email.clone(), ticket, letters: None };
+        cx.emit(ContactsAction::Letters { ticket, email });
+    }
+
+    /// Письма «Последней переписки» пришли (экран, T2-40).
+    pub(crate) fn set_letters(&mut self, ticket: u64, letters: Vec<Letter>, cx: &mut Context<Self>) {
+        if self.mail.ticket == ticket {
+            self.mail.letters = Some(letters);
+            cx.notify();
+        }
+    }
+
+    /// Письма выбранного уже найдены (снимки).
+    pub(crate) fn letters_ready(&self) -> bool {
+        self.mail.email.is_empty() || self.mail.letters.is_some()
+    }
+
+    /// «Справочник обновлён ЧЧ:ММ» (T2-46) — в строке состояния раздела.
+    pub(crate) fn directory_status(&self) -> Option<String> {
+        let t = self.directory_at?;
+        let today = day_start(jiff::Zoned::now().with_time_zone(self.tz.clone()).date(), &self.tz);
+        let time = if t >= today { hm(t, &self.tz) } else { crate::format_date(t) };
+        Some(tr!("contacts-directory-updated", time = time))
     }
 
     pub(crate) fn set_source(&mut self, source: Source, cx: &mut Context<Self>) {
@@ -841,6 +1197,7 @@ impl ContactsView {
         self.mode = Mode::View;
         self.ask_today(cx);
         self.ask_details(cx);
+        self.ask_letters(cx);
         cx.notify();
     }
 
@@ -879,7 +1236,7 @@ impl ContactsView {
         }
         let ticket = self.ticket();
         self.today = Today { email: email.clone(), ticket: Some(ticket), busy: None };
-        cx.emit(ContactsAction::Availability { ticket, email, from, to });
+        cx.emit(ContactsAction::Availability { ticket, emails: vec![email], from, to });
     }
 
     /// Первая строка списка (снимок `contacts`); в справочнике пусто — первый личный контакт.
@@ -899,6 +1256,7 @@ impl ContactsView {
         self.selected = pick;
         self.mode = Mode::View;
         self.ask_today(cx);
+        self.ask_letters(cx);
         cx.notify();
     }
 
@@ -912,7 +1270,7 @@ impl ContactsView {
 
     /// Что показывать уже есть: демо — сразу, живой ящик — после ответа сервера.
     pub(crate) fn ready(&self) -> bool {
-        (!self.live || self.loaded) && (self.selected.is_some() || self.shown.is_empty()) && self.today.ticket.is_none()
+        (!self.live || self.loaded) && (self.selected.is_some() || self.shown.is_empty()) && self.today.ticket.is_none() && self.letters_ready()
     }
 
     /// Правка первого личного контакта (снимок `contact-edit`).
@@ -999,16 +1357,24 @@ impl ContactsView {
         self.address(self.selected.as_deref()?)
     }
 
+    /// «Написать» (Ctrl+N): письмо выбранному; без адреса — пустое письмо, как Ctrl+N в почте.
     pub(crate) fn write(&mut self, cx: &mut Context<Self>) {
-        if let Some(a) = self.selected_address() {
-            cx.emit(ContactsAction::Write(a));
+        match self.selected_address() {
+            Some(a) => cx.emit(ContactsAction::Write(a)),
+            None => cx.emit(ContactsAction::WriteBlank),
         }
     }
 
+    /// «Встреча» (Ctrl+Shift+Q): с выбранным, в ближайшее окно сегодня, если оно есть (T2-42).
     pub(crate) fn meet(&mut self, cx: &mut Context<Self>) {
-        if let Some(a) = self.selected_address() {
-            cx.emit(ContactsAction::Meet(a));
-        }
+        let Some(id) = self.selected.clone() else { return };
+        self.meet_with(&id, cx);
+    }
+
+    fn meet_with(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(a) = self.address(id) else { return };
+        let start = self.entry(id).and_then(|e| self.window_of(e)).map(|(s, _)| s);
+        cx.emit(ContactsAction::Meet(a, start));
     }
 
     pub(crate) fn copy_address(&mut self, cx: &mut Context<Self>) {
@@ -1086,7 +1452,7 @@ impl ContactsView {
                 let Some(a) = self.address(&id) else { return };
                 match it {
                     MenuItem::Write => cx.emit(ContactsAction::Write(a)),
-                    MenuItem::Meet => cx.emit(ContactsAction::Meet(a)),
+                    MenuItem::Meet => self.meet_with(&id, cx),
                     _ => self.copy(a, cx),
                 }
             }
@@ -1202,17 +1568,19 @@ impl ContactsView {
             }));
             state
         };
-        let name = field(text.name, Some("contacts-name-placeholder"), cx);
+        let last = field(text.last, None, cx);
+        let first = field(text.first, None, cx);
         let emails = field(text.emails, Some("contacts-emails-placeholder"), cx);
         let phones = field(text.phones, Some("contacts-phones-placeholder"), cx);
+        let mobile = field(text.mobile, Some("contacts-phones-placeholder"), cx);
         let organization = field(text.organization, None, cx);
         let title = field(text.title, None, cx);
-        name.update(cx, |s, cx| s.focus(window, cx));
+        last.update(cx, |s, cx| s.focus(window, cx));
         if old.is_none() {
             self.set_source(Source::Mine, cx);
         }
         self.pending = None;
-        self.mode = Mode::Edit(Box::new(Form { old, name, emails, phones, organization, title, error: None }));
+        self.mode = Mode::Edit(Box::new(Form { old, last, first, emails, phones, mobile, organization, title, error: None }));
         cx.notify();
     }
 
@@ -1297,30 +1665,23 @@ impl ContactsView {
                 self.error = None;
             }
             SyncEvent::DirectoryLoaded(people) if self.live => {
-                self.directory = people.iter().cloned().map(Entry::from_principal).collect();
-                sort(&mut self.directory);
+                self.directory.clear();
+                self.lists.clear();
+                self.add_people(people);
+                self.directory_at = Some(jiff::Timestamp::now().as_second());
             }
             // Страница справочника (T1-25г): к показанному, без повторов.
             SyncEvent::DirectoryPage { offset, people, total, search_only, .. } if self.live => {
                 if !self.pages.got(*offset, people.len() as u32, *total, *search_only) {
                     return;
                 }
-                for p in people {
-                    if !self.directory.iter().any(|e| e.card.id == p.id) {
-                        self.directory.push(Entry::from_principal(p.clone()));
-                    }
+                self.add_people(people);
+                if *offset == 0 {
+                    self.directory_at = Some(jiff::Timestamp::now().as_second());
                 }
-                sort(&mut self.directory);
             }
             // Найденное поиском в справочнике (Exchange) — к уже показанному, без повторов.
-            SyncEvent::PeopleFound { people, .. } if self.live && !people.is_empty() => {
-                for p in people {
-                    if !self.directory.iter().any(|e| e.card.id == p.id) {
-                        self.directory.push(Entry::from_principal(p.clone()));
-                    }
-                }
-                sort(&mut self.directory);
-            }
+            SyncEvent::PeopleFound { people, .. } if self.live && !people.is_empty() => self.add_people(people),
             // Подробности человека (S7-08б): телефон, должность и отдел — в пустые поля его карточек справочника.
             SyncEvent::PersonDetails { email, person: Some(p) } if self.live => {
                 for e in self.directory.iter_mut().filter(|e| e.card.emails.iter().any(|m| m.eq_ignore_ascii_case(email))) {
@@ -1334,7 +1695,19 @@ impl ContactsView {
                     if card.organization.is_empty() {
                         card.organization = p.department.trim().to_owned();
                     }
+                    if card.mobile.is_empty() && !p.mobile.trim().is_empty() {
+                        card.mobile = vec![p.mobile.trim().to_owned()];
+                        card.phones.retain(|n| n != p.mobile.trim());
+                    }
+                    let mut office = e.office.clone();
+                    if office.manager.is_empty() {
+                        office.manager = p.manager.trim().to_owned();
+                    }
+                    if office.room.is_empty() {
+                        office.room = p.office.trim().to_owned();
+                    }
                     *e = Entry::new(card, e.kind);
+                    e.office = office;
                 }
             }
             SyncEvent::Me { address, .. } => {
@@ -1344,14 +1717,24 @@ impl ContactsView {
             }
             SyncEvent::Availability { ticket, people, .. } if self.today.ticket == Some(*ticket) => {
                 self.today.ticket = None;
-                self.today.busy = Some(people.first().and_then(|(_, b)| b.clone()));
+                let busy = people.first().and_then(|(_, b)| b.clone());
+                self.presence.busy.insert(self.today.email.to_lowercase(), busy.clone());
+                self.today.busy = Some(busy);
+                cx.notify();
+                return;
+            }
+            // Присутствие в строках (T2-42).
+            SyncEvent::Availability { ticket, people, .. } if self.presence.tickets.remove(ticket) => {
+                for (email, busy) in people {
+                    self.presence.busy.insert(email.to_lowercase(), busy.clone());
+                }
                 cx.notify();
                 return;
             }
             SyncEvent::ContactSaved { ticket, id } if self.pending == Some(*ticket) => {
                 self.pending = None;
                 let name = match &self.mode {
-                    Mode::Edit(f) => f.text(cx).name,
+                    Mode::Edit(f) => f.text(cx).name(),
                     _ => String::new(),
                 };
                 self.mode = Mode::View;
@@ -1389,12 +1772,25 @@ impl ContactsView {
         }
     }
 
+    /// Люди справочника — к показанным, без повторов: списки рассылки (T2-41) — отдельно.
+    fn add_people(&mut self, people: &[Principal]) {
+        for p in people {
+            let e = Entry::from_principal(p.clone());
+            let to = if e.kind == Kind::List { &mut self.lists } else { &mut self.directory };
+            if !to.iter().any(|x| x.card.id == e.card.id) {
+                to.push(e);
+            }
+        }
+        sort(&mut self.directory);
+        sort(&mut self.lists);
+    }
+
     // --- слева: источники ---
 
     fn nav(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let l = crate::roles::look(cx);
         let item = |id: &'static str, key: &str, n: usize, source: Source, cx: &mut Context<Self>| {
-            let on = self.source == source;
+            let on = self.source == source && !self.searching();
             div()
                 .id(id)
                 .h(px(32.))
@@ -1412,6 +1808,33 @@ impl ContactsView {
                 .on_click(cx.listener(move |this, _, _, cx| this.set_source(source, cx)))
         };
         let account = self.me.clone().unwrap_or_else(|| tr!("contacts-account"));
+        // Списки рассылки справочника (T2-41): первые по имени — строками с адресом, остальные — «ещё N».
+        let caption = |text: String| div().text_size(px(12.)).text_color(l.text2()).px(px(8.)).pt(px(12.)).pb(px(4.)).truncate().child(text);
+        let list_item = |ix: usize, e: &Entry, cx: &mut Context<Self>| {
+            let on = !self.searching() && self.source == Source::Lists && self.selected.as_deref() == Some(e.card.id.as_str());
+            let id = e.card.id.clone();
+            div()
+                .id(("src-list", ix))
+                .h(px(30.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .px(px(8.))
+                .rounded(px(4.))
+                .cursor_pointer()
+                .when(on, |d| d.bg(l.panel()).font_weight(FontWeight::SEMIBOLD))
+                .when(!on, |d| d.hover(|d| d.bg(l.hover())))
+                .child(icon(g::MAIL, 14.).text_color(l.text2()))
+                .child(div().flex_1().min_w_0().truncate().child(e.card.emails.first().cloned().unwrap_or_else(|| e.name())))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.set_source(Source::Lists, cx);
+                    this.select(id.clone(), cx);
+                }))
+        };
+        const LIST_ITEMS: usize = 4;
+        let lists: Vec<AnyElement> = self.lists.iter().take(LIST_ITEMS).enumerate().map(|(i, e)| list_item(i, e, cx).into_any_element()).collect();
+        let more = (self.lists.len() > LIST_ITEMS).then(|| item("src-lists", "contacts-lists-all", self.lists.len(), Source::Lists, cx));
         div()
             .w(px(NAV_W))
             .flex_none()
@@ -1428,6 +1851,7 @@ impl ContactsView {
             .child(div().text_size(px(12.)).text_color(l.text2()).px(px(8.)).pt(px(12.)).pb(px(4.)).truncate().child(account))
             .child(item("src-dir", "contacts-directory", self.pages.total.map_or(self.directory.len(), |t| t as usize), Source::Directory, cx))
             .child(item("src-mine", "contacts-mine", self.mine.len(), Source::Mine, cx))
+            .when(!lists.is_empty(), |d| d.child(caption(tr!("contacts-lists"))).children(lists).children(more))
             .when(self.loading, |d| d.child(div().px(px(8.)).pt(px(6.)).text_size(px(12.)).text_color(l.text2()).child(tr!("contacts-loading"))))
             .child(div().flex_1())
             .child(
@@ -1457,6 +1881,7 @@ impl ContactsView {
             Source::Mine => "contacts-mine",
             Source::Directory => "contacts-directory",
             Source::Frequent => "contacts-frequent",
+            Source::Lists => "contacts-lists",
         });
         let summary = match self.source {
             _ if searching => tr!("contacts-found", n = self.shown.len()),
@@ -1484,7 +1909,40 @@ impl ContactsView {
             .border_b_1()
             .border_color(l.border())
             .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
-            .child(div().text_size(px(12.)).text_color(l.text2()).child(summary))
+            // Исправленная раскладка (T2-45): «rjd → ков», крестик — сбросить поиск.
+            .when_some(self.layout.clone().filter(|_| searching), |d, fixed| {
+                d.child(
+                    div()
+                        .h(px(24.))
+                        .pl(px(8.))
+                        .pr(px(2.))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(px(4.))
+                        .rounded(px(12.))
+                        .bg(l.fill())
+                        .text_size(px(12.))
+                        .child(format!("{} → {fixed}", self.query.trim()))
+                        .child(
+                            div()
+                                .id("layout-reset")
+                                .size(px(20.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_full()
+                                .cursor_pointer()
+                                .hover(|d| d.bg(l.hover()))
+                                .child(icon(g::CANCEL, 8.))
+                                .tooltip(|window, cx| crate::screens::tip(tr!("contacts-layout-reset"), window, cx))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.escape(window, cx);
+                                })),
+                        ),
+                )
+            })
+            .child(div().text_size(px(12.)).text_color(l.text2()).truncate().child(summary))
             .child(div().flex_1())
             .child(if self.source == Source::Frequent && !searching {
                 self.order_picker(&l, cx).into_any_element()
@@ -1640,11 +2098,21 @@ impl ContactsView {
                     Source::Directory => "contacts-directory",
                     Source::Mine => "contacts-mine",
                     Source::Frequent => "contacts-group-correspondents",
+                    Source::Lists => "contacts-lists",
                 })))
                 .child(div().text_color(l.text2()).child(n.to_string()))
                 .into_any_element(),
             Some(Item::Row(i)) => match self.entries().get(i) {
-                Some(e) => row(ix, e, self.selected.as_deref() == Some(e.card.id.as_str()), self.focused, self.external(e), &l, cx),
+                Some(e) => {
+                    let state = RowState {
+                        selected: self.selected.as_deref() == Some(e.card.id.as_str()),
+                        focused: self.focused,
+                        external: self.external(e),
+                        presence: self.presence_of(e),
+                        tz: self.tz.clone(),
+                    };
+                    row(ix, e, state, &l, cx)
+                }
                 None => div().into_any_element(),
             },
             None => div().into_any_element(),
@@ -1707,11 +2175,12 @@ impl ContactsView {
             _ => (tr!("contacts-badge-directory"), tr!("contacts-add-mine")),
         };
         let second = if !c.title.is_empty() { c.title.clone() } else { e.kind.label() };
+        let presence = self.presence_of(e);
         let head = div()
             .flex()
             .items_center()
             .gap(px(16.))
-            .child(avatar(&e.name(), 64., &l))
+            .child(div().relative().flex_none().child(avatar(&e.name(), 64., &l)).children(presence.map(|p| dot(p, 14., 1., l.panel(), &l))))
             .child(
                 div()
                     .flex_1()
@@ -1741,32 +2210,47 @@ impl ContactsView {
                             .on_click(cx.listener(|this, _, window, cx| this.edit(window, cx))),
                     ),
             );
+        // Присутствие (T2-42): «Занят до 15:00 · ближайшее окно 15:00–16:30».
+        let window = self.window_of(e);
+        let presence_line = presence.filter(|p| !matches!(p, Presence::Me | Presence::Hidden)).map(|p| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .mt(px(-6.))
+                .child(dot(p, 10., 0., l.panel(), &l))
+                .child(div().font_weight(FontWeight::SEMIBOLD).child(presence_text(p, feminine(&e.name()), true, &self.tz)))
+                .when_some(window, |d, (from, to)| {
+                    d.child(div().text_color(l.text2()).child(tr!("contacts-window", from = hm(from, &self.tz), to = hm(to, &self.tz))))
+                })
+        });
         let has_mail = !c.emails.is_empty();
         let actions = div().flex().flex_wrap().gap(px(8.)).when(has_mail, |d| {
-            d.child(
-                crate::buttons::primary("contact-write", &l)
-                    .child(icon(g::MAIL, 14.))
-                    .child(tr!("contacts-write"))
-                    .on_click(cx.listener(|this, _, _, cx| this.write(cx))),
-            )
-            .child(
-                crate::buttons::secondary("contact-meet", &l)
-                    .child(icon(g::CALENDAR, 14.))
-                    .child(tr!("contacts-meet"))
-                    .on_click(cx.listener(|this, _, _, cx| this.meet(cx))),
-            )
-            .child(
-                crate::buttons::secondary("contact-copy", &l)
-                    .child(icon(g::COPY, 14.))
-                    .child(tr!("contacts-copy"))
-                    .on_click(cx.listener(|this, _, _, cx| this.copy_address(cx))),
-            )
+            let write = crate::buttons::primary("contact-write", &l)
+                .child(icon(g::MAIL, 14.))
+                .child(tr!("contacts-write"))
+                .on_click(cx.listener(|this, _, _, cx| this.write(cx)));
+            let meet = crate::buttons::secondary("contact-meet", &l)
+                .child(icon(g::CALENDAR, 14.))
+                .child(tr!("contacts-meet"))
+                .on_click(cx.listener(|this, _, _, cx| this.meet(cx)));
+            let copy = crate::buttons::secondary("contact-copy", &l)
+                .child(icon(g::COPY, 14.))
+                .child(tr!("contacts-copy"))
+                .on_click(cx.listener(|this, _, _, cx| this.copy_address(cx)));
+            // Клавиши (T2-43) — подсказкой и KeyTips, не в тексте кнопок.
+            let meet_on = crate::features::available("contacts.meeting", crate::features::get(cx));
+            d.child(crate::keytips::command(write, "contacts.write", Some(tr!("contacts-write")), &l, cx))
+                .when(meet_on, |d| d.child(crate::keytips::command(meet, "contacts.meeting", Some(tr!("contacts-meet")), &l, cx)))
+                .child(crate::keytips::command(copy, "contacts.copy_address", Some(tr!("contacts-copy")), &l, cx))
         });
         let cell = |label: &str, values: Vec<AnyElement>| {
             div().min_w_0().flex().flex_col().gap(px(2.)).child(div().text_size(px(12.)).text_color(l.text2()).child(tr!(label))).children(values)
         };
         let plain = |s: &String| div().truncate().child(s.clone()).into_any_element();
         let dash = || div().text_color(l.text3()).child("—").into_any_element();
+        let one = |s: &String| if s.trim().is_empty() { dash() } else { plain(s) };
+        let many = |list: &[String]| if list.is_empty() { vec![dash()] } else { list.iter().map(plain).collect() };
         let emails: Vec<AnyElement> = c
             .emails
             .iter()
@@ -1783,17 +2267,54 @@ impl ContactsView {
                     .into_any_element()
             })
             .collect();
-        let phones: Vec<AnyElement> = c.phones.iter().map(plain).collect();
-        let grid_rows = [
-            ("contacts-emails", if emails.is_empty() { vec![dash()] } else { emails }),
-            ("contacts-phones", if phones.is_empty() { vec![dash()] } else { phones }),
-            ("contacts-organization", vec![if c.organization.is_empty() { dash() } else { plain(&c.organization) }]),
-            ("contacts-title", vec![if c.title.is_empty() { dash() } else { plain(&c.title) }]),
-        ];
-        let mut cells: Vec<AnyElement> = grid_rows.into_iter().map(|(k, v)| cell(k, v).into_any_element()).collect();
-        if !mine {
-            cells.push(cell("contacts-kind", vec![div().child(e.kind.label()).into_any_element()]).into_any_element());
+        let emails = if emails.is_empty() { vec![dash()] } else { emails };
+        // «Руководитель» (T2-44): есть в справочнике — ссылкой на его карточку.
+        let manager = || -> AnyElement {
+            let name = e.office.manager.trim();
+            let boss = self.directory.iter().find(|d| d.kind == Kind::Person && d.name().eq_ignore_ascii_case(name)).map(|d| d.card.id.clone());
+            match boss {
+                _ if name.is_empty() => dash(),
+                Some(id) => div()
+                    .id("card-manager")
+                    .truncate()
+                    .text_color(l.accent_text())
+                    .cursor_pointer()
+                    .child(name.to_owned())
+                    .on_click(cx.listener(move |this, _, _, cx| this.select_person(id.clone(), cx)))
+                    .into_any_element(),
+                None => plain(&name.to_owned()),
+            }
+        };
+        let kind = || vec![div().child(e.kind.label()).into_any_element()];
+        // Поля в две колонки, как в макете: у сотрудника — почта, руководитель, телефоны, отдел, кабинет; у личного —
+        // почта, организация, телефоны; у переговорной, списка и адресата переписки — почта и тип.
+        let cells: Vec<AnyElement> = match e.kind {
+            Kind::Person => vec![
+                cell("contacts-emails", emails),
+                cell("contacts-manager", vec![manager()]),
+                cell("contacts-work-phone", many(&c.phones)),
+                cell("contacts-mobile", many(&c.mobile)),
+                cell("contacts-department", vec![one(&c.organization)]),
+                cell("contacts-office", vec![one(&e.office.room)]),
+            ],
+            Kind::Contact => vec![
+                cell("contacts-emails", emails),
+                cell("contacts-organization", vec![one(&c.organization)]),
+                cell("contacts-work-phone", many(&c.phones)),
+                cell("contacts-mobile", many(&c.mobile)),
+            ],
+            Kind::Room | Kind::Resource => {
+                let mut v = vec![cell("contacts-emails", emails), cell("contacts-kind", kind())];
+                if !e.office.room.is_empty() {
+                    v.push(cell("contacts-office", vec![plain(&e.office.room)]));
+                }
+                v
+            }
+            Kind::List | Kind::Correspondent => vec![cell("contacts-emails", emails), cell("contacts-kind", kind())],
         }
+        .into_iter()
+        .map(IntoElement::into_any_element)
+        .collect();
         // Две колонки.
         let mut left = Vec::new();
         let mut right = Vec::new();
@@ -1809,7 +2330,10 @@ impl ContactsView {
             .border_color(l.border())
             .child(div().flex_1().min_w_0().flex().flex_col().gap(px(12.)).children(left))
             .child(div().flex_1().min_w_0().flex().flex_col().gap(px(12.)).children(right));
-        let today = (!mine).then(|| self.today_block(e, &l, cx));
+        let today = matches!(e.kind, Kind::Person | Kind::Room | Kind::Resource).then(|| self.today_block(e, window, &l, cx).into_any_element());
+        // Список рассылки (T2-41): состава сервер не даёт.
+        let members = (e.kind == Kind::List).then(|| div().text_size(px(12.)).text_color(l.text2()).child(tr!("contacts-list-members")));
+        let letters = (has_mail && !matches!(e.kind, Kind::Room | Kind::Resource)).then(|| self.letters_block(&l, cx).into_any_element());
         div()
             .flex()
             .flex_col()
@@ -1828,16 +2352,121 @@ impl ContactsView {
                     .pt(px(20.))
                     .pb(px(16.))
                     .child(head)
+                    .children(presence_line)
                     .child(actions)
                     .child(fields)
+                    .children(members)
                     .children(today)
+                    .children(letters)
                     .when(!mine, |d| d.child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("contacts-readonly")))),
             )
             .into_any_element()
     }
 
+    /// Сотрудник справочника по щелчку «Руководителя»: из другого источника — в «Справочник компании».
+    fn select_person(&mut self, id: String, cx: &mut Context<Self>) {
+        if !self.entries().iter().any(|e| e.card.id == id) {
+            if !self.query.is_empty() {
+                self.query.clear();
+            }
+            self.set_source(Source::Directory, cx);
+        }
+        self.select(id, cx);
+    }
+
+    /// «Последняя переписка» (T2-40): последние письма с адресатом — полоса категории, отправитель («Вы» — от меня),
+    /// метка категории, скрепка, время, тема; непрочитанное — жирным. «Вся переписка» — поиск `with:` в почте.
+    fn letters_block(&self, l: &Look, cx: &mut Context<Self>) -> impl IntoElement {
+        let email = self.mail.email.clone();
+        let head = div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(div().font_weight(FontWeight::SEMIBOLD).child(tr!("contacts-recent-mail")))
+            .child(div().flex_1())
+            .child(
+                div()
+                    .id("all-mail")
+                    .relative()
+                    .children(crate::screens::spot("all-mail"))
+                    .text_size(px(12.))
+                    .text_color(l.accent_text())
+                    .cursor_pointer()
+                    .child(tr!("contacts-all-mail"))
+                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(ContactsAction::AllMail(email.clone())))),
+            );
+        let note = |text: String| div().p(px(14.)).text_color(l.text2()).child(text).into_any_element();
+        let rows: Vec<AnyElement> = match &self.mail.letters {
+            None => vec![note(tr!("contacts-mail-loading"))],
+            Some(list) if list.is_empty() => vec![note(tr!("contacts-no-mail"))],
+            Some(list) => list
+                .iter()
+                .enumerate()
+                .map(|(i, m)| {
+                    let r = &m.row;
+                    let unread = !r.seen;
+                    let from = if m.mine {
+                        tr!("contacts-you")
+                    } else if r.from_name.is_empty() {
+                        r.from_addr.clone()
+                    } else {
+                        r.from_name.clone()
+                    };
+                    let subject = r.subject.clone();
+                    let stripe = m.stripe.map(|k| l.cat(k).dot).unwrap_or(l.none());
+                    let chip = m.chip.as_ref().map(|(name, color)| {
+                        let k = l.cat(color);
+                        div().flex_none().px(px(6.)).rounded(px(4.)).bg(k.bg).text_color(k.text).text_size(px(11.)).child(name.clone())
+                    });
+                    let row = r.clone();
+                    div()
+                        .id(("letter", i))
+                        .w_full()
+                        .flex()
+                        .gap(px(10.))
+                        .pr(px(12.))
+                        .py(px(7.))
+                        .when(i + 1 < list.len(), |d| d.border_b_1().border_color(l.border()))
+                        .cursor_pointer()
+                        .hover(|d| d.bg(l.row_hover()))
+                        .child(div().w(px(4.)).flex_none().rounded_r(px(2.)).bg(stripe))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(6.))
+                                        .child(div().min_w(px(60.)).truncate().when(unread, |d| d.font_weight(FontWeight::SEMIBOLD)).child(from))
+                                        .child(div().flex_1())
+                                        .children(chip)
+                                        .when(r.has_attachment, |d| d.child(icon(crate::chrome::glyph::ATTACH, 12.).text_color(l.text2())))
+                                        .child(div().flex_none().text_size(px(12.)).text_color(l.text2()).child(crate::format_date(r.received_at))),
+                                )
+                                .child(
+                                    div().truncate().when(unread, |d| d.text_color(l.accent_text()).font_weight(FontWeight::SEMIBOLD)).child(subject),
+                                ),
+                        )
+                        .on_click(cx.listener(move |_, _, _, cx| cx.emit(ContactsAction::OpenLetter(Box::new(row.clone())))))
+                        .into_any_element()
+                })
+                .collect(),
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(head)
+            .child(div().border_1().border_color(l.border()).rounded(px(6.)).overflow_hidden().children(rows))
+    }
+
     /// «Сегодня»: занятость сотрудника или переговорной на день (без названий встреч).
-    fn today_block(&self, e: &Entry, l: &Look, cx: &mut Context<Self>) -> impl IntoElement {
+    fn today_block(&self, e: &Entry, window: Option<(i64, i64)>, l: &Look, cx: &mut Context<Self>) -> impl IntoElement {
         let day = jiff::Zoned::now().with_time_zone(self.tz.clone());
         let start = day_start(day.date(), &self.tz);
         let range = Span::new(start + DAY_FROM * 3600, start + DAY_TO * 3600);
@@ -1849,12 +2478,19 @@ impl ContactsView {
             .child(div().font_weight(FontWeight::SEMIBOLD).child(tr!("cal-today")))
             .child(div().text_size(px(12.)).text_color(l.text2()).child(crate::calendar::long_day(day.date())))
             .child(div().flex_1())
-            .when(!e.card.emails.is_empty(), |d| {
+            .when(!e.card.emails.is_empty() && self.presence_of(e) != Some(Presence::Me), |d| {
+                // Ближайшее окно (T2-42): «Встреча в 15:00» — встреча с этого времени.
+                let label = match window {
+                    Some((from, _)) => tr!("contacts-meet-at", time = hm(from, &self.tz)),
+                    None => tr!(if e.kind == Kind::Room { "contacts-book-room" } else { "contacts-meet" }),
+                };
                 d.child(
                     crate::buttons::secondary("today-meet", l)
+                        .relative()
+                        .children(crate::screens::spot("today-meet"))
                         .h(px(26.))
                         .text_size(px(12.))
-                        .child(tr!(if e.kind == Kind::Room { "contacts-book-room" } else { "contacts-meet" }))
+                        .child(label)
                         .on_click(cx.listener(|this, _, _, cx| this.meet(cx))),
                 )
             });
@@ -1987,10 +2623,28 @@ impl ContactsView {
                             .child(div().text_color(l.text2()).child(note)),
                     ),
             )
-            .child(div().flex().child(field("contacts-name", &f.name)))
+            // Поля по макету (T2-44): фамилия и имя, организация и должность, почта, рабочий и мобильный, книга.
+            .child(div().flex().gap(px(16.)).child(field("contacts-last-name", &f.last)).child(field("contacts-first-name", &f.first)))
             .child(div().flex().gap(px(16.)).child(field("contacts-organization", &f.organization)).child(field("contacts-title", &f.title)))
             .child(div().flex().child(field("contacts-emails", &f.emails)))
-            .child(div().flex().child(field("contacts-phones", &f.phones)))
+            .child(div().flex().gap(px(16.)).child(field("contacts-work-phone", &f.phones)).child(field("contacts-mobile", &f.mobile)))
+            .child(
+                // Адресная книга: Postman пишет в «Мои контакты» (книга сервера по умолчанию) — только показ.
+                div().flex().flex_col().gap(px(4.)).child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("contacts-book"))).child(
+                    div()
+                        .h(px(32.))
+                        .px(px(10.))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .rounded(l.px(Metric::RadiusControl))
+                        .border_1()
+                        .border_color(l.stroke())
+                        .text_color(l.text2())
+                        .child(icon(crate::chrome::glyph::CONTACTS, 14.))
+                        .child(tr!("contacts-mine")),
+                ),
+            )
             .child(div().text_size(px(12.)).line_height(px(17.)).text_color(l.text2()).child(tr!("contacts-form-hint")))
             .when_some(f.error.clone(), |d, e| d.child(div().text_color(l.error()).child(e)))
             .child(
@@ -2010,8 +2664,62 @@ impl ContactsView {
     }
 }
 
-/// Строка списка: кружок с буквами, имя, ниже — должность и организация или адрес (тип у переговорных).
-fn row(ix: usize, e: &Entry, selected: bool, focused: bool, external: bool, l: &Look, cx: &mut Context<ContactsView>) -> AnyElement {
+/// Цвет присутствия (T2-42): свободен — зелёный, занят — цвет занятости, вне офиса — цвет отсутствия; скрыто —
+/// серое кольцо.
+fn presence_color(p: Presence, l: &Look) -> Hsla {
+    match p {
+        Presence::Me | Presence::Free => l.success(),
+        Presence::Busy(_) => l.pm(Pm::FbBusy),
+        Presence::Away(_) => l.pm(Pm::FbOof),
+        Presence::Hidden => l.text3(),
+    }
+}
+
+/// Точка присутствия `size` px (скрытая занятость — серое кольцо); `ring` — у кружка: в углу, с обводкой 2 px цветом
+/// фона `bg`, на `ring` px от края.
+fn dot(p: Presence, size: f32, ring: f32, bg: Hsla, l: &Look) -> Div {
+    let color = presence_color(p, l);
+    let inner = div().size(px(size)).flex_none().rounded_full();
+    let inner = if p == Presence::Hidden { inner.bg(bg).border(px(2.)).border_color(color) } else { inner.bg(color) };
+    if ring > 0. { div().absolute().right(px(ring - 2.)).bottom(px(ring - 2.)).p(px(2.)).rounded_full().bg(bg).child(inner) } else { inner }
+}
+
+/// Текст присутствия: в строке — «занят до 15:00», в карточке (`long`) — «Занят до 15:00»; `f` — женская форма.
+fn presence_text(p: Presence, f: bool, long: bool, tz: &TimeZone) -> String {
+    let f = if f { "yes" } else { "no" };
+    let until = |t: i64| {
+        let today = day_start(jiff::Zoned::now().with_time_zone(tz.clone()).date(), tz);
+        match crate::calendar::zoned(t, tz) {
+            Some(z) if t >= today + 86_400 => tr!("contacts-presence-date", day = z.day(), month = tr!("cal-month-of", m = z.month())),
+            _ => hm(t, tz),
+        }
+    };
+    match (p, long) {
+        (Presence::Me, _) => tr!("contacts-presence-me"),
+        (Presence::Free, false) => tr!("contacts-presence-free", f = f),
+        (Presence::Free, true) => tr!("contacts-presence-free-long", f = f),
+        (Presence::Busy(t), false) => tr!("contacts-presence-busy", f = f, time = until(t)),
+        (Presence::Busy(t), true) => tr!("contacts-presence-busy-long", f = f, time = until(t)),
+        (Presence::Away(t), false) => tr!("contacts-presence-away", time = until(t)),
+        (Presence::Away(t), true) => tr!("contacts-presence-away-long", time = until(t)),
+        (Presence::Hidden, _) => tr!("contacts-presence-hidden"),
+    }
+}
+
+/// Состояние строки списка.
+struct RowState {
+    selected: bool,
+    focused: bool,
+    external: bool,
+    /// Присутствие сотрудника (T2-42): точка у кружка и текст справа.
+    presence: Option<Presence>,
+    tz: TimeZone,
+}
+
+/// Строка списка: кружок с буквами (и точкой присутствия), имя, ниже — должность и организация или адрес (тип у
+/// переговорных), справа — присутствие.
+fn row(ix: usize, e: &Entry, state: RowState, l: &Look, cx: &mut Context<ContactsView>) -> AnyElement {
+    let RowState { selected, focused, external, presence, tz } = state;
     let name = e.name();
     let email = e.card.emails.first().filter(|m| !m.eq_ignore_ascii_case(&name)).cloned();
     let second = match (e.kind, e.card.title.as_str(), e.card.organization.as_str(), email) {
@@ -2043,7 +2751,10 @@ fn row(ix: usize, e: &Entry, selected: bool, focused: bool, external: bool, l: &
         // Как строка писем (T1-D): тон акцента в фокусе, нейтральная без; полоса — акцент или цвет подписей.
         .when(selected, |d| d.bg(l.row_fill(focused)).child(div().absolute().left_0().top_0().bottom_0().w(px(3.)).bg(l.row_strip(focused))))
         .when(!selected, |d| d.hover(|d| d.bg(l.row_hover())))
-        .child(avatar(&name, 36., l))
+        .child(div().relative().flex_none().child(avatar(&name, 36., l)).children(presence.map(|p| {
+            let bg = if selected { l.row_fill(focused) } else { l.panel() };
+            dot(p, 8., 0.5, bg, l)
+        })))
         .child(
             div()
                 .flex_1()
@@ -2055,6 +2766,16 @@ fn row(ix: usize, e: &Entry, selected: bool, focused: bool, external: bool, l: &
                 .child(div().truncate().text_size(px(12.)).text_color(l.text2()).child(second)),
         )
         .when(matches!(e.kind, Kind::Room | Kind::Resource), |d| d.child(icon(g::PIN, 12.).text_color(l.text2())))
+        .when(e.kind == Kind::List, |d| d.child(icon(g::MAIL, 12.).text_color(l.text2())))
+        .when_some(presence, |d, p| {
+            let color = match p {
+                Presence::Me | Presence::Hidden => l.text2(),
+                Presence::Free => l.success(),
+                Presence::Busy(_) => l.accent_text(),
+                Presence::Away(_) => l.text2(),
+            };
+            d.child(div().flex_none().text_size(px(12.)).text_color(color).child(presence_text(p, feminine(&e.name()), false, &tz)))
+        })
         .when(external, |d| d.child(chip_outline(tr!("cal-external"), l)))
         .on_click(cx.listener(move |this, _, _, cx| this.select(id.clone(), cx)))
         // Правая кнопка — меню действий карточки над этой строкой (T1-23); выбор в панели не меняется.
@@ -2139,12 +2860,15 @@ impl Render for ContactsBar {
         let kind = c.selected_entry().map(|e| e.kind);
         let has_mail = c.selected_entry().is_some_and(|e| !e.card.emails.is_empty());
         let search_state = c.search.clone();
-        let action = |id: &'static str, glyph: char, key: &str, on: bool, act: fn() -> Box<dyn Action>| {
-            crate::chrome::quiet_button(id, &l)
+        let layout = c.layout.clone().filter(|_| c.searching());
+        // Клавиши (T2-43) — подсказкой и KeyTips у кнопок, не в тексте.
+        let action = |id: &'static str, command: &'static str, glyph: char, key: &str, on: bool, act: fn() -> Box<dyn Action>| {
+            let el = crate::chrome::quiet_button(id, &l)
                 .child(icon(glyph, 16.))
                 .child(tr!(key))
                 .when(!on, |d| d.opacity(0.45))
-                .on_click(move |_, window, cx| window.dispatch_action(act(), cx))
+                .on_click(move |_, window, cx| window.dispatch_action(act(), cx));
+            crate::keytips::command(el, command, Some(tr!(key)), &l, cx)
         };
         use crate::contacts::contacts as cmd;
         let new = div()
@@ -2170,6 +2894,23 @@ impl Render for ContactsBar {
         let personal = crate::features::available("contacts.new", features);
         let meet = crate::features::available("contacts.meeting", features);
         let search = Input::new(&search_state).prefix(crate::icons::icon(crate::icons::SEARCH, 18., l.text3()));
+        // Исправленная раскладка (T2-45): «раскладка исправлена: ков» в поле.
+        let search = match layout {
+            Some(fixed) => search.suffix(
+                div()
+                    .h(px(20.))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .rounded(px(10.))
+                    .bg(l.fill())
+                    .text_size(px(12.))
+                    .text_color(l.text2())
+                    .whitespace_nowrap()
+                    .child(tr!("contacts-layout-fixed", text = fixed)),
+            ),
+            None => search,
+        };
         div()
             .size_full()
             .flex()
@@ -2178,19 +2919,22 @@ impl Render for ContactsBar {
             .px(px(12.))
             .text_color(l.text())
             .when(personal, |d| d.child(new))
-            .child(action("contacts-write", g::MAIL, "contacts-write", has_mail, || Box::new(cmd::Write)))
-            .when(meet, |d| d.child(action("contacts-meet", g::CALENDAR, "contacts-meet", has_mail, || Box::new(cmd::Meeting))))
-            .child(action("contacts-copy", g::COPY, "contacts-copy", has_mail, || Box::new(cmd::CopyAddress)))
+            .child(action("contacts-write", "contacts.write", g::MAIL, "contacts-write", has_mail, || Box::new(cmd::Write)))
+            .when(meet, |d| d.child(action("contacts-meet", "contacts.meeting", g::CALENDAR, "contacts-meet", has_mail, || Box::new(cmd::Meeting))))
+            .child(action("contacts-copy", "contacts.copy_address", g::COPY, "contacts-copy", has_mail, || Box::new(cmd::CopyAddress)))
             .when(personal, |d| {
                 d.child(div().w(px(1.)).h(px(20.)).mx(px(8.)).bg(l.stroke()))
                     .child(action(
                         "contacts-edit",
+                        "contacts.edit",
                         g::EDIT,
                         if kind.is_some_and(|k| k != Kind::Contact) { "contacts-add-mine" } else { "contacts-edit" },
                         kind.is_some(),
                         || Box::new(cmd::Edit),
                     ))
-                    .child(action("contacts-delete", g::DELETE, "contacts-delete", kind == Some(Kind::Contact), || Box::new(cmd::Delete)))
+                    .child(action("contacts-delete", "contacts.delete", g::DELETE, "contacts-delete", kind == Some(Kind::Contact), || {
+                        Box::new(cmd::Delete)
+                    }))
             })
             .child(div().flex_1())
             .child(crate::keytips::badge(div().ml(px(12.)).w(px(300.)).flex_none().child(search), crate::keytips::key("search.focus", cx), &l, cx))
@@ -2199,26 +2943,53 @@ impl Render for ContactsBar {
 
 impl crate::Mailer {
     /// Просьба раздела: команда синхронизации, письмо, встреча или тост. Демо сюда правки не шлёт (они в окне).
-    pub(crate) fn on_contacts(&mut self, action: &ContactsAction, cx: &mut Context<Self>) {
+    pub(crate) fn on_contacts(&mut self, action: &ContactsAction, window: &mut Window, cx: &mut Context<Self>) {
         let command = match action {
             ContactsAction::Load => Command::Contacts,
             ContactsAction::DirectoryPage(offset) => Command::DirectoryPage { account: None, offset: *offset, max: DIR_PAGE },
             ContactsAction::Save { card, old, ticket } => Command::SaveContact { card: card.clone(), old: old.clone(), ticket: *ticket },
             ContactsAction::Delete { id, ticket } => Command::DeleteContact { id: id.clone(), ticket: *ticket },
             ContactsAction::PersonDetails(email) => Command::PersonDetails { email: email.clone() },
-            ContactsAction::Availability { ticket, email, from, to } => {
-                Command::Availability { ticket: *ticket, emails: vec![email.clone()], from: *from, to: *to, sender: None }
+            ContactsAction::Availability { ticket, emails, from, to } => {
+                Command::Availability { ticket: *ticket, emails: emails.clone(), from: *from, to: *to, sender: None }
             }
             ContactsAction::Write(address) => {
                 self.open_compose(Draft { to: vec![address.clone()], ..Default::default() }, cx);
                 return;
             }
-            ContactsAction::Meet(address) => {
+            ContactsAction::WriteBlank => {
+                self.open_compose(Draft::default(), cx);
+                return;
+            }
+            ContactsAction::Meet(address, start) => {
                 let now = jiff::Zoned::now();
-                let duration = crate::prefs::get(cx).calendar.duration_secs();
-                let mut model = crate::meeting::MeetingModel::new(crate::meeting::default_start(&now), duration);
+                let prefs = crate::prefs::get(cx).calendar.clone();
+                let duration = prefs.duration_secs();
+                // Ближайшее окно (T2-42) — в поясе календаря; иначе — начало по умолчанию.
+                let at = start
+                    .and_then(|t| jiff::Timestamp::from_second(t).ok())
+                    .map(|t| t.to_zoned(prefs.zone()).datetime())
+                    .unwrap_or_else(|| crate::meeting::default_start(&now));
+                let mut model = crate::meeting::MeetingModel::new(at, duration);
                 model.attendees = format!("{}; ", address.display());
                 self.open_meeting(Some(model), cx);
+                return;
+            }
+            ContactsAction::Letters { ticket, email } => {
+                self.contacts_letters(*ticket, email.clone(), cx);
+                return;
+            }
+            ContactsAction::AllMail(email) => {
+                // «Вся переписка» (T2-40): поиск во всех папках — письма от адресата и ему.
+                self.set_section(crate::Section::Mail, cx);
+                self.bar.update(cx, |b, _| b.scope = crate::bar::Scope::All);
+                let text = format!("with:{email}");
+                self.search.update(cx, |s, cx| s.set_value(text.clone(), window, cx));
+                self.run_search(&text, cx);
+                return;
+            }
+            ContactsAction::OpenLetter(row) => {
+                self.open_letter_tab((**row).clone(), cx);
                 return;
             }
             ContactsAction::Toast(level, text) => {
@@ -2235,6 +3006,36 @@ impl crate::Mailer {
             self.contacts.update(cx, |c, cx| c.not_sent(cx));
         }
     }
+
+    /// «Последняя переписка» (T2-40): письма с адресом — по строкам кэша в фоне; метки категорий — по таблице списка.
+    fn contacts_letters(&mut self, ticket: u64, email: String, cx: &mut Context<Self>) {
+        let cache = self.cache.clone();
+        let task = cx.background_spawn(async move {
+            let mut latest = Latest::new(&email, LETTERS);
+            let _ = cache.scan(&postman_cache::Scan::Account(None), |row, to| {
+                latest.push(row, &to);
+                true
+            });
+            latest.rows
+        });
+        cx.spawn(async move |this, cx| {
+            let rows = task.await;
+            let _ = this.update(cx, |m: &mut crate::Mailer, cx| {
+                let list = m.list.read(cx);
+                let me = list.me.addresses().to_vec();
+                let letters: Vec<Letter> = rows
+                    .into_iter()
+                    .map(|row| {
+                        let labels = crate::labels::row_labels(&list.labels, &row);
+                        let mine = me.iter().any(|a| a.eq_ignore_ascii_case(&row.from_addr));
+                        Letter { stripe: labels.stripe, chip: labels.chips.into_iter().next(), mine, row }
+                    })
+                    .collect();
+                m.contacts.update(cx, |c, cx| c.set_letters(ticket, letters, cx));
+            });
+        })
+        .detach();
+    }
 }
 
 fn demo_mine() -> Vec<Entry> {
@@ -2247,6 +3048,7 @@ fn demo_mine() -> Vec<Entry> {
                 name: c.name.into(),
                 emails: c.emails.iter().map(|s| s.to_string()).collect(),
                 phones: c.phones.iter().map(|s| s.to_string()).collect(),
+                mobile: c.mobile.iter().map(|s| s.to_string()).collect(),
                 organization: c.organization.into(),
                 title: c.title.into(),
                 free_busy: None,
@@ -2272,6 +3074,9 @@ fn demo_directory() -> Vec<Entry> {
                 title: p.title.into(),
                 department: p.department.into(),
                 phone: p.phone.into(),
+                mobile: p.mobile.into(),
+                office: p.office.into(),
+                manager: p.manager.into(),
             })
         })
         .collect();
@@ -2346,9 +3151,11 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("contacts.new", &["ctrl-shift-c"], CONTACTS_ANY),
         cmd("contacts.edit", &["f2"], CONTACTS),
         cmd("contacts.delete", &["delete"], CONTACTS),
-        cmd("contacts.write", &[], CONTACTS_ANY),
-        cmd("contacts.meeting", &[], CONTACTS_ANY),
-        cmd("contacts.copy_address", &[], CONTACTS_ANY),
+        // Макет «Контакты» (T2-43): Ctrl+N — письмо выбранному (в почте — новое письмо), Ctrl+Shift+Q — встреча с ним
+        // (в остальных разделах — новая встреча), Ctrl+C вне полей ввода — его адрес (в поле — копирование текста).
+        cmd("contacts.write", &["ctrl-n"], CONTACTS_ANY),
+        cmd("contacts.meeting", &["ctrl-shift-q"], CONTACTS_ANY),
+        cmd("contacts.copy_address", &["ctrl-c"], CONTACTS),
         // Меню строки (T1-23): как у письма — Shift+F10 и клавиша «Меню».
         cmd("contacts.context_menu", &["shift-f10", "menu"], CONTACTS),
     ]
@@ -2370,7 +3177,49 @@ pub(crate) mod scenes {
         Scene::new("contact-edit", edit, edit_ready).continues(),
         // «Часто пишу» (S5-25): адресаты переписки по частоте, первая строка выбрана, выбор порядка открыт (T1-24).
         Scene::new("contacts-frequent", frequent, frequent_ready).continues().wait(frequent_wait),
+        // Списки рассылки справочника (T2-41): первый выбран, «Последняя переписка» с ним.
+        Scene::new("contacts-lists", lists, lists_ready).continues(),
+        // Набрано в другой раскладке (T2-45): «gtnh» → «петр», подсказка в поле и над списком.
+        Scene::new("contacts-layout", layout, layout_ready).continues(),
+        // Присутствие (T2-42): коллега занят сейчас (занятость — от времени снимка), другой — вне офиса; в карточке —
+        // «Занят до …» и ближайшее окно (в рабочее время).
+        Scene::new("contacts-busy", busy, busy_ready).continues(),
     ];
+
+    fn busy(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.contacts.update(cx, |c, cx| {
+            c.escape(window, cx);
+            c.screen_busy(cx);
+        });
+        Ok(())
+    }
+
+    fn busy_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.contacts.read(cx).ready()
+    }
+
+    fn lists(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.contacts.update(cx, |c, cx| {
+            c.close_menu(window, cx);
+            c.order_menu = false;
+            c.show_lists(cx);
+        });
+        Ok(())
+    }
+
+    fn lists_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let c = m.contacts.read(cx);
+        c.source == super::Source::Lists && c.selected.is_some() && c.letters_ready()
+    }
+
+    fn layout(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.contacts.update(cx, |c, cx| c.screen_search("gtnh", window, cx)); // i18n-ok: ввод сцены
+        Ok(())
+    }
+
+    fn layout_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.contacts.read(cx).layout.is_some()
+    }
 
     fn contacts(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
         m.cal.update(cx, |c, cx| c.close_details(cx));
@@ -2447,9 +3296,10 @@ pub(crate) mod scenes {
 mod tests {
     // Не `super::*`: из `gpui_kit::*` пришёл бы атрибут `test` gpui вместо встроенного.
     use super::{
-        ContactCard, Entry, FormError, FormText, Frequent, Item, Kind, MenuItem, Order, demo_directory, demo_mine, filter, frequent, items,
-        menu_items,
+        ContactCard, Entry, FormError, FormText, Frequent, Item, Kind, Latest, MenuItem, Order, Presence, demo_directory, demo_mine, feminine,
+        filter, frequent, items, menu_items, next_window, presence,
     };
+    use postman_calendar::{Busy, BusyKind, Span};
 
     fn freq(name: &str, email: &str, last: i64) -> Frequent {
         Frequent { name: name.into(), email: email.into(), last }
@@ -2593,12 +3443,19 @@ mod tests {
             name: "Петров Алексей".into(),
             emails: vec!["a.petrov@x.ru".into()],
             phones: vec!["+7 495 000-00-01".into()],
+            mobile: vec!["+7 916 000-00-02".into()],
             organization: "ООО Ромашка".into(),
             title: String::new(),
             free_busy: None,
         };
         let mut text = FormText::of(&old);
+        assert_eq!((text.last.as_str(), text.first.as_str()), ("Петров", "Алексей"), "фамилия и имя — отдельно (T2-44)");
+        assert_eq!((text.phones.as_str(), text.mobile.as_str()), ("+7 495 000-00-01", "+7 916 000-00-02"));
         assert_eq!(text.card("c1"), Ok(old.clone()), "форма без правок — та же карточка");
+        let only_last = FormText { last: " Иванова ".into(), ..Default::default() };
+        assert_eq!(only_last.name(), "Иванова");
+        let both = FormText { last: "Иванова".into(), first: "Мария Петровна".into(), ..Default::default() };
+        assert_eq!(both.name(), "Иванова Мария Петровна", "в списках — «Фамилия Имя»");
 
         text.emails = "a.petrov@x.ru, Алексей <a@home.ru>;".into();
         text.phones = " ".into();
@@ -2615,5 +3472,100 @@ mod tests {
         assert_eq!(empty.card(""), Err(FormError::NeedName));
         let only_email = FormText { emails: "x@y.ru".into(), ..Default::default() };
         assert_eq!(only_email.card("").map(|c| c.emails), Ok(vec!["x@y.ru".to_string()]));
+    }
+
+    const H: i64 = 3600;
+
+    fn busy(from: i64, to: i64, kind: BusyKind) -> Busy {
+        Busy { span: Span::new(from, to), kind }
+    }
+
+    /// Присутствие по занятости (T2-42): занят — до конца сплошного куска (встык и внахлёст), вне офиса — важнее,
+    /// нет данных — скрыто.
+    #[test]
+    fn presence_from_busy() {
+        let day = 1_800_000_000 - 1_800_000_000 % 86_400;
+        let b = [busy(day + 9 * H, day + 10 * H, BusyKind::Busy), busy(day + 10 * H, day + 11 * H, BusyKind::Tentative)];
+        assert_eq!(presence(Some(&b), day + 9 * H + 600), Presence::Busy(day + 11 * H), "встык — один кусок");
+        assert_eq!(presence(Some(&b), day + 12 * H), Presence::Free);
+        assert_eq!(presence(None, day), Presence::Hidden);
+        let away = [busy(day, day + 3 * 86_400, BusyKind::Unavailable), busy(day + 9 * H, day + 10 * H, BusyKind::Busy)];
+        assert_eq!(presence(Some(&away), day + 9 * H), Presence::Away(day + 3 * 86_400));
+    }
+
+    /// Ближайшее окно не короче получаса (T2-42): с ближайших :00/:30 после «сейчас», между встречами или до конца
+    /// дня; отсутствие сегодня — окна нет.
+    #[test]
+    fn nearest_window() {
+        let day = 1_800_000_000 - 1_800_000_000 % 86_400;
+        let end = day + 18 * H;
+        let now = day + 14 * H + 5 * 60;
+        // Как в макете: занят до 15:00, следующая встреча в 16:30 — окно 15:00–16:30.
+        let b = [busy(day + 13 * H + H / 2, day + 15 * H, BusyKind::Busy), busy(day + 16 * H + H / 2, day + 17 * H + H / 2, BusyKind::Busy)];
+        assert_eq!(next_window(&b, now, day, end), Some((day + 15 * H, day + 16 * H + H / 2)));
+        // Свободен сейчас: с 14:30.
+        assert_eq!(next_window(&[], now, day, end), Some((day + 14 * H + H / 2, end)));
+        // Окно меньше получаса — дальше.
+        let tight = [busy(day + 14 * H + H / 2, day + 14 * H + 50 * 60, BusyKind::Busy), busy(day + 15 * H, end, BusyKind::Busy)];
+        assert_eq!(next_window(&tight, now, day, end), None);
+        assert_eq!(next_window(&[busy(day, day + 86_400, BusyKind::Unavailable)], now, day, end), None, "вне офиса");
+        assert_eq!(next_window(&[], end - 10 * 60, day, end), None, "день кончился");
+    }
+
+    #[test]
+    fn feminine_forms() {
+        assert!(feminine("Белова Марина") && feminine("Гаврилова Елена") && feminine("Коваль Анна") && feminine("Никитина Светлана"));
+        assert!(!feminine("Коваль Павел") && !feminine("Волков Никита") && !feminine("Бухгалтерия") && !feminine("Морозов Илья"));
+    }
+
+    /// «Последняя переписка» (T2-40): от адресата и ему (в «Кому» и «Копии»), новые первыми, не больше N, без повторов.
+    #[test]
+    fn latest_letters() {
+        let row = |id: &str, from: &str, at: i64| postman_cache::EmailRow {
+            id: id.into(),
+            thread_id: String::new(),
+            mailbox_ids: Vec::new(),
+            received_at: at,
+            subject: String::new(),
+            from_name: String::new(),
+            from_addr: from.into(),
+            preview: String::new(),
+            seen: true,
+            flagged: false,
+            has_attachment: false,
+            size: 0,
+            keywords: Vec::new(),
+        };
+        let to = |a: &[&str]| postman_cache::Recipients { to: a.iter().map(|s| s.to_string()).collect(), cc: Vec::new() };
+        let mut l = Latest::new("A@x.ru", 2);
+        l.push(row("1", "a@x.ru", 10), &to(&[]));
+        l.push(row("2", "me@x.ru", 30), &to(&["a@X.ru"]));
+        l.push(row("3", "b@x.ru", 40), &to(&["me@x.ru"]));
+        l.push(row("4", "a@x.ru", 20), &to(&[]));
+        l.push(row("2", "me@x.ru", 30), &to(&["a@x.ru"]));
+        assert_eq!(l.rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["2", "4"]);
+    }
+
+    /// Справочник (T2-44): мобильный — отдельно, рабочий без повтора мобильного; руководитель и кабинет; группа — список
+    /// рассылки (T2-41).
+    #[test]
+    fn directory_card_fields() {
+        let p = postman_core::model::Principal {
+            id: "p".into(),
+            name: "Иванова Мария".into(),
+            email: Some("m@x.ru".into()),
+            kind: "individual".into(),
+            phone: "+7 916".into(),
+            mobile: "+7 916".into(),
+            office: "5 этаж".into(),
+            manager: "Щукин Алексей".into(),
+            ..Default::default()
+        };
+        let e = Entry::from_principal(p);
+        assert!(e.card.phones.is_empty() && e.card.mobile == ["+7 916"]);
+        assert_eq!((e.office.manager.as_str(), e.office.room.as_str()), ("Щукин Алексей", "5 этаж"));
+        let dir = demo_directory();
+        assert_eq!(dir.iter().filter(|e| e.kind == Kind::List).count(), 2, "списки рассылки демо");
+        assert_eq!(names(&dir, "916 310"), ["Волков Сергей"], "поиск и по мобильному");
     }
 }

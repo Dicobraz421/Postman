@@ -59,7 +59,10 @@ pub struct ContactCard {
     pub id: String,
     pub name: String,
     pub emails: Vec<String>,
+    /// Телефоны, кроме мобильных (рабочий и прочие).
     pub phones: Vec<String>,
+    /// Мобильные (T2-44): JSContact `features.mobile`, vCard `TEL;TYPE=cell`, Exchange `MobilePhone`.
+    pub mobile: Vec<String>,
     pub organization: String,
     /// Должность.
     pub title: String,
@@ -88,6 +91,9 @@ impl ContactCard {
         });
         let strings =
             |field: &str, key: &str| -> Vec<String> { entries(field).into_iter().filter_map(|e| e[key].as_str()).map(str::to_string).collect() };
+        // Телефоны: мобильные (`features.mobile`) — отдельно (T2-44).
+        let (mobile, phones): (Vec<&Value>, Vec<&Value>) = entries("phones").into_iter().partition(|p| p["features"]["mobile"] == true);
+        let numbers = |list: Vec<&Value>| -> Vec<String> { list.into_iter().filter_map(|p| p["number"].as_str()).map(str::to_string).collect() };
         let organization = entries("organizations")
             .into_iter()
             .find_map(|o| {
@@ -108,7 +114,8 @@ impl ContactCard {
             id: v["id"].as_str().unwrap_or_default().to_string(),
             name: full,
             emails: strings("emails", "address"),
-            phones: strings("phones", "number"),
+            phones: numbers(phones),
+            mobile: numbers(mobile),
             organization,
             title,
             free_busy: entries("calendars").into_iter().find(|c| c["kind"] == "freeBusy").and_then(|c| c["uri"].as_str()).map(str::to_string),
@@ -137,6 +144,12 @@ pub struct Principal {
     pub department: String,
     /// Рабочий телефон, иначе мобильный; нет — пусто.
     pub phone: String,
+    /// Мобильный (T2-44); нет — пусто.
+    pub mobile: String,
+    /// Кабинет: этаж, комната (T2-44, Exchange `OfficeLocation`); нет — пусто.
+    pub office: String,
+    /// Руководитель — имя, как в справочнике (T2-44, Exchange `Manager`); нет — пусто.
+    pub manager: String,
 }
 
 impl Principal {
@@ -543,7 +556,7 @@ mod tests {
             "id": "c1",
             "name": { "components": [{ "kind": "surname", "value": "Иванова" }, { "kind": "given", "value": "Анна" }] },
             "emails": { "e2": { "address": "b@example.test" }, "e1": { "address": "a@example.test", "pref": 1 } },
-            "phones": { "p1": { "number": "+7 900" } },
+            "phones": { "p1": { "number": "+7 900" }, "m1": { "number": "+7 916", "features": { "mobile": true } } },
             "organizations": { "o1": { "name": "ИТТ", "units": [{ "name": "ИТ" }] } },
             "titles": { "t1": { "name": "инженер" } }
         });
@@ -552,5 +565,6 @@ mod tests {
         assert_eq!((c.organization.as_str(), c.title.as_str()), ("ИТТ, ИТ", "инженер"));
         assert_eq!(c.emails, ["a@example.test", "b@example.test"]);
         assert_eq!(c.phones, ["+7 900"]);
+        assert_eq!(c.mobile, ["+7 916"], "мобильный — отдельно (T2-44)");
     }
 }

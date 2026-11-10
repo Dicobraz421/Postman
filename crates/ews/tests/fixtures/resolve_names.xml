@@ -27,6 +27,7 @@
                 <t:CompanyName>Пример</t:CompanyName>
                 <t:Department>Отдел разработки</t:Department>
                 <t:JobTitle>Ведущий инженер</t:JobTitle>
+                <t:Manager>Иванов Иван</t:Manager>
                 <t:OfficeLocation>Москва, 5 этаж</t:OfficeLocation>
                 <t:ContactSource>ActiveDirectory</t:ContactSource>
               </t:Contact>

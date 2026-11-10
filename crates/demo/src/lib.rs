@@ -1549,11 +1549,12 @@ pub mod delegations {
 }
 
 pub mod contacts {
-    /// Личный контакт.
+    /// Личный контакт: телефоны — рабочие и мобильные (T2-44) отдельно.
     pub struct Card {
         pub name: &'static str,
         pub emails: &'static [&'static str],
         pub phones: &'static [&'static str],
+        pub mobile: &'static [&'static str],
         pub organization: &'static str,
         pub title: &'static str,
     }
@@ -1562,31 +1563,34 @@ pub mod contacts {
         name: &'static str,
         emails: &'static [&'static str],
         phones: &'static [&'static str],
+        mobile: &'static [&'static str],
         organization: &'static str,
         title: &'static str,
     ) -> Card {
-        Card { name, emails, phones, organization, title }
+        Card { name, emails, phones, mobile, organization, title }
     }
 
     const MINE: &[Card] = &[
         card(
             "Белова Ольга",
             &["o.belova@partner.example", "olga.belova@mail.example"],
-            &["+7 495 123-45-67", "+7 916 555-01-02"],
+            &["+7 495 123-45-67"],
+            &["+7 916 555-01-02"],
             "ООО «Партнёр»",
             "Руководитель отдела закупок",
         ),
-        card("Гусев Дмитрий", &["d.gusev@integrator.example"], &["+7 903 222-33-44"], "АО «Интегратор»", "Архитектор решений"),
-        card("Курьерская служба", &["orders@courier.example"], &["+7 495 777-00-11"], "", ""),
-        card("Лебедева Анна", &["anna.lebedeva@law.example"], &[], "Юридическая фирма «Лебедева и партнёры»", "Партнёр"),
-        card("Морозов Кирилл", &["k.morozov@bank.example"], &["+7 495 600-60-60"], "Банк", "Персональный менеджер"),
-        card("Никитина Светлана", &["svetlana@design.example"], &["+7 921 000-12-34"], "Студия дизайна", "Арт-директор"),
-        card("Служба поддержки", &["support@vendor.example"], &["8 800 100-00-00"], "Вендор", ""),
-        card("Тарасов Олег", &["oleg.tarasov@mail.example"], &["+7 905 111-22-33"], "", ""),
+        card("Гусев Дмитрий", &["d.gusev@integrator.example"], &[], &["+7 903 222-33-44"], "АО «Интегратор»", "Архитектор решений"),
+        card("Курьерская служба", &["orders@courier.example"], &["+7 495 777-00-11"], &[], "", ""),
+        card("Лебедева Анна", &["anna.lebedeva@law.example"], &[], &[], "Юридическая фирма «Лебедева и партнёры»", "Партнёр"),
+        card("Морозов Кирилл", &["k.morozov@bank.example"], &["+7 495 600-60-60"], &[], "Банк", "Персональный менеджер"),
+        card("Никитина Светлана", &["svetlana@design.example"], &[], &["+7 921 000-12-34"], "Студия дизайна", "Арт-директор"),
+        card("Служба поддержки", &["support@vendor.example"], &["8 800 100-00-00"], &[], "Вендор", ""),
+        card("Тарасов Олег", &["oleg.tarasov@mail.example"], &[], &["+7 905 111-22-33"], "", ""),
     ];
 
-    /// Человек справочника демо: имя, адрес, тип Principal (`individual`, `location` — переговорная, `resource`), должность,
-    /// отдел и телефон (S7-08: справочник Exchange их даёт).
+    /// Человек справочника демо: имя, адрес, тип Principal (`individual`, `location` — переговорная, `resource`,
+    /// `group` — список рассылки, T2-41), должность, отдел и телефон (S7-08: справочник Exchange их даёт), мобильный,
+    /// кабинет и руководитель (T2-44).
     pub struct Person {
         pub name: &'static str,
         pub email: &'static str,
@@ -1594,32 +1598,111 @@ pub mod contacts {
         pub title: &'static str,
         pub department: &'static str,
         pub phone: &'static str,
+        pub mobile: &'static str,
+        pub office: &'static str,
+        pub manager: &'static str,
     }
 
     const fn person(name: &'static str, email: &'static str, kind: &'static str) -> Person {
-        Person { name, email, kind, title: "", department: "", phone: "" }
+        Person { name, email, kind, title: "", department: "", phone: "", mobile: "", office: "", manager: "" }
     }
 
-    const fn staff(name: &'static str, email: &'static str, title: &'static str, department: &'static str, phone: &'static str) -> Person {
-        Person { name, email, kind: "individual", title, department, phone }
+    /// Сотрудник: должность, отдел, рабочий и мобильный, кабинет, руководитель.
+    #[allow(clippy::too_many_arguments)]
+    const fn staff(
+        name: &'static str,
+        email: &'static str,
+        title: &'static str,
+        department: &'static str,
+        phone: &'static str,
+        mobile: &'static str,
+        office: &'static str,
+        manager: &'static str,
+    ) -> Person {
+        Person { name, email, kind: "individual", title, department, phone, mobile, office, manager }
     }
 
     /// Справочник.
     const DIRECTORY: &[Person] = &[
         person("Бухгалтерия", "buh@corp.example", "individual"),
-        staff("Волков Сергей", "s.volkov@corp.example", "Системный администратор", "Отдел ИТ", "+7 495 100-20-31"),
-        staff("Иванова Мария", "m.ivanova@corp.example", "Руководитель проектов", "Проектный офис", "+7 495 100-20-12"),
-        staff("Кузнецова Елена", "e.kuznetsova@corp.example", "Главный бухгалтер", "Бухгалтерия", "+7 495 100-20-05"),
+        staff(
+            "Волков Сергей",
+            "s.volkov@corp.example",
+            "Системный администратор",
+            "Отдел ИТ",
+            "+7 495 100-20-31",
+            "+7 916 310-20-31",
+            "3 этаж, каб. 312",
+            "Щукин Алексей",
+        ),
+        person("Все сотрудники", "all@corp.example", "group"),
+        staff(
+            "Иванова Мария",
+            "m.ivanova@corp.example",
+            "Руководитель проектов",
+            "Проектный офис",
+            "+7 495 100-20-12",
+            "+7 916 204-71-55",
+            "5 этаж, каб. 507",
+            "Щукин Алексей",
+        ),
+        staff(
+            "Кузнецова Елена",
+            "e.kuznetsova@corp.example",
+            "Главный бухгалтер",
+            "Бухгалтерия",
+            "+7 495 100-20-05",
+            "",
+            "6 этаж, каб. 610",
+            "Щукин Алексей",
+        ),
+        person("Отдел разработки", "dev@corp.example", "group"),
         person("Переговорная 1", "room1@corp.example", "location"),
         person("Переговорная 2", "room2@corp.example", "location"),
         person("Переговорная 3", "room3@corp.example", "location"),
-        staff("Петров Алексей", "a.petrov@corp.example", "Ведущий инженер", "Отдел разработки", "+7 495 100-20-44"),
-        staff("Петров Иван", "ivan.petrov@corp.example", "Инженер", "Отдел разработки", ""),
+        staff(
+            "Петров Алексей",
+            "a.petrov@corp.example",
+            "Ведущий инженер",
+            "Отдел разработки",
+            "+7 495 100-20-44",
+            "+7 903 118-40-26",
+            "4 этаж, каб. 412",
+            "Иванова Мария",
+        ),
+        staff("Петров Иван", "ivan.petrov@corp.example", "Инженер", "Отдел разработки", "", "", "4 этаж, каб. 412", "Петров Алексей"),
         person("Проектор в учебном классе", "projector@corp.example", "resource"),
-        staff("Сидоров Игорь", "i.sidorov@corp.example", "Аналитик", "Отдел продаж", "+7 495 100-20-57"),
-        staff("Смирнова Анна", "anna.smirnova@corp.example", "Юрист", "Юридический отдел", "+7 495 100-20-68"),
-        staff("Фёдорова Наталья", "n.fedorova@corp.example", "Менеджер по персоналу", "Отдел кадров", ""),
-        staff("Щукин Алексей", "a.shchukin@corp.example", "Директор по развитию", "Дирекция", "+7 495 100-20-01"),
+        staff(
+            "Сидоров Игорь",
+            "i.sidorov@corp.example",
+            "Аналитик",
+            "Отдел продаж",
+            "+7 495 100-20-57",
+            "+7 926 330-02-14",
+            "5 этаж, каб. 515",
+            "Щукин Алексей",
+        ),
+        staff(
+            "Смирнова Анна",
+            "anna.smirnova@corp.example",
+            "Юрист",
+            "Юридический отдел",
+            "+7 495 100-20-68",
+            "",
+            "6 этаж, каб. 612",
+            "Щукин Алексей",
+        ),
+        staff("Фёдорова Наталья", "n.fedorova@corp.example", "Менеджер по персоналу", "Отдел кадров", "", "", "6 этаж, каб. 614", "Щукин Алексей"),
+        staff(
+            "Щукин Алексей",
+            "a.shchukin@corp.example",
+            "Директор по развитию",
+            "Дирекция",
+            "+7 495 100-20-01",
+            "+7 916 700-10-01",
+            "6 этаж, каб. 604",
+            "",
+        ),
     ];
 
     pub fn mine() -> &'static [Card] {

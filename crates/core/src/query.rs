@@ -1,11 +1,11 @@
 //! Запрос поиска в командной строке (S5-10, `docs/DESIGN.md` «Палитра команд и поиск»): слова и условия
 //! `from:`, `to:`, `subject:`, `has:attachment`, `is:unread`, `is:flagged`, `before:`/`after:`, `category:`,
-//! `larger:` (размер, S5-29) —
+//! `larger:` (размер, S5-29), `with:` (переписка с адресатом — от него или ему, T2-40) —
 //! разбор ([`Query::parse`]), проверка письма по кэшу ([`Query::matches`]), условие `Email/query` для «Везде»
 //! ([`Query::server_filter`]) и чипы «Уточнить» ([`Refine`], [`suggest`]).
 //!
 //! Ключи — без регистра, есть русские: `от:`, `кому:`, `тема:`, `есть:вложения`, `до:`, `после:`, `категория:`,
-//! `больше:`. Размер — `5M`, `500K`, `1G` (`5М`, `500К`, `1Г`, можно `МБ`), без единицы — байты.
+//! `больше:`, `участник:`. Размер — `5M`, `500K`, `1G` (`5М`, `500К`, `1Г`, можно `МБ`), без единицы — байты.
 //! Значение с пробелами — в кавычках (`from:"Анна Смирнова"`). Даты: `2026-10-21`, `21.10.2026` или «назад»:
 //! `7d`, `2w`, `3m`, `1y` (`7д`, `2н`, `3м`, `1г`). Неизвестный ключ (`Re:`) — просто слово; ключ без значения
 //! (запрос ещё набирается) и непонятное значение — без условия.
@@ -63,6 +63,8 @@ pub struct Query {
     pub words: Vec<String>,
     pub from: Vec<String>,
     pub to: Vec<String>,
+    /// Переписка с адресатом (T2-40, «Вся переписка» в «Контактах»): письмо от него или ему (в «Кому» и «Копии»).
+    pub with: Vec<String>,
     pub subject: Vec<String>,
     pub attachment: bool,
     pub unread: bool,
@@ -79,6 +81,7 @@ pub struct Query {
 enum Key {
     From,
     To,
+    With,
     Subject,
     Has,
     Is,
@@ -92,6 +95,7 @@ fn key(k: &str) -> Option<Key> {
     Some(match folded(k).as_str() {
         "from" | "от" => Key::From,
         "to" | "кому" => Key::To,
+        "with" | "участник" => Key::With,
         "subject" | "тема" => Key::Subject,
         "has" | "есть" => Key::Has,
         "is" => Key::Is,
@@ -219,6 +223,7 @@ impl Query {
                 Some(_) if v.is_empty() => {}
                 Some(Key::From) => q.from.push(v.to_owned()),
                 Some(Key::To) => q.to.push(v.to_owned()),
+                Some(Key::With) => q.with.push(v.to_owned()),
                 Some(Key::Subject) => q.subject.push(v.to_owned()),
                 Some(Key::Has) => q.attachment |= is_attachment(v),
                 Some(Key::Is) => {
@@ -241,7 +246,7 @@ impl Query {
 
     /// Есть условия кроме слов.
     pub fn has_conditions(&self) -> bool {
-        !(self.from.is_empty() && self.to.is_empty() && self.subject.is_empty() && self.categories.is_empty())
+        !(self.from.is_empty() && self.to.is_empty() && self.with.is_empty() && self.subject.is_empty() && self.categories.is_empty())
             || self.attachment
             || self.unread
             || self.flagged
@@ -277,6 +282,7 @@ impl Query {
             && self.from.iter().all(|v| contains(&from, v))
             && self.subject.iter().all(|v| contains(&row.subject, v))
             && self.to.iter().all(|v| if is_me(v) { to_me() } else { to.to.iter().chain(&to.cc).any(|a| contains(a, v)) })
+            && self.with.iter().all(|v| contains(&from, v) || to.to.iter().chain(&to.cc).any(|a| contains(a, v)))
             && env.categories.iter().all(|k| row.keywords.iter().any(|x| x.eq_ignore_ascii_case(k)))
     }
 
@@ -296,6 +302,7 @@ impl Query {
                 (false, _) => and.push(Filter::To(v.clone())),
             }
         }
+        and.extend(self.with.iter().map(|v| Filter::Or(vec![Filter::From(v.clone()), Filter::To(v.clone())])));
         and.extend(self.subject.iter().map(|v| Filter::Subject(with_language(v))));
         if self.attachment {
             and.push(Filter::HasAttachment(true));
@@ -553,6 +560,18 @@ mod tests {
         assert!(!check("category:тендеры"));
         assert!(!check("to:boss"));
         assert!(check("to:me@corp"));
+        // Переписка с адресатом (T2-40): от него или ему.
+        assert!(check("with:смирнова") && check("участник:me@corp.example"));
+        assert!(!check("with:boss"));
+    }
+
+    /// `with:` на сервере (T2-40): письмо от адресата или ему — `Or(From, To)`.
+    #[test]
+    fn with_is_from_or_to_on_the_server() {
+        let q = Query::parse("with:a@x.ru");
+        assert!(q.has_conditions());
+        let env = q.env(&now(), |_| None, &[]);
+        assert_eq!(q.server_filter(&env), Some(Filter::Or(vec![Filter::From("a@x.ru".into()), Filter::To("a@x.ru".into())])));
     }
 
     #[test]

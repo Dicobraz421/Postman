@@ -17,7 +17,10 @@ pub struct ContactCard {
     pub id: String,
     pub name: String,
     pub emails: Vec<String>,
+    /// Телефоны, кроме мобильных.
     pub phones: Vec<String>,
+    /// Мобильные (`features.mobile`, T2-44).
+    pub mobile: Vec<String>,
     pub organization: String,
     /// Должность (`titles` с `kind: title`, иначе роль).
     pub title: String,
@@ -74,7 +77,14 @@ impl ContactCard {
             if items.is_empty() { Value::Null } else { Value::Object(items) }
         };
         let emails = map("e", &self.emails, &|a| json!({ "address": a }));
-        let phones = map("p", &self.phones, &|n| json!({ "number": n }));
+        let mut phones = map("p", &self.phones, &|n| json!({ "number": n }));
+        // Мобильные — в тех же `phones` с `features.mobile` (T2-44), ключи `m1`, `m2`…
+        if let Value::Object(m) = map("m", &self.mobile, &|n| json!({ "number": n, "features": { "mobile": true } })) {
+            match &mut phones {
+                Value::Object(p) => p.extend(m),
+                _ => phones = Value::Object(m),
+            }
+        }
         let organizations = map("o", std::slice::from_ref(&self.organization), &|n| json!({ "name": n }));
         let titles = map("t", std::slice::from_ref(&self.title), &|n| json!({ "name": n, "kind": "title" }));
         vec![("name", name), ("emails", emails), ("phones", phones), ("organizations", organizations), ("titles", titles)]
@@ -150,6 +160,8 @@ fn card(v: &Value) -> ContactCard {
     });
     let strings =
         |field: &str, key: &str| -> Vec<String> { entries(v, field).into_iter().filter_map(|e| e[key].as_str()).map(str::to_string).collect() };
+    let (mobile, phones): (Vec<&Value>, Vec<&Value>) = entries(v, "phones").into_iter().partition(|p| p["features"]["mobile"] == true);
+    let numbers = |list: Vec<&Value>| -> Vec<String> { list.into_iter().filter_map(|p| p["number"].as_str()).map(str::to_string).collect() };
     let organization = entries(v, "organizations")
         .into_iter()
         .find_map(|o| {
@@ -170,7 +182,8 @@ fn card(v: &Value) -> ContactCard {
         id: v["id"].as_str().unwrap_or_default().to_string(),
         name: full,
         emails: strings("emails", "address"),
-        phones: strings("phones", "number"),
+        phones: numbers(phones),
+        mobile: numbers(mobile),
         organization,
         title,
         free_busy: v["calendars"]
@@ -216,7 +229,8 @@ mod tests {
             "titles": { "r": { "name": "Ответственный за договоры", "kind": "role" }, "t": { "name": "Менеджер", "kind": "title" } }
         }));
         assert_eq!(c.emails, ["work@x.ru", "home@x.ru"], "по pref");
-        assert_eq!(c.phones, ["+7 495 000-00-01", "+7 900 000-00-02"]);
+        assert_eq!(c.phones, ["+7 495 000-00-01"]);
+        assert_eq!(c.mobile, ["+7 900 000-00-02"], "мобильный — отдельно (T2-44)");
         assert_eq!(c.organization, "ООО Ромашка, Отдел продаж");
         assert_eq!(c.title, "Менеджер", "должность важнее роли");
         // Только роль и организация без имени, но с отделом.
@@ -232,6 +246,7 @@ mod tests {
             name: "Петров Алексей".into(),
             emails: vec!["a.petrov@x.ru".into()],
             phones: vec!["+7 495 000-00-01".into()],
+            mobile: Vec::new(),
             organization: "ООО Ромашка".into(),
             title: String::new(),
             free_busy: None,
@@ -245,6 +260,12 @@ mod tests {
         assert_eq!(v["name"], json!({ "full": "Петров Алексей" }));
         assert_eq!(v["emails"], json!({ "e1": { "address": "a.petrov@x.ru" } }));
         assert_eq!(v["phones"], json!({ "p1": { "number": "+7 495 000-00-01" } }));
+        let with_mobile = ContactCard { mobile: vec!["+7 916".into()], ..sample() }.to_jmap("b1");
+        assert_eq!(
+            with_mobile["phones"],
+            json!({ "p1": { "number": "+7 495 000-00-01" }, "m1": { "number": "+7 916", "features": { "mobile": true } } }),
+            "мобильный — с `features.mobile` (T2-44)"
+        );
         assert_eq!(v["organizations"], json!({ "o1": { "name": "ООО Ромашка" } }));
         assert!(v.get("titles").is_none() && v.get("id").is_none());
     }
