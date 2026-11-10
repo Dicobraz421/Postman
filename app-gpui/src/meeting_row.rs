@@ -37,6 +37,11 @@ pub(crate) fn key(id: &str) -> String {
     format!("invite-when:{id}")
 }
 
+/// Ключ в хранилище: письмо с приглашением на встречу `uid` (T2-21, «Открыть» в календаре); последнее разобранное.
+pub(crate) fn letter_key(uid: &str) -> String {
+    format!("invite-letter:{uid}")
+}
+
 /// Значение в хранилище: «начало конец весь-день отменена»; `-` — во вложении не встреча (поручение, ошибка разбора).
 pub(crate) fn encode(when: Option<&When>) -> String {
     match when {

@@ -707,9 +707,13 @@ impl ReadingPane {
             };
             // Песочница не ответила — не записываем: спросим в следующий запуск.
             let v = parsed.ok()?;
-            let when = Invitation::from_worker(&v, &tz).ok().map(|inv| crate::meeting_row::When::of(&inv));
+            let inv = Invitation::from_worker(&v, &tz).ok();
+            let when = inv.as_ref().map(crate::meeting_row::When::of);
             for id in &ids {
                 let _ = cache.set_state(&crate::meeting_row::key(id), &crate::meeting_row::encode(when.as_ref()));
+            }
+            if let (Some(inv), Some(id)) = (&inv, ids.last()) {
+                let _ = cache.set_state(&crate::meeting_row::letter_key(&inv.event.uid), id);
             }
             Some(ids.into_iter().filter_map(|id| when.map(|w| (id, w))).collect::<Vec<_>>())
         });
@@ -880,6 +884,8 @@ impl ReadingPane {
             let inv = Invitation::from_worker(&v, &tz)?;
             // Время встречи — и строке списка (T2-18).
             let _ = cache.set_state(&crate::meeting_row::key(&id_bg), &crate::meeting_row::encode(Some(&crate::meeting_row::When::of(&inv))));
+            // …и «Открыть» в календаре (T2-21): письмо этой встречи.
+            let _ = cache.set_state(&crate::meeting_row::letter_key(&inv.event.uid), &id_bg);
             let stored = cache.state(&invite_card::state_key(&inv.event.uid)).ok().flatten();
             let answer = stored.as_deref().and_then(invite_card::decode);
             Ok::<_, String>(Ok((inv, answer)))

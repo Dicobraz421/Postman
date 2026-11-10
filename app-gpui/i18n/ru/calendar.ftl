@@ -132,6 +132,9 @@ cal-write-participants = Написать участникам
 cal-details-reminder = Напоминание за { $time }
 cal-details-reminder-start = Напоминание в начале встречи
 cal-details-organizer-time = У организатора: { $time } · { $zone }
+cal-open-event = Открыть
+cal-details-imip = Пришло письмом — ответ уйдёт организатору письмом
+cal-open-letter-none = Письма с этим приглашением нет в почте
 
 # Вкладка встречи.
 meeting-title-new = Новая встреча

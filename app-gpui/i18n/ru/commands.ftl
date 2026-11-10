@@ -87,6 +87,7 @@ cmd-calendar-view-work-week = Вид «Рабочая неделя»
 cmd-calendar-view-week = Вид «Неделя»
 cmd-calendar-view-month = Вид «Месяц»
 cmd-calendar-write-participants = Написать участникам встречи
+cmd-calendar-open-event = Открыть событие
 cmd-meeting-send = Отправить приглашения
 cmd-meeting-close = Закрыть вкладку встречи
 cmd-meeting-discard = Удалить черновик встречи

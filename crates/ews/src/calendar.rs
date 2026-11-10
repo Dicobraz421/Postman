@@ -542,7 +542,8 @@ pub(crate) fn item(el: &El) -> Option<CalendarItem> {
     keywords.sort();
     keywords.dedup();
     let event = Event {
-        time_zone: None,
+        // Пояс встречи (T2-21): Windows id → IANA; «У организатора …» в подробностях события.
+        time_zone: el.text_at(&["StartTimeZoneId"]).and_then(crate::tz::iana_zone).map(str::to_owned),
         private: false,
         recurrence: None,
         id: id.id.clone(),
@@ -880,6 +881,7 @@ const PROPS: &[&str] = &[
     "calendar:Start",
     "calendar:End",
     "calendar:OriginalStart",
+    "calendar:StartTimeZoneId",
     "calendar:IsAllDayEvent",
     "calendar:LegacyFreeBusyStatus",
     "calendar:Location",
@@ -1244,6 +1246,7 @@ mod tests {
         assert_eq!(e.sequence, 2);
         assert_eq!(e.keywords, ["Проект Альфа"]);
         assert_eq!(e.free_busy, FreeBusy::Busy);
+        assert_eq!(e.time_zone.as_deref(), Some("Asia/Yekaterinburg"), "пояс встречи — IANA (T2-21)");
         assert!(!e.recurring);
         let org = e.organizer().unwrap();
         assert_eq!((org.name.as_str(), org.email.as_str()), ("Анна Петрова", "anna@example.test"));
