@@ -21,13 +21,15 @@ use crate::bulk::{Ask, key_hint, mask, menu_line, separator};
 use crate::chrome::{glyph, icon};
 use crate::roles::Look;
 
-const WIDTH: f32 = 316.;
+const WIDTH: f32 = 344.;
 const SUB_WIDTH: f32 = 224.;
 const ITEM_H: f32 = 28.;
 const SEP_H: f32 = 9.;
 const TITLE_H: f32 = 24.;
 /// Папок в подменю «Переместить» видно сразу (дальше — прокрутка).
 const SUB_MAX_H: f32 = 360.;
+/// «Заблокировать отправителя» (Segoe Fluent «Blocked»).
+const BLOCK: char = '\u{E733}';
 
 /// Подменю.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +41,8 @@ pub(crate) enum Sub {
     Remind,
     /// Вид беседы папки письма (T1-14).
     View,
+    /// «Всегда перемещать от этого отправителя ▸» (T2-50): папки своего ящика, выбор — правило.
+    Rule,
 }
 
 impl Sub {
@@ -91,6 +95,9 @@ enum Item {
     View,
     /// «Экспорт…» писем (S8-32).
     Export,
+    /// Правила из письма (T2-50, макет `Bulk`): «Всегда перемещать от этого отправителя ▸», «Заблокировать отправителя».
+    AlwaysMove,
+    Block,
 }
 
 /// Пункты группами (разделитель между группами), порядок — S5-08.
@@ -101,7 +108,7 @@ const GROUPS: &[&[Item]] = &[
     &[Item::Move, Item::Archive, Item::Delete],
     &[Item::Export],
     &[Item::View],
-    &[Item::Phishing],
+    &[Item::AlwaysMove, Item::Block, Item::Phishing],
 ];
 
 /// Пункты группами без функций, которых нет у сервера учётной записи (S7, «Нет у сервера — нет на экране»: у
@@ -122,6 +129,7 @@ impl Item {
             Item::Due => Some(Sub::Due),
             Item::Remind => Some(Sub::Remind),
             Item::View => Some(Sub::View),
+            Item::AlwaysMove => Some(Sub::Rule),
             _ => None,
         }
     }
@@ -134,7 +142,7 @@ impl Item {
 
     /// Ответить можно одному письму.
     fn single(self) -> bool {
-        matches!(self, Item::Reply | Item::ReplyAll | Item::Forward)
+        matches!(self, Item::Reply | Item::ReplyAll | Item::Forward | Item::AlwaysMove | Item::Block)
     }
 
     fn glyph(self) -> char {
@@ -156,6 +164,8 @@ impl Item {
             Item::Phishing => ' ',
             Item::View => glyph::CONVERSATION,
             Item::Export => crate::export::EXPORT,
+            Item::AlwaysMove => glyph::RULES,
+            Item::Block => BLOCK,
         }
     }
 
@@ -178,6 +188,8 @@ impl Item {
             Item::Delete => "mail.delete",
             Item::Phishing => "mail.report_phishing",
             Item::Export => "mail.export",
+            // Правила из письма — там, где у сервера есть правила.
+            Item::AlwaysMove | Item::Block => "settings.rules",
             Item::Category | Item::View => return None,
         })
     }
@@ -247,6 +259,11 @@ impl Menu {
 }
 
 impl Mailer {
+    /// Папки «Всегда перемещать от этого отправителя ▸»: свой ящик (правила — его, Sieve), кроме «Входящих».
+    pub(crate) fn rule_folders(&self, cx: &App) -> Vec<(String, String)> {
+        self.folders.read(cx).of(None).filter(|m| m.role.as_deref() != Some("inbox")).map(|m| (m.id.clone(), m.name.clone())).collect()
+    }
+
     /// Меню у строки `index` (правая кнопка — `at`, с клавиатуры — у строки).
     pub(crate) fn open_menu_at_row(&mut self, index: usize, at: Option<Point<Pixels>>, cx: &mut Context<Self>) {
         let list = self.list.read(cx);
@@ -387,7 +404,12 @@ impl Mailer {
             Item::Delete => self.ask(ids, Ask::Trash, cx),
             Item::Phishing => self.ask(ids, Ask::Phishing, cx),
             Item::Export => self.export_ask(crate::export::What::Letters(ids), cx),
-            Item::Category | Item::Move | Item::View | Item::Due | Item::Remind => {}
+            Item::Block => {
+                if let Some((_, r)) = row {
+                    self.block_sender(r, cx);
+                }
+            }
+            Item::Category | Item::Move | Item::View | Item::Due | Item::Remind | Item::AlwaysMove => {}
         }
     }
 
@@ -416,8 +438,14 @@ impl Mailer {
             }
             return;
         }
+        // Правило из письма (T2-50): папка — правило «от этого отправителя» и его письма туда же.
+        if sub == Sub::Rule {
+            let (Some((_, row)), Some(folder)) = (m.row.clone(), self.rule_folders(cx).get(k).cloned()) else { return };
+            self.close_menu(cx);
+            return self.always_move(row, folder, cx);
+        }
         let ask = match sub {
-            Sub::View | Sub::Due | Sub::Remind => return,
+            Sub::View | Sub::Due | Sub::Remind | Sub::Rule => return,
             Sub::Category => {
                 let cats = list.category_items();
                 match cats.get(k) {
@@ -439,6 +467,7 @@ impl Mailer {
         match sub {
             Sub::Category => list.category_items().len() + 1,
             Sub::Move => list.folder_items().len(),
+            Sub::Rule => self.rule_folders(cx).len(),
             Sub::View => VIEWS.len(),
             Sub::Due | Sub::Remind => sub.kind().map_or(0, |k| postman_core::lifecycle::picks(k).len() + 1),
         }
@@ -509,6 +538,7 @@ impl Mailer {
         let list = self.list.read(cx);
         let cats = list.category_items();
         let folders = list.folder_items();
+        let rule_folders = self.rule_folders(cx);
         let many = m.ids.len();
         let mut col = div().flex().flex_col();
         let mut index = 0usize;
@@ -548,20 +578,29 @@ impl Mailer {
                     Item::Phishing => tr!("menu-phishing"),
                     Item::View => tr!("folder-menu-view"),
                     Item::Export => tr!("export-menu"),
+                    Item::AlwaysMove => tr!("menu-always-move"),
+                    Item::Block => tr!("menu-block"),
                 };
                 let key = it.command(m.unread).map(|c| key_hint(c, cx)).unwrap_or_default();
                 let glyph_el = if it == Item::Phishing {
                     // Прорези маски — цветом слоя меню (заливка наведения полупрозрачная).
                     mask(16., l, l.c(Role::LayerOverlay)).into_any_element()
                 } else {
-                    icon(it.glyph(), 16.).text_color(if enabled { l.text2() } else { l.c(Role::TextDisabled) }).into_any_element()
+                    let ink = if !enabled {
+                        l.c(Role::TextDisabled)
+                    } else if it == Item::Block {
+                        l.error()
+                    } else {
+                        l.text2()
+                    };
+                    icon(it.glyph(), 16.).text_color(ink).into_any_element()
                 };
                 col = col.child(
                     menu_line(("menu-item", i), l)
                         .when(on, |d| d.bg(l.hover()))
                         .when(!enabled, |d| d.text_color(l.c(Role::TextDisabled)).cursor_default())
                         .child(glyph_el)
-                        .child(div().flex_1().min_w_0().truncate().child(label))
+                        .child(div().flex_1().min_w_0().truncate().when(enabled && it == Item::Block, |d| d.text_color(l.error())).child(label))
                         .when(!key.is_empty(), |d| d.child(div().text_size(px(11.)).text_color(l.text3()).child(key)))
                         .when(it.sub().is_some(), |d| d.child(icon(glyph::CHEVRON_RIGHT, 10.).text_color(l.text2())))
                         .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
@@ -588,6 +627,7 @@ impl Mailer {
             let n = match s {
                 Sub::Category => cats.len() + 1,
                 Sub::Move => folders.len(),
+                Sub::Rule => rule_folders.len(),
                 Sub::View => VIEWS.len(),
                 Sub::Due | Sub::Remind => s.kind().map_or(0, |k| postman_core::lifecycle::picks(k).len() + 1),
             };
@@ -661,8 +701,9 @@ impl Mailer {
                             .on_click(cx.listener(move |this, _, _, cx| this.choose_sub(n, cx))),
                     );
                 }
-                Sub::Move => {
-                    for (k, (_, name)) in folders.iter().enumerate() {
+                Sub::Move | Sub::Rule => {
+                    let shown = if s == Sub::Rule { &rule_folders } else { &folders };
+                    for (k, (_, name)) in shown.iter().enumerate() {
                         let on = m.sub_cursor == k;
                         sc = sc.child(
                             menu_line(("menu-folder", k), l)

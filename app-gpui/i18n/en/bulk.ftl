@@ -119,6 +119,8 @@ menu-move = Move
 menu-archive = Archive
 menu-delete = Delete
 menu-phishing = Report phishing
+menu-always-move = Always move messages from this sender
+menu-block = Block sender
 menu-on-selection = { $n ->
     [one] { $n } message selected
    *[other] { $n } messages selected

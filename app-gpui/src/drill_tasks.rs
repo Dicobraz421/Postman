@@ -1211,13 +1211,15 @@ const RULE: &[Input] = &[
     Input::Press("rules-add"),
     until!(|m, cx| rules_panel(m, cx).is_some_and(|p| p.editor.is_some())),
     Input::Text("тендер"),
+    Input::Press("rules-act-kind-0"),
     Input::Press("rules-kind-5"),
-    until!(|m, cx| rules_panel(m, cx).and_then(|p| p.editor.as_ref()).is_some_and(|d| d.kind == crate::rules::Kind::Category)),
+    until!(|m, cx| rules_panel(m, cx).and_then(|p| p.editor.as_ref()).is_some_and(|d| d.first().kind == crate::rules::Kind::Category)),
     Input::Press("rules-editor-save"),
     until!(|m, cx| rules_panel(m, cx).is_some_and(|p| p.error.as_deref() == Some(tr!("rules-bad-category").as_str()))),
+    Input::Press("rules-act-category-0"),
     until!(|m, cx| tender_chip(m, cx).is_some()),
     Input::Click(|m, _, cx| tender_chip(m, cx), Held::No),
-    until!(|m, cx| rules_panel(m, cx).and_then(|p| p.editor.as_ref()).is_some_and(|d| d.category.is_some())),
+    until!(|m, cx| rules_panel(m, cx).and_then(|p| p.editor.as_ref()).is_some_and(|d| d.first().category.is_some())),
     Input::Press("rules-editor-save"),
 ];
 

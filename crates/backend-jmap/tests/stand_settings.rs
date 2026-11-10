@@ -301,12 +301,7 @@ async fn rule_files_by_subject_with_vacation() {
     let vacation_before = <VacationResponse as postman_backend_jmap::convert::FromJmap<_>>::from_jmap(b.client.vacation().await.unwrap());
 
     let result = async {
-        let rule = Rule {
-            enabled: true,
-            field: Field::Subject,
-            value: marker.clone(),
-            action: Action::Move { mailbox_id: folder_id.clone(), name: folder.clone() },
-        };
+        let rule = Rule::simple(true, Field::Subject, marker.clone(), Action::Move { mailbox_id: folder_id.clone(), name: folder.clone() });
         // Прошлые прогоны (и чужой скрипт с нашим именем) — заменить: настройки user2 — тестовые.
         let state = saved_rules(&settings(&b.client, Request::SaveRules { rules: vec![rule.clone()], replace: true }).await)?;
         if !(state.active && state.rules == vec![rule.clone()]) {
@@ -365,7 +360,7 @@ async fn sieve_rule_sets_category() {
     let marker = format!("category-{stamp}");
     let keyword = postman_core::labels::category_keyword("tenders");
     let result = async {
-        let rule = Rule { enabled: true, field: Field::Subject, value: marker.clone(), action: Action::Category(keyword.clone()) };
+        let rule = Rule::simple(true, Field::Subject, marker.clone(), Action::Category(keyword.clone()));
         let state = saved_rules(&settings(&b.client, Request::SaveRules { rules: vec![rule.clone()], replace: true }).await)?;
         if !(state.active && state.rules == vec![rule]) {
             return Err(format!("правила на сервере не те: {state:?}"));

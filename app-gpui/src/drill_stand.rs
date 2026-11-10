@@ -544,7 +544,7 @@ fn projects_chip(m: &Mailer, _: &Window, cx: &App) -> Option<Point<Pixels>> {
 }
 
 fn editor_kind(m: &Mailer, cx: &App, kind: Kind) -> bool {
-    rules(m, cx).and_then(|p| p.editor.as_ref()).is_some_and(|d| d.kind == kind)
+    rules(m, cx).and_then(|p| p.editor.as_ref()).is_some_and(|d| d.first().kind == kind)
 }
 
 const RULE_CATEGORY: &[Input] = &[
@@ -555,15 +555,17 @@ const RULE_CATEGORY: &[Input] = &[
     until!(|m, cx| rules(m, cx).is_some_and(|p| p.editor.is_some())),
     Input::Press("rules-value"),
     Input::Text("тендер"), // i18n-ok: ввод сценария
+    Input::Press("rules-act-kind-0"),
     Input::Press("rules-kind-5"),
     until!(|m, cx| editor_kind(m, cx, Kind::Category)),
     Input::Press("rules-editor-save"),
     until!(|m, cx| rules(m, cx).is_some_and(|p| p.error.as_deref() == Some(tr!("rules-bad-category").as_str()))),
+    Input::Press("rules-act-category-0"),
     Input::Click(tenders_chip, Held::No),
-    until!(|m, cx| rules(m, cx).and_then(|p| p.editor.as_ref()).is_some_and(|d| d.category.is_some())),
+    until!(|m, cx| rules(m, cx).and_then(|p| p.editor.as_ref()).is_some_and(|d| d.first().category.is_some())),
     Input::Press("rules-editor-save"),
     until!(|m, cx| rules_count(m, cx) == Some(1)),
-    until!(|m, cx| rules(m, cx).and_then(|p| p.state.as_ref()).is_some_and(|s| matches!(s.rules[0].action, Action::Category(_)))),
+    until!(|m, cx| rules(m, cx).and_then(|p| p.state.as_ref()).is_some_and(|s| matches!(s.rules[0].actions.first(), Some(Action::Category(_))))),
 ];
 
 const LABEL: &[Input] = &[
@@ -593,8 +595,9 @@ const RULE_MOVE: &[Input] = &[
     Input::Press("rules-value"),
     Input::Text("проект"), // i18n-ok: ввод сценария
     until!(|m, cx| editor_kind(m, cx, Kind::Move)),
+    Input::Press("rules-act-folder-0"),
     Input::Click(projects_chip, Held::No),
-    until!(|m, cx| rules(m, cx).and_then(|p| p.editor.as_ref()).is_some_and(|d| d.folder.is_some())),
+    until!(|m, cx| rules(m, cx).and_then(|p| p.editor.as_ref()).is_some_and(|d| d.first().folder.is_some())),
     Input::Press("rules-editor-save"),
     until!(|m, cx| rules_count(m, cx) == Some(1)),
 ];
@@ -623,6 +626,7 @@ const BAD_ADDRESS: &[Input] = &[
     until!(|m, cx| rules(m, cx).is_some_and(|p| p.editor.is_some())),
     Input::Press("rules-value"),
     Input::Text("счёт"), // i18n-ok: ввод сценария
+    Input::Press("rules-act-kind-0"),
     Input::Press("rules-kind-4"),
     until!(|m, cx| editor_kind(m, cx, Kind::Redirect)),
     Input::Press("rules-address"),
@@ -640,6 +644,7 @@ const FOREIGN: &[Input] = &[
     until!(|m, cx| rules(m, cx).is_some_and(|p| p.editor.is_some())),
     Input::Press("rules-value"),
     Input::Text("чужой"), // i18n-ok: ввод сценария
+    Input::Press("rules-act-kind-0"),
     Input::Press("rules-kind-1"),
     until!(|m, cx| editor_kind(m, cx, Kind::MarkRead)),
     Input::Press("rules-editor-save"),

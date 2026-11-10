@@ -119,21 +119,83 @@ vacation-foreign-warning = На сервере активен фильтр «{ $
 rules-demo = Демо: правила хранятся на сервере — нужна учётная запись.
 rules-loading = Чтение правил с сервера…
 rules-unsupported = Сервер не поддерживает правила (Sieve).
+rules-order-note = Выполняются по порядку сверху вниз. Правило с «Остановить» прерывает следующие.
+rules-server = Выполнять на сервере, где возможно (Sieve)
+rules-server-on = Правила уйдут на сервер и сработают, даже когда Postman закрыт.
+rules-server-off = Правила выполняет Postman по новым письмам «Входящих» — только пока он запущен. Пересылка — всегда на сервере.
+rules-col-order = Порядок
+rules-col-rule = Правило
+rules-col-where = Где выполняется · срабатывания
+rules-where-server = на сервере
+rules-where-app = в приложении
+rules-where-hits = { $place } · сработало { $n ->
+    [one] { $n } раз
+    [few] { $n } раза
+   *[other] { $n } раз
+} · { $when }
+rules-name = Название
+rules-name-placeholder = по условиям, если пусто
+rules-conditions = Условия
+rules-cond-add = Добавить условие
+rules-cond-or = Добавить группу «или»
+rules-actions = Действия
+rules-act-add = Добавить действие
+rules-options = Параметры
+rules-stop = Остановить обработку следующих правил
+rules-apply = Применять к существующим письмам
+rules-apply-counting = Применять к существующим письмам — считаю…
+rules-apply-found = Применять к существующим письмам — найдено { $n }
+rules-test = Проверить на последних { $n } письмах
+rules-test-result = Подойдёт { $n ->
+    [one] { $n } письмо
+    [few] { $n } письма
+   *[other] { $n } писем
+} из { $seen }
+rules-test-show = показать
+rules-test-hide = скрыть
+rules-op-contains = содержит
+rules-op-not-contains = не содержит
+rules-op-domain = из домена
+rules-op-not-domain = не из домена
+rules-domain-placeholder = домен, например example.com
+rules-folder-pick = Выберите папку
+rules-category-pick = Выберите категорию
+rules-redirect-note = Пересылку выполняет сервер — и когда Postman закрыт.
+rules-tok-if = ЕСЛИ
+rules-tok-or = ИЛИ
+rules-tok-and = И
+rules-tok-cond = { $field } { $op }
+rules-tok-move = папка
+rules-tok-redirect = переслать
+rules-tok-category = категория
+rules-tok-stop = · стоп
+rules-log = Журнал срабатываний
+rules-log-all = Весь журнал
+rules-log-short = Свернуть
+rules-log-empty = Срабатывания правил «в приложении» и «Применять к существующим» появятся здесь. Сервер о своих срабатываниях не сообщает.
+rules-log-yesterday = Вчера
+rules-hint = Подсказка
+rules-hint-1 = Правило можно создать из письма: ПКМ → «Всегда перемещать от этого отправителя» или «Заблокировать отправителя».
+rules-hint-2 = Порядок меняется стрелками слева от правила.
+rules-applied = Правило «{ $rule }» применено: { $n ->
+    [one] { $n } письмо
+    [few] { $n } письма
+   *[other] { $n } писем
+}
+rules-open = Правила
+rules-from-move-name = От { $sender } → «{ $folder }»
+rules-from-move-toast = Правило создано: письма от { $sender } — в «{ $folder }».
+rules-block-name = Заблокирован { $sender }
+rules-block-toast = Отправитель { $sender } заблокирован: его письма — в «{ $folder }».
+rules-block-no-folder = Нет папки «Нежелательные» или «Удалённые» — заблокировать некуда.
 rules-empty = Правил пока нет.
 rules-all-off = Все правила выключены.
 rules-add = Новое правило
-rules-edit = Изменить
 rules-delete = Удалить
 rules-delete-confirm = Удалить правило?
 rules-cancel = Отмена
 rules-new-title = Новое правило
 rules-edit-title = Изменить правило
-rules-if = Если
-rules-contains = содержит
-rules-then = то
-rules-folder = Папка
-rules-category = Категория
-rules-address = Адрес
 rules-value-placeholder = текст, например «Отчёт» или адрес
 rules-address-placeholder = name@example.com
 rules-field-from = От
@@ -162,16 +224,9 @@ rules-foreign-title = Скрипты сервера, созданные не в 
 rules-foreign-hint = Только просмотр: Postman их не меняет.
 rules-foreign-active = «{ $name }» — активен
 rules-foreign-inactive = «{ $name }» — выключен
-rules-when-from = От содержит «{ $value }»
-rules-when-to = Кому или копия содержит «{ $value }»
-rules-when-subject = Тема содержит «{ $value }»
-rules-do-move = переместить в «{ $folder }»
 rules-do-read = пометить прочитанным
 rules-do-flag = пометить флагом
 rules-do-discard = удалить без корзины
-rules-do-category = поставить категорию «{ $category }»
-rules-do-redirect = переслать на { $address }
-rules-line = { $when } → { $then }
 # Вкладка «Настройки» (S5-09): разделы, поиск, общие кнопки.
 settings-search = Найти настройку
 settings-search-nothing = Ничего не найдено

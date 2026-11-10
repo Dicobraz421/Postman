@@ -411,7 +411,7 @@ mod tests {
     }
 
     fn rule(enabled: bool) -> Rule {
-        Rule { enabled, field: Field::Subject, value: "x".into(), action: Action::Flag }
+        Rule::simple(enabled, Field::Subject, "x", Action::Flag)
     }
 
     #[test]
