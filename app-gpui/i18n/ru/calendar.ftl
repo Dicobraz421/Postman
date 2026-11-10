@@ -246,6 +246,7 @@ invite-done-declined = Вы отклонили
 invite-route = Ответ уйдёт через календарь сервера · из invite.ics, разобран в песочнице
 invite-route-done = Ответ записан в календарь сервера по UID события · из invite.ics, разобран в песочнице
 invite-cancelled = Встреча отменена организатором · { $organizer }
+list-meeting-cancelled = Отменена · { $when }
 invite-outdated-newer = Приглашение устарело: в календаре более новая версия встречи
 invite-outdated-past = Встреча уже прошла
 invite-day-loading = Календарь загружается…

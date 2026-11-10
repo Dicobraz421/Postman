@@ -246,6 +246,7 @@ invite-done-declined = You declined
 invite-route = The reply goes through the server calendar · from invite.ics, parsed in the sandbox
 invite-route-done = The reply is stored in the server calendar by the event UID · from invite.ics, parsed in the sandbox
 invite-cancelled = Meeting cancelled by the organizer · { $organizer }
+list-meeting-cancelled = Cancelled · { $when }
 invite-outdated-newer = Outdated invitation: the calendar has a newer version of the meeting
 invite-outdated-past = The meeting is over
 invite-day-loading = Loading the calendar…

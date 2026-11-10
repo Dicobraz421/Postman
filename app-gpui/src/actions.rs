@@ -482,6 +482,9 @@ pub(crate) mod scenes {
             && list.selected.is_none()
             && screens::rows_loaded(list)
             && screens::reading(m, cx).is_none()
+            // Время встреч у писем-приглашений (T2-18) — разобрано.
+            && list.meetings_ask.is_empty()
+            && m.reading.read(cx).meetings_idle()
     }
 
     fn letter(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {

@@ -193,7 +193,7 @@ pub(crate) fn attendees(inv: &Invitation) -> Vec<(String, Partstat)> {
 }
 
 /// «Чт, 23 октября · 11:00–12:00».
-fn when_line(span: Span, all_day: bool, tz: &TimeZone) -> String {
+pub(crate) fn when_line(span: Span, all_day: bool, tz: &TimeZone) -> String {
     let short = day_line(span, tz);
     if all_day { format!("{short} · {}", tr!("cal-all-day")) } else { format!("{short} · {}", time_range(span, tz)) }
 }

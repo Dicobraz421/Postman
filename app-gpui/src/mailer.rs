@@ -236,6 +236,10 @@ impl Mailer {
             // Чип «Уточнить» (S5-10): условие — в строку поиска.
             cx.subscribe_in(&list, window, |this, _, crate::search::RefineChip(r), window, cx| this.refine(r, window, cx)),
             cx.subscribe(&list, |this, _, NeedMore(mailbox), cx| this.load_more(mailbox.clone(), cx)),
+            cx.subscribe(&list, |this, _, crate::list::WantMeetings(rows), cx| {
+                let rows = rows.clone();
+                this.reading.update(cx, |r, cx| r.want_meetings(rows, cx));
+            }),
             cx.subscribe(&list, |this, _, _: &ReadOnly, cx| {
                 this.toasts.update(cx, |t, cx| t.push(Toast::Info, tr!("shared-read-only-flags"), cx));
             }),
@@ -284,6 +288,10 @@ impl Mailer {
                 ReadingEvent::Open(row) => this.open_letter(row.clone(), cx),
                 ReadingEvent::Unsend(s) => this.unsend_scheduled(s.clone(), cx),
                 ReadingEvent::EditDraft(row) => this.edit_draft(row.clone(), cx),
+                ReadingEvent::Meetings(found) => this.list.update(cx, |l, cx| {
+                    l.meetings.extend(found.iter().cloned());
+                    cx.notify();
+                }),
                 ReadingEvent::Respond(row, mode) => this.respond_to(row.clone(), *mode, cx),
                 ReadingEvent::TaskMail(inc) => this.tasks.update(cx, |t, cx| t.receive_mail(inc, cx)),
                 ReadingEvent::TaskAction { uid, action } => {

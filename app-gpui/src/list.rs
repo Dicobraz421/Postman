@@ -192,6 +192,9 @@ pub(crate) struct MailList {
     search_groups: Vec<(Group, usize)>,
     /// Значки переноса строк окна (S8-16, `local::Mark`): письма без связи с сервером в папке учётки.
     pub(crate) marks: HashMap<String, crate::local::Mark>,
+    /// Время встреч писем-приглашений (T2-18) — вместо превью; и строки, о которых спросить область чтения.
+    pub(crate) meetings: HashMap<String, crate::meeting_row::When>,
+    pub(crate) meetings_ask: Vec<EmailRow>,
     /// Имена учёток (ключ — `local::home`): подсказки значков переноса.
     pub(crate) servers: HashMap<String, String>,
     _subscriptions: Vec<Subscription>,
@@ -403,6 +406,11 @@ pub(crate) struct OpenRow(pub(crate) EmailRow);
 
 impl EventEmitter<OpenRow> for MailList {}
 
+/// Строки окна с вложениями, о встрече которых в хранилище ничего нет (T2-18): область чтения разберёт их `.ics`.
+pub(crate) struct WantMeetings(pub(crate) Vec<EmailRow>);
+
+impl EventEmitter<WantMeetings> for MailList {}
+
 /// Двойной щелчок по письму (T2-11): черновик открывается на правку.
 pub(crate) struct Activate(pub(crate) EmailRow);
 
@@ -537,6 +545,8 @@ impl MailList {
             found: None,
             search_groups: Vec::new(),
             marks: HashMap::new(),
+            meetings: HashMap::new(),
+            meetings_ask: Vec::new(),
             servers: HashMap::new(),
             _subscriptions: subscriptions,
         };
@@ -942,6 +952,8 @@ impl MailList {
         let (offset, limit) = page_window(&self.visible);
         self.rows = (offset, source.read(&self.cache, offset, limit));
         self.marks = crate::local::marks(&self.cache, &self.rows.1);
+        let meetings = crate::meeting_row::read(&self.cache, &self.rows.1);
+        self.take_meetings(meetings);
         self.take_restore();
     }
 
@@ -952,6 +964,18 @@ impl MailList {
         self.take_restore();
         if self.restore.is_some() {
             self.reread(None, cx);
+        }
+    }
+
+    /// Встречи окна (T2-18): известные — в строки, неизвестные — спросить на следующем кадре ([`Self::ask_meetings`]).
+    fn take_meetings(&mut self, (known, unknown): (HashMap<String, crate::meeting_row::When>, Vec<EmailRow>)) {
+        self.meetings.extend(known);
+        self.meetings_ask.extend(unknown);
+    }
+
+    pub(crate) fn ask_meetings(&mut self, cx: &mut Context<Self>) {
+        if !self.meetings_ask.is_empty() {
+            cx.emit(WantMeetings(std::mem::take(&mut self.meetings_ask)));
         }
     }
 
@@ -982,10 +1006,11 @@ impl MailList {
             let count = source.count(&cache);
             let rows = source.read(&cache, offset, limit);
             let marks = crate::local::marks(&cache, &rows);
-            (count, groups.read(&cache, count), rows, marks)
+            let meetings = crate::meeting_row::read(&cache, &rows);
+            (count, groups.read(&cache, count), rows, marks, meetings)
         });
         cx.spawn(async move |this, cx| {
-            let (count, groups, rows, marks) = task.await;
+            let (count, groups, rows, marks, meetings) = task.await;
             let _ = this.update(cx, |m, cx| {
                 if m.page_gen != generation {
                     return;
@@ -1002,6 +1027,8 @@ impl MailList {
                 }
                 m.rows = (offset, rows);
                 m.marks = marks;
+                m.take_meetings(meetings);
+                m.ask_meetings(cx);
                 if let Some(i) = select {
                     m.selected = None;
                     if count > 0 {
@@ -1037,10 +1064,11 @@ impl MailList {
         let task = cx.background_spawn(async move {
             let rows = source.read(&cache, offset, limit);
             let marks = crate::local::marks(&cache, &rows);
-            (rows, marks)
+            let meetings = crate::meeting_row::read(&cache, &rows);
+            (rows, marks, meetings)
         });
         cx.spawn(async move |this, cx| {
-            let (rows, marks) = task.await;
+            let (rows, marks, meetings) = task.await;
             let _ = this.update(cx, |m, cx| {
                 if m.page_gen != generation {
                     return;
@@ -1048,6 +1076,8 @@ impl MailList {
                 m.page_pending = None;
                 m.rows = (offset, rows);
                 m.marks = marks;
+                m.take_meetings(meetings);
+                m.ask_meetings(cx);
                 if let Some(row) = m.pending_open.take().and_then(|i| m.row(i).cloned()) {
                     m.open_row(row, cx);
                 }
@@ -1341,9 +1371,11 @@ impl Render for MailList {
                     this.ensure(rows.clone(), cx);
                 }
                 this.ask_more(rows.end, cx);
+                this.ask_meetings(cx);
             }
             let l = look(cx);
             let now = jiff::Zoned::now();
+            let tz = crate::prefs::with(cx, |p| p.calendar.zone());
             items
                 .map(|item| match this.layout.slot(item) {
                     Some(Slot::Header(seg)) => this.group_el(seg, &l, cx),
@@ -1353,6 +1385,7 @@ impl Render for MailList {
                             // Сроки (S5-04) — после категорий.
                             labels.marks = crate::lifecycle::row_badges(&r, &now);
                             labels.assigned = crate::shared::assigned(&r, cx);
+                            labels.meeting = this.meetings.get(&r.id).map(|w| w.text(&tz));
                             // Ждёт отправки — первой меткой, нейтральной (DESIGN.md: служебные — серые).
                             let now = jiff::Timestamp::now().as_second();
                             if let Some(&at) = this.scheduled.get(&r.id).filter(|&&at| at > now) {
@@ -1634,9 +1667,20 @@ pub(crate) fn list_row(
     // «Назначено: …» — справа в строке темы, нейтральной меткой (S5-28, макет `SharedMailboxes`).
     let assigned = labels.assigned.clone().map(|t| crate::labels::chip(t, postman_core::palette::NEUTRAL, l).max_w(px(160.)));
     let subject = div().flex().items_center().gap(px(8.)).min_w_0().child(subject).children(assigned);
+    // Письмо-приглашение (T2-18): время встречи со значком календаря вместо превью.
+    let meeting = labels.meeting;
     let preview = (roomy && previews).then(|| {
         let p = div().truncate().text_size(l.px(Metric::TypeCaption)).text_color(l.text2());
-        if encrypted { p.child(tr!("smime-list-preview")) } else { p.child(crate::search::marked(&r.preview, marks, l)) }
+        match meeting {
+            Some(text) => p
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(crate::chrome::icon(crate::calendar::g::CALENDAR, 12.).flex_none())
+                .child(div().truncate().child(text)),
+            None if encrypted => p.child(tr!("smime-list-preview")),
+            None => p.child(crate::search::marked(&r.preview, marks, l)),
+        }
     });
     let lit = state.open || state.picked;
     // Выделенная строка (T1-D): в фокусе — тон акцента и полоса акцента, без фокуса — нейтральная заливка и полоса

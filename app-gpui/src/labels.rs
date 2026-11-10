@@ -57,6 +57,8 @@ pub(crate) struct RowLabels {
     pub(crate) assigned: Option<String>,
     /// Значок переноса и подсказка (S8-16, `local::Mark`); ставит список.
     pub(crate) migration: Option<(char, String)>,
+    /// Встреча письма-приглашения (T2-18, `meeting_row`): время вместо превью; ставит список.
+    pub(crate) meeting: Option<String>,
 }
 
 pub(crate) fn row_labels(book: &Book, row: &EmailRow) -> RowLabels {
@@ -67,7 +69,7 @@ pub(crate) fn row_labels(book: &Book, row: &EmailRow) -> RowLabels {
     let labels = table.labels(&row.keywords);
     let stripe = labels.iter().find(|l| matches!(l, Label::Category(_))).map(|l| l.color());
     let chips = labels.iter().take(ROW_LABELS).map(|l| (label_name(l), l.color())).collect();
-    RowLabels { stripe, chips, marks: Vec::new(), assigned: None, migration: None }
+    RowLabels { stripe, chips, ..Default::default() }
 }
 
 /// Метка в строке отправителя: подложка и текст цвета категории; длинное имя обрезается.
