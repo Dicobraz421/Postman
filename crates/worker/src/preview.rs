@@ -389,6 +389,104 @@ pub fn scan_office(bytes: &[u8]) -> Result<OfficeScan, String> {
     Ok(scan)
 }
 
+/// Копия документа OOXML без макросов (T2-29, «Открыть без макросов»): без `vbaProject.bin`, `vbaData.xml` и их связей,
+/// тип основной части — обычный (`.docm` → `.docx`). Итог проверяется [`scan_office`]: макросов нет — иначе ошибка.
+/// Старый формат (OLE, `.doc`/`.xls`) — ошибка: только «Сохранить».
+pub fn strip_macros(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    if !bytes.starts_with(b"PK\x03\x04") {
+        return Err("старый формат Office — без макросов не открыть, только сохранить".into());
+    }
+    let mut zip = zip::ZipArchive::new(io::Cursor::new(bytes)).map_err(|e| format!("документ не разобран: {e}"))?;
+    let mut out = zip::ZipWriter::new(io::Cursor::new(Vec::new()));
+    let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    for i in 0..zip.len() {
+        let mut f = zip.by_index(i).map_err(|e| format!("документ не разобран: {e}"))?;
+        let name = f.name().map_err(|e| format!("документ не разобран: {e}"))?.into_owned();
+        let lower = name.to_ascii_lowercase();
+        if f.is_dir() || lower.ends_with("vbaproject.bin") || lower.ends_with("vbadata.xml") || lower.ends_with("vbaproject.bin.rels") {
+            continue;
+        }
+        if f.size() > MAX_STRIP_PART {
+            return Err("часть документа слишком большая".into());
+        }
+        let mut data = Vec::new();
+        f.read_to_end(&mut data).map_err(|e| format!("документ не разобран: {e}"))?;
+        if lower == "[content_types].xml" {
+            data = clean_types(&String::from_utf8_lossy(&data)).into_bytes();
+        } else if lower.ends_with(".rels") {
+            data = drop_vba_rels(&String::from_utf8_lossy(&data)).into_bytes();
+        }
+        out.start_file(name, opts).map_err(|e| e.to_string())?;
+        io::Write::write_all(&mut out, &data).map_err(|e| e.to_string())?;
+    }
+    let bytes = out.finish().map_err(|e| e.to_string())?.into_inner();
+    if scan_office(&bytes)?.macros {
+        return Err("макросы убрать не удалось".into());
+    }
+    Ok(bytes)
+}
+
+/// Часть документа, которую разбираем при очистке, — не больше (распаковка в память).
+const MAX_STRIP_PART: u64 = 64 * 1024 * 1024;
+
+/// `[Content_Types].xml` без макросов: тип основной части — обычный, записи VBA — прочь.
+fn clean_types(xml: &str) -> String {
+    const MAIN: [(&str, &str); 6] = [
+        (
+            "application/vnd.ms-word.document.macroEnabled.main+xml",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
+        ),
+        (
+            "application/vnd.ms-word.template.macroEnabledTemplate.main+xml",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml",
+        ),
+        ("application/vnd.ms-excel.sheet.macroEnabled.main+xml", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"),
+        ("application/vnd.ms-excel.template.macroEnabled.main+xml", "application/vnd.openxmlformats-officedocument.spreadsheetml.template.main+xml"),
+        (
+            "application/vnd.ms-powerpoint.presentation.macroEnabled.main+xml",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml",
+        ),
+        (
+            "application/vnd.ms-powerpoint.template.macroEnabled.main+xml",
+            "application/vnd.openxmlformats-officedocument.presentationml.template.main+xml",
+        ),
+    ];
+    let mut s = xml.to_owned();
+    for (from, to) in MAIN {
+        s = s.replace(from, to);
+    }
+    drop_elements(&s, &["<Default ", "<Override "], |e| e.contains("vbaProject") || e.contains("vbaData"))
+}
+
+/// Связи без VBA: `Relationship` с типом `…/vbaProject` — прочь.
+fn drop_vba_rels(xml: &str) -> String {
+    drop_elements(xml, &["<Relationship "], |e| e.contains("vbaProject") || e.contains("vbaData"))
+}
+
+/// Убрать самозакрывающиеся элементы с началом из `heads`, для которых `drop` — да (`<… />`).
+fn drop_elements(xml: &str, heads: &[&str], drop: impl Fn(&str) -> bool) -> String {
+    let mut out = String::with_capacity(xml.len());
+    let mut rest = xml;
+    loop {
+        let next = heads.iter().filter_map(|h| rest.find(h)).min();
+        let Some(at) = next else {
+            out.push_str(rest);
+            break;
+        };
+        let Some(end) = rest[at..].find("/>").map(|e| at + e + 2) else {
+            out.push_str(rest);
+            break;
+        };
+        out.push_str(&rest[..at]);
+        let elem = &rest[at..end];
+        if !drop(elem) {
+            out.push_str(elem);
+        }
+        rest = &rest[end..];
+    }
+    out
+}
+
 /// Составной файл: есть ли проект VBA и имена его модулей (потоки хранилища `VBA`, кроме служебных).
 fn scan_ole(bytes: &[u8]) -> Result<(bool, Vec<String>), String> {
     let cf = cfb::CompoundFile::open(io::Cursor::new(bytes)).map_err(|e| format!("документ не разобран: {e}"))?;
@@ -668,5 +766,31 @@ mod tests {
     fn pdf_strings() {
         assert_eq!(pdf_string(&[0xFE, 0xFF, 0x04, 0x1E, 0x04, 0x42]), "От");
         assert_eq!(pdf_string(b"Report"), "Report");
+    }
+}
+
+#[cfg(test)]
+mod strip_tests {
+    /// «Открыть без макросов» (T2-29): у книги с VBA — копия без `vbaProject.bin`, тип — обычная книга; старый
+    /// формат — отказ.
+    #[test]
+    fn strip_macros_from_ooxml() {
+        let book = include_bytes!("../tests/fixtures/budget.xlsm");
+        assert!(super::scan_office(book).unwrap().macros);
+        let clean = super::strip_macros(book).unwrap();
+        assert!(!super::scan_office(&clean).unwrap().macros);
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&clean[..])).unwrap();
+        assert!((0..zip.len()).all(|i| !zip.by_index(i).unwrap().name().unwrap().to_ascii_lowercase().ends_with("vbaproject.bin")));
+        let mut types = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name("[Content_Types].xml").unwrap(), &mut types).unwrap();
+        assert!(!types.contains("macroEnabled") && !types.contains("vbaProject"), "{types}");
+        assert!(super::strip_macros(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0, 0]).is_err());
+    }
+
+    #[test]
+    fn drop_only_vba_relationships() {
+        let rels = r#"<Relationships><Relationship Id="r1" Type="x/styles" Target="styles.xml"/><Relationship Id="r9" Type="http://schemas.microsoft.com/office/2006/relationships/vbaProject" Target="vbaProject.bin"/></Relationships>"#;
+        let out = super::drop_vba_rels(rels);
+        assert!(out.contains("styles.xml") && !out.contains("vbaProject"), "{out}");
     }
 }

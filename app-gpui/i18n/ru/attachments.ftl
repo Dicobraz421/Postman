@@ -89,3 +89,11 @@ att-pv-module = Просмотр: модуль «{ $name }» { $version }
 att-pv-module-third = Просмотр: модуль «{ $name }» { $version } (сторонний) · в песочнице
 att-pv-module-enable = Включить модуль «{ $name }»
 att-pv-module-refused = Модуль не показал файл: { $reason }
+att-pv-open-clean = Открыть без макросов
+att-pv-zoom-in = Увеличить
+att-pv-zoom-out = Уменьшить
+att-status-archive-n = Архив: { $n ->
+    [one] { $n } файл
+    [few] { $n } файла
+   *[many] { $n } файлов
+}

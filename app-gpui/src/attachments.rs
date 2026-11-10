@@ -53,6 +53,23 @@ pub(crate) mod glyph {
 pub(crate) enum FileAct {
     Open,
     SaveAs,
+    /// «Открыть без макросов» (T2-29): копия OOXML без VBA — из песочницы — в приложение.
+    OpenClean,
+}
+
+/// Имя копии без макросов: `.docm` → `.docx`, `.xlsm` → `.xlsx`, `.pptm` → `.pptx` (и шаблоны).
+pub(crate) fn clean_name(name: &str) -> String {
+    let Some((stem, ext)) = name.rsplit_once('.') else { return name.to_owned() };
+    let ext = match ext.to_ascii_lowercase().as_str() {
+        "docm" => "docx",
+        "dotm" => "dotx",
+        "xlsm" => "xlsx",
+        "xltm" => "xltx",
+        "pptm" => "pptx",
+        "potm" => "potx",
+        _ => return name.to_owned(),
+    };
+    format!("{stem}.{ext}")
 }
 
 /// Вид файла — для плашки карточки.
@@ -362,13 +379,18 @@ impl ReadingPane {
             .font_weight(FontWeight::SEMIBOLD)
             .child(tile_label(item));
         let size = if pending { tr!("att-loading") } else { size_text(item.row.size) };
+        // Архив, уже разобранный просмотром (T2-29, макет `Attach`): «18 МБ · Архив: 42 файла».
+        let size = match self.archive_files.get(&item.row.blob_id).filter(|_| !pending) {
+            Some(&n) => format!("{size} · {}", tr!("att-status-archive-n", n = n as i64)),
+            None => size,
+        };
         let text = div()
             .flex_1()
             .min_w_0()
             .flex()
             .flex_col()
             .child(div().truncate().text_size(px(13.)).line_height(px(17.)).text_color(l.text()).child(item.name.clone()))
-            .child(div().text_size(px(11.)).line_height(px(14.)).text_color(l.text2()).child(size));
+            .child(div().truncate().text_size(px(11.)).line_height(px(14.)).text_color(l.text2()).child(size));
         let status = match item.risk {
             Risk::Macros => Some((tr!("att-status-macros"), glyph::SHIELD)),
             Risk::Blocked => Some((tr!("att-status-blocked"), glyph::SHIELD)),
