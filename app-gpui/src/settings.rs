@@ -231,6 +231,7 @@ impl Mailer {
             }
             SettingsEvent::RemoveExtra(profile) => self.remove_extra(profile.clone(), cx),
             SettingsEvent::SaveRules(rules) => self.save_rules(rules.clone(), false, cx),
+            SettingsEvent::RecheckSandbox => self.reading.update(cx, |r, cx| r.recheck_sandbox(cx)),
             SettingsEvent::SyncNow => {
                 if !self.backend.send(Command::SyncNow) {
                     self.not_sent(cx);
@@ -769,6 +770,8 @@ pub(crate) mod scenes {
         Scene::new("settings-categories", categories, section_ready),
         // «Настройки → Клавиатура»: своё сочетание у одной команды и конфликт у другой.
         Scene::new("settings-keys", keys, section_ready),
+        // Та же «Клавиатура» со свёрнутыми группами (T2-55): группы с числом команд, «Экспорт keymap.toml» и «Импорт».
+        Scene::new("settings-keys-groups", keys_groups, section_ready),
         // «Настройки → Аккаунты» с карточкой «Добавить аккаунт» на месте.
         Scene::new("settings-accounts", accounts, section_ready),
         // «Аккаунты → Настроить» (T2-51): протокол в строке, параметры сервера, офлайн-кэш; «Синхронизировать».
@@ -870,7 +873,7 @@ pub(crate) mod scenes {
             "settings-security" | "settings-directory" => S::Security,
             "settings-look" => S::Look,
             "settings-categories" => S::Categories,
-            "settings-keys" => S::Keys,
+            "settings-keys" | "settings-keys-groups" => S::Keys,
             "settings-quick" => S::Quick,
             "settings-reading" => S::Reading,
             "settings-calendar" | "settings-calendar-free" => S::Calendar,
@@ -928,6 +931,17 @@ pub(crate) mod scenes {
             p.keys_single.insert("mail.archive".into(), vec!["y".into()]);
         });
         m.open_settings(Some(S::Keys), window, cx);
+        Ok(())
+    }
+
+    fn keys_groups(s: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        keys(s, m, window, cx)?;
+        if let Some(v) = m.settings.view.clone() {
+            v.update(cx, |v, cx| {
+                v.keys.collapsed = crate::commands::all().iter().map(|c| c.area()).collect();
+                cx.notify();
+            });
+        }
         Ok(())
     }
 

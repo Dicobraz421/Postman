@@ -30,6 +30,10 @@ pub(crate) struct KeysState {
     pub(crate) clash: Option<(String, &'static str)>,
     /// Перехват нажатий на время записи (клавиши не уходят командам).
     intercept: Option<Subscription>,
+    /// Свёрнутые группы команд (T2-55): область команд (`mail`, `calendar`…).
+    pub(crate) collapsed: std::collections::BTreeSet<&'static str>,
+    /// Итог экспорта или импорта `keymap.toml`.
+    pub(crate) file_note: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -42,7 +46,16 @@ impl KeysState {
                 cx.notify();
             }
         });
-        Self { search, query: String::new(), recording: None, clash: None, intercept: None, _subscriptions: vec![sub] }
+        Self {
+            search,
+            query: String::new(),
+            recording: None,
+            clash: None,
+            intercept: None,
+            collapsed: Default::default(),
+            file_note: None,
+            _subscriptions: vec![sub],
+        }
     }
 }
 
@@ -51,7 +64,81 @@ pub(crate) fn command_name(c: &Command) -> String {
     tr!(&c.name_key())
 }
 
+/// Свои сочетания из настроек — для `keymap.toml`.
+fn keymap_of(p: &postman_core::prefs::Prefs) -> postman_core::keymap_file::Keymap {
+    postman_core::keymap_file::Keymap { scheme: p.key_scheme, outlook: p.keys.clone(), single: p.keys_single.clone() }
+}
+
+/// Сочетания из файла — только команд реестра; ответ — сколько взято и сколько пропущено.
+fn known(k: postman_core::keymap_file::Keymap) -> (postman_core::keymap_file::Keymap, usize) {
+    let ids: Vec<&str> = crate::commands::all().iter().map(|c| c.id).collect();
+    let mut skipped = 0;
+    let mut keep = |m: std::collections::BTreeMap<String, Vec<String>>| {
+        m.into_iter()
+            .filter(|(id, _)| {
+                let ok = ids.contains(&id.as_str());
+                skipped += usize::from(!ok);
+                ok
+            })
+            .collect()
+    };
+    let outlook = keep(k.outlook);
+    let single = keep(k.single);
+    (postman_core::keymap_file::Keymap { scheme: k.scheme, outlook, single }, skipped)
+}
+
 impl SettingsView {
+    /// «Экспорт keymap.toml»: системный выбор места, файл пишется в фоне.
+    fn keys_export(&mut self, cx: &mut Context<Self>) {
+        let text = postman_core::keymap_file::write(&keymap_of(&crate::prefs::get(cx)));
+        let dir = std::env::var_os("USERPROFILE").map(|h| std::path::PathBuf::from(h).join("Documents")).unwrap_or_default();
+        let path = cx.prompt_for_new_path(&dir, Some("keymap.toml"));
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(path))) = path.await else { return };
+            let task = cx.background_spawn(async move { std::fs::write(&path, text).map(|_| path) });
+            let result = task.await;
+            let _ = this.update(cx, |v, cx| {
+                v.keys.file_note = Some(match result {
+                    Ok(p) => tr!("settings-keys-exported", file = p.display().to_string()),
+                    Err(e) => tr!("settings-keys-file-failed", error = e.to_string()),
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// «Импорт»: файл — в фоне; свои сочетания и схема — из файла (команды не из реестра пропускаются).
+    fn keys_import(&mut self, cx: &mut Context<Self>) {
+        let paths = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: None });
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = paths.await else { return };
+            let Some(path) = paths.into_iter().next() else { return };
+            let task = cx.background_spawn(async move {
+                let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+                postman_core::keymap_file::read(&text).map_err(|e| e.to_string())
+            });
+            let result = task.await;
+            let _ = this.update(cx, |v, cx| {
+                match result {
+                    Ok(k) => {
+                        let (k, skipped) = known(k);
+                        let n = k.outlook.len() + k.single.len();
+                        crate::prefs::update(cx, |p| {
+                            p.key_scheme = k.scheme;
+                            p.keys = k.outlook;
+                            p.keys_single = k.single;
+                        });
+                        v.keys.file_note = Some(tr!("settings-keys-imported", n = n as i64, skipped = skipped as i64));
+                    }
+                    Err(e) => v.keys.file_note = Some(tr!("settings-keys-file-failed", error = e)),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// «Изменить»: следующее нажатие (не одни модификаторы) — новое сочетание команды; Esc — отмена.
     fn start_recording(&mut self, id: &'static str, cx: &mut Context<Self>) {
         self.keys.recording = Some(id);
@@ -146,19 +233,43 @@ impl SettingsView {
                 .child(div().w(px(140.))),
         );
         let mut area = "";
+        let mut groups = 0usize;
+        // Поиск показывает найденное во всех группах; без поиска группы сворачиваются (T2-55).
+        let searching = !self.keys.query.trim().is_empty();
         for (i, c) in commands.iter().copied().enumerate() {
             if c.area() != area {
                 area = c.area();
+                let a: &'static str = c.area();
+                let folded = !searching && self.keys.collapsed.contains(a);
+                let count = commands.iter().filter(|x| x.area() == a).count();
                 table = table.child(
                     div()
+                        .id(("settings-keys-group", groups))
+                        .children(crate::screens::spot(("settings-keys-group", groups)))
                         .pt_3()
                         .pb_1()
                         .flex()
-                        .items_baseline()
+                        .items_center()
                         .gap_2()
+                        .cursor_pointer()
+                        .child(
+                            crate::chrome::icon(if folded { crate::chrome::glyph::CHEVRON_RIGHT } else { crate::chrome::glyph::CHEVRON_DOWN }, 10.)
+                                .text_color(l.text2()),
+                        )
                         .child(div().font_weight(FontWeight::SEMIBOLD).child(tr!(&format!("settings-keys-area-{area}"))))
-                        .child(div().text_size(px(11.)).text_color(l.text3()).child(format!("{area}.*"))),
+                        .child(div().text_size(px(11.)).text_color(l.text3()).child(format!("{area}.*")))
+                        .child(div().text_size(px(11.)).text_color(l.text3()).child(tr!("settings-keys-group-count", n = count as i64)))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !this.keys.collapsed.remove(a) {
+                                this.keys.collapsed.insert(a);
+                            }
+                            cx.notify();
+                        })),
                 );
+                groups += 1;
+            }
+            if !searching && self.keys.collapsed.contains(c.area()) {
+                continue;
             }
             table = table.child(self.key_row(i, c, &set, &conflicts, l, cx));
         }
@@ -221,7 +332,38 @@ impl SettingsView {
             .child(div().text_size(px(12.)).text_color(l.text2()).child(note))
             .child(conflicts_block)
             .child(table)
-            .child(aside_card(tr!("settings-keys-layout"), vec![tr!("settings-keys-layout-1"), tr!("settings-keys-layout-2")], l));
+            .child(
+                div()
+                    .flex()
+                    .gap_3()
+                    .child(div().flex_1().child(aside_card(
+                        tr!("settings-keys-layout"),
+                        vec![tr!("settings-keys-layout-1"), tr!("settings-keys-layout-2")],
+                        l,
+                    )))
+                    .child(
+                        div().flex_1().child(
+                            aside_card(
+                                tr!("settings-keys-export"),
+                                vec![self.keys.file_note.clone().unwrap_or_else(|| tr!("settings-keys-export-note"))],
+                                l,
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap_2()
+                                    .child(
+                                        button("settings-keys-export", tr!("settings-keys-export-button"), false, l)
+                                            .on_click(cx.listener(|this, _, _, cx| this.keys_export(cx))),
+                                    )
+                                    .child(
+                                        button("settings-keys-import", tr!("settings-keys-import"), false, l)
+                                            .on_click(cx.listener(|this, _, _, cx| this.keys_import(cx))),
+                                    ),
+                            ),
+                        ),
+                    ),
+            );
         (reset_all, body.into_any_element(), Vec::new())
     }
 

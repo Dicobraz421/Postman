@@ -99,6 +99,38 @@ impl SettingsView {
         .detach();
     }
 
+    /// «Предпросмотр» (T2-58): уведомление о новом письме, как его покажет Windows, — или почему его не будет.
+    pub(crate) fn notify_preview(&self, l: &Look, cx: &mut Context<Self>) -> Div {
+        let g = crate::prefs::get(cx).general;
+        let hour = jiff::Zoned::now().hour() as u8;
+        let quiet = g.quiet && postman_core::newmail::quiet(hour, g.quiet_from, g.quiet_to);
+        let (title, note) = match g.notify {
+            Notify::Off => (tr!("settings-notify-preview-off"), tr!("settings-notify-off-hint")),
+            _ if quiet => (tr!("settings-notify-preview-quiet"), tr!("settings-quiet-hint")),
+            Notify::Important => (tr!("settings-notify-important"), tr!("settings-notify-important-hint")),
+            Notify::All => (tr!("settings-notify-all"), tr!("settings-notify-all-hint")),
+        };
+        let shown = g.notify != Notify::Off && !quiet;
+        let toast = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p_3()
+            .rounded(l.px(pets_ui::theme::Metric::RadiusOverlay))
+            .border_1()
+            .border_color(l.c(pets_ui::theme::Role::StrokeCard))
+            .bg(l.c(pets_ui::theme::Role::LayerOverlay))
+            .when(!shown, |d| d.opacity(0.45))
+            .child(div().flex().text_size(px(12.)).text_color(l.text2()).child(div().flex_1().child("Postman")).child(tr!(if g.sound && shown {
+                "settings-notify-preview-sound"
+            } else {
+                "settings-notify-preview-silent"
+            })))
+            .child(div().font_weight(FontWeight::SEMIBOLD).child(tr!("settings-notify-preview-from")))
+            .child(div().text_size(px(12.)).child(tr!("settings-notify-preview-subject")));
+        crate::settings_tab::preview_card(toast, title, note, l)
+    }
+
     pub(crate) fn general(&mut self, l: &Look, cx: &mut Context<Self>) -> Div {
         let p = crate::prefs::get(cx);
         let g = p.general.clone();
