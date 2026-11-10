@@ -1,5 +1,6 @@
-//! Добавление аккаунта на месте (S5-09, DESIGN «Настройки»: «Первый запуск — добавление аккаунта на месте»): три шага —
-//! адрес сервера, логин, пароль — и проверка входом. Не модальное окно: при первом запуске — на месте экрана почты
+//! Добавление аккаунта на месте (S5-09, DESIGN «Настройки»: «Первый запуск — добавление аккаунта на месте»; макет
+//! `FirstRun`, T2-28): три шага — адрес почты, сервер (найден по адресу: Exchange, JMAP или IMAP; иначе — вручную) с
+//! паролем, проверка (подключение, авторизация, папки) и «Открыть почту». Не модальное окно: при первом запуске — на месте экрана почты
 //! (с выбором темы и плотности), в «Настройки → Аккаунты» — карточкой в списке аккаунтов. Вход проверяется
 //! синхронизацией: панель уходит после первого ответа сервера.
 //!
@@ -20,35 +21,62 @@ use crate::settings_tab::{seg, seg_group};
 /// Шаг добавления.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Step {
+    /// Адрес почты (он же логин).
+    Address,
+    /// Сервер — найден по адресу или вручную; пароль и где его хранить.
     Server,
-    Login,
-    Password,
+    /// Проверка: подключение, авторизация, папки.
+    Check,
 }
 
 impl Step {
-    const ALL: [Step; 3] = [Step::Server, Step::Login, Step::Password];
+    const ALL: [Step; 3] = [Step::Address, Step::Server, Step::Check];
 
     fn index(self) -> usize {
         match self {
-            Step::Server => 0,
-            Step::Login => 1,
-            Step::Password => 2,
+            Step::Address => 0,
+            Step::Server => 1,
+            Step::Check => 2,
         }
     }
 
     fn title(self) -> String {
         match self {
+            Step::Address => tr!("signin-step-address"),
             Step::Server => tr!("signin-step-server"),
-            Step::Login => tr!("signin-step-login"),
-            Step::Password => tr!("signin-step-password"),
+            Step::Check => tr!("signin-step-check"),
         }
     }
 }
 
+/// Сервер, найденный по адресу почты (T2-28): адрес пути, как нашли, за сколько.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Found {
+    pub(crate) url: String,
+    pub(crate) ms: u128,
+}
+
+/// Вид сервера по адресу пути: «Exchange (EWS)», «IMAP/SMTP», «JMAP» — и чем нашли.
+fn kind_of(url: &str) -> (String, String) {
+    if postman_backend_ews::is_ews_url(url) {
+        (tr!("signin-kind-ews"), tr!("signin-how-autodiscover"))
+    } else if url.starts_with("imaps://") || url.starts_with("imap://") {
+        (tr!("signin-kind-imap"), tr!("signin-how-port"))
+    } else {
+        (tr!("signin-kind-jmap"), tr!("signin-how-wellknown"))
+    }
+}
+
+/// Узел для строки «Найдены настройки: … · mail.example.ru».
+fn host_of(url: &str) -> String {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    rest.split(['/', '?', ':']).next().unwrap_or(rest).to_owned()
+}
+
 pub(crate) struct SignIn {
     pub(crate) step: Step,
-    url: Entity<InputState>,
-    user: Entity<InputState>,
+    pub(crate) url: Entity<InputState>,
+    pub(crate) user: Entity<InputState>,
     password: Entity<InputState>,
     /// Пароль — в диспетчер учётных данных Windows (`false` — не хранить, спрашивать при запуске).
     pub(crate) store: bool,
@@ -63,8 +91,20 @@ pub(crate) struct SignIn {
     pub(crate) error: Option<String>,
     /// Поле шага — в фокус на следующем кадре (нужно окно).
     focus: bool,
+    /// Поиск сервера по адресу (T2-28): идёт; нашли; «Настроить вручную» — поле адреса сервера.
+    pub(crate) detecting: bool,
+    pub(crate) found: Option<Found>,
+    pub(crate) manual: bool,
+    /// Проверка (шаг 3): вход подтверждён; папка, которая загружается.
+    pub(crate) signed: bool,
+    pub(crate) folder: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
+
+/// «Открыть почту» или «Пропустить» (T2-28): панель — прочь.
+pub(crate) struct Done;
+
+impl EventEmitter<Done> for SignIn {}
 
 /// «Проверить и подключить»: учётная запись из полей и где хранить пароль.
 pub(crate) struct Submit {
@@ -91,12 +131,9 @@ impl SignIn {
         };
         let subscriptions =
             vec![cx.subscribe_in(&url, window, enter), cx.subscribe_in(&user, window, enter), cx.subscribe_in(&password, window, enter)];
-        // Адрес и логин уже есть (сервер отклонил сохранённый вход) — сразу пароль.
-        let step = match (prefill.url.is_empty(), prefill.user.is_empty()) {
-            (true, _) => Step::Server,
-            (false, true) => Step::Login,
-            (false, false) => Step::Password,
-        };
+        // Адрес и логин уже есть (сервер отклонил сохранённый вход) — сразу шаг сервера с паролем.
+        let step = if prefill.user.is_empty() { Step::Address } else { Step::Server };
+        let manual = !prefill.url.is_empty();
         let domain = crate::sys::shell::in_domain();
         let windows = prefill.windows;
         Self {
@@ -111,8 +148,67 @@ impl SignIn {
             busy: false,
             error: None,
             focus: true,
+            detecting: false,
+            found: None,
+            manual,
+            signed: false,
+            folder: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Первый запуск (панель на месте почты), а не карточка в настройках.
+    pub(crate) fn is_welcome(&self) -> bool {
+        self.welcome
+    }
+
+    /// Найти сервер по домену адреса (T2-28): `домен`, затем `mail.домен` — пути по очереди (JMAP, IMAP, Exchange); в
+    /// фоне. Нашли — адрес в поле сервера; нет — поле открыто.
+    fn detect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let email = self.user.read(cx).value().trim().to_owned();
+        let Some((_, domain)) = email.rsplit_once('@') else { return };
+        let domain = domain.to_lowercase();
+        self.detecting = true;
+        self.found = None;
+        let task = cx.background_spawn(async move {
+            let started = std::time::Instant::now();
+            for host in [domain.clone(), format!("mail.{domain}")] {
+                let url = crate::plugins::registry().detect_blocking(&host);
+                if url != host {
+                    return Some(Found { url, ms: started.elapsed().as_millis() });
+                }
+            }
+            None
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let found = task.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.detecting = false;
+                match found {
+                    Some(f) => {
+                        this.url.update(cx, |s, cx| s.set_value(f.url.clone(), window, cx));
+                        this.found = Some(f);
+                    }
+                    None => this.manual = true,
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Вход подтверждён (шаг «Проверка»): подключение и авторизация — готово, дальше папки.
+    pub(crate) fn signed_in(&mut self, cx: &mut Context<Self>) {
+        self.busy = false;
+        self.signed = true;
+        self.step = Step::Check;
+        cx.notify();
+    }
+
+    /// Загружается папка (шаг «Проверка»).
+    pub(crate) fn loading(&mut self, folder: String, cx: &mut Context<Self>) {
+        self.folder = Some(folder);
+        cx.notify();
     }
 
     /// Выбор входа Windows виден: адрес — EWS Exchange, машина в домене.
@@ -140,7 +236,7 @@ impl SignIn {
         cx.notify();
     }
 
-    fn go(&mut self, step: Step, cx: &mut Context<Self>) {
+    pub(crate) fn go(&mut self, step: Step, cx: &mut Context<Self>) {
         self.step = step;
         self.error = None;
         self.focus = true;
@@ -148,27 +244,34 @@ impl SignIn {
     }
 
     /// «Продолжить» или Enter: проверить поле шага и дальше; на последнем — вход.
-    fn next(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
             return;
         }
         match self.step {
-            Step::Server => match check_url(&self.url.read(cx).value()) {
-                Ok(_) => self.go(Step::Login, cx),
-                Err(e) => self.fail(e, cx),
-            },
-            Step::Login if self.user.read(cx).value().trim().is_empty() => self.fail(tr!("signin-fill-user"), cx),
-            // Вход Windows (T1-02б): шага «Пароль» нет.
-            Step::Login if self.windows && self.windows_offered(cx) => self.submit(cx),
-            Step::Login => self.go(Step::Password, cx),
-            Step::Password => self.submit(cx),
+            Step::Address => {
+                let email = self.user.read(cx).value().trim().to_owned();
+                if !email.contains('@') || email.ends_with('@') {
+                    return self.fail(tr!("signin-fill-email"), cx);
+                }
+                if !self.manual {
+                    self.detect(window, cx);
+                }
+                self.go(Step::Server, cx);
+            }
+            Step::Server => self.submit(cx),
+            Step::Check => {
+                if self.signed {
+                    cx.emit(Done);
+                }
+            }
         }
     }
 
     fn back(&mut self, cx: &mut Context<Self>) {
         let prev = match self.step {
-            Step::Server | Step::Login => Step::Server,
-            Step::Password => Step::Login,
+            Step::Address | Step::Server => Step::Address,
+            Step::Check => Step::Server,
         };
         self.go(prev, cx);
     }
@@ -192,6 +295,10 @@ impl SignIn {
         }
         self.busy = true;
         self.error = None;
+        // Проверка — шагом 3 (макет): подключение идёт.
+        if self.welcome {
+            self.step = Step::Check;
+        }
         cx.notify();
         cx.emit(Submit { account: Account { url, auth: Auth::Basic { user, password } }, store: self.store });
     }
@@ -199,7 +306,7 @@ impl SignIn {
     /// Сервер отклонил сохранённый вход: причина под полями, адрес и логин уже подставлены.
     pub(crate) fn rejected(&mut self, text: String, cx: &mut Context<Self>) {
         self.busy = false;
-        self.step = Step::Password;
+        self.step = Step::Server;
         self.error = Some(text);
         cx.notify();
     }
@@ -215,9 +322,9 @@ impl SignIn {
     /// и предложением войти с паролем: шаг «Пароль».
     pub(crate) fn failed(&mut self, error: &str, cx: &mut Context<Self>) {
         self.busy = false;
+        self.step = Step::Server;
         if self.windows && error.contains(postman_backend_ews::WINDOWS_SIGN_IN_UNAVAILABLE) {
             self.windows = false;
-            self.step = Step::Password;
             self.focus = true;
             self.error = Some(tr!("signin-windows-failed"));
         } else {
@@ -289,7 +396,7 @@ impl SignIn {
 
     /// Уже введённое на прошлых шагах: строка «Сервер: … · Изменить».
     fn summary(&self, l: &crate::roles::Look, label: String, value: String, to: Step, cx: &mut Context<Self>) -> Div {
-        let id: &'static str = if to == Step::Server { "signin-edit-server" } else { "signin-edit-login" };
+        let id: &'static str = if to == Step::Address { "signin-edit-address" } else { "signin-edit-server" };
         div()
             .flex()
             .items_center()
@@ -332,19 +439,58 @@ impl SignIn {
     fn content(&self, l: &crate::roles::Look, cx: &mut Context<Self>) -> Div {
         let button = |id: &'static str, label: String, primary: bool| crate::buttons::plain(id, label, primary);
         let mut body = div().flex().flex_col().gap_4();
-        let url = normalize_url(&self.url.read(cx).value());
         let user = self.user.read(cx).value().trim().to_owned();
         match self.step {
-            Step::Server => {
-                body = body.child(self.field(l, tr!("signin-url"), &self.url, Some(tr!("signin-url-hint"))));
+            Step::Address => {
+                body = body.child(self.field(l, tr!("signin-email"), &self.user, Some(tr!("signin-email-hint")))).child(
+                    div().flex().child(
+                        div()
+                            .id("signin-manual")
+                            .children(crate::screens::spot("signin-manual"))
+                            .px_1()
+                            .rounded(l.px(Metric::RadiusControl))
+                            .text_size(px(13.))
+                            .text_color(l.text2())
+                            .cursor_pointer()
+                            .hover(|d| d.bg(l.hover()).text_color(l.accent_text()))
+                            .child(tr!("signin-manual"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.manual = true;
+                                this.next(window, cx);
+                            })),
+                    ),
+                );
             }
-            Step::Login => {
-                body = body.child(self.summary(l, tr!("signin-url"), url, Step::Server, cx)).child(self.field(
-                    l,
-                    tr!("signin-user"),
-                    &self.user,
-                    Some(tr!("signin-user-hint")),
-                ));
+            Step::Server => {
+                body = body.child(self.summary(l, tr!("signin-address"), user, Step::Address, cx));
+                // Найдены настройки (макет): вид и узел, справа — чем и за сколько.
+                let line = if self.detecting {
+                    Some(div().text_color(l.text2()).child(tr!("signin-detecting")))
+                } else {
+                    self.found.as_ref().filter(|_| !self.manual).map(|f| {
+                        let (kind, how) = kind_of(&f.url);
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .px_3()
+                            .py_2()
+                            .rounded(l.px(Metric::RadiusControl))
+                            .border_1()
+                            .border_color(l.border())
+                            .child(crate::chrome::icon(crate::calendar::g::CHECK, 14.).text_color(l.success()))
+                            .child(div().flex_1().min_w_0().truncate().child(tr!("signin-found", kind = kind, host = host_of(&f.url))))
+                            .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!(
+                                "signin-found-how",
+                                how = how,
+                                secs = format!("{:.1}", f.ms as f64 / 1000.).replace('.', ",")
+                            )))
+                    })
+                };
+                body = body.children(line);
+                if self.manual || (!self.detecting && self.found.is_none()) {
+                    body = body.child(self.field(l, tr!("signin-url"), &self.url, Some(tr!("signin-url-hint"))));
+                }
                 // Exchange в домене (T1-02б): вход учётной записью Windows без пароля.
                 if self.windows_offered(cx) {
                     let on = self.windows;
@@ -369,47 +515,89 @@ impl SignIn {
                             .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("signin-windows-hint"))),
                     );
                 }
+                if !(self.windows && self.windows_offered(cx)) {
+                    let (tls, ok) = security_line();
+                    body = body
+                        .child(self.field(l, tr!("signin-password"), &self.password, None))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_2()
+                                .child(div().text_color(l.text2()).child(tr!("signin-store")))
+                                .child(self.radio_row(l, "signin-store-windows", self.store, tr!("signin-store-windows"), cx))
+                                .child(self.radio_row(l, "signin-store-never", !self.store, tr!("signin-store-never"), cx))
+                                .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("signin-store-note"))),
+                        )
+                        .child(
+                            div()
+                                .p_2()
+                                .rounded(l.px(Metric::RadiusControl))
+                                .bg(if ok { l.fill_passive() } else { l.warning_bg() })
+                                .text_size(px(12.))
+                                .text_color(if ok { l.text2() } else { l.warning() })
+                                .child(tls),
+                        );
+                }
             }
-            Step::Password => {
-                let (tls, ok) = security_line();
-                body = body
-                    .child(self.summary(l, tr!("signin-url"), url, Step::Server, cx))
-                    .child(self.summary(l, tr!("signin-user"), user, Step::Login, cx))
-                    .child(self.field(l, tr!("signin-password"), &self.password, None))
-                    .child(
+            Step::Check => {
+                let url = normalize_url(&self.url.read(cx).value());
+                let (kind, _) = kind_of(&url);
+                body = body.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(div().font_weight(FontWeight::SEMIBOLD).child(user))
+                        .child(div().text_size(px(12.)).text_color(l.text2()).child(format!("{kind} · {}", host_of(&url)))),
+                );
+                // Ход проверки (макет): готово — ✓, идёт — акцентом, впереди — серым.
+                let state = |done: bool, active: bool| -> (char, Hsla) {
+                    if done {
+                        (crate::calendar::g::CHECK, l.success())
+                    } else if active {
+                        ('\u{E895}', l.accent_text())
+                    } else {
+                        ('\u{EA3A}', l.text3())
+                    }
+                };
+                let folders_done = false;
+                let rows = [
+                    (tr!("signin-check-connect"), self.signed, !self.signed, String::new()),
+                    (tr!("signin-check-auth"), self.signed, !self.signed, if self.signed { tr!("signin-check-ok") } else { String::new() }),
+                    (tr!("signin-check-folders"), folders_done, self.signed, self.folder.clone().unwrap_or_default()),
+                ];
+                let list = div().flex().flex_col().rounded(l.px(Metric::RadiusControl)).border_1().border_color(l.border()).children(
+                    rows.into_iter().enumerate().map(|(i, (title, done, active, meta))| {
+                        let (glyph, color) = state(done, active);
                         div()
+                            .id(("signin-check", i))
                             .flex()
-                            .flex_col()
-                            .gap_2()
-                            .child(div().text_color(l.text2()).child(tr!("signin-store")))
-                            .child(self.radio_row(l, "signin-store-windows", self.store, tr!("signin-store-windows"), cx))
-                            .child(self.radio_row(l, "signin-store-never", !self.store, tr!("signin-store-never"), cx))
-                            .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("signin-store-note"))),
-                    )
-                    .child(
-                        div()
-                            .p_2()
-                            .rounded(l.px(Metric::RadiusControl))
-                            .bg(if ok { l.fill_passive() } else { l.warning_bg() })
-                            .text_size(px(12.))
-                            .text_color(if ok { l.text2() } else { l.warning() })
-                            .child(tls),
-                    );
+                            .items_center()
+                            .gap_3()
+                            .px_3()
+                            .py_2()
+                            .child(crate::chrome::icon(glyph, 14.).text_color(color))
+                            .child(div().flex_1().when(active, |d| d.font_weight(FontWeight::SEMIBOLD)).child(title))
+                            .child(div().text_size(px(12.)).text_color(if active { l.accent_text() } else { l.text2() }).child(meta))
+                    }),
+                );
+                body = body.child(list).child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("signin-check-hint")));
             }
         }
         let busy = self.busy;
-        let last = self.step == Step::Password || (self.step == Step::Login && self.windows && self.windows_offered(cx));
-        let primary = match (last, busy) {
-            (true, true) => tr!("signin-busy"),
-            (true, false) => tr!("signin-submit"),
+        let primary = match (self.step, busy) {
+            (Step::Server, true) | (Step::Check, true) => tr!("signin-busy"),
+            (Step::Server, false) => tr!("signin-submit"),
+            (Step::Check, false) => tr!("signin-open"),
             _ => tr!("signin-next"),
         };
+        let enabled = !busy && (self.step != Step::Check || self.signed);
         let actions = div()
             .flex()
             .items_center()
             .gap_3()
-            .child(button("signin-next", primary, !busy).on_click(cx.listener(|this, _, window, cx| this.next(window, cx))))
-            .when(self.step != Step::Server, |d| {
+            .child(button("signin-next", primary, enabled).on_click(cx.listener(|this, _, window, cx| this.next(window, cx))))
+            .when(self.step != Step::Address && !busy, |d| {
                 d.child(button("signin-back", tr!("signin-back"), false).on_click(cx.listener(|this, _, _, cx| this.back(cx))))
             })
             .when(!self.welcome, |d| {
@@ -447,6 +635,19 @@ impl SignIn {
                 }))
             })
             .collect::<Vec<_>>();
+        // Клавиши (T2-28, макет): Outlook или одиночные, как в Gmail («Настройки → Клавиатура»).
+        let scheme = crate::prefs::get(cx).key_scheme;
+        let key_items =
+            [(postman_core::prefs::KeyScheme::Outlook, "signin-keys-outlook"), (postman_core::prefs::KeyScheme::Single, "signin-keys-single")]
+                .into_iter()
+                .enumerate()
+                .map(|(i, (s, key))| {
+                    seg(("first-keys", i), tr!(key), scheme == s, true, l).on_click(cx.listener(move |_, _, _, cx| {
+                        crate::prefs::update(cx, |p| p.key_scheme = s);
+                        cx.notify();
+                    }))
+                })
+                .collect::<Vec<_>>();
         let group = |label: String, items: Div| div().flex().items_center().gap_3().child(div().text_color(l.text2()).child(label)).child(items);
         div()
             .flex()
@@ -456,6 +657,7 @@ impl SignIn {
             .gap_6()
             .child(group(tr!("settings-theme"), seg_group(theme_items, l)))
             .child(group(tr!("settings-density"), seg_group(density_items, l)))
+            .child(group(tr!("signin-keys"), seg_group(key_items, l)))
     }
 }
 
@@ -464,9 +666,9 @@ impl Render for SignIn {
         let l = crate::roles::look(cx);
         if std::mem::take(&mut self.focus) {
             let input = match self.step {
-                Step::Server => &self.url,
-                Step::Login => &self.user,
-                Step::Password => &self.password,
+                Step::Address => &self.user,
+                Step::Server if self.manual => &self.url,
+                Step::Server | Step::Check => &self.password,
             };
             input.update(cx, |s, cx| s.focus(window, cx));
         }
@@ -518,7 +720,26 @@ impl Render for SignIn {
             .p_6()
             .child(card)
             .child(self.first_prefs(&l, cx))
-            .child(div().text_size(px(12.)).text_color(l.text3()).child(tr!("signin-demo")))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_size(px(12.))
+                    .text_color(l.text3())
+                    // «Пропустить» (T2-28, макет): пустое окно; аккаунт — потом, в «Настройки → Аккаунты».
+                    .child(
+                        div()
+                            .id("signin-skip")
+                            .children(crate::screens::spot("signin-skip"))
+                            .text_color(l.accent_text())
+                            .cursor_pointer()
+                            .child(tr!("signin-skip"))
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(Done))),
+                    )
+                    .child("·")
+                    .child(tr!("signin-demo")),
+            )
             .into_any_element()
     }
 }
@@ -544,7 +765,43 @@ pub(crate) mod scenes {
         Scene::new(FIRSTRUN, firstrun, firstrun_ready),
         // Шаг «Логин» у Exchange в домене (T1-02б): «Войти как пользователь Windows (без пароля)».
         Scene::new("signin", signin, signin_ready),
+        // Первый запуск по макету `FirstRun` (T2-28): шаг 2 — найдены настройки Exchange; шаг 3 — проверка.
+        Scene::new("firstrun-server", step_server, step_ready),
+        Scene::new("firstrun-check", step_check, step_ready),
     ];
+
+    fn step(m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>, check: bool) -> Result<(), String> {
+        if m.live.signin.is_none() {
+            m.show_signin(None, window, cx);
+        }
+        let panel = m.live.signin.clone().ok_or("no sign-in panel")?;
+        panel.update(cx, |p, cx| {
+            p.user.update(cx, |s, cx| s.set_value("a.antropov@corp.example", window, cx));
+            p.url.update(cx, |s, cx| s.set_value("https://mail.corp.example/EWS/Exchange.asmx", window, cx));
+            p.found = Some(super::Found { url: "https://mail.corp.example/EWS/Exchange.asmx".into(), ms: 800 });
+            p.manual = false;
+            p.detecting = false;
+            p.domain = false;
+            p.error = None;
+            p.signed = check;
+            p.folder = check.then(|| "Входящие · 1 240 / 3 900".to_owned()); // i18n-ok: демо-ход загрузки
+            p.go(if check { super::Step::Check } else { super::Step::Server }, cx);
+        });
+        Ok(())
+    }
+
+    fn step_server(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        step(m, window, cx, false)
+    }
+
+    fn step_check(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        step(m, window, cx, true)
+    }
+
+    fn step_ready(s: &Scene, m: &Mailer, cx: &App) -> bool {
+        let want = if s.name == "firstrun-check" { super::Step::Check } else { super::Step::Server };
+        m.live.signin.as_ref().is_some_and(|p| p.read(cx).step == want)
+    }
 
     fn signin(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
         let prefill = crate::account::Settings {
@@ -557,7 +814,7 @@ pub(crate) mod scenes {
             panel.update(cx, |p, cx| {
                 // Снимок не зависит от машины: «в домене».
                 p.domain = true;
-                p.go(super::Step::Login, cx);
+                p.go(super::Step::Server, cx);
             });
         }
         Ok(())
