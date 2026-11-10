@@ -34,16 +34,6 @@ checks-count = { $n ->
 }
 checks-none = nothing found
 checks-clear = Nothing to check.
-checks-card = The text looks like a payment card number
-checks-card-detail = Payment data leak: sending is stopped until the number is hidden.
-checks-card-external = Payment data leak. The message goes to external recipients.
-checks-password = The text looks like a password
-checks-token = The text looks like an access token
-checks-private-key = The text contains a private key
-checks-secret-detail = Every recipient keeps the secret: sending is stopped until it is hidden.
-checks-mask = Mask
-checks-not-card = Not a card
-checks-not-secret = Not a secret
 checks-attachment = An attachment is mentioned (“{ $word }”), but no file is attached
 checks-attachment-detail = The message has no attached files.
 checks-attachment-card = An attachment is mentioned — no file attached

@@ -36,16 +36,6 @@ checks-count = { $n ->
 }
 checks-none = нет замечаний
 checks-clear = Замечаний нет.
-checks-card = В тексте похоже на номер банковской карты
-checks-card-detail = Утечка платёжных данных: отправка остановлена, пока номер не скрыт.
-checks-card-external = Утечка платёжных данных. Письмо уходит внешним получателям.
-checks-password = В тексте похоже на пароль
-checks-token = В тексте похоже на токен доступа
-checks-private-key = В тексте закрытый ключ
-checks-secret-detail = Секрет останется у всех получателей: отправка остановлена, пока он не скрыт.
-checks-mask = Замаскировать
-checks-not-card = Это не карта
-checks-not-secret = Это не секрет
 checks-attachment = Упомянуто вложение («{ $word }»), а файла нет
 checks-attachment-detail = В письме нет вложенных файлов.
 checks-attachment-card = Упомянуто вложение — файл не вложен
