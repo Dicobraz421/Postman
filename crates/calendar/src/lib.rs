@@ -5,6 +5,7 @@
 pub mod assign;
 mod event;
 mod freebusy;
+pub mod history;
 pub mod ics;
 mod invite;
 mod layout;

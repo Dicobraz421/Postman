@@ -333,6 +333,26 @@ pub struct Step {
     /// Срок шага (новый или предложенный): местное время срока задачи.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub due: Option<String>,
+    /// Письмо шага (ключ в кэше получателя) — у шага, учтённого из письма (T2-33: вложение к результату).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail: Option<String>,
+    /// Вложения письма шага: имя и размер (файлы — в самом письме).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<StepFile>,
+}
+
+/// Вложение письма шага.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct StepFile {
+    pub name: String,
+    pub size: u64,
+}
+
+impl Step {
+    /// Шаг без письма.
+    pub fn new(kind: StepKind, who: &str, at: i64) -> Self {
+        Self { at, who: who.to_owned(), kind, comment: String::new(), due: None, mail: None, files: Vec::new() }
+    }
 }
 
 /// Шаги по времени (старые первыми); битые — пропускаются.
@@ -340,6 +360,28 @@ pub fn steps(t: &Task) -> Vec<Step> {
     let mut out: Vec<Step> = t.extra.iter().filter(|p| is_prop(p, X_STEP)).filter_map(|p| serde_json::from_str(&prop_text(p)).ok()).collect();
     out.sort_by_key(|s| s.at);
     out
+}
+
+/// Письмо и вложения — последнему шагу `kind` от `who`, у которого письма ещё нет (письмо открыто: результат с
+/// файлом). `false` — такого шага нет или письмо у него уже есть.
+pub fn attach_mail(t: &mut Task, kind: StepKind, who: &str, mail: &str, files: Vec<StepFile>) -> bool {
+    let found = t
+        .extra
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| is_prop(p, X_STEP))
+        .filter_map(|(i, p)| serde_json::from_str::<Step>(&prop_text(p)).ok().map(|s| (i, s)))
+        .filter(|(_, s)| s.kind == kind && s.who.eq_ignore_ascii_case(who))
+        .max_by_key(|(_, s)| s.at);
+    let Some((i, mut s)) = found else { return false };
+    if s.mail.is_some() {
+        return false;
+    }
+    s.mail = Some(mail.to_owned());
+    s.files = files;
+    let Ok(v) = serde_json::to_string(&s) else { return false };
+    t.extra[i] = json!([X_STEP, {}, "unknown", v]);
+    true
 }
 
 /// Добавить шаг; такой же (время, кто, что) уже есть — `false` (письмо открыто второй раз).
@@ -618,8 +660,19 @@ mod tests {
     #[test]
     fn steps_are_stored_in_extra_and_deduplicated() {
         let mut t = delegated();
-        let s = Step { at: 100, who: "me@itt.test".into(), kind: StepKind::Declined, comment: "Нет доступа".into(), due: None };
-        assert!(push_step(&mut t, Step { at: 50, kind: StepKind::Assigned, who: "boss@itt.test".into(), comment: String::new(), due: None }));
+        let s = Step {
+            at: 100,
+            who: "me@itt.test".into(),
+            kind: StepKind::Declined,
+            comment: "Нет доступа".into(),
+            due: None,
+            mail: None,
+            files: Vec::new(),
+        };
+        assert!(push_step(
+            &mut t,
+            Step { at: 50, kind: StepKind::Assigned, who: "boss@itt.test".into(), comment: String::new(), due: None, mail: None, files: Vec::new() }
+        ));
         assert!(push_step(&mut t, s.clone()));
         assert!(!push_step(&mut t, s.clone()), "то же письмо второй раз");
         let list = steps(&t);
@@ -629,7 +682,18 @@ mod tests {
         let back = Task::from_jmap(&t.to_jmap()).unwrap();
         assert_eq!(steps(&back), list);
         assert_eq!(next_reminder(&t), None);
-        push_step(&mut t, Step { at: 1000, who: "boss@itt.test".into(), kind: StepKind::Reminded, comment: String::new(), due: None });
+        push_step(
+            &mut t,
+            Step {
+                at: 1000,
+                who: "boss@itt.test".into(),
+                kind: StepKind::Reminded,
+                comment: String::new(),
+                due: None,
+                mail: None,
+                files: Vec::new(),
+            },
+        );
         assert_eq!(next_reminder(&t), Some(1000 + REMIND_EVERY));
     }
 
