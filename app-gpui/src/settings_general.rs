@@ -15,16 +15,6 @@ use crate::buttons::button;
 use crate::roles::Look;
 use crate::settings_tab::{SettingsView, group, row, seg, seg_group, toggle};
 
-/// Пометка «сохраняется»: выбор запомнен, действия пока нет.
-pub(crate) fn stored(l: &Look) -> Div {
-    div().flex_none().px_1p5().rounded_sm().bg(l.fill()).text_size(px(11.)).text_color(l.text2()).child(tr!("settings-cal-stored"))
-}
-
-/// Строка с пометкой «сохраняется» у названия.
-pub(crate) fn stored_row(title: String, hint: Option<String>, control: impl IntoElement, l: &Look) -> Div {
-    row(title, hint, div().flex().items_center().gap_2().child(stored(l)).child(control), l)
-}
-
 /// Что видно в разделе «Общие» о Windows: автозапуск, клиент по умолчанию, отчёт (читается в фоне).
 #[derive(Clone, Default)]
 pub(crate) struct OsState {
@@ -134,11 +124,8 @@ impl SettingsView {
         });
         let start_hint = tr!(if g.start == StartView::Inbox { "settings-start-inbox-hint" } else { "settings-start-last-hint" });
         let start_control = seg_group(starts, l);
-        let start_row = if g.start == StartView::LastTabs {
-            crate::settings_general::stored_row(tr!("settings-start"), Some(start_hint), start_control, l)
-        } else {
-            row(tr!("settings-start"), Some(start_hint), start_control, l)
-        };
+        // «Последняя вкладка» действует (T2-11): вкладки — в настройках при каждой смене.
+        let start_row = row(tr!("settings-start"), Some(start_hint), start_control, l);
         // Клиент по умолчанию.
         let is_default = self.os.mailto_default == Some(true);
         let mailto_control = if is_default {

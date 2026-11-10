@@ -143,6 +143,10 @@ pub fn ensure(path: &Path, n: usize) -> postman_cache::Result<()> {
         if cache.rows_by_ids(&[CHAIN[0].id.to_string()])?.is_empty() {
             chain(&cache, jiff::Timestamp::now().as_second())?;
         }
+        // …и черновика (T2-11).
+        if cache.rows_by_ids(&[DRAFT.to_string()])?.is_empty() {
+            draft(&cache, jiff::Timestamp::now().as_second())?;
+        }
         // …и писем-поручений (S6-11).
         if cache.rows_by_ids(&[delegations::letter_id(1)])?.is_empty() {
             delegations::letters(&cache, jiff::Timestamp::now().as_second())?;
@@ -229,6 +233,7 @@ pub fn ensure(path: &Path, n: usize) -> postman_cache::Result<()> {
     shared(&cache, now)?;
     extra_accounts(&cache, now)?;
     chain(&cache, now)?;
+    draft(&cache, now)?;
     delegations::letters(&cache, now)?;
     store::fill(&cache, now)
 }
@@ -336,7 +341,36 @@ fn chain(cache: &Cache, now: i64) -> postman_cache::Result<()> {
     cache.set_recipients(&CHAIN.iter().map(|m| (m.id.to_string(), Recipients { to: vec![to(m).into()], cc: Vec::new() })).collect::<Vec<_>>())
 }
 
+/// Черновик демо в «Черновиках» (T2-11): «Продолжить» открывает его во вкладке письма.
+pub const DRAFT: &str = "draft1";
+
+const DRAFT_TEXT: &str = "Алексей, добрый день!\n\nВысылаю предложение по пилоту SIEM: источники событий и график подключения.\n";
+
+fn draft(cache: &Cache, now: i64) -> postman_cache::Result<()> {
+    let (_, addr) = SENDERS[1];
+    cache.upsert_emails(&[EmailRow {
+        id: DRAFT.into(),
+        thread_id: DRAFT.into(),
+        mailbox_ids: vec!["drafts".into()],
+        received_at: now - 3 * 3600,
+        subject: "Предложение по пилоту SIEM".into(),
+        from_name: ME_NAME.into(),
+        from_addr: ME.into(),
+        preview: "Алексей, добрый день! Высылаю предложение по пилоту SIEM".into(),
+        seen: true,
+        flagged: false,
+        has_attachment: false,
+        size: 2048,
+        keywords: vec!["$draft".into()],
+    }])?;
+    cache.set_recipients(&[(DRAFT.to_string(), Recipients { to: vec![addr.into()], cc: Vec::new() })])
+}
+
 fn chain_body(id: &str) -> Option<BodyRow> {
+    if id == DRAFT {
+        let (name, addr) = SENDERS[1];
+        return Some(BodyRow { to: vec![Addr { name: name.into(), email: addr.into() }], text: Some(DRAFT_TEXT.into()), ..Default::default() });
+    }
     let m = CHAIN.iter().find(|m| m.id == id)?;
     let (name, addr) = SENDERS[1];
     let to = if m.mine { Addr { name: name.into(), email: addr.into() } } else { Addr { name: ME_NAME.into(), email: ME.into() } };

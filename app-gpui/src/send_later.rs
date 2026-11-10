@@ -90,7 +90,12 @@ pub(crate) fn reject_text(r: Reject, max_delay: u64) -> String {
 fn draft_from_cache(m: &Mailer, key: &str) -> Option<Draft> {
     let row = m.cache.rows_by_ids(&[key.to_owned()]).ok()?.pop()?;
     let body = m.cache.body(key).ok()??;
-    let account = postman_cache::account_of(key);
+    Some(draft_of(m, row, body))
+}
+
+/// Черновик из письма и его тела (T2-11: письмо из «Черновиков» — во вкладку на правку).
+pub(crate) fn draft_of(m: &Mailer, row: postman_cache::EmailRow, body: postman_cache::BodyRow) -> Draft {
+    let account = postman_cache::account_of(&row.id);
     let from = m
         .compose
         .sender_for(account)
@@ -98,7 +103,7 @@ fn draft_from_cache(m: &Mailer, key: &str) -> Option<Draft> {
         .map(|(a, _)| a)
         .unwrap_or_else(|| Address::new(&row.from_name, &row.from_addr));
     let addresses = |list: &[postman_cache::Addr]| list.iter().map(|a| Address::new(&a.name, &a.email)).collect();
-    Some(Draft {
+    Draft {
         from,
         to: addresses(&body.to),
         cc: addresses(&body.cc),
@@ -112,7 +117,7 @@ fn draft_from_cache(m: &Mailer, key: &str) -> Option<Draft> {
             .map(|a| Attachment { inline_cid: a.cid.filter(|_| a.inline), name: a.name, mime: a.mime, data: Vec::new(), blob_id: Some(a.blob_id) })
             .collect(),
         ..Default::default()
-    })
+    }
 }
 
 impl Mailer {
@@ -138,7 +143,7 @@ impl Mailer {
                 let draft = offered.or(kept).or_else(|| draft_from_cache(self, email));
                 let text = match draft {
                     Some(d) => {
-                        let how = crate::compose::OpenAs { letter: None, server_id: Some(email.clone()) };
+                        let how = crate::compose::OpenAs { server_id: Some(email.clone()), ..Default::default() };
                         self.open_draft(d, how, cx);
                         tr!("send-unsent")
                     }

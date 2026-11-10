@@ -135,6 +135,8 @@ pub(crate) struct ReadingPane {
     pub(crate) mine: Vec<String>,
     /// Отправки, которые держит сервер (S5-06): у такого письма — строка «Отправится …» с отменой.
     pub(crate) scheduled: Vec<postman_core::send_later::Scheduled>,
+    /// Открытое письмо — черновик (T2-11, решает `Mailer::is_draft`): полоса «Продолжить», без быстрого ответа.
+    pub(crate) draft: Option<String>,
     /// «Сохранить все» ждёт байтов вложений (S5-07).
     pub(crate) save_all: Option<crate::preview::SaveAll>,
     /// Открытая папка: её вид беседы (лента, стопка, «как Outlook», S5-05б).
@@ -171,6 +173,8 @@ pub(crate) enum ReadingEvent {
     Open(EmailRow),
     /// «Отменить отправку» запланированного письма.
     Unsend(postman_core::send_later::Scheduled),
+    /// «Продолжить» у черновика (T2-11): во вкладку письма на правку.
+    EditDraft(EmailRow),
     /// «Ответить» или «Переслать» у письма стопки (S5-05б).
     Respond(EmailRow, postman_compose::Mode),
     /// Письмо-поручение разобрано (S6-10): учесть его в своей копии задачи (шаг, комментарий, срок).
@@ -243,6 +247,7 @@ impl ReadingPane {
             quotes: false,
             mine: Vec::new(),
             scheduled: Vec::new(),
+            draft: None,
             save_all: None,
             folder: None,
             tasks: None,
@@ -336,6 +341,37 @@ impl ReadingPane {
                 .child(tr!("send-scheduled-cancel"))
                 .on_click(cx.listener(move |_, _, _, cx| cx.emit(ReadingEvent::Unsend(s.clone())))),
         );
+        Some(bar.into_any_element())
+    }
+
+    /// Открытое письмо — черновик (T2-11).
+    fn is_draft(&self) -> bool {
+        self.reading.as_ref().is_some_and(|r| self.draft.as_deref() == Some(r.row.id.as_str()))
+    }
+
+    /// Черновик (T2-11, как Outlook «Это сообщение не отправлено»): «Черновик · не отправлен — Продолжить (Enter)».
+    fn draft_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let row = self.reading.as_ref().filter(|_| self.is_draft())?.row.clone();
+        let l = look(cx);
+        let bar = div()
+            .id("reading-draft")
+            .children(crate::screens::spot("reading-draft"))
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .bg(l.picked())
+            .child(crate::chrome::icon(crate::chrome::glyph::DRAFT, 14.))
+            .child(div().flex_1().min_w_0().child(tr!("reading-draft")))
+            .child(
+                crate::buttons::secondary("draft-edit", &l)
+                    .children(crate::screens::spot("draft-edit"))
+                    .child(tr!("reading-draft-edit"))
+                    .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(tr!("reading-draft-edit-hint")).build(window, cx))
+                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(ReadingEvent::EditDraft(row.clone())))),
+            );
         Some(bar.into_any_element())
     }
 
@@ -871,7 +907,8 @@ impl Render for ReadingPane {
         let Some(r) = &self.reading else {
             return div().flex().size_full().items_center().justify_center().text_color(l.text2()).child(tr!("reading-empty")).into_any_element();
         };
-        let scheduled = self.scheduled_bar(cx);
+        let scheduled = self.scheduled_bar(cx).or_else(|| self.draft_bar(cx));
+        let draft = self.is_draft();
         // Стопка беседы (S5-05б, макет «Беседа»): тема, сроки, «N писем · M участников», письма карточками — у каждого
         // своя шапка.
         if self.stacked(cx) {
@@ -1027,7 +1064,7 @@ impl Render for ReadingPane {
                 .children(strip)
                 .children(card)
                 .child(feed)
-                .child(quick_reply(&r.row, self.me.as_deref(), &l, cx));
+                .children((!draft).then(|| quick_reply(&r.row, self.me.as_deref(), &l, cx)));
             return with_side(main, side);
         }
         // Открыт просмотр вложения — он на месте текста письма и карточки приглашения (DESIGN «Вложения»).
@@ -1064,7 +1101,7 @@ impl Render for ReadingPane {
                 col.children(ir_view::blocks_marked(&doc.blocks, "doc", &r.images, &hits, self.column.get(), cx)).into_any_element()
             }
         };
-        let quick_reply = r.doc.is_some().then(|| quick_reply(&r.row, self.me.as_deref(), &l, cx));
+        let quick_reply = (r.doc.is_some() && !draft).then(|| quick_reply(&r.row, self.me.as_deref(), &l, cx));
         // Текст ещё не пришёл — совпадения только в теме.
         let n = hits.seen();
         self.hits.set(n);

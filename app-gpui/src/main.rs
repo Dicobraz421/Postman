@@ -273,12 +273,16 @@ fn main() {
     // Живой ящик: кэш учётной записи; нет учётной записи — пустой кэш в памяти до входа.
     // Перенос формата 5 (ADR 0006 п. 6) первое окно не ждёт: оно — на пустом кэше, ход — в строке состояния.
     let mut upgrading = None;
+    // Вкладки (T2-11): снимки и бенч их не пишут; вход и перенос хранилища (папок ещё нет) — не открывают прошлые.
+    let keep_tabs = screens.is_none() && !bench;
+    let mut restore_tabs = keep_tabs && !matches!(start_with, account::Start::SignIn(_));
     let (cache, index) = match &start_with {
         account::Start::Demo => (demo_cache(&dir, bench, screens.is_some(), keep, n, &mut start), None),
         account::Start::Live(_) if bench => live::bench_store(warm, keep, &mut start).unwrap_or_else(|e| fatal("fatal-store", e)),
         account::Start::Live(a) => match live::open_at_start(&account::cache_path(&dir, a)).unwrap_or_else(|e| fatal("fatal-store", e)) {
             live::Startup::Ready(cache, index) => (cache, index),
             live::Startup::Upgrading(rx) => {
+                restore_tabs = false;
                 upgrading = Some(rx);
                 (Cache::open_in_memory().unwrap_or_else(|e| fatal("fatal-store", e)), None)
             }
@@ -330,6 +334,10 @@ fn main() {
                     }
                     if minimized {
                         window.minimize_window();
+                    }
+                    // «Последняя вкладка» (T2-11): вкладки прошлого запуска; снимки и бенч — без них и без записи.
+                    if keep_tabs {
+                        mailer.update(cx, |m, cx| if restore_tabs { m.restore_session(window, cx) } else { m.session_ready = true });
                     }
                     if let Some(uri) = &mailto {
                         mailer.update(cx, |m, cx| m.open_mailto(uri, cx));

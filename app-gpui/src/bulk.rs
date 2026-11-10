@@ -1086,6 +1086,11 @@ impl Mailer {
                 this.ask(ids, a.clone(), cx);
             }),
             cx.subscribe(list, |this, _, m: &OpenMenu, cx| this.open_menu_at_row(m.index, m.at, cx)),
+            cx.subscribe(list, |this, _, a: &crate::list::Activate, cx| {
+                if this.is_draft(&a.0, cx) {
+                    this.edit_draft(a.0.clone(), cx);
+                }
+            }),
             cx.subscribe(list, |this, _, _: &RetryNow, cx| this.retry_now(cx)),
             cx.subscribe(list, |this, _, p: &crate::list::PurgeMany, cx| this.purge_many(p.0.clone(), cx)),
             cx.subscribe(list, |this, _, p: &crate::list::PurgeWhole, cx| this.start_sweep(p.0.clone(), Action::Purge, true, cx)),

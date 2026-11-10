@@ -1070,6 +1070,9 @@ impl Mailer {
 
     /// Открыть письмо в области чтения. Живой ящик: тело из кэша (в фоне), нет в кэше — с сервера (`Body`).
     pub(crate) fn open_letter(&mut self, row: postman_cache::EmailRow, cx: &mut Context<Self>) {
+        // Черновик (T2-11): полоса «Продолжить» над письмом.
+        let draft = self.is_draft(&row, cx).then(|| row.id.clone());
+        self.reading.update(cx, |r, _| r.draft = draft);
         if !self.backend.is_live() {
             self.reading.update(cx, |r, cx| r.open(row, cx));
             return;
@@ -1119,6 +1122,7 @@ impl Mailer {
                         x.queue(vec![id.clone()]);
                     }
                     m.reading.update(cx, |r, cx| r.show_body(&id, b, cx));
+                    m.body_shown(&id, cx);
                 } else if fetch && postman_core::store::parse_ref(&id).is_none() && !m.backend.send(Command::Body(id)) {
                     m.sync_stopped(cx);
                 }

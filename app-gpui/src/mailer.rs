@@ -38,6 +38,20 @@ impl Section {
             Section::Tasks => "view.tasks",
         }
     }
+
+    /// Имя раздела в настройках (T2-11, `Session::section`).
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            Section::Mail => "mail",
+            Section::Calendar => "calendar",
+            Section::Contacts => "contacts",
+            Section::Tasks => "tasks",
+        }
+    }
+
+    pub(crate) fn from_key(key: &str) -> Option<Section> {
+        [Section::Mail, Section::Calendar, Section::Contacts, Section::Tasks].into_iter().find(|s| s.key() == key)
+    }
 }
 
 // --- экран ---
@@ -99,6 +113,9 @@ pub(crate) struct Mailer {
     pub(crate) invite_waiting: bool,
     /// Раздел главной вкладки, пока открыта вкладка почты (в ней раздел — всегда «Почта», S5-16).
     pub(crate) main_section: Option<Section>,
+    /// Вкладки (T2-11): записываются после восстановления прошлых (`restore_session`); последнее записанное.
+    pub(crate) session_ready: bool,
+    pub(crate) session_saved: Option<postman_core::prefs::Session>,
     /// Календарь — своя кэшируемая view (S3-05); окна новой встречи — `meeting.rs`.
     pub(crate) cal: Entity<calendar::CalendarView>,
     /// Командные строки календаря и контактов (S5-11) — на месте строки почты в своём разделе.
@@ -266,6 +283,7 @@ impl Mailer {
                 ReadingEvent::WorkerFound => cx.notify(),
                 ReadingEvent::Open(row) => this.open_letter(row.clone(), cx),
                 ReadingEvent::Unsend(s) => this.unsend_scheduled(s.clone(), cx),
+                ReadingEvent::EditDraft(row) => this.edit_draft(row.clone(), cx),
                 ReadingEvent::Respond(row, mode) => this.respond_to(row.clone(), *mode, cx),
                 ReadingEvent::TaskMail(inc) => this.tasks.update(cx, |t, cx| t.receive_mail(inc, cx)),
                 ReadingEvent::TaskAction { uid, action } => {
@@ -366,6 +384,8 @@ impl Mailer {
             screens: None,
             section: Section::Mail,
             main_section: None,
+            session_ready: false,
+            session_saved: None,
             invite_waiting: false,
             keytips: Default::default(),
             keytips_task: None,
@@ -577,6 +597,8 @@ impl Render for Mailer {
         }
         // Вкладку сменили мимо `sync_mail_tab` (закрыли письмо или встречу) — части почты по активной вкладке.
         self.sync_mail_tab(cx);
+        // «Последняя вкладка» (T2-11): вкладки — в настройки при каждой смене.
+        self.keep_session(cx);
         // Ширины панелей (T1-05б): настройки или идущее перетаскивание, ужатые окном (сначала чтение, затем список).
         let avail = panes_room(f32::from(window.viewport_size().width));
         let (f, li) = self.split.layout.unwrap_or(crate::prefs::get(cx).layout).widths(avail);

@@ -430,7 +430,6 @@ settings-nav-calendar = Calendar
 settings-nav-calendar-keywords = calendar meeting work week days hours time zone view step duration reminder free time color invitations colleagues
 settings-hint-calendar = Working time, grid view, defaults for new meetings and colleagues' calendar colors.
 settings-cal-reset = Defaults
-settings-cal-stored = saved
 settings-cal-week-group = Work week
 settings-cal-days = Working days
 settings-cal-days-hint = Other days are shaded in the grid and left out of the work week.

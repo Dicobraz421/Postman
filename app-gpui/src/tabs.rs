@@ -135,10 +135,28 @@ impl Tabs {
             self.active = i;
             return self.tabs[i].id;
         }
+        let id = self.open_behind(kind);
+        self.active = self.tabs.len() - 1;
+        id
+    }
+
+    /// Вкладка в конец, активная — та же (T2-11: вкладки прошлого запуска); одиночная — уже открытая.
+    pub(crate) fn open_behind(&mut self, kind: TabKind) -> u64 {
+        if kind.single()
+            && let Some(t) = self.tabs.iter().find(|t| t.kind == kind)
+        {
+            return t.id;
+        }
         let id = self.next_id;
         self.next_id += 1;
         self.tabs.push(Tab { id, kind });
-        self.active = self.tabs.len() - 1;
+        id
+    }
+
+    /// Вкладка почты прошлого запуска (T2-11): позади активной, со своим состоянием — его поставит переход в неё.
+    pub(crate) fn restore_mail(&mut self, state: MailState) -> u64 {
+        let id = self.open_behind(TabKind::Mail);
+        self.saved.insert(id, state);
         id
     }
 
@@ -233,6 +251,19 @@ mod tests {
         assert_eq!(t.close(b).map(|t| t.kind), Some(TabKind::Compose(8)));
         assert!(t.is_active(TabKind::Compose(7)), "активна соседняя слева");
         assert!(t.activate_kind(TabKind::Main));
+    }
+
+    /// T2-11: вкладки прошлого запуска открываются позади активной; переход во вкладку почты отдаёт её состояние.
+    #[test]
+    fn restored_tabs_open_behind() {
+        let mut t = Tabs::default();
+        let mail = t.restore_mail(at("sent", None));
+        let draft = t.open_behind(TabKind::Compose(3));
+        assert!(t.is_active(TabKind::Main), "активная — та же");
+        assert_eq!(t.iter().map(|t| t.id).collect::<Vec<_>>(), vec![0, mail, draft]);
+        assert_eq!(t.open_behind(TabKind::Main), 0, "одиночная — уже открытая");
+        assert!(t.activate(mail));
+        assert_eq!(t.hand_over(|| at("inbox", None)), Some(at("sent", None)));
     }
 
     fn at(mailbox: &str, letter: Option<&str>) -> MailState {
