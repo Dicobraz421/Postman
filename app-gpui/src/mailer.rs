@@ -951,13 +951,17 @@ impl Mailer {
             // Ответ — в области чтения над письмом (S5-06б): своя кэшируемая view сверху карточки.
             // Выделено несколько писем — сводка на месте письма (S5-08).
             let picked = self.list.read(cx).selection.len() > 1;
-            let reading = || match self.compose.inline_view() {
-                _ if picked => card(l).flex_1().child(self.summary.clone().cached(full())),
-                Some(reply) => card(l)
-                    .flex_1()
-                    .child(reply.clone().cached(StyleRefinement::default().w_full().h(relative(INLINE_SHARE)).flex_none()))
-                    .child(self.reading.clone().cached(StyleRefinement::default().w_full().flex_1().min_h_0())),
-                None => card(l).flex_1().child(self.reading.clone().cached(full())),
+            let reading = || {
+                match self.compose.inline_view() {
+                    _ if picked => card(l).flex_1().child(self.summary.clone().cached(full())),
+                    Some(reply) => card(l)
+                        .flex_1()
+                        .child(reply.clone().cached(StyleRefinement::default().w_full().h(relative(INLINE_SHARE)).flex_none()))
+                        .child(self.reading.clone().cached(StyleRefinement::default().w_full().flex_1().min_h_0())),
+                    None => card(l).flex_1().child(self.reading.clone().cached(full())),
+                }
+                .relative()
+                .children(crate::reading::link_line(l, cx))
             };
             // Панель чтения — справа, снизу или скрыта (Настройки → Чтение).
             return match crate::prefs::get(cx).reading.pane {

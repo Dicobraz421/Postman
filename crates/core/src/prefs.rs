@@ -737,6 +737,26 @@ impl ThreadOrder {
     pub const ALL: [ThreadOrder; 2] = [ThreadOrder::OldestFirst, ThreadOrder::NewestFirst];
 }
 
+/// Когда открытое письмо становится прочитанным (T2-54, макет `SettingsReading`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MarkRead {
+    /// Через [`MARK_READ_SECS`] с, если письмо всё ещё открыто (по умолчанию).
+    #[default]
+    After,
+    /// Сразу при открытии.
+    Now,
+    /// Только вручную.
+    Manual,
+}
+
+impl MarkRead {
+    pub const ALL: [MarkRead; 3] = [MarkRead::After, MarkRead::Now, MarkRead::Manual];
+}
+
+/// «Отмечать прочитанным через 2 с».
+pub const MARK_READ_SECS: u64 = 2;
+
 /// Чтение. Внешние картинки не грузятся никогда — это политика Postman, не настройка (`docs/HANDOFF.md` §3a).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -752,6 +772,14 @@ pub struct Reading {
     pub invite_side: bool,
     /// Порядок писем в беседе (T1-16а).
     pub thread_order: ThreadOrder,
+    /// «Группировать письма в беседы» (T2-54): выключено — каждое письмо отдельной строкой, без ленты и стопки.
+    pub group: bool,
+    /// «Показывать цитаты по умолчанию»: в ленте и стопке цитаты раскрыты.
+    pub quotes: bool,
+    /// «Отмечать прочитанным».
+    pub mark_read: MarkRead,
+    /// «Показывать адрес ссылки при наведении» — внизу панели чтения.
+    pub link_hover: bool,
 }
 
 impl Default for Reading {
@@ -763,6 +791,10 @@ impl Default for Reading {
             warn_link_mismatch: true,
             invite_side: false,
             thread_order: ThreadOrder::OldestFirst,
+            group: true,
+            quotes: false,
+            mark_read: MarkRead::After,
+            link_hover: true,
         }
     }
 }

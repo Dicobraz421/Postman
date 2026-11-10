@@ -113,6 +113,8 @@ pub(crate) struct MailList {
     pub(crate) page_gen: u64,
     /// Письмо выбрано, а его строка ещё не прочитана — открыть, когда страница придёт.
     pub(crate) pending_open: Option<usize>,
+    /// Номер открытия письма: «прочитано через 2 с» — только если с тех пор не открыли другое (T2-54).
+    read_ticket: u64,
     /// Видимые письма (номера по порядку списка, без заголовков групп).
     pub(crate) visible: Range<usize>,
     pub(crate) selected: Option<usize>,
@@ -498,6 +500,7 @@ impl MailList {
             page_pending: None,
             page_gen: 0,
             pending_open: None,
+            read_ticket: 0,
             visible: 0..30,
             selected: None,
             restore: None,
@@ -1143,16 +1146,44 @@ impl MailList {
         self.open_row(row, cx);
     }
 
-    /// При первом открытии письмо помечается прочитанным, затем уходит в область чтения.
+    /// Открытое письмо помечается прочитанным по «Отмечать прочитанным» (T2-54): сразу, через 2 с (если оно всё ещё
+    /// открыто) или вручную; затем уходит в область чтения. Прогон снимков — сразу (повторяемо).
     pub(crate) fn open_row(&mut self, mut row: EmailRow, cx: &mut Context<Self>) {
-        // Папка общего ящика без права `maySetSeen` — письмо остаётся непрочитанным.
-        if !row.seen && may(&self.rights, &row, |r| r.seen) {
-            row.seen = true;
-            self.flags.set(&row.id, true, row.flagged);
-            self.patch_row(&row);
-            cx.emit(Flagged { id: row.id.clone(), keyword: "$seen", on: true });
+        use postman_core::prefs::MarkRead;
+        self.read_ticket += 1;
+        let mode = if crate::screens::screening() { MarkRead::Now } else { crate::prefs::get(cx).reading.mark_read };
+        match mode {
+            MarkRead::Now => self.mark_opened(&mut row, cx),
+            MarkRead::Manual => {}
+            MarkRead::After if row.seen => {}
+            MarkRead::After => {
+                let (ticket, id) = (self.read_ticket, row.id.clone());
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(std::time::Duration::from_secs(postman_core::prefs::MARK_READ_SECS)).await;
+                    let _ = this.update(cx, |l, cx| {
+                        // Открыто другое письмо — это остаётся непрочитанным.
+                        if l.read_ticket != ticket {
+                            return;
+                        }
+                        let Some(mut row) = l.rows.1.iter().find(|r| r.id == id).cloned() else { return };
+                        l.mark_opened(&mut row, cx);
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
         }
         cx.emit(OpenRow(row));
+    }
+
+    /// Прочитано: в список, кэш и на сервер. Папка общего ящика без права `maySetSeen` — остаётся непрочитанным.
+    fn mark_opened(&mut self, row: &mut EmailRow, cx: &mut Context<Self>) {
+        if !row.seen && may(&self.rights, row, |r| r.seen) {
+            row.seen = true;
+            self.flags.set(&row.id, true, row.flagged);
+            self.patch_row(row);
+            cx.emit(Flagged { id: row.id.clone(), keyword: "$seen", on: true });
+        }
     }
 
     pub(crate) fn patch_row(&mut self, row: &EmailRow) {

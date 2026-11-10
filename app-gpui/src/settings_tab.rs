@@ -493,6 +493,56 @@ pub(crate) fn link(id: impl Into<ElementId>, label: String, l: &Look) -> Statefu
         .child(label)
 }
 
+/// «По умолчанию» в заголовке раздела (T2-58): вернуть настройки раздела; `reset` — что именно.
+pub(crate) fn reset_button(id: &'static str, l: &Look, cx: &mut Context<SettingsView>, reset: fn(&mut postman_core::prefs::Prefs)) -> Stateful<Div> {
+    crate::buttons::button(id, tr!("settings-reset"), false, l).on_click(cx.listener(move |_, _, _, cx| {
+        crate::prefs::update(cx, reset);
+        cx.notify();
+    }))
+}
+
+/// Карточка «Предпросмотр» сбоку раздела: содержимое и подпись под ним.
+pub(crate) fn preview_card(body: impl IntoElement, title: String, note: String, l: &Look) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .p_4()
+        .rounded(l.px(Metric::RadiusOverlay))
+        .border_1()
+        .border_color(l.c(Role::StrokeCard))
+        .bg(l.panel())
+        .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child(tr!("settings-preview-title")))
+        .child(body)
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_0p5()
+                .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
+                .child(div().text_size(px(12.)).text_color(l.text2()).child(note)),
+        )
+}
+
+/// Схема окна: список и панель чтения — справа, снизу или вместо списка (предпросмотр «Чтения» и «Внешнего вида»).
+pub(crate) fn pane_scheme(pane: Pane, l: &Look) -> Div {
+    let block = |w: Length, h: Length, strong: bool| div().w(w).h(h).rounded_sm().bg(if strong { l.picked() } else { l.fill() });
+    let inner = match pane {
+        Pane::Right => div().flex().gap_1().size_full().child(block(relative(0.38).into(), relative(1.).into(), false)).child(block(
+            relative(0.6).into(),
+            relative(1.).into(),
+            true,
+        )),
+        Pane::Bottom => div().flex().flex_col().gap_1().size_full().child(block(relative(1.).into(), relative(0.45).into(), false)).child(block(
+            relative(1.).into(),
+            relative(0.52).into(),
+            true,
+        )),
+        Pane::Hidden => div().flex().size_full().child(block(relative(1.).into(), relative(1.).into(), false)),
+    };
+    div().h(px(96.)).p_1p5().rounded(l.px(Metric::RadiusControl)).bg(l.fill_passive()).border_1().border_color(l.border()).child(inner)
+}
+
 /// Карточка сбоку раздела.
 pub(crate) fn aside_card(title: String, lines: Vec<String>, l: &Look) -> Div {
     div()
@@ -822,11 +872,50 @@ impl SettingsView {
             .child(icon('\u{E72E}', 12.).text_color(l.text2()))
             .child(tr!("settings-images-never"));
         let warn = p.warn_link_mismatch;
+        let outlook = p.conversation == Conversation::Outlook;
+        use postman_core::prefs::MarkRead;
+        let marks: Vec<Stateful<Div>> = MarkRead::ALL
+            .into_iter()
+            .enumerate()
+            .map(|(i, m)| {
+                let name = tr!(match m {
+                    MarkRead::After => "settings-mark-read-after",
+                    MarkRead::Now => "settings-mark-read-now",
+                    MarkRead::Manual => "settings-mark-read-manual",
+                });
+                seg(("settings-mark-read", i), name, p.mark_read == m, true, l).on_click(cx.listener(move |_, _, _, cx| {
+                    crate::prefs::update(cx, |p| p.reading.mark_read = m);
+                    cx.notify();
+                }))
+            })
+            .collect();
+        let flip = |id: &'static str, on: bool, f: fn(&mut postman_core::prefs::Reading)| {
+            toggle(id, on, l).on_click(cx.listener(move |_, _, _, cx| {
+                crate::prefs::update(cx, |p| f(&mut p.reading));
+                cx.notify();
+            }))
+        };
         div()
             .flex()
             .flex_col()
             .child(group(tr!("settings-conv-group"), l))
             .child(cards)
+            // T2-54: беседы в списке и ленте/стопке; цитаты — раскрыты ли по умолчанию.
+            .child(row(
+                tr!("settings-group-threads"),
+                Some(tr!("settings-group-threads-hint")),
+                flip("settings-group-toggle", p.group, |r| r.group = !r.group),
+                l,
+            ))
+            .child(
+                row(
+                    tr!("settings-quotes"),
+                    Some(tr!(if outlook { "settings-quotes-outlook" } else { "settings-quotes-hint" })),
+                    flip("settings-quotes-toggle", p.quotes, |r| r.quotes = !r.quotes),
+                    l,
+                )
+                .when(outlook, |d| d.opacity(0.45)),
+            )
             .when(!self.info.folders.is_empty(), |d| {
                 d.child(group(tr!("settings-conv-folders"), l))
                     .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("settings-conv-folders-hint")))
@@ -836,6 +925,7 @@ impl SettingsView {
             .child(row(tr!("settings-thread-order"), None, seg_group(orders, l), l))
             .child(group(tr!("settings-pane-group"), l))
             .child(row(tr!("settings-pane"), Some(tr!("settings-pane-hint")), seg_group(panes, l), l))
+            .child(row(tr!("settings-mark-read"), Some(tr!("settings-mark-read-hint")), seg_group(marks, l), l))
             // Приглашение (S5-24): карточка над текстом письма или колонка справа.
             .child(row(
                 tr!("settings-invite-side"),
@@ -848,6 +938,12 @@ impl SettingsView {
             ))
             .child(group(tr!("settings-external-group"), l))
             .child(row(tr!("settings-images"), Some(tr!("settings-images-hint")), images, l))
+            .child(row(
+                tr!("settings-link-hover"),
+                Some(tr!("settings-link-hover-hint")),
+                flip("settings-link-hover-toggle", p.link_hover, |r| r.link_hover = !r.link_hover),
+                l,
+            ))
             .child(row(
                 tr!("settings-link-mismatch"),
                 Some(tr!("settings-link-mismatch-hint")),
@@ -868,9 +964,15 @@ impl SettingsView {
                 (None, self.quick(l, cx).into_any_element(), aside)
             }
             Section::Reading => {
-                let aside =
-                    vec![aside_card(tr!("settings-reading-aside"), vec![tr!("settings-reading-aside-1"), tr!("settings-reading-aside-2")], l)];
-                (None, self.reading(l, cx).into_any_element(), aside)
+                let p = crate::prefs::get(cx).reading;
+                let note = tr!("settings-reading-preview-note", view = conversation_hint(p.conversation), pane = pane_name(p.pane).to_lowercase()); // i18n-ok: строчные
+                let aside = vec![
+                    preview_card(pane_scheme(p.pane, l), conversation_name(p.conversation), note, l),
+                    aside_card(tr!("settings-reading-aside"), vec![tr!("settings-reading-aside-1"), tr!("settings-reading-aside-2")], l),
+                ];
+                // «По умолчанию» (T2-58): все настройки чтения, и свои виды папок.
+                let reset = reset_button("settings-reading-reset", l, cx, |p| p.reading = Default::default());
+                (Some(reset), self.reading(l, cx).into_any_element(), aside)
             }
             Section::Calendar => self.calendar(l, cx),
             Section::Security => (None, self.security(l, cx).into_any_element(), Vec::new()),

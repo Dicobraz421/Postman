@@ -137,8 +137,8 @@ impl ReadingPane {
         let current = self.reading.as_ref().map(|r| r.row.id.clone());
         match &mut self.feed {
             Some(f) if f.conv.thread == key => f.conv = conv,
-            // Одно письмо — не беседа: переключателя нет.
-            _ if conv.len() < 2 => return,
+            // Одно письмо — не беседа: переключателя нет; «Группировать в беседы» выключено — тоже (T2-54).
+            _ if conv.len() < 2 || !crate::prefs::get(cx).reading.group => return,
             _ => self.feed = Some(Feed::new(conv)),
         }
         if let Some(f) = &mut self.feed {
@@ -179,6 +179,11 @@ impl ReadingPane {
             self.load_feed(cx);
         }
         cx.notify();
+    }
+
+    /// Цитаты ленты показаны: «Показывать цитаты по умолчанию», переключённое «Показать цитаты».
+    pub(crate) fn quotes_shown(&self, cx: &App) -> bool {
+        self.quotes != crate::prefs::get(cx).reading.quotes
     }
 
     /// «Показать цитаты» в ленте.
@@ -286,7 +291,8 @@ impl ReadingPane {
         let button = |id: &'static str, label: String, on: bool| {
             crate::buttons::secondary(id, &l).h(px(26.)).px_2().border_1().border_color(if on { l.accent() } else { l.none() }).child(label)
         };
-        let quotes = if self.quotes { tr!("thread-quotes-hide") } else { tr!("thread-quotes-show") };
+        let shown = self.quotes_shown(cx);
+        let quotes = if shown { tr!("thread-quotes-hide") } else { tr!("thread-quotes-show") };
         let bar = div()
             .flex()
             .items_center()
@@ -295,9 +301,7 @@ impl ReadingPane {
                 button("thread-toggle", tr!("thread-toggle", n = f.conv.len()), self.feed_on)
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_feed(cx))),
             )
-            .when(self.feed_on, |d| {
-                d.child(button("thread-quotes", quotes, self.quotes).on_click(cx.listener(|this, _, _, cx| this.toggle_quotes(cx))))
-            })
+            .when(self.feed_on, |d| d.child(button("thread-quotes", quotes, shown).on_click(cx.listener(|this, _, _, cx| this.toggle_quotes(cx)))))
             .when(f.waiting, |d| d.child(div().text_color(l.text2()).child(tr!("thread-loading"))))
             .child(div().flex_1())
             // Порядок писем (T1-16б) — у ленты, когда она показана.
@@ -362,7 +366,7 @@ impl ReadingPane {
                         m.row.from_name.clone()
                     };
                     let doc = f.docs.get(&m.row.id);
-                    let whole = self.quotes || feed::is_forward(&m.row.subject);
+                    let whole = self.quotes_shown(cx) || feed::is_forward(&m.row.subject);
                     // Цитата свёрнута (макет): «··· цитата из письма от X, 14 окт» — предыдущее письмо беседы.
                     let earlier = f.conv.messages.iter().filter(|p| p.row.received_at < m.row.received_at).max_by_key(|p| p.row.received_at);
                     let quote_from = earlier.map(|p| tr!("thread-quote-from", who = name_of(p), date = day_month(p.row.received_at)));
@@ -670,7 +674,8 @@ impl ReadingPane {
         let Some(f) = &self.feed else { return div().into_any_element() };
         let id = m.row.id.clone();
         let to = f.to.get(&id).cloned().unwrap_or_default();
-        let quoted = f.quoted.contains(&id);
+        // «Показывать цитаты по умолчанию» (T2-54): щелчок меняет вид этого письма относительно умолчания.
+        let quoted = f.quoted.contains(&id) != crate::prefs::get(cx).reading.quotes;
         let whole = feed::is_forward(&m.row.subject);
         let action = |key: &'static str, g: char, mode: Mode, row: EmailRow, cx: &mut Context<Self>| {
             div()
