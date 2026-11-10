@@ -28,6 +28,13 @@ impl Invitation {
             None
         }
         .ok_or("в приглашении нет события")?;
+        // Кто выпустил приглашение (`PRODID` календаря → `prodId` группы): «Внешнее приглашение · Google» (T2-20).
+        let mut raw = raw;
+        if raw.get("prodId").is_none()
+            && let Some(p) = data.get("prodId").filter(|p| p.is_string())
+        {
+            raw["prodId"] = p.clone();
+        }
         let mut event = Event::from_jmap(&raw, default_tz)?;
         if event.id.is_empty() {
             event.id = event.uid.clone();
@@ -47,6 +54,23 @@ impl Invitation {
     /// Ключ моего участника в `participants` (для патча статуса).
     pub fn my_participant_id(&self, me: &str) -> Option<String> {
         participant_id(&self.raw, me)
+    }
+
+    /// Чья программа выпустила приглашение (`PRODID`): Google, Microsoft, Apple…; неизвестная — `None`.
+    pub fn producer(&self) -> Option<&'static str> {
+        const KNOWN: [(&str, &str); 9] = [
+            ("google", "Google"),
+            ("microsoft", "Microsoft"),
+            ("apple", "Apple"),
+            ("yandex", "Yandex"),
+            ("zoom", "Zoom"),
+            ("mozilla", "Thunderbird"),
+            ("mail.ru", "Mail.ru"),
+            ("zimbra", "Zimbra"),
+            ("nextcloud", "Nextcloud"),
+        ];
+        let p = self.raw.get("prodId")?.as_str()?.to_ascii_lowercase();
+        KNOWN.iter().find(|(k, _)| p.contains(k)).map(|(_, name)| *name)
     }
 
     pub fn organizer_email(&self) -> Option<&str> {
@@ -202,6 +226,25 @@ mod tests {
             }]}
         });
         Invitation::from_worker(&v, &TimeZone::UTC).unwrap()
+    }
+
+    /// Кто выпустил (T2-20): `prodId` группы — в событие; известные программы — по имени.
+    #[test]
+    fn producer_from_group_prodid() {
+        assert_eq!(invite().producer(), None, "PRODID нет");
+        let v = json!({
+            "method": "REQUEST",
+            "data": { "@type": "Group", "prodId": "-//Google Inc//Google Calendar 70.9054//EN", "entries": [{
+                "@type": "Event", "uid": "g-1", "title": "Созвон", "start": "2026-10-21T11:00:00", "timeZone": "Etc/UTC", "duration": "PT1H"
+            }]}
+        });
+        let inv = Invitation::from_worker(&v, &TimeZone::UTC).unwrap();
+        assert_eq!(inv.producer(), Some("Google"));
+        let mut inv = inv;
+        inv.raw["prodId"] = "-//Microsoft Corporation//Outlook 16.0 MIMEDIR//EN".into();
+        assert_eq!(inv.producer(), Some("Microsoft"));
+        inv.raw["prodId"] = "-//Postman//Postman//RU".into();
+        assert_eq!(inv.producer(), None);
     }
 
     #[test]
