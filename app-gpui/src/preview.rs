@@ -53,7 +53,12 @@ pub(crate) struct Pv {
     pub(crate) scroll: ScrollHandle,
     /// Ширина страницы PDF в пикселях, с которой её просили у воркера (0 — ещё не просили).
     pub(crate) fit_w: u32,
+    /// Масштаб PDF, % от ширины холста (T2-29, макет `Attach`: «−», «+»).
+    pub(crate) zoom: u32,
 }
+
+/// Шаги масштаба PDF, %.
+const ZOOMS: [u32; 7] = [50, 75, 100, 125, 150, 175, 200];
 
 pub(crate) enum PvState {
     Loading,
@@ -207,6 +212,7 @@ impl ReadingPane {
             scroll: ScrollHandle::new(),
             // Ширина панели — от прежнего просмотра: страницу не придётся перерисовывать.
             fit_w: r.preview.as_ref().map_or(0, |p| p.fit_w),
+            zoom: r.preview.as_ref().map_or(100, |p| p.zoom),
         };
         // Карточка за «+N» — лента разворачивается, выбранное видно.
         let index = attachments::items(r).iter().position(|i| i.row.blob_id == blob).unwrap_or(0);
@@ -383,6 +389,7 @@ impl ReadingPane {
                 if pv.row.blob_id != blob || pv.page != page {
                     return;
                 }
+                let mut files_seen = None;
                 let old = pv.image();
                 pv.busy = false;
                 pv.state = match result {
@@ -391,7 +398,11 @@ impl ReadingPane {
                         pv.page = page;
                         PvState::Ready(Shown::Pdf { image, page, pages, title })
                     }
-                    Ok((Preview::Archive(l), _)) => PvState::Ready(Shown::Archive(l)),
+                    Ok((Preview::Archive(l), _)) => {
+                        // Число файлов — и на карточку вложения (T2-29).
+                        files_seen = Some((pv.row.blob_id.clone(), l.files));
+                        PvState::Ready(Shown::Archive(l))
+                    }
                     Ok((Preview::Text { text, truncated }, _)) => PvState::Ready(Shown::Text { text, truncated }),
                     Ok((Preview::Office(s), _)) => PvState::Ready(Shown::Office(s)),
                     Ok((Preview::Document { sections, truncated }, _)) => {
@@ -413,6 +424,9 @@ impl ReadingPane {
                     Err(e) => PvState::Failed(e),
                 };
                 this.retired.extend(old);
+                if let Some((blob, n)) = files_seen {
+                    this.archive_files.insert(blob, n);
+                }
                 cx.notify();
             })
             .ok();
@@ -460,6 +474,7 @@ impl ReadingPane {
             busy: false,
             scroll: ScrollHandle::new(),
             fit_w: 0,
+            zoom: 100,
         };
         if let Some(old) = r.preview.replace(pv) {
             self.retired.extend(old.image());
@@ -503,6 +518,15 @@ impl ReadingPane {
         p.page = next;
         p.busy = true;
         self.run_preview(cx);
+        cx.notify();
+    }
+
+    /// «−» / «+» масштаба PDF (T2-29): соседний шаг; страница — заново под новую ширину (`refit_pdf` при отрисовке).
+    fn pdf_zoom(&mut self, delta: i64, cx: &mut Context<Self>) {
+        let Some(p) = self.reading.as_mut().and_then(|r| r.preview.as_mut()) else { return };
+        let at = ZOOMS.iter().position(|&z| z == p.zoom).unwrap_or(2) as i64;
+        let next = (at + delta).clamp(0, ZOOMS.len() as i64 - 1) as usize;
+        p.zoom = ZOOMS[next];
         cx.notify();
     }
 
@@ -693,16 +717,25 @@ impl ReadingPane {
                     )))
                     .child(pager("pv-next", glyph::NEXT, 1, tr!("att-pv-next-page"), page + 1 < *pages))
                     .child(div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(l.border()))
+                    // Масштаб (T2-29, макет `Attach`): «−», «N %», «+».
+                    .child(zoomer("pv-zoom-out", '\u{E71F}', -1, tr!("att-pv-zoom-out"), p.zoom > ZOOMS[0], &l, cx))
+                    .child(div().min_w(px(44.)).flex().justify_center().text_size(px(12.)).child(format!("{} %", p.zoom)))
+                    .child(zoomer("pv-zoom-in", '\u{E8A3}', 1, tr!("att-pv-zoom-in"), p.zoom < ZOOMS[ZOOMS.len() - 1], &l, cx))
+                    .child(div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(l.border()))
                     .child(div().flex_1().min_w_0().truncate().text_color(l.text2()).child(title.clone().unwrap_or_default()))
                     .children(self.file_buttons(p, &l, cx));
                 // Страница по ширине холста, вниз — прокрутка (макет); листание — кнопками. Пикселей — по ширине
                 // холста на экране: заметно другая ширина (первый показ, ресайз) — страница заново.
                 let width = p.scroll.bounds().size.width - px(2. * CANVAS_PAD);
-                let want = (f32::from(width) * window.scale_factor()).round().max(0.) as u32;
+                let scale = p.zoom as f32 / 100.;
+                let want = (f32::from(width) * window.scale_factor() * scale).round().max(0.) as u32;
                 if want > 0 && !p.busy && needs_refit(p.fit_w, want) {
                     cx.defer_in(window, move |this, _, cx| this.refit_pdf(want, cx));
                 }
-                let canvas = pv_canvas(&p.scroll, "pv-pdf", &l).child(picture(image, relative(1.)));
+                // Крупнее холста — шире него, прокрутка вбок; мельче — по центру.
+                let page_w = width * scale;
+                let canvas =
+                    pv_canvas(&p.scroll, "pv-pdf", &l).overflow_x_scroll().child(div().w(page_w).flex_none().child(picture(image, relative(1.))));
                 div().flex_1().min_h_0().flex().flex_col().child(bar).child(canvas).into_any_element()
             }
             PvState::Ready(Shown::Archive(list)) => archive(list, &l),
@@ -989,10 +1022,18 @@ impl ReadingPane {
             let row = p.row.clone();
             // «Сохранить…» файла с макросами — по настройке «Безопасность» (S5-30, по умолчанию можно, решение №7).
             let save = p.risk != Risk::Macros || crate::prefs::get(cx).security.macro_save;
+            // «Открыть без макросов» (T2-29, макет `Attach`; решение №7 запрещает только «Открыть»): документ OOXML.
+            let ooxml = p.risk == Risk::Macros && scan.is_some_and(|s| s.format == postman_worker::OfficeFormat::Ooxml);
+            let clean_row = p.row.clone();
+            let clean = ooxml.then(|| {
+                crate::buttons::primary("pv-open-clean", l)
+                    .child(tr!("att-pv-open-clean"))
+                    .on_click(cx.listener(move |this, _, _, cx| this.file_action(clean_row.clone(), FileAct::OpenClean, cx)))
+            });
             card = if save {
                 card.child(
-                    div().flex().gap(px(8.)).child(
-                        crate::buttons::primary("pv-save-blocked", l)
+                    div().flex().gap(px(8.)).children(clean).child(
+                        crate::buttons::secondary("pv-save-blocked", l)
                             .child(icon(glyph::SAVE, 14.))
                             .child(tr!("att-pv-save"))
                             .on_click(cx.listener(move |this, _, _, cx| this.file_action(row.clone(), FileAct::SaveAs, cx))),
@@ -1045,6 +1086,14 @@ fn tool_button(id: &'static str, g: char, text: String, l: &Look) -> Stateful<Di
 }
 
 /// Холст картинки и страницы PDF: колонка по центру с прокруткой вниз.
+/// Кнопка масштаба PDF (T2-29).
+fn zoomer(id: &'static str, g: char, delta: i64, text: String, on: bool, l: &Look, cx: &mut Context<ReadingPane>) -> Stateful<Div> {
+    crate::calendar::icon_button(id, g, l)
+        .when(!on, |d| d.opacity(0.4))
+        .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(text.clone()).build(window, cx))
+        .on_click(cx.listener(move |this, _, _, cx| this.pdf_zoom(delta, cx)))
+}
+
 fn pv_canvas(scroll: &ScrollHandle, id: &'static str, l: &Look) -> Stateful<Div> {
     div().id(id).track_scroll(scroll).flex_1().min_h_0().overflow_y_scroll().bg(l.base()).p(px(CANVAS_PAD)).flex().flex_col().items_center()
 }

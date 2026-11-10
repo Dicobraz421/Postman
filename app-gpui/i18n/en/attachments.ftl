@@ -85,3 +85,10 @@ att-pv-module = Viewer: module “{ $name }” { $version }
 att-pv-module-third = Viewer: module “{ $name }” { $version } (third-party) · sandboxed
 att-pv-module-enable = Turn on module “{ $name }”
 att-pv-module-refused = The module couldn’t show the file: { $reason }
+att-pv-open-clean = Open without macros
+att-pv-zoom-in = Zoom in
+att-pv-zoom-out = Zoom out
+att-status-archive-n = Archive: { $n ->
+    [one] { $n } file
+   *[other] { $n } files
+}

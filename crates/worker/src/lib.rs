@@ -136,6 +136,8 @@ pub enum Request {
     Mapi {
         seen: bool,
     },
+    /// Документ OOXML с макросами в бинарной части → копия без макросов там же (T2-29, «Открыть без макросов»).
+    StripMacros,
     /// Модуль просмотра (только `postman-viewer`, S8-24): в бинарной части — модуль (`wasm` байт), за ним вход.
     /// Ответ — [`wasm::ViewerOutput`] или [`wasm::Refusal`]; пиксели картинки — в бинарной части.
     ViewModule {
@@ -746,6 +748,13 @@ fn handle(req: Result<Request, serde_json::Error>, bin: &[u8]) -> (Response, Vec
             Ok(t) => Response::Threads(t),
             Err(e) => Response::Err(e),
         },
+        Ok(Request::StripMacros) => match preview::strip_macros(bin) {
+            Ok(bytes) => {
+                out_bin = bytes;
+                Response::Part
+            }
+            Err(e) => Response::Err(e),
+        },
         Ok(Request::Mapi { seen }) => match mapi::mapi(bin, seen).map(|m| mapi::encode(&m)) {
             Ok(bytes) if bytes.len() <= MAX_SPLIT_FRAME => {
                 out_bin = bytes;
@@ -1213,6 +1222,15 @@ impl Client {
         let timeout = self.timeout.max(SPLIT_TIMEOUT);
         match self.call_for(&Request::Mapi { seen }, raw, timeout)? {
             (Response::Mapi, bytes) => mapi::decode(&bytes).ok_or_else(|| "неожиданный ответ".into()),
+            (Response::Err(e), _) => Err(e),
+            _ => Err("неожиданный ответ".into()),
+        }
+    }
+
+    /// Копия документа без макросов (T2-29) в песочнице.
+    pub fn strip_macros(&mut self, doc: &[u8]) -> Result<Vec<u8>, String> {
+        match self.call(&Request::StripMacros, doc)? {
+            (Response::Part, bytes) => Ok(bytes),
             (Response::Err(e), _) => Err(e),
             _ => Err("неожиданный ответ".into()),
         }

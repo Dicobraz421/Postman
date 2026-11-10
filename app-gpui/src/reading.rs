@@ -188,6 +188,8 @@ pub(crate) struct ReadingPane {
     /// Шапка письма (T2-25, макет `Main`): категории открытого письма и внешний ли отправитель — их ставит экран.
     pub(crate) chips: Vec<(String, &'static str)>,
     pub(crate) external: bool,
+    /// Файлов в архивах, уже разобранных просмотром (T2-29, «Архив: 42 файла» на карточке): блоб → число.
+    pub(crate) archive_files: HashMap<String, u64>,
     /// Куда «Открыть» кладёт файл перед запуском системного приложения.
     pub(crate) open_dir: PathBuf,
     /// Картинки закрытого письма: убрать из атласа gpui при следующей отрисовке (S4-08). Сам gpui их не
@@ -322,6 +324,7 @@ impl ReadingPane {
             pending_answer: None,
             chips: Vec::new(),
             external: false,
+            archive_files: HashMap::new(),
             open_dir: data_dir().join("open"),
             retired: Vec::new(),
             feed: None,
@@ -1083,6 +1086,25 @@ impl ReadingPane {
                 let text = tr!("reading-file-failed", name = name, error = tr!("att-status-macros"));
                 cx.emit(ReadingEvent::Toast(Toast::Warning, text));
             }
+            FileAct::OpenClean => {
+                // Копия без макросов (T2-29): VBA убирает песочница, итог она же проверяет; открывается обычным путём.
+                let (dir, worker) = (self.open_dir.clone(), self.worker.clone());
+                let clean = crate::attachments::clean_name(&a.name);
+                let task = cx.background_spawn(async move {
+                    let bytes = {
+                        let mut w = worker.lock().unwrap_or_else(PoisonError::into_inner);
+                        w.strip_macros(&data)?
+                    };
+                    files::open(&dir, &clean, &bytes).map(|_| ()).map_err(|e| e.to_string())
+                });
+                cx.spawn(async move |this, cx| {
+                    if let Err(e) = task.await {
+                        let text = tr!("reading-file-failed", name = name, error = e);
+                        this.update(cx, |_, cx| cx.emit(ReadingEvent::Toast(Toast::Error, text))).ok();
+                    }
+                })
+                .detach();
+            }
             FileAct::Open => {
                 let dir = self.open_dir.clone();
                 let task = cx.background_spawn(async move { files::open(&dir, &a.name, &data).map(|_| ()) });
@@ -1328,8 +1350,9 @@ impl Render for ReadingPane {
             Some(crate::tasks::mail_card(inc, copy.as_ref(), &me, &tz, cx, on))
         });
         // Лента беседы — на месте письма; вложения и карточка открытого письма (приглашение, поручение) — над ней:
-        // лента включена по умолчанию (T2-14), без карточки на приглашение не ответить.
-        if let Some(feed) = feed {
+        // лента включена по умолчанию (T2-14), без карточки на приглашение не ответить. Открыт просмотр вложения —
+        // он на месте ленты (T2-29: раньше лента его заслоняла, и просмотр в беседе не открывался).
+        if let Some(feed) = feed.filter(|_| r.preview.is_none()) {
             let main = div()
                 .id("reading")
                 .flex()
