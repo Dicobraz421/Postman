@@ -14,6 +14,7 @@ pub mod contacts;
 pub mod export;
 pub mod extract;
 pub mod files;
+pub mod fill;
 pub mod filters;
 pub mod fuzzy;
 pub mod indexer;

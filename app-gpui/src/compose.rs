@@ -1426,6 +1426,8 @@ pub(crate) mod scenes {
         Scene::new("compose", compose, compose_ready).after("task-repeat"),
         // То же письмо с открытым меню «Отправить позже» у кнопки «Отправить» (S5-06).
         Scene::new("send-later", send_later, send_later_ready).continues(),
+        // Шаблон с полями (T2-52): «/кп» и пробел в тексте — строка «Поля шаблона» над текстом письма.
+        Scene::new("compose-template", template, template_ready).continues(),
         // Второе письмо — вторая вкладка: все замечания «Перед отправкой» (карта, вложение, внешние, сменённый адрес).
         Scene::new("checks", checks, checks_ready),
         // «Конфиденциально» (S5-12 Ф4): адресат с сертификатом (Петров из подписанного образца демо) — замок у чипа,
@@ -1495,6 +1497,23 @@ pub(crate) mod scenes {
             c.toggle_later_menu(cx);
         });
         Ok(())
+    }
+
+    fn template(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        let Some(c) = m.compose.last().cloned() else { return Err("no compose tab".into()) };
+        c.update(cx, |c, cx| {
+            if c.later_menu_open() {
+                c.toggle_later_menu(cx);
+            }
+            c.prefs = crate::settings_sign::screen_sample(&[]);
+            let t = c.prefs.templates.first().cloned().ok_or("no template")?;
+            c.use_template(t, 0, window, cx);
+            Ok::<_, String>(())
+        })
+    }
+
+    fn template_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        screens::compose_tab(m).is_some_and(|c| c.read(cx).drawn() && c.read(cx).tpl_ask.is_some())
     }
 
     fn send_later_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {

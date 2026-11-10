@@ -1087,8 +1087,8 @@ pub struct Signature {
     pub text: String,
 }
 
-/// Шаблон письма: вставляется в новое письмо.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Шаблон письма: вставляется в новое письмо (меню «Шаблон» или `/команда` в тексте, T2-52).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Template {
     pub id: String,
     pub name: String,
@@ -1096,6 +1096,24 @@ pub struct Template {
     pub subject: String,
     #[serde(default)]
     pub body: String,
+    /// Команда без `/`: `кп` — набрать `/кп` и пробел.
+    #[serde(default)]
+    pub command: String,
+    /// Файлы, которые шаблон прикладывает (пути на этом компьютере).
+    #[serde(default)]
+    pub attachments: Vec<String>,
+    /// Спрашивать значения своих полей (`{Компания}`) при вставке; нет — поля остаются метками.
+    #[serde(default)]
+    pub ask: bool,
+}
+
+/// Профиль учётной записи для полей подписи `{имя}`, `{должность}`, `{телефон}` (T2-52).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Profile {
+    pub name: String,
+    pub title: String,
+    pub phone: String,
 }
 
 /// Какую подпись ставить адресу: в новое письмо и в ответ или пересылку (id подписи; `None` — без подписи).
@@ -1115,11 +1133,13 @@ pub struct AccountPrefs {
     pub templates: Vec<Template>,
     /// Адрес отправителя → подписи по умолчанию.
     pub defaults: BTreeMap<String, Defaults>,
+    /// Поля подписи (T2-52).
+    pub profile: Profile,
 }
 
 impl Default for AccountPrefs {
     fn default() -> Self {
-        Self { version: VERSION, signatures: Vec::new(), templates: Vec::new(), defaults: BTreeMap::new() }
+        Self { version: VERSION, signatures: Vec::new(), templates: Vec::new(), defaults: BTreeMap::new(), profile: Profile::default() }
     }
 }
 
@@ -1579,7 +1599,7 @@ mod tests {
         let short = a.new_id('s', 10);
         assert_ne!(main, short);
         a.signatures.push(Signature { id: short.clone(), name: "Short".into(), identity: Some("me@corp.example".into()), text: "Me".into() });
-        a.templates.push(Template { id: a.new_id('t', 10), name: "Offer".into(), subject: "S".into(), body: "B".into() });
+        a.templates.push(Template { id: a.new_id('t', 10), name: "Offer".into(), subject: "S".into(), body: "B".into(), ..Default::default() });
         a.defaults.insert("me@corp.example".into(), Defaults { new: Some(main.clone()), reply: Some(short.clone()) });
         // Подпись другого адреса умолчанием не станет.
         a.defaults.insert("other@corp.example".into(), Defaults { new: Some(short.clone()), reply: None });

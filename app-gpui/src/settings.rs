@@ -778,6 +778,8 @@ pub(crate) mod scenes {
         Scene::new("settings-directory", directory, section_ready),
         // «Настройки → Подписи и шаблоны» с образцом подписи и шаблона (демо — без файла).
         Scene::new("settings-sign", sign, section_ready),
+        // Тот же раздел с правкой шаблона (T2-52): команда «/кп», файлы, поля и «Спрашивать значения при вставке».
+        Scene::new("settings-sign-template", sign_template, section_ready),
     ];
 
     fn vacation(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
@@ -865,7 +867,7 @@ pub(crate) mod scenes {
             "settings-quick" => S::Quick,
             "settings-reading" => S::Reading,
             "settings-calendar" | "settings-calendar-free" => S::Calendar,
-            "settings-sign" => S::Signatures,
+            "settings-sign" | "settings-sign-template" => S::Signatures,
             _ => S::Accounts,
         }
     }
@@ -883,6 +885,7 @@ pub(crate) mod scenes {
                     "settings-categories" => v.cat_edit.as_ref().is_some_and(|e| e.found.is_some()) && v.cat_counts.is_some(),
                     "settings-accounts" => v.add.is_some(),
                     "settings-sign" => !v.sign.prefs.signatures.is_empty(),
+                    "settings-sign-template" => v.sign.edit.is_some(),
                     _ => true,
                 }
             })
@@ -948,6 +951,17 @@ pub(crate) mod scenes {
             v.update(cx, |v, cx| {
                 v.scroll.scroll_to_bottom();
                 cx.notify();
+            });
+        }
+        Ok(())
+    }
+
+    fn sign_template(s: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        sign(s, m, window, cx)?;
+        if let Some(v) = m.settings.view.clone() {
+            v.update(cx, |v, cx| {
+                v.sign_edit("t1".into(), true, window, cx);
+                v.scroll.scroll_to_bottom();
             });
         }
         Ok(())

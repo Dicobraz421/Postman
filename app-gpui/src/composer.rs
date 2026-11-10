@@ -154,13 +154,31 @@ pub(crate) struct Composer {
     resolve_pending: Option<(Vec<String>, String)>,
     later: Later,
     /// Подписи учётной записи (Настройки → Подписи и шаблоны).
-    prefs: AccountPrefs,
+    pub(crate) prefs: AccountPrefs,
+    /// Шаблон ждёт значений своих полей (T2-52): строка над текстом письма, не окно.
+    pub(crate) tpl_ask: Option<TplAsk>,
     /// `--screens`: сколько раз письмо нарисовано.
     screens: Option<u32>,
     _subscriptions: Vec<Subscription>,
 }
 
 static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Шаблон и поля, значения которых спрашиваются при вставке; `at` — куда вставить (байт текста письма).
+pub(crate) struct TplAsk {
+    pub(crate) template: postman_core::prefs::Template,
+    pub(crate) fields: Vec<(String, Entity<InputState>)>,
+    at: usize,
+}
+
+/// Профиль для полей подписи: имя — из адреса «От», если в профиле его нет.
+fn profile_for(prefs: &AccountPrefs, from: &Address) -> postman_core::prefs::Profile {
+    let mut p = prefs.profile.clone();
+    if p.name.trim().is_empty() {
+        p.name = from.name.clone();
+    }
+    p
+}
 
 /// Свои домены: домены адресов «От».
 fn own_domains(senders: &[Sender], me: Option<&Address>) -> Vec<String> {
@@ -221,11 +239,12 @@ impl Composer {
             let value = state.read(cx).value().to_string();
             this.on_input(Field::Subject, value, ev, cx);
         }));
-        subscriptions.push(cx.subscribe_in(&body, window, |this, state, ev: &InputEvent, _, cx| {
+        subscriptions.push(cx.subscribe_in(&body, window, |this, state, ev: &InputEvent, window, cx| {
             let value = state.read(cx).value().to_string();
-            this.on_input(Field::Body, value, ev, cx);
+            this.on_input(Field::Body, value.clone(), ev, cx);
             if matches!(ev, InputEvent::Change) {
                 this.paint_markdown(cx);
+                this.slash_template(&value, window, cx);
             }
         }));
         // Enter в строке «Отправить позже» — «Запланировать».
@@ -275,6 +294,7 @@ impl Composer {
             later,
             prefs: open.prefs,
             screens: open.screens.then_some(0),
+            tpl_ask: None,
             _subscriptions: subscriptions,
         }
     }
@@ -881,10 +901,11 @@ impl Composer {
 
     pub(crate) fn signatures(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
+        let profile = profile_for(&self.prefs, self.model.from());
         for s in self.prefs.signatures_for(&self.model.from().email) {
-            let s = s.text.trim_end();
-            if !s.is_empty() && !out.iter().any(|o| o == s) {
-                out.push(s.to_owned());
+            let s = postman_core::fill::signature(s.text.trim_end(), &profile);
+            if !s.is_empty() && !out.contains(&s) {
+                out.push(s);
             }
         }
         for s in &self.senders {
@@ -904,7 +925,8 @@ impl Composer {
 /// Подпись по умолчанию из настроек (новые письма или ответы и пересылка) для адреса «От»; `true` — текст изменился.
 fn default_signature(model: &mut Model, prefs: &AccountPrefs, reply: bool) -> bool {
     let Some(s) = prefs.signature(&model.from().email, reply) else { return false };
-    let text = s.text.trim_end().to_owned();
+    // Поля `{имя}`, `{должность}`, `{телефон}` (T2-52) — из профиля учётной записи.
+    let text = postman_core::fill::signature(s.text.trim_end(), &profile_for(prefs, model.from()));
     if model.signature == text {
         return false;
     }
@@ -1344,10 +1366,147 @@ impl Composer {
         }))
     }
 
-    /// «Шаблон»: шаблоны появятся в настройках (S5-09) — пока пустой список.
+    /// «Шаблон» (T2-52): шаблоны учётной записи с их командами; выбор — вставка у курсора.
     fn template_menu(&self, l: &Look, cx: &mut Context<Self>) -> AnyElement {
-        let menu = menu_box("template-menu", l).child(div().px(px(10.)).py(px(6.)).text_color(l.text2()).child(tr!("compose-template-empty")));
+        let mut menu = menu_box("template-menu", l);
+        if self.prefs.templates.is_empty() {
+            menu = menu.child(div().px(px(10.)).py(px(6.)).text_color(l.text2()).child(tr!("compose-template-empty")));
+        }
+        for (i, t) in self.prefs.templates.iter().enumerate() {
+            let tpl = t.clone();
+            let command = (!t.command.trim().is_empty()).then(|| format!("/{}", t.command.trim().trim_start_matches('/')));
+            menu = menu.child(
+                menu_item(ElementId::NamedInteger("tpl".into(), i as u64), l, false)
+                    .child(div().flex_1().max_w(px(260.)).truncate().child(t.name.clone()))
+                    .children(command.map(|c| div().pl_3().text_size(px(12.)).text_color(l.text3()).child(c)))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.menu = Menu::None;
+                        let at = this.body.read(cx).selected_range().start;
+                        this.use_template(tpl.clone(), at, window, cx);
+                    })),
+            );
+        }
+        if !self.prefs.templates.is_empty() {
+            menu =
+                menu.child(div().px(px(10.)).py(px(6.)).max_w(px(300.)).text_size(px(12.)).text_color(l.text2()).child(tr!("compose-template-hint")));
+        }
         deferred(self.close_menu_out(menu, cx)).with_priority(1).into_any_element()
+    }
+
+    /// `/команда` и пробел в тексте письма (T2-52): команда уходит, на её место — шаблон.
+    fn slash_template(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.prefs.templates.is_empty() {
+            return;
+        }
+        let cursor = self.body.read(cx).selected_range().end.min(text.len());
+        let Some(head) = text.get(..cursor) else { return };
+        let Some((start, word)) = postman_core::fill::slash_at_end(head) else { return };
+        let Some(t) = postman_core::fill::by_command(&self.prefs.templates, &word).cloned() else { return };
+        let rest = format!("{}{}", &text[..start], &text[cursor..]);
+        self.body.update(cx, |s, cx| s.replace_all(rest.clone(), window, cx));
+        self.model.set(Field::Body, rest);
+        self.use_template(t, start, window, cx);
+    }
+
+    /// Шаблон в письмо: свои поля и «Спрашивать значения» — сначала строка полей, иначе — сразу.
+    pub(crate) fn use_template(&mut self, t: postman_core::prefs::Template, at: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let own = postman_core::fill::own_fields(&format!("{}\n{}", t.subject, t.body));
+        if t.ask && !own.is_empty() {
+            let fields: Vec<(String, Entity<InputState>)> =
+                own.into_iter().map(|f| (f.clone(), cx.new(|cx| InputState::new(window, cx).placeholder(f)))).collect();
+            if let Some((_, first)) = fields.first() {
+                first.update(cx, |s, cx| s.focus(window, cx));
+            }
+            self.tpl_ask = Some(TplAsk { template: t, fields, at });
+            return cx.notify();
+        }
+        self.insert_template(&t, &[], at, window, cx);
+    }
+
+    /// Вставить шаблон: поля — значениями (профиль — сам), тема — если пустая, текст — у `at`, файлы шаблона — вложениями.
+    fn insert_template(
+        &mut self,
+        t: &postman_core::prefs::Template,
+        values: &[(String, String)],
+        at: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut vals = values.to_vec();
+        vals.extend(postman_core::fill::profile_values(&profile_for(&self.prefs, self.model.from())));
+        let body = postman_core::fill::fill(&t.body, &vals);
+        let subject = postman_core::fill::fill(&t.subject, &vals);
+        if self.model.field(Field::Subject).trim().is_empty() && !subject.trim().is_empty() {
+            self.model.set(Field::Subject, subject.clone());
+            self.subject.update(cx, |s, cx| s.set_value(subject, window, cx));
+        }
+        let text = self.body.read(cx).value().to_string();
+        let mut at = at.min(text.len());
+        while !text.is_char_boundary(at) {
+            at -= 1;
+        }
+        let next = format!("{}{}{}", &text[..at], body, &text[at..]);
+        let end = at + body.len();
+        self.body.update(cx, |s, cx| {
+            s.replace_all(next.clone(), window, cx);
+            s.set_selected_range(end..end, cx);
+            s.focus(window, cx);
+        });
+        self.model.set(Field::Body, next);
+        self.paint_markdown(cx);
+        let files: Vec<PathBuf> = t.attachments.iter().map(PathBuf::from).collect();
+        if !files.is_empty() {
+            self.attach(files, cx);
+        }
+        self.schedule_autosave(cx);
+        cx.notify();
+    }
+
+    /// «Вставить» в строке полей шаблона; `fill` — со значениями (иначе поля остаются метками).
+    fn answer_template(&mut self, fill: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(a) = self.tpl_ask.take() else { return };
+        let values: Vec<(String, String)> =
+            if fill { a.fields.iter().map(|(k, s)| (k.clone(), s.read(cx).value().to_string())).collect() } else { Vec::new() };
+        self.insert_template(&a.template, &values, a.at, window, cx);
+    }
+
+    /// Строка полей шаблона над текстом письма.
+    fn template_ask_row(&self, l: &Look, cx: &mut Context<Self>) -> Option<Div> {
+        let a = self.tpl_ask.as_ref()?;
+        let fields = a.fields.iter().enumerate().map(|(i, (name, input))| {
+            div()
+                .flex()
+                .items_center()
+                .gap_1p5()
+                .child(div().text_size(px(12.)).text_color(l.text2()).child(name.clone()))
+                .child(div().w(px(160.)).relative().children(crate::screens::spot(("tpl-field", i))).child(Input::new(input)))
+        });
+        Some(
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_3()
+                .px(px(16.))
+                .py(px(8.))
+                .bg(l.fill_passive())
+                .border_b_1()
+                .border_color(l.border())
+                .child(div().font_weight(FontWeight::SEMIBOLD).child(tr!("compose-template-fields", name = a.template.name.clone())))
+                .children(fields)
+                .child(
+                    crate::buttons::button("tpl-insert", tr!("compose-template-insert"), true, l)
+                        .on_click(cx.listener(|this, _, window, cx| this.answer_template(true, window, cx))),
+                )
+                .child(
+                    crate::buttons::button("tpl-insert-raw", tr!("compose-template-raw"), false, l)
+                        .on_click(cx.listener(|this, _, window, cx| this.answer_template(false, window, cx))),
+                )
+                .child(crate::buttons::button("tpl-cancel", tr!("compose-template-cancel"), false, l).on_click(cx.listener(|this, _, _, cx| {
+                    this.tpl_ask = None;
+                    cx.notify();
+                }))),
+        )
     }
 
     /// «Подпись»: без подписи и подписи адресов «От».
@@ -2117,6 +2276,7 @@ impl Render for Composer {
             .child(self.toolbar(&l, cx))
             .children(self.later_picker(&l, cx))
             .when(inline, |d| d.children(self.attachment_chips(&l, cx)))
+            .children(self.template_ask_row(&l, cx))
             .child(self.content(window))
             .when(inline, |d| d.children(self.inline_checks(&l, cx)))
             // Ответ на письмо общего ящика (S5-28): «От» — свой адрес или письмо у коллеги.
