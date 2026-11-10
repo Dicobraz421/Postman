@@ -1317,6 +1317,16 @@ impl CalendarView {
         if mine.is_some_and(|p| p.owner) || e.organizer().is_none() { Some(Opens::Edit) } else { mine.map(|_| Opens::Letter) }
     }
 
+    /// Мои события (T2-23, помощник вкладки встречи): время и тема; отклонённые и календари коллег — нет.
+    pub(crate) fn own_titles(&self) -> Vec<(Span, String)> {
+        let me = self.me.as_deref();
+        self.events
+            .iter()
+            .filter(|e| e.owner.is_none() && !e.all_day && event_look(e, me) != Shown::Hidden && !e.title.trim().is_empty())
+            .map(|e| (e.span, e.title.clone()))
+            .collect()
+    }
+
     /// Строка состояния календаря (T2-22, макет): вид, событий в нём, ждут ответа, отклонённых скрыто, пояс.
     pub(crate) fn status_text(&self) -> String {
         let (from, to) = self.range();

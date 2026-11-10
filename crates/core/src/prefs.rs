@@ -894,6 +894,9 @@ pub struct Calendar {
     pub reminder: u16,
     /// Начинать встречи на 5 мин позже (перерыв между встречами подряд).
     pub start_late: bool,
+    /// Сервис видеовстреч (T2-23, «Новая ссылка» во вкладке встречи): адрес, к которому добавляется комната
+    /// (`https://meet.example.ru`, Jitsi и похожие); пусто — не задан.
+    pub video_base: String,
     /// Необязательные участники закрывают общие окна.
     pub with_optional: bool,
     pub free_color: FreeColor,
@@ -953,6 +956,7 @@ impl Default for Calendar {
             duration: 30,
             reminder: 15,
             start_late: true,
+            video_base: String::new(),
             with_optional: false,
             free_color: FreeColor::Brand,
             free_busy_links: std::collections::BTreeMap::new(),
@@ -1435,6 +1439,7 @@ mod tests {
                 duration: 60,
                 reminder: 0,
                 start_late: false,
+                video_base: String::new(),
                 with_optional: true,
                 free_color: FreeColor::Slate,
                 free_busy_links: std::collections::BTreeMap::new(),

@@ -338,7 +338,10 @@ fn main() {
                     }
                     // «Последняя вкладка» (T2-11): вкладки прошлого запуска; снимки и бенч — без них и без записи.
                     if keep_tabs {
-                        mailer.update(cx, |m, cx| if restore_tabs { m.restore_session(window, cx) } else { m.session_ready = true });
+                        mailer.update(cx, |m, cx| {
+                            m.meeting_drafts = true;
+                            if restore_tabs { m.restore_session(window, cx) } else { m.session_ready = true }
+                        });
                     }
                     if let Some(uri) = &mailto {
                         mailer.update(cx, |m, cx| m.open_mailto(uri, cx));

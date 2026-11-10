@@ -770,6 +770,15 @@ impl ContactsView {
     }
 
     /// Переговорные и ресурсы справочника — во вкладку встречи: (имя, адрес).
+    /// Отделы сотрудников справочника (T2-23, вкладка встречи): адрес в нижнем регистре → отдел.
+    pub(crate) fn departments(&self) -> std::collections::HashMap<String, String> {
+        self.directory
+            .iter()
+            .filter(|e| !e.card.organization.trim().is_empty())
+            .flat_map(|e| e.card.emails.iter().map(|m| (m.to_lowercase(), e.card.organization.trim().to_owned())))
+            .collect()
+    }
+
     pub(crate) fn rooms(&self) -> Vec<(String, String)> {
         self.directory
             .iter()

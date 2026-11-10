@@ -105,6 +105,8 @@ pub(crate) struct MeetingModel {
     /// Весь день и частная (T2-14, макет `Meeting`).
     pub(crate) all_day: bool,
     pub(crate) private: bool,
+    /// Пояс встречи (T2-23, «Москва, UTC+3 ▾»): IANA; `None` — мой (`Настройки → Календарь`).
+    pub(crate) zone: Option<String>,
     pub(crate) status: Status,
     /// Тикет отправки, итог которой ждём.
     sending: Option<u64>,
@@ -117,6 +119,71 @@ pub(crate) struct MeetingModel {
 pub(crate) struct Editing {
     pub(crate) event: Box<postman_calendar::Event>,
     pub(crate) series: bool,
+}
+
+/// Латиница для адреса комнаты (ГОСТ 7.79 Б без знаков).
+fn translit(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            match c {
+                'а' => "a",
+                'б' => "b",
+                'в' => "v",
+                'г' => "g",
+                'д' => "d",
+                'е' | 'ё' | 'э' => "e",
+                'ж' => "zh",
+                'з' => "z",
+                'и' | 'й' => "i",
+                'к' => "k",
+                'л' => "l",
+                'м' => "m",
+                'н' => "n",
+                'о' => "o",
+                'п' => "p",
+                'р' => "r",
+                'с' => "s",
+                'т' => "t",
+                'у' => "u",
+                'ф' => "f",
+                'х' => "h",
+                'ц' => "c",
+                'ч' => "ch",
+                'ш' => "sh",
+                'щ' => "shh",
+                'ы' => "y",
+                'ю' => "yu",
+                'я' => "ya",
+                'ъ' | 'ь' => "",
+                c => return c.to_string(),
+            }
+            .to_string()
+        })
+        .collect()
+}
+
+/// Комната видеовстречи (T2-23): `<сервис>/<тема латиницей>-<4 знака>`; тема пустая — `meeting-<4 знака>`.
+pub(crate) fn video_room(base: &str, title: &str, salt: i128) -> String {
+    let slug: String = translit(&title.to_lowercase())
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|p| !p.is_empty())
+        .take(5)
+        .collect::<Vec<_>>()
+        .join("-");
+    let slug = if slug.is_empty() { "meeting".to_string() } else { slug };
+    const ABC: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
+    let mut n = salt.unsigned_abs();
+    let tail: String = (0..4)
+        .map(|_| {
+            let c = ABC[(n % ABC.len() as u128) as usize] as char;
+            n /= ABC.len() as u128;
+            c
+        })
+        .collect();
+    format!("{}/{slug}-{tail}", base.trim().trim_end_matches('/'))
 }
 
 /// Участник строкой поля вкладки: «Имя <адрес>», без имени — адрес.
@@ -268,6 +335,7 @@ impl MeetingModel {
             repeat: None,
             all_day: false,
             private: false,
+            zone: None,
             status: Status::None,
             sending: None,
             editing: None,
@@ -542,9 +610,28 @@ impl Mailer {
         // Длительность новой встречи — «Настройки → Календарь» (S5-20).
         let cal = crate::prefs::get(cx).calendar;
         let duration = cal.duration_secs();
+        let fresh = model.is_none();
         let mut model = model.unwrap_or_else(|| MeetingModel::new(default_start(&now), duration));
         model.late = cal.start_late && model.editing.is_none();
         model.reminder = model.editing.is_none().then(|| i64::from(cal.reminder) * 60);
+        // Новая встреча (T2-23): черновик прошлой неотправленной — в неё (хранилище — в фоне).
+        if fresh && self.meeting_drafts {
+            let cache = self.cache.clone();
+            let task = cx.background_spawn(async move { cache.state(DRAFT_KEY).ok().flatten() });
+            cx.spawn(async move |this, cx| {
+                let saved = task.await.and_then(|s| serde_json::from_str::<MeetingDraft>(&s).ok());
+                let _ = this.update(cx, |m, cx| {
+                    let mut model = model;
+                    if let Some(d) = saved {
+                        d.apply(&mut model);
+                    }
+                    m.meetings.pending.push(model);
+                    cx.notify();
+                });
+            })
+            .detach();
+            return;
+        }
         self.meetings.pending.push(model);
         cx.notify();
     }
@@ -563,6 +650,9 @@ impl Mailer {
                 me,
                 senders: self.compose.own_senders(self.backend.is_live()),
                 from: self.cal.read(cx).selected_account(),
+                departments: self.contacts.read(cx).departments(),
+                own: self.cal.read(cx).own_titles(),
+                drafts: (self.meeting_drafts && model.editing.is_none()).then(|| self.cache.clone()),
             };
             let view = cx.new(|cx| MeetingView::new(model, open, window, cx));
             let tab = self.tabs.open(crate::tabs::TabKind::Meeting);
@@ -650,6 +740,76 @@ struct Open {
     senders: Vec<(String, String)>,
     /// «От» по умолчанию: учётная запись календаря, выбранного слева (событие другой моей учётной записи).
     from: Option<String>,
+    /// Отделы сотрудников справочника (T2-23): адрес в нижнем регистре → отдел.
+    departments: std::collections::HashMap<String, String>,
+    /// Мои события (T2-23): названия — в моей строке помощника.
+    own: Vec<(Span, String)>,
+    /// Черновик новой встречи (T2-23): хранилище; `None` — снимки, бенч, правка.
+    drafts: Option<postman_cache::Cache>,
+}
+
+/// Ключ черновика новой встречи в хранилище (T2-23): один, как в Outlook «последняя несохранённая».
+pub(crate) const DRAFT_KEY: &str = "meeting-draft";
+
+/// Черновик новой встречи (T2-23): поля вкладки.
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub(crate) struct MeetingDraft {
+    pub(crate) title: String,
+    pub(crate) location: String,
+    pub(crate) date: String,
+    pub(crate) start: String,
+    pub(crate) duration: i64,
+    pub(crate) attendees: String,
+    pub(crate) optional: String,
+    pub(crate) description: String,
+    pub(crate) all_day: bool,
+    pub(crate) private: bool,
+    pub(crate) repeat: Option<String>,
+    pub(crate) zone: Option<String>,
+}
+
+impl MeetingDraft {
+    fn of(m: &MeetingModel, tz: &TimeZone) -> Self {
+        Self {
+            title: m.title.clone(),
+            location: m.location.clone(),
+            date: m.date.clone(),
+            start: m.start.clone(),
+            duration: m.duration,
+            attendees: m.attendees.clone(),
+            optional: m.optional.clone(),
+            description: m.description.clone(),
+            all_day: m.all_day,
+            private: m.private,
+            repeat: m.repeat.as_ref().and_then(postman_core::recur::rrule_of_rule),
+            zone: tz.iana_name().map(str::to_owned),
+        }
+    }
+
+    /// Пустой — нечего хранить: тема, участники, место и описание не заполнены.
+    fn is_empty(&self) -> bool {
+        [&self.title, &self.location, &self.attendees, &self.optional, &self.description].iter().all(|s| s.trim().is_empty())
+    }
+
+    pub(crate) fn apply(self, m: &mut MeetingModel) {
+        m.title = self.title;
+        m.location = self.location;
+        if !self.date.is_empty() {
+            m.date = self.date;
+            m.start = self.start;
+        }
+        if self.duration > 0 {
+            m.duration = self.duration;
+        }
+        m.attendees = self.attendees;
+        m.optional = self.optional;
+        m.description = self.description;
+        m.all_day = self.all_day;
+        m.private = self.private;
+        m.repeat = self.repeat.as_deref().and_then(postman_core::recur::rule_of_rrule);
+        m.zone = self.zone;
+    }
 }
 
 /// Занятость для помощника: неделя и адреса запроса, ответ.
@@ -757,7 +917,7 @@ pub(crate) struct MeetingView {
     /// Подсказки — для этого списка.
     suggest_for: Option<Kind>,
     selected: usize,
-    tz: TimeZone,
+    pub(crate) tz: TimeZone,
     hours: WorkHours,
     live: bool,
     rooms: Vec<(String, String)>,
@@ -766,7 +926,7 @@ pub(crate) struct MeetingView {
     senders: Vec<(String, String)>,
     from_menu: bool,
     /// Открыт выбор повтора.
-    repeat_menu: bool,
+    pub(crate) repeat_menu: bool,
     busy: Availability,
     /// Строка ссылки занятости (S8-42): адрес, для которого она открыта, поле, ссылка не годится.
     link_for: Option<String>,
@@ -789,6 +949,18 @@ pub(crate) struct MeetingView {
     /// Перетаскивание выбранного времени: где нажата мышь и какое было время.
     drag_from: Option<(Pixels, Span)>,
     desc_open: bool,
+    /// Выбор пояса встречи (T2-23).
+    pub(crate) zone_menu: bool,
+    departments: std::collections::HashMap<String, String>,
+    own: Vec<(Span, String)>,
+    /// «Новая ссылка» (T2-23): строка адреса сервиса видеовстреч, пока его нет в настройках.
+    video_ask: bool,
+    video_input: Entity<InputState>,
+    /// Черновик (T2-23): хранилище, последнее записанное, когда, номер записи.
+    drafts: Option<postman_cache::Cache>,
+    draft_last: Option<MeetingDraft>,
+    pub(crate) draft_saved: Option<i64>,
+    draft_gen: u64,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -829,6 +1001,12 @@ impl MeetingView {
                 this.model.set(Field::Description, value);
             }
         }));
+        let video_input = cx.new(|cx| InputState::new(window, cx).placeholder(tr!("meeting-video-placeholder")));
+        subscriptions.push(cx.subscribe_in(&video_input, window, |this, _, ev: &InputEvent, window, cx| {
+            if let InputEvent::PressEnter { .. } = ev {
+                this.save_video_base(window, cx);
+            }
+        }));
         let link_input = cx.new(|cx| InputState::new(window, cx).placeholder(tr!("meeting-link-placeholder")));
         subscriptions.push(cx.subscribe_in(&link_input, window, |this, _, ev: &InputEvent, _, cx| match ev {
             InputEvent::PressEnter { .. } => this.save_link(cx),
@@ -849,7 +1027,8 @@ impl MeetingView {
             this.step = i64::from(cal.step) * 60;
             cx.notify();
         }));
-        let tz = cal.zone();
+        // Пояс встречи из черновика (T2-23), иначе — мой.
+        let tz = model.zone.as_deref().and_then(|z| TimeZone::get(z).ok()).unwrap_or_else(|| cal.zone());
         let desc_open = !model.description.trim().is_empty();
         let mut model = model;
         if model.from.is_none() {
@@ -892,6 +1071,15 @@ impl MeetingView {
             step: i64::from(cal.step) * 60,
             drag_from: None,
             desc_open,
+            zone_menu: false,
+            departments: open.departments,
+            own: open.own,
+            video_ask: false,
+            video_input,
+            drafts: open.drafts,
+            draft_last: None,
+            draft_saved: None,
+            draft_gen: 0,
             _subscriptions: subscriptions,
         };
         w.sync_model(cx);
@@ -1289,6 +1477,8 @@ impl MeetingView {
                 None
             }
             Event::MeetingCreated { ticket, .. } | Event::MeetingUpdated { ticket, .. } if self.model.on_created(*ticket) => {
+                // Отправлена — черновика больше нет (T2-23).
+                self.drop_draft(cx);
                 cx.notify();
                 let invited = !self.model.people().is_empty() || !self.model.optional_people().is_empty();
                 let edited = matches!(ev, Event::MeetingUpdated { .. });
@@ -1670,6 +1860,133 @@ impl MeetingView {
         Some(div().relative().child(button).children(menu))
     }
 
+    /// Пояс встречи (T2-23, макет «Москва, UTC+3 ▾»): время в полях — в нём, на сервер уходит его имя.
+    fn zone_button(&self, cx: &mut Context<Self>) -> Div {
+        let l = crate::roles::look(cx);
+        let current = self.tz.iana_name().map(str::to_owned);
+        let button = div()
+            .id("meeting-zone")
+            .children(crate::screens::spot("meeting-zone"))
+            .h(px(32.))
+            .px(px(12.))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .rounded(px(4.))
+            .border_1()
+            .border_color(l.stroke())
+            .cursor_pointer()
+            .hover(|d| d.bg(l.hover()))
+            .child(icon(g::GLOBE, 14.))
+            .child(zone_label(&self.tz))
+            .child(icon(crate::chrome::glyph::CHEVRON, 10.).text_color(l.text2()))
+            .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(tr!("meeting-zone")).build(window, cx))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.zone_menu = !this.zone_menu;
+                cx.notify();
+            }));
+        let menu = self.zone_menu.then(|| {
+            let items = postman_core::prefs::ZONES.iter().enumerate().map(|(i, &z)| {
+                let on = current.as_deref() == Some(z);
+                crate::composer::menu_item(ElementId::NamedInteger("meeting-zone-item".into(), i as u64), &l, on)
+                    .child(crate::settings_cal::zone_name(z))
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_zone(z, cx)))
+            });
+            deferred(crate::composer::menu_box("meeting-zone-menu", &l).top(px(36.)).left(px(0.)).children(items).on_mouse_down_out(cx.listener(
+                |this, _, _, cx| {
+                    this.zone_menu = false;
+                    cx.notify();
+                },
+            )))
+            .with_priority(1)
+        });
+        div().relative().child(button).children(menu)
+    }
+
+    /// Пояс выбран: поля — те же часы в нём (как в Outlook), занятость — заново.
+    pub(crate) fn set_zone(&mut self, zone: &str, cx: &mut Context<Self>) {
+        self.zone_menu = false;
+        if let Ok(tz) = TimeZone::get(zone) {
+            self.hours = crate::prefs::get(cx).calendar.work_hours(tz.clone());
+            self.tz = tz;
+            self.model.zone = Some(zone.to_owned());
+            self.busy.asked = None;
+            self.query(cx);
+        }
+        cx.notify();
+    }
+
+    /// «Новая ссылка» (T2-23): комната `<сервис>/<тема>-<4 знака>` — в «Место / ссылка»; сервиса нет — строка его адреса.
+    fn new_link(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let base = crate::prefs::get(cx).calendar.video_base;
+        if base.trim().is_empty() {
+            self.video_ask = true;
+            self.video_input.update(cx, |s, cx| s.focus(window, cx));
+            cx.notify();
+            return;
+        }
+        let link = video_room(&base, &self.model.title, jiff::Timestamp::now().as_nanosecond());
+        let place = self.model.location.trim();
+        let value = if place.is_empty() { link } else { format!("{place} · {link}") };
+        self.model.location = value.clone();
+        self.location.update(cx, |s, cx| s.set_value(value, window, cx));
+        cx.notify();
+    }
+
+    fn save_video_base(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let base = self.video_input.read(cx).value().trim().trim_end_matches('/').to_string();
+        if !base.starts_with("https://") || base.len() <= "https://".len() {
+            return;
+        }
+        crate::prefs::update(cx, |p| p.calendar.video_base = base);
+        self.video_ask = false;
+        self.new_link(window, cx);
+    }
+
+    /// Черновик новой встречи (T2-23): поля поменялись — записать через секунду (в фоне); пустой — не храним.
+    fn keep_draft(&mut self, cx: &mut Context<Self>) {
+        let Some(cache) = self.drafts.clone().filter(|_| self.model.editing.is_none() && self.model.sending.is_none()) else { return };
+        let now = MeetingDraft::of(&self.model, &self.tz);
+        if self.draft_last.as_ref() == Some(&now) {
+            return;
+        }
+        let first = self.draft_last.is_none();
+        self.draft_last = Some(now.clone());
+        // Открыли — записывать нечего: это и есть сохранённое.
+        if first || now.is_empty() {
+            return;
+        }
+        self.draft_gen += 1;
+        let generation = self.draft_gen;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
+            let Ok(current) = this.update(cx, |w, _| w.draft_gen == generation) else { return };
+            if !current {
+                return;
+            }
+            let json = serde_json::to_string(&now).unwrap_or_default();
+            let ok = cx.background_spawn(async move { cache.set_state(DRAFT_KEY, &json).is_ok() }).await;
+            let _ = this.update(cx, |w, cx| {
+                if ok {
+                    w.draft_saved = Some(jiff::Timestamp::now().as_second());
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// «Удалить черновик» или встреча отправлена: черновика больше нет.
+    pub(crate) fn drop_draft(&mut self, cx: &mut Context<Self>) {
+        self.draft_gen += 1;
+        if let Some(cache) = self.drafts.clone() {
+            cx.background_spawn(async move {
+                let _ = cache.remove_state(DRAFT_KEY);
+            })
+            .detach();
+        }
+    }
+
     /// Выбран адрес «От»: занятость — заново, путём его учётной записи.
     fn set_from(&mut self, email: String, cx: &mut Context<Self>) {
         self.from_menu = false;
@@ -1941,6 +2258,10 @@ impl MeetingView {
                 } else {
                     tr!("meeting-role-optional")
                 };
+                // Отдел из справочника (T2-23, макет): «Обязательный · пресейл».
+                if let Some(d) = self.departments.get(&c.email.to_lowercase()).filter(|d| !d.is_empty()) {
+                    sub = format!("{sub} · {d}");
+                }
                 if busy.is_none() {
                     sub = tr!("meeting-not-counted", role = sub);
                 } else if self.busy.links.get(&c.email.to_lowercase()) == Some(&Link::Shown) {
@@ -2286,8 +2607,11 @@ impl MeetingView {
         let tracks = rows.iter().map(|Row { email, busy, .. }| {
             let external = email.as_deref().is_some_and(|e| self.external(e));
             let row = div().h(px(ROW_H)).relative().border_b_1().border_color(l.border());
+            // Моя строка (T2-23, макет): названия моих встреч на блоках занятости.
+            let mine = email.is_none();
+            let label = |b: &Busy| mine.then(|| self.own.iter().find(|(s, _)| s.overlaps(&b.span)).map(|(_, t)| t.clone())).flatten();
             match busy {
-                Some(list) => row.children(list.iter().filter_map(|b| block(b, None))),
+                Some(list) => row.children(list.iter().filter_map(|b| block(b, label(b)))),
                 None => row.bg(if external { external_fill } else { unknown_fill }).child(
                     // Плашка лежит над общими окнами и сеткой: без `occlude` щелчок по «Указать ссылку» уходил и им, фокус
                     // оставался у вкладки, а не у строки ссылки.
@@ -2625,21 +2949,13 @@ impl Render for MeetingView {
                     .ml(px(4.))
                     .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(tr!("meeting-private-tip")).build(window, cx)),
             )
-            .child(
-                div()
-                    .h(px(32.))
-                    .px(px(12.))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .rounded(px(4.))
-                    .border_1()
-                    .border_color(l.stroke())
-                    .child(icon(g::GLOBE, 14.))
-                    .child(zone_label(&self.tz)),
-            )
+            .child(self.zone_button(cx))
             .child(div().flex_1())
             .children(status)
+            // Черновик (T2-23, макет): «Черновик сохранён 14:22».
+            .when_some(self.draft_saved.filter(|_| self.status_line().is_none()), |d, at| {
+                d.child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("meeting-draft-saved", time = hm(at, &self.tz))))
+            })
             // «Удалить черновик» (макет встречи, Ctrl+D): вкладка закрывается без отправки.
             .child(
                 crate::buttons::secondary("discard", &l)
@@ -2648,8 +2964,12 @@ impl Render for MeetingView {
                     .justify_center()
                     .child(icon(g::DELETE, 14.))
                     .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(tr!("cmd-meeting-discard")).build(window, cx))
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(MeetingEvent::Close))),
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.drop_draft(cx);
+                        cx.emit(MeetingEvent::Close)
+                    })),
             );
+        self.keep_draft(cx);
         let fields =
             div()
                 .flex_none()
@@ -2666,8 +2986,42 @@ impl Render for MeetingView {
                 .child(
                     Self::field_row(&l)
                         .child(Self::label(tr!("meeting-location")))
-                        .child(div().flex_1().child(Input::new(&self.location).appearance(false))),
+                        .child(div().flex_1().child(Input::new(&self.location).appearance(false)))
+                        // «Новая ссылка» (T2-23, макет): комната сервиса видеовстреч — в место.
+                        .when(self.model.editing.is_none(), |d| {
+                            d.child(
+                                div()
+                                    .id("meeting-new-link")
+                                    .children(crate::screens::spot("meeting-new-link"))
+                                    .h(px(24.))
+                                    .px(px(6.))
+                                    .flex()
+                                    .items_center()
+                                    .rounded(px(4.))
+                                    .text_size(px(12.))
+                                    .text_color(l.accent_text())
+                                    .cursor_pointer()
+                                    .hover(|d| d.bg(l.hover()))
+                                    .child(tr!("meeting-new-link"))
+                                    .on_click(cx.listener(|this, _, window, cx| this.new_link(window, cx))),
+                            )
+                        }),
                 )
+                .when(self.video_ask, |d| {
+                    d.child(
+                        Self::field_row(&l)
+                            .child(Self::label(tr!("meeting-video")))
+                            .child(div().flex_1().child(Input::new(&self.video_input).appearance(false)))
+                            .child(
+                                crate::buttons::secondary("meeting-video-save", &l)
+                                    .h(px(24.))
+                                    .px(px(8.))
+                                    .text_size(px(12.))
+                                    .child(tr!("meeting-link-save"))
+                                    .on_click(cx.listener(|this, _, window, cx| this.save_video_base(window, cx))),
+                            ),
+                    )
+                })
                 .child(self.time_row(cx))
                 .child(self.description_row(cx));
         div()
@@ -2759,7 +3113,24 @@ pub(crate) mod scenes {
         Scene::new("meeting-link", link, link_ready).continues(),
         // «Повтор ▾» (T2-13, макет `Meeting`): выбран «По будням», меню открыто.
         Scene::new("meeting-repeat", repeat, repeat_ready).continues(),
+        // Пояс встречи ▾ (T2-23, макет `Meeting`): меню открыто; «Новая ссылка», «Черновик сохранён».
+        Scene::new("meeting-zone", zone, zone_ready).continues(),
     ];
+
+    fn zone(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        let Some(v) = m.meetings.last() else { return Err("no meeting tab".into()) };
+        v.update(cx, |v, cx| {
+            v.repeat_menu = false;
+            v.zone_menu = true;
+            v.draft_saved = jiff::civil::date(2026, 11, 10).at(14, 22, 0, 0).to_zoned(v.tz.clone()).ok().map(|z| z.timestamp().as_second());
+            cx.notify();
+        });
+        Ok(())
+    }
+
+    fn zone_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.meetings.last().is_some_and(|v| v.read(cx).zone_menu && v.read(cx).ready())
+    }
 
     fn meeting(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
         m.set_section(Section::Calendar, cx);
@@ -2832,6 +3203,35 @@ pub(crate) mod scenes {
 
 #[cfg(test)]
 mod tests {
+
+    /// «Новая ссылка» (T2-23): тема латиницей, хвост из соли; пустая тема — `meeting`.
+    #[test]
+    fn video_room_from_title() {
+        let a = super::video_room("https://meet.corp.ru/", "Синхронизация по SOC — этап 2", 12345);
+        assert!(a.starts_with("https://meet.corp.ru/sinhronizaciya-po-soc-etap-2-"), "{a}");
+        assert_eq!(a.len(), "https://meet.corp.ru/sinhronizaciya-po-soc-etap-2-".len() + 4);
+        assert_ne!(a, super::video_room("https://meet.corp.ru", "Синхронизация по SOC — этап 2", 54321));
+        assert!(super::video_room("https://m.ru", "", 1).starts_with("https://m.ru/meeting-"));
+    }
+
+    /// Черновик (T2-23): поля и пояс — туда и обратно.
+    #[test]
+    fn meeting_draft_round_trip() {
+        let mut m = super::MeetingModel::new(jiff::civil::date(2026, 11, 12).at(10, 0, 0, 0), 3600);
+        m.title = "Обзор".into();
+        m.attendees = "a@corp.example; ".into();
+        m.private = true;
+        let d = super::MeetingDraft::of(&m, &jiff::tz::TimeZone::get("Asia/Yekaterinburg").unwrap());
+        let json = serde_json::to_string(&d).unwrap();
+        let back: super::MeetingDraft = serde_json::from_str(&json).unwrap();
+        let mut fresh = super::MeetingModel::new(jiff::civil::date(2026, 11, 13).at(9, 0, 0, 0), 1800);
+        back.apply(&mut fresh);
+        assert_eq!((fresh.title.as_str(), fresh.attendees.as_str(), fresh.private, fresh.duration), ("Обзор", "a@corp.example; ", true, 3600));
+        assert_eq!(fresh.date, m.date);
+        assert_eq!(fresh.zone.as_deref(), Some("Asia/Yekaterinburg"));
+        assert!(super::MeetingDraft::default().is_empty());
+    }
+
     // Не `use super::*`: вместе с gpui пришёл бы атрибут `gpui::test`, он перекрывает `#[test]`.
     use super::{
         Command, Date, Grip, MeetingModel, Status, TimeZone, chips_of, default_start, dragged, free_runs, parse_date, parse_time, step_slot,
