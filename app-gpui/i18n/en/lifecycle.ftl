@@ -14,6 +14,9 @@ lifecycle-remind-at = Remind { $when }
 lifecycle-expires = Expires
 lifecycle-expires-days = Expires in { $n } d
 lifecycle-expires-hours = Expires in { $n } h
+lifecycle-archives = To archive
+lifecycle-archives-days = To archive in { $n } d
+lifecycle-archives-hours = To archive in { $n } h
 # Message header buttons.
 lifecycle-act-due = Due date
 lifecycle-act-remind = Remind me

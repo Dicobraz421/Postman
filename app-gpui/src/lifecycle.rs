@@ -113,7 +113,16 @@ pub(crate) fn badge_text(b: &Badge) -> String {
     badge_text_in(&pets_i18n::current(), b)
 }
 
+/// «Исчезнет» уходит в «Архив» («Настройки → Жизненный цикл»): метка — «В архив через N д» (T2-24, макет).
+static TO_ARCHIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn set_expire_to_archive(on: bool) {
+    TO_ARCHIVE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn badge_text_in(t: &I18n, b: &Badge) -> String {
+    let archive = TO_ARCHIVE.load(std::sync::atomic::Ordering::Relaxed);
+    let key = |trash: &'static str, arch: &'static str| if archive { arch } else { trash };
     let n = |key: &str, n: i64| fmt1(t, key, "n", n);
     match b {
         Badge::Due(None) => t.get("lifecycle-due"),
@@ -135,9 +144,9 @@ fn badge_text_in(t: &I18n, b: &Badge) -> String {
                 Some(d) => fmt1(t, "lifecycle-remind-at", "when", format!("{d} {time}")),
             }
         }
-        Badge::Expires(None) => t.get("lifecycle-expires"),
-        Badge::Expires(Some(Span::Days(d))) => n("lifecycle-expires-days", *d),
-        Badge::Expires(Some(Span::Hours(h))) => n("lifecycle-expires-hours", *h),
+        Badge::Expires(None) => t.get(key("lifecycle-expires", "lifecycle-archives")),
+        Badge::Expires(Some(Span::Days(d))) => n(key("lifecycle-expires-days", "lifecycle-archives-days"), *d),
+        Badge::Expires(Some(Span::Hours(h))) => n(key("lifecycle-expires-hours", "lifecycle-archives-hours"), *h),
     }
 }
 

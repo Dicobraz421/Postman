@@ -14,6 +14,9 @@ lifecycle-remind-at = Напомнит { $when }
 lifecycle-expires = Исчезнет
 lifecycle-expires-days = Исчезнет через { $n } д
 lifecycle-expires-hours = Исчезнет через { $n } ч
+lifecycle-archives = В архив
+lifecycle-archives-days = В архив через { $n } д
+lifecycle-archives-hours = В архив через { $n } ч
 # Кнопки в шапке письма.
 lifecycle-act-due = Срок
 lifecycle-act-remind = Напомнить

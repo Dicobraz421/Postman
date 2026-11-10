@@ -1644,7 +1644,7 @@ pub(crate) fn list_row(
         )
         .child(chips)
         // Число писем беседы (S5-05б).
-        .children(state.thread.count(l))
+        .children(state.thread.count(i, l))
         .when(encrypted, |d| d.child(crate::chrome::icon(crate::smime_enc::LOCK, 13.).text_color(l.text3())))
         .when(r.has_attachment && !encrypted, |d| d.child(crate::chrome::icon(crate::chrome::glyph::ATTACH, 13.).text_color(l.text3())))
         .when(r.flagged, |d| d.child(crate::chrome::icon(crate::chrome::glyph::FLAG, 13.).text_color(l.pm(Pm::Flag))))

@@ -45,10 +45,13 @@ impl Mark {
     }
 
     /// Число писем беседы — серая «таблетка» в строке отправителя.
-    pub(crate) fn count(self, l: &Look) -> Option<Div> {
+    /// Число писем беседы; подсказка — «Писем в беседе» (T2-24, макет `Thread`).
+    pub(crate) fn count(self, i: usize, l: &Look) -> Option<Stateful<Div>> {
         let Mark::Head { n, .. } = self else { return None };
         Some(
             div()
+                .id(("thread-count", i))
+                .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(pets_i18n::tr!("thread-count-tip")).build(window, cx))
                 .flex_none()
                 .min_w(px(18.))
                 .flex()

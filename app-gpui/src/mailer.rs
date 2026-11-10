@@ -617,6 +617,7 @@ impl Render for Mailer {
         self.sync_mail_tab(cx);
         // «Последняя вкладка» (T2-11): вкладки — в настройки при каждой смене.
         self.keep_session(cx);
+        crate::lifecycle::set_expire_to_archive(crate::prefs::with(cx, |p| p.lifecycle.expire_to == postman_core::prefs::ExpireTo::Archive));
         // Общие ящики (T2-22): их календари — группой «Общие».
         let boxes: Vec<String> = self.folders.read(cx).accounts.iter().filter(|a| !a.is_personal).map(|a| a.name.clone()).collect();
         if self.cal.read(cx).shared_boxes != boxes {

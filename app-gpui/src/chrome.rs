@@ -304,11 +304,20 @@ impl Mailer {
                         this.close_tab(id, window, cx);
                     }))
             });
+            // «×» (T2-24, макет `Main`): у активной — всегда, у остальных — при наведении на вкладку.
+            let group: SharedString = format!("tab-{id}").into();
+            let close = close.map(|c| {
+                let g = group.clone();
+                c.when(!on, move |c| c.invisible().group_hover(g, |s| s.visible()))
+            });
             let close = close.map(|c| crate::keytips::badge(c, close_key.clone().filter(|_| on), l, cx));
             let (title, dirty) = self.tab_title(t, cx);
+            let full = title.clone();
             let letter = matches!(t.kind, TabKind::Compose(_));
             div()
                 .id(("tab", id as usize))
+                .group(group)
+                .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(full.clone()).build(window, cx))
                 .h(px(H_TAB))
                 .min_w(px(W_TAB_MIN))
                 .max_w(px(W_TAB_MAX))
@@ -325,7 +334,17 @@ impl Mailer {
                 .when(t.kind == TabKind::Mail, |d| d.child(icon(glyph::MAIL, 12.)))
                 .child(div().flex_1().min_w_0().truncate().child(title))
                 // Несохранённый черновик — точка (DESIGN «Новое письмо», макет вкладки).
-                .when(dirty, |d| d.child(div().size(px(6.)).flex_none().rounded_full().bg(l.text2())))
+                .when(dirty, |d| {
+                    d.child(
+                        div()
+                            .id(("tab-dirty", id as usize))
+                            .size(px(6.))
+                            .flex_none()
+                            .rounded_full()
+                            .bg(l.text2())
+                            .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(tr!("tab-dirty-tip")).build(window, cx)),
+                    )
+                })
                 .children(close)
                 .on_click(cx.listener(move |this, _, window, cx| this.activate_tab(id, window, cx)))
         });
@@ -369,6 +388,25 @@ impl Mailer {
             .children(self.sections(l, cx))
             // Обрезка только по ширине: плашка KeyTips «×» активной вкладки выходит за низ строки.
             .child(div().h_full().flex().items_end().gap(px(2.)).min_w_0().overflow_x_hidden().children(tabs))
+            // «+» — новая вкладка почты (T2-24, макет `Main`, Ctrl+T).
+            .child({
+                let tip = crate::keytips::tip("tab.new", cx);
+                div()
+                    .id("tab-new")
+                    .children(crate::screens::spot("tab-new"))
+                    .size(px(28.))
+                    .ml(px(4.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(l.px(Metric::RadiusControl))
+                    .text_color(l.text2())
+                    .hover(|d| d.bg(l.hover()))
+                    .child(icon(crate::calendar::g::ADD, 12.))
+                    .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx))
+                    .on_click(cx.listener(|this, _, window, cx| this.new_mail_tab(window, cx)))
+            })
             // Пустое место — заголовок окна: перетаскивание, двойной щелчок — развернуть.
             .child(
                 div().id("drag").children(crate::screens::spot("drag")).flex_1().min_w(px(48.)).h_full().window_control_area(WindowControlArea::Drag),
@@ -537,6 +575,19 @@ impl Mailer {
         .detach();
     }
 
+    /// «2 аккаунта · 1 общий ящик» (T2-24, макет `Main`): учётные записи профиля и общие ящики дерева; одна учётка
+    /// без общих — ничего.
+    fn accounts_status(&self, cx: &App) -> Option<String> {
+        let accounts = &self.folders.read(cx).accounts;
+        let own = accounts.iter().filter(|a| a.is_personal).count().max(1);
+        let shared = accounts.iter().filter(|a| !a.is_personal).count();
+        match (own, shared) {
+            (1, 0) => None,
+            (n, 0) => Some(tr!("status-accounts", n = n as i64)),
+            (n, s) => Some(format!("{} · {}", tr!("status-accounts", n = n as i64), tr!("status-shared", n = s as i64))),
+        }
+    }
+
     /// Строка состояния: элементы, синхронизация, квота, последнее нажатие, песочница, уведомления.
     pub(crate) fn status_bar(&self, l: &Look, cx: &mut Context<Self>) -> Div {
         // Задачи (макет): слева — состояние синхронизации с точкой, затем «N задач из писем».
@@ -557,7 +608,8 @@ impl Mailer {
         // Без связи (S5-08): серая точка и «Нет связи · повтор через N с» вместо состояния синхронизации.
         let sync = match crate::states::status_text(&self.offline, Instant::now()) {
             Some(text) => div().flex().items_center().gap(px(6.)).child(div().size(px(8.)).rounded_full().bg(l.text3())).child(text),
-            None if tasks && !self.live.status.is_empty() => div()
+            // Синхронизация (T2-24, макет `Main`): точка и «Синхронизировано 14:01» — во всех разделах.
+            None if !self.live.status.is_empty() => div()
                 .flex()
                 .items_center()
                 .gap(px(6.))
@@ -577,10 +629,10 @@ impl Mailer {
             .px(px(14.))
             .text_size(l.px(Metric::TypeCaption))
             .text_color(l.text2())
-            .when(!tasks, |d| d.child(status.clone()))
             .child(sync)
-            .when(tasks, |d| d.child(status))
+            .children(self.accounts_status(cx))
             .child(div().flex_1())
+            .child(status)
             .when(!self.last_key.is_empty(), |d| d.child(self.last_key.clone()))
             .child(self.sandbox.map(crate::reading::sandbox_label).unwrap_or_default())
             .children(self.worker_status(l, cx))
