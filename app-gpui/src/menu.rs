@@ -34,8 +34,22 @@ const SUB_MAX_H: f32 = 360.;
 pub(crate) enum Sub {
     Category,
     Move,
+    /// «Срок ▸» и «Напомнить ▸» (T2-30r, макет `Bulk`): варианты панели и «Выбрать дату…» — подменю, без панели.
+    Due,
+    Remind,
     /// Вид беседы папки письма (T1-14).
     View,
+}
+
+impl Sub {
+    /// Срок подменю «Срок ▸» / «Напомнить ▸».
+    fn kind(self) -> Option<Kind> {
+        match self {
+            Sub::Due => Some(Kind::Due),
+            Sub::Remind => Some(Kind::Remind),
+            _ => None,
+        }
+    }
 }
 
 /// Пункты «Вида беседы»: свой вид папки или «По умолчанию» (`None`).
@@ -105,6 +119,8 @@ impl Item {
         match self {
             Item::Category => Some(Sub::Category),
             Item::Move => Some(Sub::Move),
+            Item::Due => Some(Sub::Due),
+            Item::Remind => Some(Sub::Remind),
             Item::View => Some(Sub::View),
             _ => None,
         }
@@ -364,15 +380,14 @@ impl Mailer {
             Item::ForwardAttached => self.forward_attached(last, cx),
             Item::Seen => self.ask(ids, Ask::Seen(Some(unread)), cx),
             Item::Flag => self.ask(ids, Ask::Flag(Some(unflagged)), cx),
-            Item::Due => self.ask(last, Ask::Lifecycle(Kind::Due), cx),
-            Item::Remind => self.ask(last, Ask::Lifecycle(Kind::Remind), cx),
+
             Item::Wait => self.ask(last, Ask::Lifecycle(Kind::Wait), cx),
             Item::Expire => self.ask(last, Ask::Lifecycle(Kind::Expire), cx),
             Item::Archive => self.ask(ids, Ask::Archive, cx),
             Item::Delete => self.ask(ids, Ask::Trash, cx),
             Item::Phishing => self.ask(ids, Ask::Phishing, cx),
             Item::Export => self.export_ask(crate::export::What::Letters(ids), cx),
-            Item::Category | Item::Move | Item::View => {}
+            Item::Category | Item::Move | Item::View | Item::Due | Item::Remind => {}
         }
     }
 
@@ -390,8 +405,19 @@ impl Mailer {
             crate::prefs::update(cx, |p| p.reading.set_folder(&folder, view));
             return;
         }
+        // Срок и напоминание (T2-30r): вариант — сразу письмам; последний — «Выбрать дату…» (панель с полем даты).
+        if let Some(kind) = sub.kind() {
+            let picks = postman_core::lifecycle::picks(kind);
+            let last = m.row.as_ref().map_or_else(|| ids.clone(), |(_, r)| vec![r.id.clone()]);
+            self.close_menu(cx);
+            match picks.get(k).and_then(|p| p.when(kind, &jiff::Zoned::now())) {
+                Some(when) => self.mark_at(kind, last, when, cx),
+                None => self.ask(last, Ask::Lifecycle(kind), cx),
+            }
+            return;
+        }
         let ask = match sub {
-            Sub::View => return,
+            Sub::View | Sub::Due | Sub::Remind => return,
             Sub::Category => {
                 let cats = list.category_items();
                 match cats.get(k) {
@@ -414,6 +440,7 @@ impl Mailer {
             Sub::Category => list.category_items().len() + 1,
             Sub::Move => list.folder_items().len(),
             Sub::View => VIEWS.len(),
+            Sub::Due | Sub::Remind => sub.kind().map_or(0, |k| postman_core::lifecycle::picks(k).len() + 1),
         }
     }
 
@@ -562,6 +589,7 @@ impl Mailer {
                 Sub::Category => cats.len() + 1,
                 Sub::Move => folders.len(),
                 Sub::View => VIEWS.len(),
+                Sub::Due | Sub::Remind => s.kind().map_or(0, |k| postman_core::lifecycle::picks(k).len() + 1),
             };
             let extra = if s == Sub::Category { SEP_H } else { 0. };
             let h = (n as f32 * ITEM_H + extra + 8.).min(SUB_MAX_H);
@@ -609,6 +637,29 @@ impl Mailer {
                                 .on_click(cx.listener(move |this, _, _, cx| this.choose_sub(k, cx))),
                         );
                     }
+                }
+                Sub::Due | Sub::Remind => {
+                    let kind = s.kind().unwrap_or(Kind::Due);
+                    let now = jiff::Zoned::now();
+                    let picks = postman_core::lifecycle::picks(kind);
+                    let n = picks.len();
+                    for (k, p) in picks.into_iter().enumerate() {
+                        // Справа — когда именно (как в панели): «пт 18:00».
+                        let hint = p.when(kind, &now).map(|w| crate::lifecycle::when_hint(&w)).unwrap_or_default();
+                        sc = sc.child(
+                            menu_line(("menu-when", k), l)
+                                .when(m.sub_cursor == k, |d| d.bg(l.hover()))
+                                .child(div().flex_1().truncate().child(crate::lifecycle::pick_text(p, kind)))
+                                .child(div().text_size(px(11.)).text_color(l.text3()).child(hint))
+                                .on_click(cx.listener(move |this, _, _, cx| this.choose_sub(k, cx))),
+                        );
+                    }
+                    sc = sc.child(separator(l)).child(
+                        menu_line("menu-when-date", l)
+                            .when(m.sub_cursor == n, |d| d.bg(l.hover()))
+                            .child(div().flex_1().child(tr!("lifecycle-pick-date")))
+                            .on_click(cx.listener(move |this, _, _, cx| this.choose_sub(n, cx))),
+                    );
                 }
                 Sub::Move => {
                     for (k, (_, name)) in folders.iter().enumerate() {

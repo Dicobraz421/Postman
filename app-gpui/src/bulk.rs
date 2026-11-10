@@ -1152,6 +1152,20 @@ impl Mailer {
     }
 
     /// Панель выбора срока (S5-04) над письмами `ids` (строки — из кэша в фоне).
+    /// Срок или напоминание вариантом подменю (T2-30r): письма — из хранилища в фоне, правка — как выбор в панели.
+    pub(crate) fn mark_at(&mut self, kind: Kind, ids: Vec<String>, when: postman_core::marks::When, cx: &mut Context<Self>) {
+        let cache = self.cache.clone();
+        let task = cx.background_spawn(async move { cache.rows_by_ids(&ids).unwrap_or_default() });
+        cx.spawn(async move |this, cx| {
+            let rows = task.await;
+            let _ = this.update(cx, |m, cx| {
+                m.picker_on(kind, rows, cx);
+                m.choose(Some(when), cx);
+            });
+        })
+        .detach();
+    }
+
     pub(crate) fn open_picker_for(&mut self, kind: Kind, ids: Vec<String>, whole: Option<Selector>, cx: &mut Context<Self>) {
         let cache = self.cache.clone();
         let task = cx.background_spawn(async move { cache.rows_by_ids(&ids).unwrap_or_default() });
@@ -1376,6 +1390,8 @@ pub(crate) mod scenes {
         Scene::new("bulk", bulk, bulk_ready),
         // Контекстное меню над выделением с открытым подменю «Категория».
         Scene::new("context-menu", menu, menu_ready).continues(),
+        // «Срок ▸» подменю (T2-30r, макет `Bulk`): варианты и «Выбрать дату…», без панели.
+        Scene::new("menu-due", menu_due, menu_ready).continues(),
         // «Сообщить о фишинге»: тост «Отменить» после сообщения и меню у другого письма на пункте с красной маской.
         Scene::new("phishing", phishing, menu_ready).continues(),
         // «Переслать вложениями» (T1-17): три письма выделения — новое письмо вкладкой с тремя вложениями .eml.
@@ -1409,6 +1425,12 @@ pub(crate) mod scenes {
         // Как правая кнопка по третьей строке (она в выделении), затем наведение на «Категория».
         m.open_menu_at_row(2, None, cx);
         m.screen_menu_sub(crate::menu::Sub::Category);
+        Ok(())
+    }
+
+    fn menu_due(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.open_menu_at_row(2, None, cx);
+        m.screen_menu_sub(crate::menu::Sub::Due);
         Ok(())
     }
 
