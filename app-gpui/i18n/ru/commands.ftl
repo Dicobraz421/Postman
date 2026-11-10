@@ -25,6 +25,7 @@ cmd-mail-expire = Исчезнет…
 cmd-mail-select-all = Выделить все
 cmd-mail-clear-selection = Снять выделение
 cmd-mail-select-down = Расширить выделение вниз
+cmd-mail-pick = Выделить письмо
 cmd-mail-select-up = Расширить выделение вверх
 cmd-mail-context-menu = Контекстное меню
 cmd-mail-move = Переместить в папку…

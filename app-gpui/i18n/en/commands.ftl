@@ -25,6 +25,7 @@ cmd-mail-expire = Expires…
 cmd-mail-select-all = Select all
 cmd-mail-clear-selection = Clear selection
 cmd-mail-select-down = Extend selection down
+cmd-mail-pick = Select the message
 cmd-mail-select-up = Extend selection up
 cmd-mail-context-menu = Context menu
 cmd-mail-move = Move to folder…

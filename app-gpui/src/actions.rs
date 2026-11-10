@@ -63,6 +63,14 @@ pub(crate) fn handlers(root: Div, cx: &mut Context<Mailer>) -> Div {
             })
         }))
         .on_action(cx.listener(|this, _: &mail::SelectDown, _, cx| this.list.update(cx, |l, cx| l.extend(1, cx))))
+        // Пробел (T2-30r, макет `Bulk`): строка под курсором — в выделение или из него.
+        .on_action(cx.listener(|this, _: &mail::Pick, _, cx| {
+            this.list.update(cx, |l, cx| {
+                if let Some(i) = l.selected {
+                    l.pick(i, true, cx);
+                }
+            })
+        }))
         .on_action(cx.listener(|this, _: &mail::SelectUp, _, cx| this.list.update(cx, |l, cx| l.extend(-1, cx))))
         .on_action(cx.listener(|this, _: &mail::ContextMenu, _, cx| this.context_menu_key(cx)))
         .on_action(cx.listener(|this, _: &mail::Move, _, cx| this.move_key(cx)))
@@ -353,6 +361,7 @@ pub(crate) mod mail {
             SelectAll,
             ClearSelection,
             SelectDown,
+            Pick,
             SelectUp,
             ContextMenu,
             Move,
@@ -411,6 +420,7 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("mail.select_all", &["ctrl-a"], LIST),
         cmd("mail.clear_selection", &[], LIST),
         cmd("mail.select_down", &["shift-down"], LIST),
+        cmd("mail.pick", &["space"], LIST),
         cmd("mail.select_up", &["shift-up"], LIST),
         cmd("mail.context_menu", &["shift-f10", "menu"], LIST),
         cmd("mail.move", &["ctrl-shift-v"], LIST),

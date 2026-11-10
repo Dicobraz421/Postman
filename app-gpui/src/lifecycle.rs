@@ -243,7 +243,7 @@ pub(crate) fn pick_text(p: Pick, kind: Kind) -> String {
 }
 
 /// Подсказка справа: «пт 23.10», «чт 18:00».
-fn when_hint(w: &When) -> String {
+pub(crate) fn when_hint(w: &When) -> String {
     let wd = weekday(w.date.weekday());
     match w.time {
         Some(t) => format!("{wd} {} {}", ddmm(w.date), hhmm(t)),
@@ -349,7 +349,7 @@ impl Mailer {
     }
 
     /// Вариант панели или «Убрать»: правка письма.
-    fn choose(&mut self, when: Option<When>, cx: &mut Context<Self>) {
+    pub(crate) fn choose(&mut self, when: Option<When>, cx: &mut Context<Self>) {
         let Some(p) = self.lifecycle.picker.take() else { return };
         self.refocus |= p.input.is_some();
         if let (Kind::Remind, Some(w)) = (p.kind, when) {
