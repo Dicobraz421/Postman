@@ -69,6 +69,9 @@ pub struct Prefs {
     pub viewers: Viewers,
     /// Вкладки при закрытии (T2-11): «Открывать при запуске: Последняя вкладка» открывает их снова.
     pub session: Session,
+    /// «Избранное» над деревом папок (T2-33r, макет `Main`): ключи папок по порядку; `None` — «Входящие»,
+    /// «Отправленные», «Черновики» своей учётки.
+    pub favorites: Option<Vec<String>>,
 }
 
 /// Схема клавиш.
@@ -101,6 +104,7 @@ impl Default for Prefs {
             layout: Layout::default(),
             viewers: Viewers::default(),
             session: Session::default(),
+            favorites: None,
         }
     }
 }

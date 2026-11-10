@@ -53,3 +53,6 @@ thread-feed-head = { $n ->
    *[other] { $n } messages
 } · { $people } · since { $since }
 thread-quote-from = ··· quoted from { $who }, { $date }
+folders-favorites = Favorites
+folder-menu-favorite = Add to Favorites
+folder-menu-unfavorite = Remove from Favorites
