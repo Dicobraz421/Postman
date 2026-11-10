@@ -3819,6 +3819,8 @@ pub(crate) mod scenes {
         Scene::new("delegate", delegation, delegation_ready),
         // Поручено мне: карточка с «Принять» / «Предложить срок» / «Отклонить».
         Scene::new("delegation-in", delegation, delegation_ready),
+        // «Предложить другого» (T2-37): исполнитель отказывает и предлагает коллегу.
+        Scene::new("delegation-suggest", delegation, delegation_ready),
         // Я поручил, готово — на проверку: ход, результат, лента шагов, «Принять результат».
         Scene::new("delegation-steps", delegation, delegation_ready),
         // Проект поручений демо: круги всех статусов в списке.
@@ -3979,6 +3981,15 @@ pub(crate) mod scenes {
                 // Статусы — первая строка (отклонённое: «Поручить другому»); ход и лента — готовое на проверку.
                 match s.name {
                     "delegation-in" => t.select_title(d::INCOMING, cx),
+                    "delegation-suggest" => {
+                        t.select_title(d::INCOMING, cx);
+                        t.set_book(book);
+                        t.deleg_open(crate::tasks::delegation::Edit::Suggest, window, cx);
+                        let pick = t.book.as_ref().and_then(|b| b.borrow().suggest("сид", 1, 0).first().map(|e| (e.name.clone(), e.email.clone()))); // i18n-ok: ввод сцены
+                        if let Some((name, email)) = pick {
+                            t.deleg.to = Some(postman_compose::Address::new(&name, &email));
+                        }
+                    }
                     "delegation-steps" => t.select_title(d::REVIEW, cx),
                     _ => {}
                 }
