@@ -340,6 +340,8 @@ fn main() {
                     if keep_tabs {
                         mailer.update(cx, |m, cx| {
                             m.meeting_drafts = true;
+                            // История уведомлений — 7 дней на диске (T2-34r).
+                            m.toasts.update(cx, |t, cx| t.persist_to(crate::data_dir().join("notices.jsonl"), cx));
                             if restore_tabs { m.restore_session(window, cx) } else { m.session_ready = true }
                         });
                     }

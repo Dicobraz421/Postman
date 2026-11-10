@@ -90,6 +90,17 @@ pub(crate) struct Stack {
 }
 
 impl Stack {
+    /// Запись прошлых запусков (T2-34r): в конец истории (она старше всех), без тоста и без «непрочитанных».
+    pub(crate) fn restore(&mut self, level: Level, text: SharedString, at: i64) {
+        if self.entries.len() >= MAX_HISTORY {
+            return;
+        }
+        self.next += 1;
+        let now = Instant::now();
+        let clock = jiff::Timestamp::from_second(at).map(|t| t.to_zoned(jiff::tz::TimeZone::system())).unwrap_or_else(|_| jiff::Zoned::now());
+        self.entries.push_back(Entry { id: self.next, level, text, at: now, clock, action: None, done: false, live: false, until: now });
+    }
+
     /// Новое уведомление (`toast` — ещё и тостом на экране) → id.
     pub(crate) fn push(&mut self, level: Level, text: SharedString, action: Option<ToastAction>, toast: bool, now: Instant) -> u64 {
         self.next += 1;
@@ -219,6 +230,42 @@ pub(crate) struct Notices {
     ticking: bool,
     /// Насколько поднять стопку: внизу справа кнопка, её тост не закрывает (`Mailer::render`).
     pub(crate) lift: f32,
+    /// История на диске (T2-34r, макет «Состояния»: «хранится 7 дней»): файл строк JSON; `None` — снимки, бенч.
+    file: Option<std::path::PathBuf>,
+}
+
+/// Сколько хранится история уведомлений.
+const KEEP_SECS: i64 = 7 * 24 * 3600;
+
+/// Запись истории на диске: время, уровень, текст, выполнено ли действие.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Saved {
+    t: i64,
+    l: char,
+    x: String,
+}
+
+fn level_char(l: Level) -> char {
+    match l {
+        Level::Error => 'e',
+        Level::Warning => 'w',
+        Level::Success => 's',
+        _ => 'i',
+    }
+}
+
+fn char_level(c: char) -> Level {
+    match c {
+        'e' => Level::Error,
+        'w' => Level::Warning,
+        's' => Level::Success,
+        _ => Level::Info,
+    }
+}
+
+/// Строки файла истории: за 7 дней до `now`, старые первыми; битые строки — мимо.
+fn read_saved(text: &str, now: i64) -> Vec<Saved> {
+    text.lines().filter_map(|l| serde_json::from_str::<Saved>(l).ok()).filter(|s| now - s.t <= KEEP_SECS).collect()
 }
 
 impl Notices {
@@ -236,16 +283,73 @@ impl Notices {
         Self::default()
     }
 
+    /// История — с диска и на диск (T2-34r): прошлые 7 дней — в начало истории (без тостов), файл — переписан без
+    /// старых; дальше каждое уведомление дописывается в фоне.
+    pub(crate) fn persist_to(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        let read = path.clone();
+        let task = cx.background_spawn(async move {
+            let now = jiff::Timestamp::now().as_second();
+            let saved = std::fs::read_to_string(&read).map(|t| read_saved(&t, now)).unwrap_or_default();
+            let text: String = saved.iter().filter_map(|s| serde_json::to_string(s).ok()).map(|l| l + "\n").collect();
+            let _ = std::fs::write(&read, text);
+            saved
+        });
+        cx.spawn(async move |this, cx| {
+            let saved = task.await;
+            let _ = this.update(cx, |n, cx| {
+                for s in saved {
+                    n.stack.restore(char_level(s.l), s.x.into(), s.t);
+                }
+                n.file = Some(path);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Новое уведомление — в файл истории (в фоне).
+    fn save(&self, level: Level, text: &SharedString, cx: &mut Context<Self>) {
+        let Some(path) = self.file.clone() else { return };
+        let line =
+            serde_json::to_string(&Saved { t: jiff::Timestamp::now().as_second(), l: level_char(level), x: text.to_string() }).unwrap_or_default();
+        cx.background_spawn(async move {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                let _ = writeln!(f, "{line}");
+            }
+        })
+        .detach();
+    }
+
     /// Тост; скроется сам через [`Level::duration`].
     pub(crate) fn push(&mut self, level: Level, text: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.stack.push(level, text.into(), None, true, Instant::now());
+        let text = text.into();
+        self.save(level, &text, cx);
+        // Ошибка без своего действия (T2-34r, макет «Состояния»): «Подробнее в журнале» — история уведомлений.
+        if level == Level::Error {
+            let me = cx.entity().downgrade();
+            let action = ToastAction::new(tr!("notices-details"), move |_, cx| {
+                let _ = me.update(cx, |n, cx| {
+                    if !n.history_open {
+                        n.toggle_history(cx);
+                    }
+                });
+            });
+            self.stack.push(level, text, Some(action), true, Instant::now());
+            self.tick(cx);
+            cx.notify();
+            return;
+        }
+        self.stack.push(level, text, None, true, Instant::now());
         self.tick(cx);
         cx.notify();
     }
 
     /// Тост с кнопкой («Отменить»); виден [`ACTION_DURATION`], из истории действие доступно до выполнения.
     pub(crate) fn push_action(&mut self, level: Level, text: impl Into<SharedString>, action: ToastAction, cx: &mut Context<Self>) {
-        self.stack.push(level, text.into(), Some(action), true, Instant::now());
+        let text = text.into();
+        self.save(level, &text, cx);
+        self.stack.push(level, text, Some(action), true, Instant::now());
         self.tick(cx);
         cx.notify();
     }
@@ -584,9 +688,30 @@ impl Notices {
                     .py(px(10.))
                     .border_t_1()
                     .border_color(l.border())
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
                     .text_size(px(12.))
                     .text_color(l.text3())
-                    .child(tr!("notices-log")),
+                    .child(div().flex_1().child(tr!("notices-log")))
+                    // «Открыть журнал» (T2-34r, макет «Состояния»): папка с файлами журнала.
+                    .child(
+                        div()
+                            .id("notices-open-log")
+                            .px(px(8.))
+                            .py(px(4.))
+                            .rounded(px(4.))
+                            .text_color(l.accent_text())
+                            .cursor_pointer()
+                            .hover(|d| d.bg(l.hover()))
+                            .child(tr!("notices-open-log"))
+                            .on_click(|_, _, _| {
+                                let dir = crate::diagnostics::log_dir(&crate::data_dir());
+                                if let Err(e) = crate::sys::shell::open(&dir.display().to_string()) {
+                                    tracing::warn!("open log folder: {e}");
+                                }
+                            }),
+                    ),
             )
             .into_any_element()
     }
@@ -775,5 +900,23 @@ mod tests {
             s.push(Level::Info, "x".into(), None, true, now);
         }
         assert_eq!(s.history().count(), MAX_HISTORY);
+    }
+}
+
+#[cfg(test)]
+mod saved_tests {
+    /// История на диске (T2-34r): старше 7 дней и битые строки — мимо.
+    #[test]
+    fn saved_keeps_seven_days() {
+        let now = 1_800_000_000;
+        let lines = [
+            format!(r#"{{"t":{},"l":"e","x":"старое"}}"#, now - 8 * 86_400),
+            format!(r#"{{"t":{},"l":"i","x":"вчера"}}"#, now - 86_400),
+            "мусор".to_owned(),
+        ]
+        .join("\n");
+        let saved = super::read_saved(&lines, now);
+        assert_eq!(saved.iter().map(|s| s.x.as_str()).collect::<Vec<_>>(), ["вчера"]);
+        assert_eq!(super::char_level(super::level_char(pets_ui::Level::Error)), pets_ui::Level::Error);
     }
 }
