@@ -45,3 +45,7 @@ filters-quick-hide = Hide quick filters
 filters-quick-hidden = Quick filters are hidden. To restore: View → Quick filters
 filters-menu-view = View
 filters-menu-quick = Quick filters
+filters-save-search = Save as quick filter
+filters-saved = Quick filter “{ $name }” saved
+filters-saved-exists = This quick filter already exists
+filters-saved-remove = Remove quick filter

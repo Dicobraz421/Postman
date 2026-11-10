@@ -450,6 +450,22 @@ pub(crate) fn header(found: &Found, count: usize, l: &Look, cx: &mut Context<cra
             move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
         })
         .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::search::search::Clear), cx));
+    // «Сохранить как быстрый фильтр» (T2-38, макет `Search`).
+    let save = div()
+        .id("search-save-filter")
+        .children(crate::screens::spot("search-save-filter"))
+        .flex_none()
+        .px(px(6.))
+        .h(px(24.))
+        .flex()
+        .items_center()
+        .rounded(px(4.))
+        .text_size(px(12.))
+        .text_color(l.accent_text())
+        .cursor_pointer()
+        .hover(|d| d.bg(l.hover()))
+        .child(tr!("filters-save-search"))
+        .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::search::search::SaveFilter), cx));
     let line = div()
         .id("list-header")
         .h(px(40.))
@@ -459,9 +475,9 @@ pub(crate) fn header(found: &Found, count: usize, l: &Look, cx: &mut Context<cra
         .gap(px(8.))
         .pl(px(14.))
         .pr(px(6.))
-        .child(div().flex_initial().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD).child(tr!("search-title", query = found.text.clone())))
-        .child(div().flex_none().text_size(l.px(Metric::TypeCaption)).text_color(l.text2()).child(summary))
-        .child(div().flex_1())
+        .child(div().flex_none().max_w(px(220.)).truncate().font_weight(FontWeight::SEMIBOLD).child(tr!("search-title", query = found.text.clone())))
+        .child(div().flex_1().min_w_0().truncate().text_size(l.px(Metric::TypeCaption)).text_color(l.text2()).child(summary))
+        .child(save)
         .child(close);
     // «только <папка>» (макет): включён — поиск в текущей папке, щелчок — везде.
     let only = (!found.folder.is_empty()).then(|| {
@@ -546,6 +562,7 @@ fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
     .on_action(cx.listener(|this, _: &search::Attachments, window, cx| this.refine(&postman_core::query::Refine::Attachment, window, cx)))
     .on_action(cx.listener(|this, _: &search::Unread, window, cx| this.refine(&postman_core::query::Refine::Unread, window, cx)))
     .on_action(cx.listener(|this, _: &search::Recent, window, cx| this.refine(&postman_core::query::Refine::Within(30), window, cx)))
+    .on_action(cx.listener(|this, _: &search::SaveFilter, _, cx| this.save_search_filter(cx)))
     // По совпадениям в открытом письме (S5-14).
     .on_action(cx.listener(|this, _: &search::NextMatch, _, cx| this.reading.update(cx, |r, cx| r.step_hit(1, cx))))
     .on_action(cx.listener(|this, _: &search::PrevMatch, _, cx| this.reading.update(cx, |r, cx| r.step_hit(-1, cx))))
@@ -617,7 +634,7 @@ const TEXTS: &[pets_i18n::Resource] = &[("ru", include_str!("../i18n/ru/search.f
 // Имя — область действий (`search::…`), как в id команд: так обработчики читаются и их находит `docs/PARITY.md`.
 #[allow(clippy::module_inception)]
 pub(crate) mod search {
-    gpui_kit::actions!(search, [Focus, Clear, All, Folder, Attachments, Unread, Recent, NextMatch, PrevMatch]);
+    gpui_kit::actions!(search, [Focus, Clear, All, Folder, Attachments, Unread, Recent, NextMatch, PrevMatch, SaveFilter]);
 }
 
 /// Команды части (`commands.rs`: контексты и `cmd`).
@@ -632,6 +649,8 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("search.attachments", &[], MAIL),
         cmd("search.unread", &[], MAIL),
         cmd("search.recent", &[], MAIL),
+        // «Сохранить как быстрый фильтр» (T2-38).
+        cmd("search.save_filter", &[], MAIL),
         // По совпадениям поиска в открытом письме (S5-14): F3 / Shift+F3, как «Найти далее» в браузерах и редакторах
         // (в classic Outlook F3 — ещё одна клавиша поиска, она у нас — Ctrl+E). В поле поиска тоже: набрал — F3.
         cmd("search.next_match", &["f3"], MAIL),
@@ -649,12 +668,24 @@ pub(crate) mod scenes {
     pub(crate) const SCENES: &[Scene] = &[
         // Поиск «Везде» (S5-10): результаты группами по папкам, подсветка, чипы «Уточнить».
         Scene::new("search", search, search_ready),
+        // «Сохранить как быстрый фильтр» (T2-38): поиск — своей закладкой, она включена.
+        Scene::new("search-saved", saved, saved_ready).continues(),
         // Письмо из результатов поиска: подсветка в теме и тексте, строка «Совпадения».
         Scene::new("search-letter", letter, letter_ready).continues(),
         // То же письмо (S5-14): прокручено до низа, затем F3 по кругу до первого совпадения (в теме) — оно прокручено в
         // вид, «Совпадение 1 из N». Готово, только если переход прокрутил письмо наверх.
         Scene::new("search-next", next, next_ready).continues(),
     ];
+
+    fn saved(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        crate::prefs::update(cx, |p| p.saved_filters.clear());
+        m.save_search_filter(cx);
+        Ok(())
+    }
+
+    fn saved_ready(s: &Scene, m: &Mailer, cx: &App) -> bool {
+        search_ready(s, m, cx) && !crate::prefs::get(cx).saved_filters.is_empty() && crate::screens::spotted("quick-saved-0").is_some()
+    }
 
     /// Запрос с результатами в демо-ящике (S5-10): последнее слово первой темы демо («Отчёт за квартал») — письма во
     /// «Входящих», «Архиве» и «Отправленных», в тексте писем Outlook — «итоги квартала».

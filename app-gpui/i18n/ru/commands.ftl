@@ -55,6 +55,7 @@ cmd-search-folder = Поиск: в текущей папке
 cmd-search-attachments = Поиск: только с вложениями
 cmd-search-unread = Поиск: только непрочитанные
 cmd-search-recent = Поиск: за 30 дней
+cmd-search-save-filter = Сохранить поиск как быстрый фильтр
 cmd-search-next-match = Следующее совпадение в письме
 cmd-search-prev-match = Предыдущее совпадение в письме
 cmd-palette-open = Палитра команд

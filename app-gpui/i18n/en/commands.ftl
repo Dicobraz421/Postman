@@ -55,6 +55,7 @@ cmd-search-folder = Search: current folder
 cmd-search-attachments = Search: with attachments only
 cmd-search-unread = Search: unread only
 cmd-search-recent = Search: last 30 days
+cmd-search-save-filter = Save search as a quick filter
 cmd-search-next-match = Next match in the message
 cmd-search-prev-match = Previous match in the message
 cmd-palette-open = Command palette

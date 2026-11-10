@@ -529,7 +529,18 @@ pub(crate) fn group_header(id: usize, label: String, n: usize, folder: bool, col
 /// ними, во всю ширину списка и области чтения, ничего не сдвигая (рисует экран почты поверх частей). Панель
 /// открывает наведение на закладки, закрывает — уход мыши с закладок и панели. Щелчок по закладке или ячейке —
 /// включить или выключить. Какие закладки и в каком порядке — `tabs` (Настройки → Быстрые фильтры).
-pub(crate) fn quick(model: &Entity<FilterModel>, m: &FilterModel, tabs: &[Quick], l: &Look, strip_w: f32) -> Stateful<Div> {
+/// Щелчок по своему фильтру (T2-38): номер и «убрать» (× у включённого).
+pub(crate) type OnSaved = std::rc::Rc<dyn Fn(usize, bool, &mut Window, &mut App)>;
+
+pub(crate) fn quick(
+    model: &Entity<FilterModel>,
+    m: &FilterModel,
+    tabs: &[Quick],
+    saved: &[(String, bool)],
+    on_saved: OnSaved,
+    l: &Look,
+    strip_w: f32,
+) -> Stateful<Div> {
     let on = |q: Quick| m.query.criteria.quick.contains(&q);
     let toggle = |q: Quick| {
         let model = model.clone();
@@ -572,6 +583,52 @@ pub(crate) fn quick(model: &Entity<FilterModel>, m: &FilterModel, tabs: &[Quick]
             .child(div().flex_none().child(if n > 0 { n.to_string() } else { String::new() }))
             .on_click(toggle(q))
     });
+    // Свои фильтры (T2-38): сохранённые поиски — после встроенных; включённый — с «×» (убрать).
+    let saved_tabs = saved.iter().enumerate().map(|(i, (name, active))| {
+        let (pick, drop) = (on_saved.clone(), on_saved.clone());
+        let active = *active;
+        let id = SharedString::from(format!("quick-saved-{i}"));
+        div()
+            .id(id.clone())
+            .children(crate::screens::spot(id))
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap(px(3.))
+            .px(px(4.))
+            .rounded_t(px(6.))
+            .text_size(px(11.))
+            .cursor_pointer()
+            .relative()
+            .when(active, |d| {
+                d.h(px(QUICK_H))
+                    .bg(l.panel())
+                    .text_color(l.text())
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .border_l_1()
+                    .border_r_1()
+                    .border_color(l.stroke())
+                    .child(div().absolute().top_0().left_0().right_0().h(px(3.)).rounded_t(px(6.)).bg(l.accent()))
+            })
+            .when(!active, |d| d.h(px(20.)).bg(l.fill()).text_color(l.text2()))
+            .child(icon(glyph::SEARCH, 9.).flex_none())
+            .child(div().flex_1().min_w_0().truncate().child(name.clone()))
+            .when(active, |d| {
+                d.child(
+                    div()
+                        .id(("quick-saved-drop", i))
+                        .flex_none()
+                        .child(icon(glyph::CLOSE, 8.))
+                        .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(tr!("filters-saved-remove")).build(window, cx))
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            drop(i, true, window, cx)
+                        }),
+                )
+            })
+            .on_click(move |_, window, cx| pick(i, false, window, cx))
+    });
     let hide = div()
         .id("quick-hide")
         .children(crate::screens::spot("quick-hide"))
@@ -604,6 +661,7 @@ pub(crate) fn quick(model: &Entity<FilterModel>, m: &FilterModel, tabs: &[Quick]
             // Строки списка под закладками не просвечивают.
             .bg(l.panel())
             .children(tabs)
+            .children(saved_tabs)
             .child(hide)
             .on_hover(move |hovered, _, cx| {
                 if *hovered {
@@ -772,14 +830,23 @@ impl crate::Mailer {
 
     /// Закладки быстрых фильтров и панель по наведению — поверх нижнего края карточки списка (`body` экрана
     /// почты); закладки скрыты, поиск, не «Почта» — нет.
-    pub(crate) fn quick_overlay(&self, l: &Look, cx: &App) -> Option<AnyElement> {
+    pub(crate) fn quick_overlay(&self, l: &Look, cx: &mut Context<Self>) -> Option<AnyElement> {
         use postman_core::prefs::Pane;
-        let m = self.filters.read(cx);
-        let tabs = Self::quick_tabs(cx);
+        // Поиск (T2-38): встроенные фильтры к найденному не применяются — видны только свои (они сами — поиски).
+        let searching = self.list.read(cx).search_ids.is_some();
+        let tabs = if searching { Vec::new() } else { Self::quick_tabs(cx) };
+        let now = self.find.text.trim().to_owned();
+        let saved: Vec<(String, bool)> =
+            crate::prefs::get(cx).saved_filters.iter().map(|f| (f.name.clone(), searching && f.query.trim() == now)).collect();
         let mail = self.section == crate::Section::Mail && self.tabs.active().kind.shows_mail();
-        if !mail || tabs.is_empty() || self.live.signin.is_some() || self.list.read(cx).search_ids.is_some() {
+        if !mail || (tabs.is_empty() && saved.is_empty()) || self.live.signin.is_some() {
             return None;
         }
+        let me = cx.entity().downgrade();
+        let on_saved: OnSaved = std::rc::Rc::new(move |i, remove, window, cx| {
+            let _ = me.update(cx, |m, cx| m.saved_filter(i, remove, window, cx));
+        });
+        let m = self.filters.read(cx);
         // Панель чтения (Настройки → Чтение): справа и скрыта — список до низа, снизу — список сверху на 45 %.
         let pane = crate::prefs::get(cx).reading.pane;
         if pane == Pane::Hidden && self.reading_instead_of_list(cx) {
@@ -791,7 +858,39 @@ impl crate::Mailer {
         let overlay = div().absolute().left(px(left)).right(px(8.));
         let overlay = if pane == Pane::Bottom { overlay.bottom(relative(0.55)) } else { overlay.bottom_0() };
         // Ширина закладок — карточка списка без рамки.
-        Some(overlay.child(quick(&self.filters, m, &tabs, l, w_list - 2.)).into_any_element())
+        Some(overlay.child(quick(&self.filters, m, &tabs, &saved, on_saved, l, w_list - 2.)).into_any_element())
+    }
+
+    /// Свой фильтр (T2-38): щелчок — его поиск (включённый — снять поиск); «×» — убрать из настроек.
+    pub(crate) fn saved_filter(&mut self, i: usize, remove: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let list = crate::prefs::get(cx).saved_filters;
+        let Some(f) = list.get(i).cloned() else { return };
+        if remove {
+            crate::prefs::update(cx, |p| {
+                p.saved_filters.remove(i);
+            });
+            self.end_search(cx);
+            self.search.update(cx, |s, cx| s.set_value("", window, cx));
+            return cx.notify();
+        }
+        let active = self.list.read(cx).search_ids.is_some() && self.find.text.trim() == f.query.trim();
+        let next = if active { String::new() } else { f.query.clone() };
+        self.search.update(cx, |s, cx| s.set_value(next.clone(), window, cx));
+        self.run_search(&next, cx);
+    }
+
+    /// «Сохранить как быстрый фильтр» (T2-38): текущий поиск — закладкой; такой уже есть — тост.
+    pub(crate) fn save_search_filter(&mut self, cx: &mut Context<Self>) {
+        let query = self.find.text.trim().to_owned();
+        if query.is_empty() {
+            return;
+        }
+        if crate::prefs::get(cx).saved_filters.iter().any(|f| f.query.trim() == query) {
+            return self.toast(pets_ui::Level::Info, tr!("filters-saved-exists"), cx);
+        }
+        let name: String = query.chars().take(24).collect();
+        crate::prefs::update(cx, |p| p.saved_filters.push(postman_core::prefs::SavedFilter { name: name.clone(), query }));
+        self.toast(pets_ui::Level::Success, tr!("filters-saved", name = name), cx);
     }
 
     /// Меню сортировки над списком.
