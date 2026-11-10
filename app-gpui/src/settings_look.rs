@@ -15,9 +15,79 @@ use crate::chrome::icon;
 use crate::roles::Look;
 use crate::settings_tab::{SettingsView, group, row, seg, seg_group, toggle};
 
+/// Доля панели чтения справа (T2-58, «Сейчас справа, 46 %»): чтение от ширины списка и чтения в окне `width`.
+pub(crate) fn reading_share(layout: postman_core::prefs::Layout, width: u16) -> u16 {
+    let (folders, list) = layout.widths(width);
+    let rest = width.saturating_sub(folders);
+    let reading = rest.saturating_sub(list);
+    if rest == 0 { 0 } else { (u32::from(reading) * 100 / u32::from(rest)) as u16 }
+}
+
 impl SettingsView {
-    pub(crate) fn look(&mut self, l: &Look, cx: &mut Context<Self>) -> Div {
+    /// «Предпросмотр»: строка списка в выбранной плотности, со шрифтом, аватаром и превью — как в списке писем.
+    pub(crate) fn look_preview(&self, l: &Look, cx: &mut Context<Self>) -> Div {
         let p = crate::prefs::get(cx);
+        let compact = l.density().row() < 24;
+        let avatars = p.look.avatars && !compact;
+        let preview = p.look.preview && !compact;
+        let size = f32::from(p.look.font_px());
+        let row = div()
+            .flex()
+            .gap_3()
+            .p_2()
+            .rounded(l.px(Metric::RadiusControl))
+            .border_1()
+            .border_color(l.border())
+            .bg(l.panel())
+            .text_size(px(size))
+            .when(avatars, |d| {
+                d.child(
+                    div()
+                        .size(px(32.))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .bg(l.picked())
+                        .text_color(l.accent_text())
+                        .text_size(px(12.))
+                        .child(tr!("settings-look-preview-initials")),
+                )
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .child(div().flex_1().truncate().font_weight(FontWeight::SEMIBOLD).child(tr!("settings-look-preview-from")))
+                            .child(div().text_color(l.text2()).child("10:42")),
+                    )
+                    .child(div().truncate().text_color(l.accent_text()).child(tr!("settings-look-preview-subject")))
+                    .when(preview, |d| d.child(div().truncate().text_color(l.text2()).child(tr!("settings-look-preview-text")))),
+            );
+        let title = if compact { tr!("settings-density-compact", px = 20) } else { tr!("settings-density-normal", px = 24) };
+        crate::settings_tab::preview_card(row, title, tr!("settings-look-preview-note", size = size as i64), l)
+    }
+
+    pub(crate) fn look(&mut self, l: &Look, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let p = crate::prefs::get(cx);
+        // «Панель чтения · справа, 46 %» (T2-58): где она и какая доля; ширина — перетаскиванием границы.
+        let width = f32::from(window.viewport_size().width).max(0.) as u16;
+        let pane = match p.reading.pane {
+            postman_core::prefs::Pane::Right => tr!("settings-look-pane-right", share = reading_share(p.layout, width) as i64),
+            postman_core::prefs::Pane::Bottom => tr!("settings-look-pane-bottom"),
+            postman_core::prefs::Pane::Hidden => tr!("settings-look-pane-hidden"),
+        };
+        let pane_control = div().flex().items_center().gap_3().child(div().text_color(l.text2()).child(pane)).child(
+            crate::settings_tab::link("settings-look-open-reading", tr!("settings-look-open-reading"), l)
+                .on_click(cx.listener(|this, _, window, cx| this.select(crate::settings_tab::Section::Reading, window, cx))),
+        );
         // Тема и плотность — как были в «Общих» (S5-09).
         let (choice, locked, ids, titles) = match Themes::try_get(cx) {
             Some(t) => {
@@ -134,12 +204,14 @@ impl SettingsView {
             .flex()
             .flex_col()
             .child(group(tr!("settings-look"), l))
-            .child(row(tr!("settings-theme"), theme_hint, seg_group(themes, l), l))
+            // Тем пять: с карточкой «Предпросмотр» им тесно в строку — переносятся.
+            .child(row(tr!("settings-theme"), theme_hint, div().max_w(px(420.)).flex().justify_end().child(seg_group(themes, l)), l))
             .child(row(tr!("settings-accent"), Some(tr!("settings-accent-hint")), accents, l))
             .child(row(tr!("settings-density"), Some(tr!("settings-density-hint")), seg_group(densities, l), l))
             .child(group(tr!("settings-text-group"), l))
             .child(row(tr!("settings-font"), Some(tr!("settings-font-hint")), font, l))
             .child(group(tr!("settings-layout-group"), l))
+            .child(row(tr!("settings-look-pane"), Some(tr!("settings-look-pane-hint")), pane_control, l))
             .child(row(
                 tr!("settings-avatars"),
                 Some(tr!(if compact { "settings-compact-off" } else { "settings-avatars-hint" })),

@@ -97,6 +97,67 @@ impl SettingsView {
         )
     }
 
+    /// «Состояние защиты» (T2-57, макет `SettingsSecurity`): песочница, макросы, пароли, соединение, фишинг, диск.
+    pub(crate) fn protection_card(&mut self, l: &Look, cx: &mut Context<Self>) -> Div {
+        self.check_disk(cx);
+        let p = crate::prefs::get(cx);
+        let eff = crate::security::effective(&p);
+        let full = self.info.sandbox == Some(Level::Full);
+        let line = |ok: Option<bool>, title: String, value: String| {
+            let (g, color) = match ok {
+                Some(true) => (crate::chrome::glyph::CHECK, l.accent_text()),
+                Some(false) => (crate::chrome::glyph::WARNING, l.warning()),
+                None => (crate::chrome::glyph::INFO, l.text3()),
+            };
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .py_1()
+                .child(crate::chrome::icon(g, 12.).text_color(color))
+                .child(div().flex_1().child(title))
+                .child(div().text_color(if ok == Some(false) { l.warning() } else { l.text() }).child(value))
+        };
+        let sandbox = match self.info.sandbox {
+            Some(Level::Full) => tr!("settings-protection-full"),
+            Some(_) => tr!("settings-protection-partial"),
+            None => tr!("settings-protection-unknown"),
+        };
+        let phishing = p.general.phishing_report.clone();
+        let disk = self.disk.clone().map(|(drive, state)| {
+            let v = match state {
+                Some(true) => tr!("settings-protection-disk-on", drive = drive),
+                Some(false) => tr!("settings-protection-disk-off", drive = drive),
+                None => tr!("settings-protection-unknown"),
+            };
+            line(state, tr!("settings-protection-disk"), v)
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p_4()
+            .rounded(l.px(pets_ui::theme::Metric::RadiusOverlay))
+            .border_1()
+            .border_color(l.c(pets_ui::theme::Role::StrokeCard))
+            .bg(l.panel())
+            .child(div().pb_1().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child(tr!("settings-protection")))
+            .child(line(self.info.sandbox.map(|_| full), tr!("settings-protection-sandbox"), sandbox))
+            .child(line(Some(true), tr!("settings-protection-macros"), tr!("settings-protection-macros-on")))
+            .child(line(
+                None,
+                tr!("settings-protection-passwords"),
+                tr!(if eff.store_password { "settings-protection-vault" } else { "settings-protection-no-store" }),
+            ))
+            .child(line(None, tr!("settings-protection-tls"), tr!(if eff.tls13 { "settings-protection-tls13" } else { "settings-protection-tls12" })))
+            .child(line(
+                Some(phishing.is_some()),
+                tr!("settings-protection-phishing"),
+                phishing.unwrap_or_else(|| tr!("settings-protection-no-address")),
+            ))
+            .children(disk)
+    }
+
     pub(crate) fn security(&mut self, l: &Look, cx: &mut Context<Self>) -> Div {
         self.check_disk(cx);
         let disk = self.disk_row(l, cx);
@@ -251,16 +312,32 @@ impl SettingsView {
             .child(row(
                 tr!("settings-sandbox"),
                 Some(sandbox_hint),
-                div().flex().items_center().gap_2().child(chip).when(partial, |d| {
-                    d.child(
-                        link("settings-sandbox-help", tr!(if help { "settings-sandbox-help-hide" } else { "settings-sandbox-help" }), l).on_click(
-                            cx.listener(|this, _, _, cx| {
-                                this.sandbox_help = !this.sandbox_help;
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(chip)
+                    // «Проверить снова» (T2-57): права на папку выдали — полная изоляция без перезапуска.
+                    .child(if self.sandbox_checking {
+                        div().text_color(l.text2()).child(tr!("settings-sandbox-checking")).into_any_element()
+                    } else {
+                        link("settings-sandbox-recheck", tr!("settings-sandbox-recheck"), l)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.sandbox_checking = true;
+                                cx.emit(crate::settings_tab::SettingsEvent::RecheckSandbox);
                                 cx.notify();
-                            }),
-                        ),
-                    )
-                }),
+                            }))
+                            .into_any_element()
+                    })
+                    .when(partial, |d| {
+                        d.child(
+                            link("settings-sandbox-help", tr!(if help { "settings-sandbox-help-hide" } else { "settings-sandbox-help" }), l)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.sandbox_help = !this.sandbox_help;
+                                    cx.notify();
+                                })),
+                        )
+                    }),
                 l,
             ))
             .when(partial && help, |d| {

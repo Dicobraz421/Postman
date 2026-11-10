@@ -934,6 +934,15 @@ impl Client {
         self.level
     }
 
+    /// «Проверить снова» (T2-57): следующий запрос запустит процесс заново и снова попробует полную изоляцию
+    /// (права на папку программы могли выдать без перезапуска Postman).
+    pub fn restart(&mut self) {
+        self.running = None;
+        self.relaxed = false;
+        self.fallback = None;
+        self.level = Level::None;
+    }
+
     /// Почему изоляция не полная: отказ AppContainer при запуске или воркер, не ответивший в полной изоляции.
     /// `None` — уровень полный (или причина неизвестна).
     pub fn fallback(&self) -> Option<&str> {

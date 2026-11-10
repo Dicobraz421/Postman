@@ -181,6 +181,8 @@ pub(crate) enum SettingsEvent {
     ApplyRule(postman_core::rules::Rule),
     /// «Синхронизировать» у учётной записи (T2-51): сверить с сервером сейчас.
     SyncNow,
+    /// «Проверить снова» у песочницы (T2-57).
+    RecheckSandbox,
 }
 
 pub(crate) struct SettingsView {
@@ -231,6 +233,8 @@ pub(crate) struct SettingsView {
     pub(crate) wipe_confirm: bool,
     pub(crate) wiped: bool,
     pub(crate) sandbox_help: bool,
+    /// «Проверить снова» нажато — ждём уровень изоляции.
+    pub(crate) sandbox_checking: bool,
     /// «Безопасность → Каталог сертификатов» (S5-12.5б).
     pub(crate) dir: crate::settings_directory::DirState,
     _subscriptions: Vec<Subscription>,
@@ -305,6 +309,7 @@ impl SettingsView {
             wipe_confirm: false,
             wiped: false,
             sandbox_help: false,
+            sandbox_checking: false,
             dir,
             _subscriptions: subscriptions,
         };
@@ -972,7 +977,23 @@ impl SettingsView {
     /// Раздел: содержимое и карточки сбоку.
     fn content(&mut self, l: &Look, window: &mut Window, cx: &mut Context<Self>) -> (Option<Stateful<Div>>, AnyElement, Vec<Div>) {
         match self.section {
-            Section::General => (None, self.general(l, cx).into_any_element(), Vec::new()),
+            Section::General => {
+                // «По умолчанию» (T2-58): запуск, уведомления, обновления, журнал. Язык, тема, автозапуск (их держит
+                // Windows) и адрес ИБ — как были.
+                let reset = reset_button("settings-general-reset", l, cx, |p| {
+                    let g = &p.general;
+                    p.general = postman_core::prefs::General {
+                        theme: g.theme.clone(),
+                        density: g.density,
+                        language: g.language.clone(),
+                        phishing_report: g.phishing_report.clone(),
+                        autostart: g.autostart,
+                        ..Default::default()
+                    };
+                });
+                let aside = vec![self.notify_preview(l, cx)];
+                (Some(reset), self.general(l, cx).into_any_element(), aside)
+            }
             Section::Quick => {
                 let aside = vec![aside_card(tr!("settings-quick-aside"), vec![tr!("settings-quick-aside-1"), tr!("settings-quick-aside-2")], l)];
                 (None, self.quick(l, cx).into_any_element(), aside)
@@ -989,9 +1010,31 @@ impl SettingsView {
                 (Some(reset), self.reading(l, cx).into_any_element(), aside)
             }
             Section::Calendar => self.calendar(l, cx),
-            Section::Security => (None, self.security(l, cx).into_any_element(), Vec::new()),
+            Section::Security => {
+                // «По умолчанию» (T2-58): содержимое писем, вложения, соединение; каталог сертификатов и адрес ИБ — свои.
+                let reset = reset_button("settings-security-reset", l, cx, |p| {
+                    p.security = postman_core::prefs::Security { directory: p.security.directory.clone(), ..Default::default() };
+                    p.reading.warn_link_mismatch = true;
+                });
+                let aside = vec![self.protection_card(l, cx)];
+                (Some(reset), self.security(l, cx).into_any_element(), aside)
+            }
             Section::Viewers => (None, self.viewers(l, cx).into_any_element(), Vec::new()),
-            Section::Look => (None, self.look(l, cx).into_any_element(), Vec::new()),
+            Section::Look => {
+                // «По умолчанию» (T2-58): тема «Как в Windows», обычная плотность, акцент, шрифт, аватары, превью, KeyTips.
+                let reset = crate::buttons::button("settings-look-reset", tr!("settings-reset"), false, l).on_click(cx.listener(|this, _, _, cx| {
+                    crate::prefs::update(cx, |p| {
+                        p.look = Default::default();
+                        p.keytips = true;
+                    });
+                    crate::prefs::set_density(24, cx);
+                    this.theme_error = crate::prefs::set_theme(pets_ui::theme::SYSTEM, cx).err().map(|e| e.to_string());
+                    cx.notify();
+                }));
+                let aside = vec![self.look_preview(l, cx)];
+                let body = self.look(l, window, cx).into_any_element();
+                (Some(reset), body, aside)
+            }
             Section::Categories => self.categories(l, window, cx),
             Section::Keys => self.keyboard(l, cx),
             Section::Signatures => self.signatures(l, window, cx),

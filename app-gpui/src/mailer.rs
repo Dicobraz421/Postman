@@ -293,6 +293,14 @@ impl Mailer {
                         this.toasts.update(cx, |t, cx| t.push(Toast::Warning, text, cx));
                     }
                     this.sandbox = Some(*level);
+                    if let Some(v) = &this.settings.view {
+                        let level = *level;
+                        v.update(cx, |v, cx| {
+                            v.info.sandbox = Some(level);
+                            v.sandbox_checking = false;
+                            cx.notify();
+                        });
+                    }
                     cx.notify();
                 }
                 ReadingEvent::Error(text) => this.toasts.update(cx, |t, cx| t.push(Toast::Error, text.clone(), cx)),

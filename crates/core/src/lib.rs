@@ -19,6 +19,7 @@ pub mod filters;
 pub mod fuzzy;
 pub mod indexer;
 pub mod invite;
+pub mod keymap_file;
 pub mod labels;
 pub mod lifecycle;
 pub mod link;

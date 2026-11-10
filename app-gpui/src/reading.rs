@@ -1491,6 +1491,24 @@ pub(crate) fn sandbox_label(level: Level) -> String {
 
 /// Полоса «Помечено как фишинг» (T2-16): спам и подлинность отправителя решает сервер (SPF/DKIM/DMARC, антиспам);
 /// клиент только показывает его вердикт — `$phishing` или `pm.threat` у письма. Кнопок нет (решение 2026-11-09).
+impl ReadingPane {
+    /// «Проверить снова» у песочницы (T2-57): воркер — заново, пустой разбор, уровень изоляции — событием.
+    pub(crate) fn recheck_sandbox(&mut self, cx: &mut Context<Self>) {
+        let worker = self.worker.clone();
+        let task = cx.background_spawn(async move {
+            let mut w = worker.lock().unwrap_or_else(PoisonError::into_inner);
+            w.restart();
+            let _ = w.render(&Request::Text(String::new()));
+            w.level()
+        });
+        cx.spawn(async move |this, cx| {
+            let level = task.await;
+            let _ = this.update(cx, |_, cx| cx.emit(ReadingEvent::Sandbox(level)));
+        })
+        .detach();
+    }
+}
+
 /// Адрес ссылки под курсором — строкой у нижнего края панели чтения (T2-54, «Показывать адрес ссылки при
 /// наведении», как строка состояния браузера).
 pub(crate) fn link_line(l: &crate::roles::Look, cx: &App) -> Option<Div> {
