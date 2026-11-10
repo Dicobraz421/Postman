@@ -2,6 +2,11 @@
 //! писем и для ответов, шаблоны писем. Хранятся у учётной записи на этом компьютере (`postman_core::prefs::AccountPrefs`,
 //! файл рядом с кэшем, запись в фоне); на сервере (FileNode, как категории) — [проверить]. Композер берёт их через
 //! `AccountPrefs::signature` (S5-06).
+//!
+//! T2-52 (макет `SettingsSign`): у подписи — «Ж»/«К» (Markdown, как в письме) и «Вставить поле ▾» — `{имя}`,
+//! `{должность}`, `{телефон}` из профиля учётной записи (свои поля раздела); у шаблона — команда `/…`, файлы, поля
+//! `{…}` со «Спрашивать значения полей при вставке» (`postman_core::fill`). Справа — «Предпросмотр» нового письма и
+//! ответа с подписью, как его увидит получатель.
 
 use std::path::PathBuf;
 
@@ -27,6 +32,27 @@ pub(crate) struct SignEdit {
     text: Entity<TextareaState>,
     /// Адрес подписи; `None` — любой.
     identity: Option<String>,
+    /// Шаблон: команда `/…`, файлы, спрашивать ли поля.
+    command: Entity<InputState>,
+    attachments: Vec<String>,
+    ask: bool,
+    /// Открыто меню «Вставить поле».
+    field_menu: bool,
+}
+
+/// Поля профиля для меню «Вставить поле»: ключ и что это.
+const PROFILE_FIELDS: [(&str, &str); 3] = [
+    ("settings-sign-field-name", "settings-sign-field-name-hint"),
+    ("settings-sign-field-title", "settings-sign-field-title-hint"),
+    ("settings-sign-field-phone", "settings-sign-field-phone-hint"),
+];
+
+/// Предпросмотр: новое письмо или ответ.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum PreviewMode {
+    #[default]
+    New,
+    Reply,
 }
 
 pub(crate) struct SignState {
@@ -35,11 +61,53 @@ pub(crate) struct SignState {
     loaded: bool,
     pub(crate) edit: Option<SignEdit>,
     writer: Writer,
+    /// Профиль для полей подписи: имя, должность, телефон (правка — сразу в настройки учётной записи).
+    profile: [Entity<InputState>; 3],
+    /// Поля профиля — заново из загруженных настроек (при отрисовке).
+    profile_sync: bool,
+    pub(crate) preview: PreviewMode,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl SignState {
-    pub(crate) fn new(cache: Option<PathBuf>, _window: &mut Window, _cx: &mut Context<SettingsView>) -> Self {
-        Self { path: cache, prefs: AccountPrefs::default(), loaded: false, edit: None, writer: Writer::default() }
+    pub(crate) fn new(cache: Option<PathBuf>, window: &mut Window, cx: &mut Context<SettingsView>) -> Self {
+        let mut input = |key: &str, cx: &mut Context<SettingsView>| cx.new(|cx| InputState::new(window, cx).placeholder(tr!(key)));
+        let profile = [
+            input("settings-sign-profile-name-placeholder", cx),
+            input("settings-sign-profile-title-placeholder", cx),
+            input("settings-sign-profile-phone-placeholder", cx),
+        ];
+        let mut subs = Vec::new();
+        for (i, p) in profile.iter().enumerate() {
+            subs.push(cx.subscribe_in(p, window, move |this: &mut SettingsView, state, ev: &gpui_kit::component::input::InputEvent, _, cx| {
+                if !matches!(ev, gpui_kit::component::input::InputEvent::Change) || this.sign.profile_sync {
+                    return;
+                }
+                let v = state.read(cx).value().to_string();
+                let p = &mut this.sign.prefs.profile;
+                let slot = match i {
+                    0 => &mut p.name,
+                    1 => &mut p.title,
+                    _ => &mut p.phone,
+                };
+                if *slot != v {
+                    *slot = v;
+                    this.sign_save(cx);
+                    cx.notify();
+                }
+            }));
+        }
+        Self {
+            path: cache,
+            prefs: AccountPrefs::default(),
+            loaded: false,
+            edit: None,
+            writer: Writer::default(),
+            profile,
+            profile_sync: true,
+            preview: PreviewMode::New,
+            _subscriptions: subs,
+        }
     }
 
     fn file(&self) -> Option<PathBuf> {
@@ -69,13 +137,14 @@ impl SettingsView {
             let _ = this.update(cx, |v, cx| {
                 v.sign.prefs = prefs;
                 v.sign.loaded = true;
+                v.sign.profile_sync = true;
                 cx.notify();
             });
         })
         .detach();
     }
 
-    fn sign_save(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn sign_save(&mut self, cx: &mut Context<Self>) {
         self.sign.prefs = std::mem::take(&mut self.sign.prefs).normalized();
         cx.emit(crate::settings_tab::SettingsEvent::AccountPrefs(self.sign.prefs.clone()));
         let Some(file) = self.sign.file() else { return };
@@ -89,15 +158,18 @@ impl SettingsView {
         .detach();
     }
 
-    fn sign_edit(&mut self, id: String, template: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn sign_edit(&mut self, id: String, template: bool, window: &mut Window, cx: &mut Context<Self>) {
         let p = &self.sign.prefs;
+        let tpl = p.templates.iter().find(|t| t.id == id).cloned();
         let (name, subject, text, identity) = if template {
-            let t = p.templates.iter().find(|t| t.id == id);
+            let t = tpl.as_ref();
             (t.map(|t| t.name.clone()), t.map(|t| t.subject.clone()), t.map(|t| t.body.clone()), None)
         } else {
             let s = p.signatures.iter().find(|s| s.id == id);
             (s.map(|s| s.name.clone()), None, s.map(|s| s.text.clone()), s.and_then(|s| s.identity.clone()))
         };
+        let (command, attachments, ask) = tpl.map_or((String::new(), Vec::new(), true), |t| (t.command, t.attachments, t.ask));
+        let command = cx.new(|cx| InputState::new(window, cx).placeholder(tr!("settings-tpl-command-placeholder")).default_value(command));
         let name =
             cx.new(|cx| InputState::new(window, cx).placeholder(tr!("settings-sign-name-placeholder")).default_value(name.unwrap_or_default()));
         let subject =
@@ -105,7 +177,7 @@ impl SettingsView {
         let text =
             cx.new(|cx| TextareaState::new(window, cx).placeholder(tr!("settings-sign-text-placeholder")).default_value(text.unwrap_or_default()));
         name.update(cx, |s, cx| s.focus(window, cx));
-        self.sign.edit = Some(SignEdit { id, template, name, subject, text, identity });
+        self.sign.edit = Some(SignEdit { id, template, name, subject, text, identity, command, attachments, ask, field_menu: false });
         cx.notify();
     }
 
@@ -122,7 +194,8 @@ impl SettingsView {
         let p = &mut self.sign.prefs;
         if e.template {
             let subject = e.subject.read(cx).value().to_string();
-            let t = Template { id: e.id.clone(), name, subject, body: text };
+            let command = e.command.read(cx).value().trim().trim_start_matches('/').to_owned();
+            let t = Template { id: e.id.clone(), name, subject, body: text, command, attachments: e.attachments.clone(), ask: e.ask };
             match p.templates.iter_mut().find(|x| x.id == e.id) {
                 Some(x) => *x = t,
                 None => p.templates.push(t),
@@ -158,6 +231,226 @@ impl SettingsView {
         }
         self.sign_save(cx);
         cx.notify();
+    }
+
+    /// «Ж» и «К»: Markdown вокруг выделения текста подписи (как в письме).
+    fn sign_format(&mut self, mark: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(e) = &self.sign.edit else { return };
+        let text = e.text.clone();
+        let (value, sel) = {
+            let s = text.read(cx);
+            (s.value().to_string(), s.selected_range())
+        };
+        let (start, end) = (sel.start.min(value.len()), sel.end.min(value.len()));
+        if !value.is_char_boundary(start) || !value.is_char_boundary(end) {
+            return;
+        }
+        let next = format!("{}{mark}{}{mark}{}", &value[..start], &value[start..end], &value[end..]);
+        text.update(cx, |s, cx| {
+            s.set_value(next, window, cx);
+            s.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    /// «Вставить поле»: `{поле}` у курсора текста подписи.
+    fn sign_field(&mut self, key: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(e) = &mut self.sign.edit else { return };
+        e.field_menu = false;
+        let text = e.text.clone();
+        let (value, at) = {
+            let s = text.read(cx);
+            (s.value().to_string(), s.selected_range().end)
+        };
+        let at = if value.is_char_boundary(at.min(value.len())) { at.min(value.len()) } else { value.len() };
+        let token = format!("{{{}}}", tr!(key));
+        let next = format!("{}{token}{}", &value[..at], &value[at..]);
+        text.update(cx, |s, cx| {
+            s.set_value(next, window, cx);
+            s.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    /// «Прикрепить файл» к шаблону: системный выбор файлов, пути — в шаблон.
+    fn tpl_pick_files(&mut self, cx: &mut Context<Self>) {
+        let paths = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: None });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = paths.await {
+                let _ = this.update(cx, |v, cx| {
+                    if let Some(e) = &mut v.sign.edit {
+                        for p in paths {
+                            let p = p.to_string_lossy().into_owned();
+                            if !e.attachments.contains(&p) {
+                                e.attachments.push(p);
+                            }
+                        }
+                    }
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Ряд «Ж К · Вставить поле ▾» над текстом подписи.
+    fn sign_toolbar(&self, e: &SignEdit, l: &Look, cx: &mut Context<Self>) -> Div {
+        let tool = |id: &'static str, label: String| {
+            div()
+                .id(id)
+                .children(crate::screens::spot(id))
+                .h(px(26.))
+                .min_w(px(26.))
+                .px_1p5()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(l.px(Metric::RadiusControl))
+                .cursor_pointer()
+                .hover(|d| d.bg(l.hover()))
+                .child(label)
+        };
+        let menu = e.field_menu.then(|| {
+            let items = PROFILE_FIELDS.iter().enumerate().map(|(i, (key, hint))| {
+                let key = *key;
+                div()
+                    .id(("settings-sign-field", i))
+                    .children(crate::screens::spot(("settings-sign-field", i)))
+                    .h(px(28.))
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .rounded(l.px(Metric::RadiusControl))
+                    .cursor_pointer()
+                    .hover(|d| d.bg(l.hover()))
+                    .child(div().font_weight(FontWeight::SEMIBOLD).child(format!("{{{}}}", tr!(key))))
+                    .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!(hint)))
+                    .on_click(cx.listener(move |this, _, window, cx| this.sign_field(key, window, cx)))
+            });
+            deferred(
+                div()
+                    .absolute()
+                    .top(px(30.))
+                    .left_0()
+                    .min_w(px(260.))
+                    .occlude()
+                    .p(px(4.))
+                    .flex()
+                    .flex_col()
+                    .rounded(l.px(Metric::RadiusOverlay))
+                    .border_1()
+                    .border_color(l.c(pets_ui::theme::Role::StrokeCard))
+                    .bg(l.c(pets_ui::theme::Role::LayerOverlay))
+                    .shadow_lg()
+                    .children(items)
+                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                        if let Some(e) = &mut this.sign.edit {
+                            e.field_menu = false;
+                        }
+                        cx.notify();
+                    })),
+            )
+            .with_priority(1)
+        });
+        div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(
+                tool("settings-sign-bold", tr!("settings-sign-bold"))
+                    .font_weight(FontWeight::BOLD)
+                    .on_click(cx.listener(|this, _, window, cx| this.sign_format("**", window, cx))),
+            )
+            .child(
+                tool("settings-sign-italic", tr!("settings-sign-italic"))
+                    .italic()
+                    .on_click(cx.listener(|this, _, window, cx| this.sign_format("*", window, cx))),
+            )
+            .child(div().w(px(1.)).h(px(16.)).mx_1().bg(l.border()))
+            .child(
+                div()
+                    .relative()
+                    .child(tool("settings-sign-field-menu", format!("{} ▾", tr!("settings-sign-insert-field"))).on_click(cx.listener(
+                        |this, _, _, cx| {
+                            if let Some(e) = &mut this.sign.edit {
+                                e.field_menu = !e.field_menu;
+                            }
+                            cx.notify();
+                        },
+                    )))
+                    .children(menu),
+            )
+    }
+
+    /// Шаблон: команда, файлы, поля и «Спрашивать значения полей при вставке».
+    fn tpl_extras(&self, e: &SignEdit, l: &Look, cx: &mut Context<Self>) -> Vec<Div> {
+        let label = |t: String| div().w(px(110.)).flex_none().pt_1().text_color(l.text2()).child(t);
+        let text = format!("{}\n{}", e.subject.read(cx).value(), e.text.read(cx).value());
+        let own = postman_core::fill::own_fields(&text);
+        let fields =
+            if own.is_empty() { tr!("settings-tpl-fields-none") } else { own.iter().map(|f| format!("{{{f}}}")).collect::<Vec<_>>().join(", ") };
+        let files = e.attachments.iter().enumerate().map(|(i, p)| {
+            let name = std::path::Path::new(p).file_name().map_or_else(|| p.clone(), |n| n.to_string_lossy().into_owned());
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py_0p5()
+                .rounded(l.px(Metric::RadiusControl))
+                .border_1()
+                .border_color(l.border())
+                .bg(l.panel())
+                .child(crate::chrome::icon(crate::chrome::glyph::ATTACH, 12.).text_color(l.text2()))
+                .child(name)
+                .child(link(("settings-tpl-file-remove", i), "×".into(), l).on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(e) = &mut this.sign.edit
+                        && i < e.attachments.len()
+                    {
+                        e.attachments.remove(i);
+                    }
+                    cx.notify();
+                })))
+        });
+        let ask = e.ask;
+        vec![
+            div().flex().gap_4().child(label(tr!("settings-tpl-command"))).child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(div().text_color(l.text2()).child("/"))
+                    .child(div().w(px(200.)).relative().children(crate::screens::spot("settings-tpl-command")).child(Input::new(&e.command))),
+            ),
+            div().flex().gap_4().child(label(tr!("settings-tpl-files"))).child(
+                div().flex_1().flex().flex_wrap().items_center().gap_2().children(files).child(
+                    link("settings-tpl-attach", format!("+ {}", tr!("settings-tpl-attach")), l)
+                        .on_click(cx.listener(|this, _, _, cx| this.tpl_pick_files(cx))),
+                ),
+            ),
+            div().flex().gap_4().child(label(tr!("settings-tpl-fields"))).child(
+                div().flex_1().flex().flex_col().gap_2().child(div().text_color(l.text2()).child(fields)).child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .child(crate::settings_tab::toggle("settings-tpl-ask", ask, l).on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(e) = &mut this.sign.edit {
+                                e.ask = !e.ask;
+                            }
+                            cx.notify();
+                        })))
+                        .child(div().flex().flex_col().child(tr!("settings-tpl-ask")).child(
+                            div().text_size(px(12.)).text_color(l.text2()).child(if ask {
+                                tr!("settings-tpl-ask-on")
+                            } else {
+                                tr!("settings-tpl-ask-off")
+                            }),
+                        )),
+                ),
+            ),
+        ]
     }
 
     fn sign_editor(&self, e: &SignEdit, l: &Look, cx: &mut Context<Self>) -> Div {
@@ -196,6 +489,7 @@ impl SettingsView {
             .when(e.template, |d| {
                 d.child(div().flex().gap_4().child(label(tr!("settings-tpl-subject"))).child(div().flex_1().child(Input::new(&e.subject))))
             })
+            .when(!e.template, |d| d.child(div().pl(px(126.)).child(self.sign_toolbar(e, l, cx))))
             .child(
                 div().flex().gap_4().child(label(if e.template { tr!("settings-tpl-body") } else { tr!("settings-sign-text") })).child(
                     div()
@@ -207,6 +501,7 @@ impl SettingsView {
                 ),
             )
             .when(!e.template, |d| d.child(div().pl(px(126.)).text_size(px(12.)).text_color(l.text2()).child(tr!("settings-sign-fields"))))
+            .when(e.template, |d| d.children(self.tpl_extras(e, l, cx)))
             .child(
                 div()
                     .flex()
@@ -224,7 +519,114 @@ impl SettingsView {
             )
     }
 
-    pub(crate) fn signatures(&mut self, l: &Look, _window: &mut Window, cx: &mut Context<Self>) -> (Option<Stateful<Div>>, AnyElement, Vec<Div>) {
+    /// Предпросмотр: правимая подпись или подпись по умолчанию первого адреса — с полями профиля, в новом письме или
+    /// над цитатой ответа.
+    fn sign_preview(&self, l: &Look, cx: &mut Context<Self>) -> Div {
+        let p = &self.sign.prefs;
+        let reply = self.sign.preview == PreviewMode::Reply;
+        let me = self.info.identities.first().cloned().unwrap_or_default();
+        let editing = self
+            .sign
+            .edit
+            .as_ref()
+            .filter(|e| !e.template)
+            .map(|e| (e.name.read(cx).value().to_string(), e.text.read(cx).value().to_string(), e.identity.clone()));
+        let (name, text, identity) = editing
+            .or_else(|| p.signature(&me, reply).or(p.signatures.first()).map(|s| (s.name.clone(), s.text.clone(), s.identity.clone())))
+            .unwrap_or_default();
+        let mut profile = p.profile.clone();
+        if profile.name.trim().is_empty() {
+            profile.name = tr!("settings-sign-preview-me");
+        }
+        let signature = postman_core::fill::signature(text.trim_end(), &profile);
+        let modes: Vec<Stateful<Div>> = [(PreviewMode::New, "settings-sign-preview-new"), (PreviewMode::Reply, "settings-sign-preview-reply")]
+            .into_iter()
+            .enumerate()
+            .map(|(i, (m, key))| {
+                seg(("settings-sign-preview", i), tr!(key), self.sign.preview == m, true, l).on_click(cx.listener(move |this, _, _, cx| {
+                    this.sign.preview = m;
+                    cx.notify();
+                }))
+            })
+            .collect();
+        let line = |k: String, v: String| div().flex().gap_2().text_size(px(12.)).child(div().w(px(40.)).text_color(l.text2()).child(k)).child(v);
+        let letter = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_3()
+            .rounded(l.px(Metric::RadiusControl))
+            .border_1()
+            .border_color(l.border())
+            // Светлая тема — так письмо увидит получатель: подложка письма — как у области чтения.
+            .bg(l.panel())
+            .child(line(tr!("settings-sign-preview-to"), tr!("settings-sign-preview-to-name")))
+            .child(line(
+                tr!("settings-tpl-subject"),
+                if reply { tr!("settings-sign-preview-subject-re") } else { tr!("settings-sign-preview-subject") },
+            ))
+            .child(div().h(px(1.)).bg(l.border()))
+            .child(div().text_size(px(12.)).child(if reply { tr!("settings-sign-preview-body-re") } else { tr!("settings-sign-preview-body") }))
+            .child(div().flex().flex_col().text_size(px(12.)).text_color(l.text2()).children(signature.lines().map(md_line).collect::<Vec<_>>()))
+            .when(reply, |d| {
+                d.child(
+                    div()
+                        .pl_2()
+                        .border_l_2()
+                        .border_color(l.border())
+                        .text_size(px(12.))
+                        .text_color(l.text3())
+                        .child(tr!("settings-sign-preview-quote")),
+                )
+            });
+        let title =
+            format!("{} · {}", if name.is_empty() { tr!("settings-sign-none") } else { name }, identity.unwrap_or_else(|| tr!("settings-sign-any")));
+        let note = if reply { tr!("settings-sign-preview-note-re") } else { tr!("settings-sign-preview-note") };
+        crate::settings_tab::preview_card(div().flex().flex_col().gap_2().child(seg_group(modes, l)).child(letter), title, note, l)
+    }
+
+    /// Профиль для полей подписи: имя, должность, телефон.
+    fn sign_profile(&self, l: &Look) -> Div {
+        let field = |key: String, input: &Entity<InputState>, id: &'static str| {
+            div()
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(div().w(px(150.)).flex_none().text_color(l.text2()).child(key))
+                .child(div().w(px(320.)).relative().children(crate::screens::spot(id)).child(Input::new(input)))
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(group(tr!("settings-sign-profile"), l))
+            .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("settings-sign-profile-hint")))
+            .child(field(format!("{{{}}}", tr!("settings-sign-field-name")), &self.sign.profile[0], "settings-sign-profile-name"))
+            .child(field(format!("{{{}}}", tr!("settings-sign-field-title")), &self.sign.profile[1], "settings-sign-profile-title"))
+            .child(field(format!("{{{}}}", tr!("settings-sign-field-phone")), &self.sign.profile[2], "settings-sign-profile-phone"))
+    }
+
+    /// «По умолчанию» (T2-58): какую подпись ставить — первая подпись адреса в новые письма и в ответы.
+    fn sign_reset(&mut self, cx: &mut Context<Self>) {
+        let p = &mut self.sign.prefs;
+        p.defaults.clear();
+        for addr in &self.info.identities {
+            let first = p.signatures_for(addr).next().map(|s| s.id.clone());
+            p.defaults.insert(addr.clone(), postman_core::prefs::Defaults { new: first.clone(), reply: first });
+        }
+        self.sign_save(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn signatures(&mut self, l: &Look, window: &mut Window, cx: &mut Context<Self>) -> (Option<Stateful<Div>>, AnyElement, Vec<Div>) {
+        if std::mem::take(&mut self.sign.profile_sync) {
+            let pr = self.sign.prefs.profile.clone();
+            self.sign.profile_sync = true;
+            for (input, v) in self.sign.profile.clone().iter().zip([pr.name, pr.title, pr.phone]) {
+                input.update(cx, |s, cx| s.set_value(v, window, cx));
+            }
+            self.sign.profile_sync = false;
+        }
         let p = self.sign.prefs.clone();
         let editing = self.sign.edit.as_ref().map(|e| (e.id.clone(), e.template));
         // Подписи.
@@ -372,31 +774,66 @@ impl SettingsView {
             .child(tpl_head)
             .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("settings-tpl-hint")))
             .child(tpls)
+            .child(self.sign_profile(l))
             .child(div().pt_3().text_size(px(12.)).text_color(l.text2()).child(if self.sign.path.is_some() {
                 tr!("settings-sign-local")
             } else {
                 tr!("settings-sign-demo")
             }));
-        (None, body.into_any_element(), Vec::new())
+        let reset = crate::buttons::button("settings-sign-reset", tr!("settings-reset"), false, l)
+            .on_click(cx.listener(|this, _, _, cx| this.sign_reset(cx)));
+        let aside = vec![
+            self.sign_preview(l, cx),
+            crate::settings_tab::aside_card(tr!("settings-reading-aside"), vec![tr!("settings-sign-aside-1"), tr!("settings-sign-aside-2")], l),
+        ];
+        (Some(reset), body.into_any_element(), aside)
     }
 }
 
 /// Образец для снимка `settings-sign` (демо): две подписи — основная для новых писем и короткая для ответов, шаблон.
 pub(crate) fn screen_sample(identities: &[String]) -> AccountPrefs {
     let mut p = AccountPrefs::default();
-    let text = "С уважением,\nИван Петров\nотдел продаж".to_owned(); // i18n-ok: образец подписи
+    let text = "С уважением,\n**{имя}**\n{должность}".to_owned(); // i18n-ok: образец подписи
     p.signatures.push(Signature { id: "s1".into(), name: "Основная".into(), identity: None, text }); // i18n-ok: образец
     p.signatures.push(Signature { id: "s2".into(), name: "Короткая".into(), identity: None, text: "— Иван".into() }); // i18n-ok: образец
     p.templates.push(Template {
         id: "t1".into(),
-        name: "Коммерческое предложение".into(),                       // i18n-ok: образец шаблона
-        subject: "Предложение".into(),                                 // i18n-ok: образец
-        body: "Добрый день! Направляю предложение по проекту.".into(), // i18n-ok: образец
+        name: "Коммерческое предложение".into(),                   // i18n-ok: образец шаблона
+        subject: "Коммерческое предложение для {Компания}".into(), // i18n-ok: образец
+        body: "Добрый день! Направляю предложение для {Компания} по итогам {Дата}.".into(), // i18n-ok: образец
+        command: "кп".into(),                                      // i18n-ok: образец
+        attachments: Vec::new(),
+        ask: true,
     });
+    let name = "Иван Петров".to_owned(); // i18n-ok: образец
+    let title = "Руководитель отдела продаж".to_owned(); // i18n-ok: образец
+    p.profile = postman_core::prefs::Profile { name, title, phone: String::new() };
     if let Some(me) = identities.first() {
         p.defaults.insert(me.clone(), postman_core::prefs::Defaults { new: Some("s1".into()), reply: Some("s2".into()) });
     }
     p
+}
+
+/// Строка подписи с разметкой письма: `**жирный**`, `*курсив*` (предпросмотр).
+fn md_line(s: &str) -> Div {
+    let mut d = div().flex().flex_wrap().min_h(px(16.));
+    for (i, part) in s.split("**").enumerate() {
+        let bold = i % 2 == 1;
+        for (j, run) in part.split('*').enumerate() {
+            if run.is_empty() {
+                continue;
+            }
+            let mut span = div().whitespace_nowrap().child(run.to_owned());
+            if bold {
+                span = span.font_weight(FontWeight::BOLD);
+            }
+            if j % 2 == 1 {
+                span = span.italic();
+            }
+            d = d.child(span);
+        }
+    }
+    d
 }
 
 fn badge(text: String, l: &Look) -> Div {
