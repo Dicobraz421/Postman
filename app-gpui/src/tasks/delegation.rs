@@ -39,8 +39,24 @@ pub(crate) enum Edit {
     },
     Return,
     Decline,
+    /// «Предложить другого» (T2-37, решение владельца 2026-11-10: «Поручить дальше» — через отказ): отказ с
+    /// предложенным исполнителем в комментарии; у автора «Поручить другому» — с ним.
+    Suggest,
     Propose,
     ChangeDue,
+}
+
+/// Предложенный исполнитель в комментарии отказа (T2-37): «… Имя <адрес>» → адрес с именем.
+pub(crate) fn suggested_in(comment: &str) -> Option<Address> {
+    let open = comment.find('<')?;
+    let close = open + comment[open..].find('>')?;
+    let email = comment[open + 1..close].trim();
+    if !email.contains('@') {
+        return None;
+    }
+    let head = &comment[..open];
+    let name = head.rsplit_once(':').map_or(head, |(_, n)| n).trim();
+    Some(Address::new(name, email))
 }
 
 /// Письма отмены, которые сервер держит окно «Отменить» (S6-11: «Забрать», «Удалить поручение»).
@@ -371,10 +387,15 @@ impl TasksView {
         let focus = match edit {
             Edit::Assign { .. } => Some(self.deleg.person.clone()),
             Edit::Return | Edit::Decline | Edit::Propose => Some(self.deleg.comment.clone()),
+            Edit::Suggest => Some(self.deleg.person.clone()),
             Edit::ChangeDue => None,
         };
         if let Some(f) = focus {
             f.update(cx, |s, cx| s.focus(window, cx));
+        }
+        // «Поручить другому» после «Предложить другого» (T2-37): предложенный исполнитель — уже выбран.
+        if let (Edit::Assign { reassign: true }, Some(t)) = (edit, self.selected_task()) {
+            self.deleg.to = assign::steps(t).iter().rev().find(|s| s.kind == StepKind::Declined).and_then(|s| suggested_in(&s.comment));
         }
         if let (Edit::Assign { .. }, Some(t)) = (edit, self.selected_task()) {
             // Срок задачи — выбранным, если он среди вариантов.
@@ -498,6 +519,15 @@ impl TasksView {
             Edit::Assign { reassign: true } => Action::Reassign,
             Edit::Return => Action::Return,
             Edit::Decline => Action::Decline,
+            Edit::Suggest => {
+                let Some(to) = self.deleg.to.clone() else {
+                    return cx.emit(TasksAction::Toast(Toast::Info, tr!("assign-form-pick-first")));
+                };
+                let name = if to.name.is_empty() { to.email.clone() } else { to.name.clone() };
+                let note = tr!("assign-suggest-note", who = name, email = to.email.clone());
+                let comment = if comment.trim().is_empty() { note } else { format!("{note} · {}", comment.trim()) };
+                return self.deleg_act(Action::Decline, comment, cx);
+            }
             Edit::Propose => Action::ProposeDue,
             Edit::ChangeDue => Action::ChangeDue,
         };
@@ -997,17 +1027,61 @@ impl TasksView {
         let (label, send) = match edit {
             Edit::Return => (tr!("assign-comment-return", who = other.clone()), tr!("assign-do-return")),
             Edit::Decline => (tr!("assign-comment-decline", who = other.clone()), tr!("assign-decline")),
+            Edit::Suggest => (tr!("assign-comment-suggest", who = other.clone()), tr!("assign-suggest-send")),
             Edit::Propose => (tr!("assign-comment-propose", who = other.clone()), tr!("assign-send")),
             Edit::ChangeDue => (tr!("assign-due-note", who = other.clone()), tr!("assign-send")),
             Edit::Assign { .. } => (String::new(), String::new()),
         };
         let due = matches!(edit, Edit::Propose | Edit::ChangeDue);
-        let comment = matches!(edit, Edit::Return | Edit::Decline | Edit::Propose);
+        let comment = matches!(edit, Edit::Return | Edit::Decline | Edit::Suggest | Edit::Propose);
+        // Кого предложить (T2-37): выбран — строкой с «×», иначе — поле и подсказки справочника.
+        let person = (edit == Edit::Suggest).then(|| match &self.deleg.to {
+            Some(a) => div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(crate::calendar::avatar(if a.name.is_empty() { &a.email } else { &a.name }, 24., l))
+                .child(div().flex_1().min_w_0().truncate().child(if a.name.is_empty() {
+                    a.email.clone()
+                } else {
+                    format!("{} <{}>", a.name, a.email)
+                }))
+                .child(div().id("suggest-unpick").cursor_pointer().child(icon(g::CANCEL, 10.)).on_click(cx.listener(|this, _, _, cx| {
+                    this.deleg.to = None;
+                    cx.notify();
+                })))
+                .into_any_element(),
+            None => div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(div().relative().children(crate::screens::spot("suggest-person")).child(Input::new(&self.deleg.person)))
+                .children(self.deleg.suggest.iter().take(5).enumerate().map(|(i, a)| {
+                    let pick = a.clone();
+                    div()
+                        .id(("suggest-person-item", i))
+                        .h(px(30.))
+                        .px(px(8.))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .hover(|d| d.bg(l.hover()))
+                        .child(div().flex_1().min_w_0().truncate().child(if a.name.is_empty() { a.email.clone() } else { a.name.clone() }))
+                        .child(
+                            div().text_size(px(11.)).text_color(l.text3()).child(self.position_of(&a.email).map(str::to_owned).unwrap_or_default()),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| this.deleg_pick(false, pick.clone(), cx)))
+                }))
+                .into_any_element(),
+        });
         // Подсказка у кнопок (макеты): что будет после отправки.
         let hint = match edit {
             Edit::Return => Some(tr!("assign-hint-return")),
             Edit::Propose => Some(tr!("assign-hint-propose")),
             Edit::Decline => Some(tr!("assign-hint-decline")),
+            Edit::Suggest => Some(tr!("assign-hint-suggest")),
             Edit::ChangeDue | Edit::Assign { .. } => None,
         };
         div()
@@ -1021,6 +1095,8 @@ impl TasksView {
             .rounded(px(6.))
             .bg(l.fill_passive())
             .when(due, |d| d.child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("assign-new-due"))).child(self.due_chips(l, cx)))
+            .when(person.is_some(), |d| d.child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("assign-suggest-who"))))
+            .children(person)
             .child(div().text_size(px(12.)).text_color(l.text2()).child(label))
             .when(comment, |d| d.child(div().relative().children(crate::screens::spot("assign-comment")).child(Input::new(&self.deleg.comment))))
             .child(
@@ -1270,6 +1346,8 @@ impl TasksView {
                     b1.push(self.deleg_button("assign-accept", tr!("assign-accept"), true, Action::Accept, &l, cx));
                     b1.push(self.deleg_opener("assign-propose", tr!("assign-propose"), false, Edit::Propose, &l, cx));
                     b1.push(self.deleg_opener("assign-decline", tr!("assign-decline"), false, Edit::Decline, &l, cx));
+                    // «Поручить дальше» — через отказ (решение владельца 2026-11-10, T2-37).
+                    b1.push(self.deleg_opener("assign-suggest", tr!("assign-suggest"), false, Edit::Suggest, &l, cx));
                 }
                 Status::Accepted => {
                     b1.push(self.deleg_button("assign-start", tr!("assign-start"), true, Action::Start, &l, cx));
@@ -1737,5 +1815,17 @@ mod tests {
         assert_eq!(d.tz.as_deref(), Some("Europe/Moscow"));
         assert_eq!(due_at(0, None, today).local, "2026-10-20T18:00:00".parse().unwrap());
         assert_eq!(DUE_DAYS[0], 0);
+    }
+}
+
+#[cfg(test)]
+mod suggest_tests {
+    /// Предложенный исполнитель (T2-37): «… Имя <адрес>» — адрес и имя; без адреса — нет.
+    #[test]
+    fn suggested_person_from_decline_note() {
+        let a = super::suggested_in("Предлагаю передать: Сидоров Игорь <i.sidorov@corp.example> · я в отпуске").unwrap();
+        assert_eq!((a.name.as_str(), a.email.as_str()), ("Сидоров Игорь", "i.sidorov@corp.example"));
+        assert!(super::suggested_in("Не успеваю").is_none());
+        assert!(super::suggested_in("<не адрес>").is_none());
     }
 }
