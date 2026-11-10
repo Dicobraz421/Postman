@@ -18,6 +18,18 @@ sandbox-partial = Песочница: частичная
 sandbox-none = Песочница: нет
 sandbox-weak = Песочница разбора писем ослаблена ({ $level }): письма открываются с меньшей защитой.
 status-items = Элементов: { $n }
+status-accounts = { $n ->
+    [one] { $n } аккаунт
+    [few] { $n } аккаунта
+   *[other] { $n } аккаунтов
+}
+status-shared = { $n ->
+    [one] { $n } общий ящик
+    [few] { $n } общих ящика
+   *[other] { $n } общих ящиков
+}
+status-unread = непрочитанных: { $n }
+status-cached = (кэш)
 status-notifications-hint = Уведомления
 second-instance = Postman уже запущен — показано это окно.
 
@@ -38,3 +50,5 @@ folder-role-drafts = Черновики
 folder-role-trash = Удалённые
 folder-role-junk = Спам
 folder-role-archive = Архив
+tab-dirty-tip = Есть несохранённые изменения
+thread-count-tip = Писем в беседе

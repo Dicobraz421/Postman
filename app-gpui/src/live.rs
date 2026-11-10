@@ -908,10 +908,19 @@ impl Mailer {
         let list = self.list.read(cx);
         // Беседы в списке (S5-05б): писем, а не строк.
         let n = list.threads().map_or(list.count, |o| o.total());
-        match list.more.total.filter(|&t| t > n && list.search_ids.is_none()) {
+        let mut text = match list.more.total.filter(|&t| t > n && list.search_ids.is_none()) {
             Some(total) => tr!("status-items-of", n = n, total = total),
             None => tr!("status-items", n = n),
+        };
+        // Непрочитанные папки (T2-24, макет `Main`) и «(кэш)» без связи: список — из хранилища.
+        let unread = list.mailbox.as_ref().and_then(|id| self.folders.read(cx).mailboxes.iter().find(|b| &b.id == id)).map_or(0, |b| b.unread);
+        if unread > 0 && list.search_ids.is_none() {
+            text = format!("{text} · {}", tr!("status-unread", n = unread as i64));
         }
+        if self.offline.is_down() {
+            text = format!("{text} {}", tr!("status-cached"));
+        }
+        text
     }
 
     /// Команда не ушла: поток синхронизации остановился (ошибка уже показана).

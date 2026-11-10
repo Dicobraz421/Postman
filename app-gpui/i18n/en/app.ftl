@@ -18,6 +18,16 @@ sandbox-partial = Sandbox: partial
 sandbox-none = Sandbox: none
 sandbox-weak = The message sandbox is weakened ({ $level }): messages open with less protection.
 status-items = Items: { $n }
+status-accounts = { $n ->
+    [one] { $n } account
+   *[other] { $n } accounts
+}
+status-shared = { $n ->
+    [one] { $n } shared mailbox
+   *[other] { $n } shared mailboxes
+}
+status-unread = unread: { $n }
+status-cached = (cached)
 status-notifications-hint = Notifications
 second-instance = Postman is already running — this window is shown.
 
@@ -38,3 +48,5 @@ folder-role-drafts = Drafts
 folder-role-trash = Deleted
 folder-role-junk = Junk
 folder-role-archive = Archive
+tab-dirty-tip = Unsaved changes
+thread-count-tip = Messages in the conversation
