@@ -179,6 +179,8 @@ pub(crate) enum SettingsEvent {
     SaveRules(Vec<postman_core::rules::Rule>),
     /// «Применить к уже полученным»: действия правила — подходящим письмам кэша.
     ApplyRule(postman_core::rules::Rule),
+    /// «Синхронизировать» у учётной записи (T2-51): сверить с сервером сейчас.
+    SyncNow,
 }
 
 pub(crate) struct SettingsView {
@@ -192,6 +194,12 @@ pub(crate) struct SettingsView {
     pub(crate) cat_purge: Option<String>,
     /// Писем у каждой категории (ключевое слово в нижнем регистре); `None` — ещё считаем.
     pub(crate) cat_counts: Option<std::collections::HashMap<String, usize>>,
+    /// «Настроить» у учётной записи (T2-51): раскрыта карточка с параметрами сервера и синхронизацией.
+    pub(crate) account_open: Option<String>,
+    /// «Синхронизировать» нажато: «синхронизация…», пока не придёт новое состояние.
+    pub(crate) syncing: bool,
+    /// Размер кэша учётной записи на диске (офлайн-кэш); `None` — ещё не прочитан.
+    pub(crate) cache_size: Option<u64>,
     pub(crate) keys: crate::settings_keys::KeysState,
     pub(crate) sign: crate::settings_sign::SignState,
     /// Карточка добавления аккаунта (её события слушает экран почты).
@@ -274,6 +282,9 @@ impl SettingsView {
             cat_edit: None,
             cat_purge: None,
             cat_counts: None,
+            account_open: None,
+            syncing: false,
+            cache_size: None,
             keys,
             sign,
             add: None,
@@ -336,6 +347,9 @@ impl SettingsView {
 
     pub(crate) fn set_info(&mut self, info: Info, cx: &mut Context<Self>) {
         let cache_changed = info.cache != self.info.cache;
+        if info.status != self.info.status {
+            self.syncing = false;
+        }
         self.info = info;
         if cache_changed {
             self.sign.path = self.info.cache.clone();

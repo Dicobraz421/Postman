@@ -306,6 +306,9 @@ pub enum Command {
     },
     /// «Повторить сейчас» (S5-08): без связи — попытка сразу, не дожидаясь паузы; со связью — ничего.
     Reconnect,
+    /// «Синхронизировать» у учётной записи (T2-51, класс B, ОК владельца 2026-11-10): сверить с сервером сейчас, не
+    /// дожидаясь push и опроса; без связи — как [`Command::Reconnect`].
+    SyncNow,
     /// Задачи (S6-02, `tasks.rs`): загрузка, сверка, правки → `Event::Tasks`. Правка без связи — в кэше, уходит
     /// по возвращении связи (`tasks::Request::Flush`).
     Tasks(tasks::Request),
@@ -530,7 +533,7 @@ impl Command {
             }
             Command::CancelMeeting { from, .. } => from.clone().map_or(Target::Profile(None), Target::Sender),
             Command::Availability { sender, .. } => sender.clone().map_or(Target::Profile(None), Target::Sender),
-            Command::Events { .. } | Command::Scheduled | Command::Reconnect | Command::Newsletters { .. } => Target::All,
+            Command::Events { .. } | Command::Scheduled | Command::Reconnect | Command::SyncNow | Command::Newsletters { .. } => Target::All,
             Command::SetKeywords { .. } | Command::Patch { .. } | Command::ReportPhishing { .. } => return self.split(),
             _ => Target::Profile(None),
         };
@@ -579,6 +582,7 @@ impl Command {
             Command::Events { from, to } => Command::Events { from: *from, to: *to },
             Command::Scheduled => Command::Scheduled,
             Command::Reconnect => Command::Reconnect,
+            Command::SyncNow => Command::SyncNow,
             Command::Newsletters { cutoff, archive_name } => Command::Newsletters { cutoff: *cutoff, archive_name: archive_name.clone() },
             _ => return None,
         })
@@ -1145,7 +1149,7 @@ async fn wait_offline(rx: &mut UnboundedReceiver<Command>, link: &mut Link<Comma
             () = tokio::time::sleep_until(until) => return true,
             cmd = rx.recv() => match cmd {
                 None => return false,
-                Some(Command::Reconnect) => return true,
+                Some(Command::Reconnect | Command::SyncNow) => return true,
                 Some(cmd) => {
                     if let Some(c) = cmd.replayable() {
                         link.queue(c);

@@ -57,7 +57,7 @@ pub(crate) struct Found {
 }
 
 /// Вид сервера по адресу пути: «Exchange (EWS)», «IMAP/SMTP», «JMAP» — и чем нашли.
-fn kind_of(url: &str) -> (String, String) {
+pub(crate) fn kind_of(url: &str) -> (String, String) {
     if postman_backend_ews::is_ews_url(url) {
         (tr!("signin-kind-ews"), tr!("signin-how-autodiscover"))
     } else if url.starts_with("imaps://") || url.starts_with("imap://") {

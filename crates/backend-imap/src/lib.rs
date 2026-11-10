@@ -1398,6 +1398,15 @@ impl Imap {
                     self.session().await?;
                 }
             }
+            // «Синхронизировать» (T2-51): папки и письма заново сейчас.
+            Command::SyncNow => {
+                if self.session.is_none() {
+                    self.session().await?;
+                }
+                if let Err(e) = self.refresh_all(notify).await {
+                    notify(Event::Error(e));
+                }
+            }
             Command::RespondInvite { invite, status, in_reply_to, answer } => self.respond_invite(*invite, status, in_reply_to, answer, notify).await,
             Command::Delegate { uid, drafts, ticket, release } => self.delegate(uid, drafts, ticket, release, notify).await,
             Command::Withhold { scheduled, ticket } => {

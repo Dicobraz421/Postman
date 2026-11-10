@@ -549,6 +549,24 @@ settings-account-revocation = Сертификат сервера и его от
 settings-account-secrets = Пароли
 settings-account-secrets-1 = Пароль — только в Диспетчере учётных данных Windows или нигде.
 settings-account-secrets-2 = На диск Postman пишет лишь адрес сервера и логин.
+settings-account-setup = Настроить
+settings-account-setup-hide = Свернуть
+settings-account-sync-now = Синхронизировать
+settings-account-syncing = синхронизация…
+settings-account-server = Параметры сервера
+settings-account-protocol = Протокол
+settings-account-host = Сервер
+settings-account-port = Порт
+settings-account-path = Путь
+settings-account-tls-row = Шифрование
+settings-account-tls-on = TLS 1.2+ (проверяет Windows)
+settings-account-tls-off = без шифрования
+settings-account-login = Логин
+settings-account-sync = Синхронизация
+settings-account-cache = Офлайн-кэш
+settings-account-cache-reading = считаю…
+settings-account-cache-demo = демо — в памяти
+settings-account-sync-note = Письма и вложения для работы без сети: тела писем подгружаются заранее, вложения — при открытии.
 
 # «Общие → Безопасность» (S5-08): адрес для писем «Сообщить о фишинге».
 settings-security-group = Безопасность

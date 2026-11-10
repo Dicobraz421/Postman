@@ -60,6 +60,36 @@ fn demo_card(a: &postman_demo::Account, l: &Look) -> Div {
         ))
 }
 
+/// Адрес пути по частям: (протокол, узел, порт, путь, шифрование) — «Параметры сервера» (T2-51).
+pub(crate) fn server_parts(url: &str) -> (String, String, String, String, bool) {
+    let (scheme, rest) = url.split_once("://").unwrap_or(("https", url));
+    let (hostport, path) = rest.split_once('/').map_or((rest, String::new()), |(h, p)| (h, format!("/{p}")));
+    let (host, port) = match hostport.rsplit_once(':') {
+        Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) && !p.is_empty() => (h.to_owned(), p.to_owned()),
+        _ => {
+            let port = match scheme {
+                "imaps" => "993",
+                "imap" => "143",
+                "http" => "80",
+                _ => "443",
+            };
+            (hostport.to_owned(), port.to_owned())
+        }
+    };
+    let tls = matches!(scheme, "https" | "imaps");
+    (scheme.to_owned(), host, port, path, tls)
+}
+
+/// Строка «Название — значение» карточки «Настроить».
+fn param(name: String, value: String, l: &Look) -> Div {
+    div()
+        .flex()
+        .gap_3()
+        .py_1()
+        .child(div().w(px(160.)).flex_none().text_color(l.text2()).child(name))
+        .child(div().flex_1().min_w_0().truncate().child(value))
+}
+
 /// Кружок с инициалами учётной записи.
 fn avatar(text: String, l: &Look) -> Div {
     div()
@@ -76,6 +106,75 @@ fn avatar(text: String, l: &Look) -> Div {
 }
 
 impl SettingsView {
+    /// Размер кэша учётной записи на диске — в фоне.
+    pub(crate) fn read_cache_size(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.info.cache.clone() else { return };
+        let task = cx.background_spawn(async move { std::fs::metadata(&path).map(|m| m.len()).ok() });
+        cx.spawn(async move |this, cx| {
+            let size = task.await;
+            let _ = this.update(cx, |v, cx| {
+                v.cache_size = size.or(Some(0));
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// «Настроить»: параметры сервера и синхронизация учётной записи.
+    fn account_details(&self, url: &str, user: &str, kind: String, l: &Look) -> Div {
+        let (_, host, port, path, tls) = server_parts(url);
+        let cache = match (&self.info.cache, self.cache_size) {
+            (None, _) => tr!("settings-account-cache-demo"),
+            (Some(_), None) => tr!("settings-account-cache-reading"),
+            (Some(_), Some(n)) => crate::bulk::size_text(n),
+        };
+        div()
+            .ml(px(48.))
+            .p_3()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .rounded(l.px(Metric::RadiusControl))
+            .bg(l.fill_passive())
+            .border_1()
+            .border_color(l.border())
+            .child(div().font_weight(FontWeight::SEMIBOLD).child(tr!("settings-account-server")))
+            .child(param(tr!("settings-account-protocol"), kind, l))
+            .child(param(tr!("settings-account-host"), host, l))
+            .child(param(tr!("settings-account-port"), port, l))
+            .when(!path.is_empty(), |d| d.child(param(tr!("settings-account-path"), path, l)))
+            .child(param(tr!("settings-account-tls-row"), if tls { tr!("settings-account-tls-on") } else { tr!("settings-account-tls-off") }, l))
+            .when(!user.is_empty(), |d| d.child(param(tr!("settings-account-login"), user.to_owned(), l)))
+            .child(div().pt_2().font_weight(FontWeight::SEMIBOLD).child(tr!("settings-account-sync")))
+            .child(param(tr!("settings-account-cache"), cache, l))
+            .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("settings-account-sync-note")))
+    }
+
+    /// «Настроить» и «Синхронизировать» в карточке учётной записи.
+    fn account_actions(&self, key: &str, cx: &mut Context<Self>, l: &Look) -> Div {
+        let open = self.account_open.as_deref() == Some(key);
+        let k = key.to_owned();
+        let n = if key == "main" { 0 } else { 1 + key.len() };
+        div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(link(("settings-account-setup", n), tr!(if open { "settings-account-setup-hide" } else { "settings-account-setup" }), l).on_click(
+                cx.listener(move |this, _, _, cx| {
+                    this.account_open = if this.account_open.as_deref() == Some(k.as_str()) { None } else { Some(k.clone()) };
+                    if this.account_open.is_some() {
+                        this.read_cache_size(cx);
+                    }
+                    cx.notify();
+                }),
+            ))
+            .child(link(("settings-account-sync-now", n), tr!("settings-account-sync-now"), l).on_click(cx.listener(|this, _, _, cx| {
+                this.syncing = true;
+                cx.emit(SettingsEvent::SyncNow);
+                cx.notify();
+            })))
+    }
+
     pub(crate) fn accounts(&mut self, l: &Look, cx: &mut Context<Self>) -> (Option<Stateful<Div>>, AnyElement, Vec<Div>) {
         let adding = self.add.is_some();
         let add = (!adding).then(|| {
@@ -98,8 +197,19 @@ impl SettingsView {
                     Some(false) => tr!("settings-account-password-none"),
                     None => String::new(),
                 };
-                let status = if self.info.status.is_empty() { tr!("settings-account-idle") } else { self.info.status.clone() };
+                let status = if self.syncing {
+                    tr!("settings-account-syncing")
+                } else if self.info.status.is_empty() {
+                    tr!("settings-account-idle")
+                } else {
+                    self.info.status.clone()
+                };
+                // Протокол в строке (T2-51): «Exchange (EWS) · mail.corp · синхронизирован».
+                let (kind, _) = crate::signin::kind_of(&a.url);
+                let status = format!("{kind} · {status}");
                 let confirm = self.remove_confirm;
+                let actions = self.account_actions("main", cx, l);
+                let details = (self.account_open.as_deref() == Some("main")).then(|| self.account_details(&a.url, &a.user, kind.clone(), l));
                 list = list.child(
                     card()
                         .child(avatar(initials(&a.user)))
@@ -119,12 +229,15 @@ impl SettingsView {
                                 .when(!password.is_empty(), |d| d.child(div().text_size(px(12.)).text_color(l.text2()).child(password))),
                         )
                         .when(!confirm, |d| {
-                            d.child(link("settings-account-remove", tr!("settings-account-remove"), l).on_click(cx.listener(|this, _, _, cx| {
-                                this.remove_confirm = true;
-                                cx.notify();
-                            })))
+                            d.child(actions).child(link("settings-account-remove", tr!("settings-account-remove"), l).on_click(cx.listener(
+                                |this, _, _, cx| {
+                                    this.remove_confirm = true;
+                                    cx.notify();
+                                },
+                            )))
                         }),
                 );
+                list = list.children(details);
                 if confirm {
                     list = list.child(
                         div()
@@ -151,7 +264,12 @@ impl SettingsView {
             // Демо (S7-09б): основная учётка демо-ящика; дополнительные — ниже, после её общих ящиков.
             _ => {
                 if let Some(a) = postman_demo::ACCOUNTS.first() {
-                    list = list.child(demo_card(a, l));
+                    let actions = self.account_actions("main", cx, l);
+                    list = list.child(demo_card(a, l).child(actions));
+                    if self.account_open.as_deref() == Some("main") {
+                        let url = format!("https://{}/jmap", a.host);
+                        list = list.child(self.account_details(&url, a.email, tr!("settings-account-kind", kind = kind(a.kind)), l));
+                    }
                 }
             }
         }
