@@ -284,6 +284,7 @@ assign-mail-body-revoked = { $who } takes the task “{ $title }” back — no 
 assign-mail-body-reassigned = { $who } delegates the task “{ $title }” to you.
 # Screen `delegate`: the form comment (demo).
 assign-screen-comment = Collect questions for the customer: delivery dates, requirements, licences and SLA.
+assign-screen-title = Gather test bench requirements for the pilot
 
 # Delegations section (S6-11).
 tasks-delegations = Delegations
@@ -335,3 +336,61 @@ assign-toast-reminded-all = { $n ->
    *[other] {" "}· { $soon } already today
 }
 assign-remind-all-soon = Everyone was reminded today — next reminder in a day
+
+# Mockup check T2-G (T2-30…T2-36): task row, sorting, view, projects, history, toasts, assignee, delegations.
+tasks-open-letter-tip = Open the email “{ $subject }”
+tasks-no-due-project = No due date or project
+tasks-sort-due = By due date
+tasks-sort-manual = Manual
+tasks-sort-done = By completion date
+tasks-sort-status = By status
+tasks-sort-title = By title
+tasks-sort-important = Important first
+tasks-move-today = Move to today
+tasks-moved-today = { $n ->
+    [one] Moved to today: { $n } task
+   *[other] Moved to today: { $n } tasks
+}
+tasks-project-add = New project
+tasks-added = Added · { $when }
+tasks-added-where = to “{ $list }”
+tasks-added-at = { $day }, { $time }
+tasks-show = Show
+tasks-day-today = today
+tasks-day-tomorrow = tomorrow
+tasks-day-yesterday = yesterday
+tasks-plan = Schedule
+tasks-to-project = To project
+tasks-reply = Reply to author
+tasks-reply-subject = Re: { $title }
+tasks-view = List view
+tasks-view-list = View: list
+tasks-view-dense = View: dense
+tasks-view-item-list = List
+tasks-view-item-dense = Dense list — one line per task
+tasks-history = History
+tasks-history-n = History · { $n }
+tasks-hist-created = Created · { $when }
+tasks-hist-from-mail = Created from the email “{ $subject }” · { $when }
+tasks-hist-from-mail-plain = Created from the email “{ $subject }”
+tasks-hist-from-mail-unknown = Created from an email
+tasks-hist-due-moved = Due date moved from { $from } to { $to } · { $when }
+tasks-hist-due-set = Due: { $to } · { $when }
+tasks-hist-due-removed = Due date cleared · { $when }
+tasks-hist-done = Completed · { $when }
+tasks-hist-reopened = Back in progress · { $when }
+tasks-hist-subtasks = Subtasks: { $done } of { $total } · { $when }
+assign-form-title-new = New delegation
+assign-form-title-placeholder = What to delegate — task title
+assign-form-title-first = Type what to delegate first
+assign-load = { $n } in progress
+assign-load-none = no delegations
+assign-hint-return = The status will become “In progress”
+assign-hint-propose = The due date stays until the author decides
+assign-hint-decline = The task will leave your lists
+deleg-group-declined = Declined
+deleg-status-new = { $n ->
+    [one] { $n } new delegation
+   *[other] { $n } new delegations
+}
+deleg-status-no-new = No new delegations

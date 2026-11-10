@@ -25,6 +25,8 @@ use pets_i18n::tr;
 use pets_ui::Level as Toast;
 use pets_ui::theme::Metric;
 use postman_cache::{Cache, EmailRow};
+use postman_calendar::assign::status as assign_status;
+use postman_calendar::history::{self, Entry as HistEntry, Kind as HistKind};
 use postman_calendar::{Alert, Anchor, Busy, Moment, Progress, Span, Task, TimeBlock, Trigger, WorkHours};
 use postman_core::assign::{self as flow, Bucket, Tab};
 use postman_core::labels::Categories;
@@ -75,6 +77,11 @@ pub(crate) mod g {
     pub(crate) const REVOKE: char = '\u{E7A7}';
     pub(crate) const PLAY: char = '\u{E768}';
     pub(crate) const CANCEL: char = '\u{E711}';
+    /// «Ответить автору» (T2-30), «Вид» (T2-34), история, вложение результата.
+    pub(crate) const REPLY: char = '\u{E97A}';
+    pub(crate) const VIEW: char = '\u{E8FD}';
+    pub(crate) const HISTORY: char = '\u{E81C}';
+    pub(crate) const ATTACH: char = '\u{E723}';
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -245,6 +252,17 @@ pub(crate) fn section(tasks: &[Task], letters: &[EmailRow], nav: &Nav, pending: 
     }
 }
 
+/// Порядок внутри групп: свой у раздела (`Auto`) или выбранный над списком; сортировка устойчивая — равные остаются
+/// в порядке раздела.
+pub(crate) fn sort_tasks(shown: &mut [Task], sort: Sort, tz: &TimeZone) {
+    match sort {
+        Sort::Auto => {}
+        Sort::Due => shown.sort_by_key(|t| t.due_at(tz).unwrap_or(i64::MAX)),
+        Sort::Title => shown.sort_by_cached_key(|t| t.title.to_lowercase()),
+        Sort::Important => shown.sort_by_key(|t| !t.important),
+    }
+}
+
 /// Выполнение с задержкой: задача зачёркнута на месте [`DONE_DELAY`], затем уходит; «Отменить» до срока — ничего не
 /// было.
 #[derive(Debug, Default, Clone)]
@@ -308,6 +326,13 @@ pub(crate) enum TasksAction {
         text: String,
         undo: Undo,
     },
+    /// Задача добавлена не в этот список (T2-32): тост «Добавлено · завтра» с «Показать».
+    Added {
+        text: String,
+        uid: String,
+    },
+    /// Новое письмо (T2-30, «Ответить автору»): кому и тема.
+    Compose(Box<postman_compose::Draft>),
     /// Письма шага поручения (S6-10): своя копия уже записана — `Command::Delegate`; `hold` — сервер держит их окно
     /// «Отменить» (S6-11: «Забрать», «Удалить поручение»).
     Delegate {
@@ -334,6 +359,8 @@ pub(crate) enum Undo {
     Repeat(Box<Task>, String),
     /// Слова срока писем.
     Letters(Vec<Patch>),
+    /// Задачи и слова срока писем («Перенести на сегодня»).
+    Both(Vec<Task>, Vec<Patch>),
     /// Поручение до «Забрать» или «Удалить» (S6-11): копия — как была, письма отмены — не отправлять.
     Delegation(Box<Task>),
 }
@@ -403,7 +430,30 @@ pub(crate) struct TasksView {
     pub(crate) own_only: bool,
     /// Слова «Ждём», отданные почте последними.
     waiting_sent: Vec<String>,
+    /// Порядок в списке (кнопка над списком) и его меню.
+    pub(crate) sort: Sort,
+    sort_open: bool,
+    /// «Вид»: плотный список — строки в одну линию (как плотность «Компактно», только в задачах); меню вида.
+    pub(crate) dense: bool,
+    view_open: bool,
+    /// «+» у «Проекты» слева: поле нового проекта; созданные, но ещё без задач — в списке проектов.
+    pub(crate) nav_project: Option<Entity<InputState>>,
+    pub(crate) new_projects: Vec<String>,
+    /// Должность по адресу (справочник и контакты): подсказки и карточка поручения.
+    positions: std::collections::HashMap<String, String>,
+    /// «История · N» в карточке задачи раскрыта.
+    pub(crate) history_open: bool,
     _subscriptions: Vec<Subscription>,
+}
+
+/// Порядок в списке: свой у раздела (по сроку, вручную, по дате выполнения, по статусу) или выбранный.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Sort {
+    #[default]
+    Auto,
+    Due,
+    Title,
+    Important,
 }
 
 impl EventEmitter<TasksAction> for TasksView {}
@@ -523,6 +573,14 @@ impl TasksView {
             tab: Tab::ByMe,
             own_only: true,
             waiting_sent: Vec::new(),
+            sort: Sort::Auto,
+            sort_open: false,
+            dense: false,
+            view_open: false,
+            nav_project: None,
+            new_projects: Vec::new(),
+            positions: Default::default(),
+            history_open: false,
             _subscriptions: subscriptions,
         };
         this.load_letters(cx);
@@ -545,9 +603,12 @@ impl TasksView {
         cx.notify();
     }
 
-    /// Раздел открыт: письма со сроком — заново из кэша.
+    /// Раздел открыт: письма со сроком — заново из кэша; должности (справочник) — у экрана.
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
         self.load_letters(cx);
+        if self.positions.is_empty() {
+            cx.emit(TasksAction::NeedBook);
+        }
     }
 
     fn load_letters(&mut self, cx: &mut Context<Self>) {
@@ -614,6 +675,7 @@ impl TasksView {
         if !q.is_empty() {
             shown.retain(|t| t.title.to_lowercase().contains(&q) || t.notes.to_lowercase().contains(&q));
         }
+        sort_tasks(&mut shown, self.sort, &self.tz);
         self.items = groups(&shown, &self.nav, &pending, now, &self.tz);
         self.shown = shown;
         let drafting = self.draft.as_ref().is_some_and(|d| self.selected.as_ref() == Some(&d.uid));
@@ -680,8 +742,160 @@ impl TasksView {
         if self.nav != nav {
             self.nav = nav;
             self.selected = None;
+            // Порядок у каждого раздела свой (по сроку, вручную, по дате выполнения, по статусу).
+            self.sort = Sort::Auto;
+            self.sort_open = false;
             self.reshow(cx);
         }
+    }
+
+    /// Строки в одну линию: плотность «Компактно» или «Вид: плотный» в задачах.
+    fn dense(&self, l: &Look) -> bool {
+        l.compact() || self.dense
+    }
+
+    /// Порядок над списком: выбрать (меню закрывается).
+    pub(crate) fn set_sort(&mut self, sort: Sort, cx: &mut Context<Self>) {
+        self.sort = sort;
+        self.sort_open = false;
+        self.reshow(cx);
+    }
+
+    pub(crate) fn toggle_sort_menu(&mut self, cx: &mut Context<Self>) {
+        self.sort_open = !self.sort_open;
+        self.view_open = false;
+        cx.notify();
+    }
+
+    /// «Вид: список» (командная строка): меню вида.
+    pub(crate) fn toggle_view_menu(&mut self, cx: &mut Context<Self>) {
+        self.view_open = !self.view_open;
+        self.sort_open = false;
+        cx.notify();
+    }
+
+    pub(crate) fn set_dense(&mut self, dense: bool, cx: &mut Context<Self>) {
+        self.dense = dense;
+        self.view_open = false;
+        self.list.reset(self.items.len());
+        cx.notify();
+    }
+
+    /// «+» у «Проекты» слева: поле названия; Enter — проект открыт (задачи, добавленные в нём, — в проекте), Esc или
+    /// пустое — ничего.
+    pub(crate) fn start_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let state = cx.new(|cx| InputState::new(window, cx).placeholder(tr!("tasks-project-new")));
+        let sub = cx.subscribe_in(&state, window, |this: &mut Self, state, ev: &InputEvent, _, cx| match ev {
+            InputEvent::PressEnter { .. } => {
+                let name = state.read(cx).value().trim().to_string();
+                this.finish_project(name, cx);
+            }
+            InputEvent::Blur => this.finish_project(String::new(), cx),
+            _ => {}
+        });
+        state.update(cx, |s, cx| s.focus(window, cx));
+        self._subscriptions.push(sub);
+        self.nav_project = Some(state);
+        cx.notify();
+    }
+
+    fn finish_project(&mut self, name: String, cx: &mut Context<Self>) {
+        if self.nav_project.take().is_none() {
+            return;
+        }
+        if name.is_empty() {
+            cx.notify();
+            return;
+        }
+        let known = model::projects(&self.tasks).iter().any(|p| p.name.eq_ignore_ascii_case(&name));
+        if !known && !self.new_projects.iter().any(|p| p.eq_ignore_ascii_case(&name)) {
+            self.new_projects.push(name.clone());
+        }
+        self.set_nav(Nav::Project(name), cx);
+        cx.notify();
+    }
+
+    /// Проекты слева: из задач и созданные «+», ещё без задач (в конце).
+    fn nav_projects(&self) -> Vec<model::Project> {
+        let mut v = model::projects(&self.tasks);
+        for p in &self.new_projects {
+            if !v.iter().any(|x| x.name.eq_ignore_ascii_case(p)) {
+                v.push(model::Project { name: p.clone(), total: 0, done: 0 });
+            }
+        }
+        v
+    }
+
+    /// «Перенести на сегодня» у группы «Просрочено»: срок — сегодня без времени; «Отменить» — как было. Задачи-письма —
+    /// сроком письма.
+    pub(crate) fn move_overdue(&mut self, cx: &mut Context<Self>) {
+        let now = self.now();
+        let today = day_of(now, &self.tz).unwrap_or_default();
+        let over: Vec<Task> =
+            self.shown.iter().filter(|t| model::is_overdue(t, now, &self.tz) && !self.completing.is_pending(&t.uid)).cloned().collect();
+        if over.is_empty() {
+            return;
+        }
+        let (mut tasks, mut patches, mut back_tasks, mut back_letters) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for t in &over {
+            let mut moved = t.clone();
+            let (m, all_day) = mailtask::due_moment(When::day(today));
+            moved.due = Some(m);
+            moved.all_day = all_day;
+            if mailtask::is_letter(t) {
+                patches.extend(self.letter_patches(&moved));
+                back_letters.extend(
+                    self.letter(mailtask::letter_key(t).unwrap_or_default())
+                        .and_then(|row| mailtask::letter_due(row).map(|w| cycle::set(row, Kind::Due, Some(w)))),
+                );
+            } else {
+                let e = HistEntry::due_moved(t.due.as_ref(), moved.due.as_ref(), now);
+                history::push(&mut moved, e);
+                patches.extend(self.letter_patches(&moved));
+                back_tasks.push(t.clone());
+                tasks.push(moved);
+            }
+        }
+        if !patches.is_empty() {
+            cx.emit(TasksAction::Patch(patches));
+        }
+        let n = over.len() as i64;
+        self.save(tasks, cx);
+        let undo = if back_letters.is_empty() { Undo::Tasks(back_tasks) } else { Undo::Both(back_tasks, back_letters) };
+        cx.emit(TasksAction::Undo { text: tr!("tasks-moved-today", n = n), undo });
+    }
+
+    /// Где задача видна: «Сегодня» (срок сегодня и раньше), «Предстоящие», «Когда-нибудь», проект или «Входящие».
+    fn home_of(&self, t: &Task) -> Nav {
+        let today = day_of(self.now(), &self.tz).unwrap_or_default();
+        match t.due.as_ref().and_then(|d| d.date_in(&self.tz)) {
+            Some(d) if d <= today => Nav::List(List::Today),
+            Some(_) => Nav::List(List::Upcoming),
+            None if t.someday => Nav::List(List::Someday),
+            None => match &t.project {
+                Some(p) => Nav::Project(p.clone()),
+                None => Nav::List(List::Inbox),
+            },
+        }
+    }
+
+    /// «Показать» в тосте «Добавлено»: раздел задачи, задача выбрана.
+    pub(crate) fn show_task(&mut self, uid: &str, cx: &mut Context<Self>) {
+        let Some(t) = self.tasks.iter().find(|t| t.uid == uid).cloned() else { return };
+        self.set_nav(self.home_of(&t), cx);
+        self.select(t.uid, cx);
+    }
+
+    /// Должности по адресам (справочник и контакты экрана контактов).
+    pub(crate) fn set_positions(&mut self, positions: std::collections::HashMap<String, String>, cx: &mut Context<Self>) {
+        if self.positions != positions {
+            self.positions = positions;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn position_of(&self, email: &str) -> Option<&str> {
+        self.positions.get(&email.to_lowercase()).map(String::as_str).filter(|s| !s.is_empty())
     }
 
     fn select(&mut self, uid: String, cx: &mut Context<Self>) {
@@ -690,8 +904,10 @@ impl TasksView {
             self.deleg.edit = None;
             self.open = None;
             self.slot = 0;
-            self.load_linked(cx);
             self.selected = Some(uid);
+            // Письмо выбранной (блок письма в карточке) — после выбора.
+            self.load_linked(cx);
+            self.history_open = false;
             self.due_open = false;
             self.title = None;
             cx.notify();
@@ -729,6 +945,77 @@ impl TasksView {
         cx.notify();
     }
 
+    /// Варианты проекта (карточка задачи и поручения, «В проект»): проекты, «Без проекта», новый — строкой.
+    pub(crate) fn project_options(&self, t: &Task, l: &Look, cx: &mut Context<Self>) -> Div {
+        let pill = |id: ElementId, text: String, on: bool| {
+            div()
+                .id(id.clone())
+                .children(crate::screens::spot(id))
+                .h(px(26.))
+                .px(px(10.))
+                .flex()
+                .items_center()
+                .rounded(px(13.))
+                .text_size(px(12.))
+                .border_1()
+                .border_color(if on { l.accent_text() } else { l.stroke() })
+                .when(on, |d| d.bg(l.picked()))
+                .cursor_pointer()
+                .hover(|d| d.bg(l.hover()))
+                .child(text)
+        };
+        let mut items: Vec<AnyElement> = self
+            .nav_projects()
+            .into_iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let on = t.project.as_deref().is_some_and(|x| x.eq_ignore_ascii_case(&p.name));
+                let name = p.name.clone();
+                pill(("proj-opt", i).into(), p.name, on)
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_project(Some(name.clone()), cx)))
+                    .into_any_element()
+            })
+            .collect();
+        items.push(
+            pill("proj-none".into(), tr!("tasks-no-project"), t.project.is_none())
+                .on_click(cx.listener(|this, _, _, cx| this.set_project(None, cx)))
+                .into_any_element(),
+        );
+        items.push(div().relative().children(crate::screens::spot("proj-new")).w(px(180.)).child(Input::new(&self.project_input)).into_any_element());
+        div().flex().flex_wrap().gap(px(6.)).pl(px(26.)).pt(px(4.)).pb(px(8.)).children(items)
+    }
+
+    /// «В проект» (командная строка): варианты проекта в карточке; у задачи-письма — сначала записать задачей.
+    pub(crate) fn move_to_project(&mut self, cx: &mut Context<Self>) {
+        let Some(t) = self.selected_task().cloned() else { return };
+        if t.progress.is_closed() || delegation::watcher_side(&t, &self.me_email()) {
+            return;
+        }
+        if mailtask::is_letter(&t) && self.writable(cx).is_none() {
+            return;
+        }
+        self.open = Some(Field::Project);
+        self.due_open = false;
+        cx.notify();
+    }
+
+    /// «Ответить автору» (Ctrl+R, макет «Поручено мне»): письмо другой стороне поручения — исполнитель пишет автору,
+    /// автор — исполнителю; тема — «Re: название».
+    pub(crate) fn reply_author(&mut self, cx: &mut Context<Self>) {
+        let Some((t, _, owner)) = self.delegation() else { return };
+        if delegation::watcher_side(&t, &self.me_email()) {
+            return;
+        }
+        let other = if owner { postman_calendar::assign::assignee(&t) } else { t.organizer() };
+        let Some(p) = other else { return };
+        let draft = postman_compose::Draft {
+            to: vec![postman_compose::Address::new(&p.name, &p.email)],
+            subject: tr!("tasks-reply-subject", title = t.title.clone()),
+            ..Default::default()
+        };
+        cx.emit(TasksAction::Compose(Box::new(draft)));
+    }
+
     /// Поле карточки (S6-06): открыть или закрыть его варианты.
     pub(crate) fn toggle_field(&mut self, f: Field, cx: &mut Context<Self>) {
         self.open = if self.open == Some(f) { None } else { Some(f) };
@@ -747,7 +1034,8 @@ impl TasksView {
         }
         let row = self.letter(mailtask::letter_key(&t)?)?.clone();
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-        let task = mailtask::promote(&row, None, &model::new_uid(nanos));
+        let mut task = mailtask::promote(&row, None, &model::new_uid(nanos));
+        history::push(&mut task, HistEntry::from_mail(&row.subject, self.now()));
         let uid = task.uid.clone();
         self.save(vec![task.clone()], cx);
         self.selected = Some(uid.clone());
@@ -993,7 +1281,12 @@ impl TasksView {
 
     /// Снимок `task-card-mail`: задача демо со ссылкой на письмо ящика (первое во «Входящих»).
     pub(crate) fn attach_demo_letter(&mut self, row: EmailRow, cx: &mut Context<Self>) {
-        let Some(t) = self.tasks.iter_mut().find(|t| t.title == postman_demo::tasks::MAIN) else { return };
+        self.attach_letter_to(postman_demo::tasks::MAIN, row, cx);
+    }
+
+    /// Снимки: задача (поручение) демо `title` со ссылкой на письмо ящика — блок письма в карточке и форме.
+    pub(crate) fn attach_letter_to(&mut self, title: &str, row: EmailRow, cx: &mut Context<Self>) {
+        let Some(t) = self.tasks.iter_mut().find(|t| t.title == title) else { return };
         t.mail = Some(postman_calendar::MailLink { message_id: String::new(), email_id: Some(row.id.clone()) });
         let uid = t.uid.clone();
         self.linked.push(row);
@@ -1090,6 +1383,9 @@ impl TasksView {
         if t.progress.is_closed() {
             let mut back = t.clone();
             back.set_done(false, 0);
+            if !mailtask::is_letter(&back) && assign_status(&back).is_none() {
+                history::push(&mut back, HistEntry::new(HistKind::Reopened, self.now()));
+            }
             self.save(vec![back], cx);
             cx.emit(TasksAction::Toast(Toast::Info, tr!("tasks-reopened")));
             return;
@@ -1124,6 +1420,9 @@ impl TasksView {
         let Some(t) = self.task_by_uid(uid) else { return };
         let mut done = t.clone();
         done.set_done(true, self.now());
+        if assign_status(&done).is_none() {
+            history::push(&mut done, HistEntry::new(HistKind::Done, self.now()));
+        }
         // Повторяющаяся (S6-07): следующая копия со сдвигом срока, у выполненной повтора больше нет.
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         let next = (!mailtask::is_letter(&t)).then(|| recur::next_task(&t, &model::new_uid(nanos), self.now(), &self.tz)).flatten();
@@ -1167,6 +1466,10 @@ impl TasksView {
                 self.save(vec![*t], cx);
             }
             Undo::Letters(p) => cx.emit(TasksAction::Patch(p)),
+            Undo::Both(list, p) => {
+                self.save(list, cx);
+                cx.emit(TasksAction::Patch(p));
+            }
             Undo::Delegation(t) => self.undo_delegation(*t, cx),
         }
     }
@@ -1205,7 +1508,14 @@ impl TasksView {
         let Some(mut t) = self.tasks.iter().find(|t| t.uid == uid).cloned() else { return };
         let done = !t.progress.is_closed();
         t.set_done(done, self.now());
+        let parent = t.parent.clone();
         self.save(vec![t], cx);
+        // У родителя — «Подзадачи: 2 из 5» в истории (подряд — одной записью).
+        if let Some(mut p) = parent.and_then(|u| self.tasks.iter().find(|x| x.uid == u).cloned()) {
+            let (d, n) = model::subtask_progress(&self.tasks, &p.uid);
+            history::push(&mut p, HistEntry::subtasks(d, n, self.now()));
+            self.save(vec![p], cx);
+        }
     }
 
     /// Срок (Insert): варианты в карточке.
@@ -1223,6 +1533,7 @@ impl TasksView {
     fn set_due(&mut self, when: Option<When>, cx: &mut Context<Self>) {
         let Some(mut t) = self.selected_task().cloned() else { return };
         self.due_open = false;
+        let before = t.due.clone();
         match when {
             Some(w) => {
                 let (m, all_day) = mailtask::due_moment(w);
@@ -1236,6 +1547,10 @@ impl TasksView {
             cx.emit(TasksAction::Patch(patches));
         }
         if !mailtask::is_letter(&t) {
+            if self.draft.as_ref().is_none_or(|d| d.uid != t.uid) {
+                let e = HistEntry::due_moved(before.as_ref(), t.due.as_ref(), self.now());
+                history::push(&mut t, e);
+            }
             self.save(vec![t], cx);
         } else {
             cx.notify();
@@ -1268,6 +1583,7 @@ impl TasksView {
                 return;
             }
             d.title = text;
+            history::push(&mut d, HistEntry::new(HistKind::Created, self.now()));
             let uid = d.uid.clone();
             self.save(vec![d], cx);
             self.selected = Some(uid);
@@ -1284,6 +1600,11 @@ impl TasksView {
 
     /// Esc: правка названия, варианты срока, поиск.
     pub(crate) fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        // Меню порядка и вида, поле нового проекта.
+        if std::mem::take(&mut self.sort_open) | std::mem::take(&mut self.view_open) | self.nav_project.take().is_some() {
+            cx.notify();
+            return true;
+        }
         if self.deleg_escape(cx) {
             return true;
         }
@@ -1318,10 +1639,27 @@ impl TasksView {
             return false;
         }
         let p = self.parse(text, cx);
-        let mut t = self.draft_for_nav(&p.title);
+        let mut t = self.quick_task(&p);
         if t.title.trim().is_empty() {
             t.title = title.to_owned();
         }
+        history::push(&mut t, HistEntry::new(HistKind::Created, self.now()));
+        let uid = t.uid.clone();
+        let added = t.clone();
+        self.save(vec![t], cx);
+        // На другой день задача уходит из списка: без неё в списке выбор остаётся прежним, иначе карточка пустая;
+        // тост говорит, куда она ушла, «Показать» — туда (T2-32, макет «Задачи»).
+        if self.shown.iter().any(|t| t.uid == uid) {
+            self.select(uid, cx);
+        } else {
+            cx.emit(TasksAction::Added { text: tr!("tasks-added", when = self.added_when(&added)), uid });
+        }
+        true
+    }
+
+    /// Задача из разобранной строки «Добавить задачу»: раздел, срок, категория, «!».
+    fn quick_task(&self, p: &Parsed) -> Task {
+        let mut t = self.draft_for_nav(&p.title);
         if let Some(date) = p.date {
             let w = match p.time {
                 Some(time) => When::at(date, time),
@@ -1331,17 +1669,33 @@ impl TasksView {
             t.due = Some(m);
             t.all_day = all_day;
         }
-        if let Some(k) = p.category {
-            t.keywords = vec![k];
+        if let Some(k) = &p.category {
+            t.keywords = vec![k.clone()];
         }
         t.important = p.important;
-        let uid = t.uid.clone();
-        self.save(vec![t], cx);
-        // На другой день задача уходит из списка: без неё в списке выбор остаётся прежним, иначе карточка пустая.
-        if self.shown.iter().any(|t| t.uid == uid) {
-            self.select(uid, cx);
+        t
+    }
+
+    /// Задача из строки уйдёт из этого списка — куда (макет «Задачи»: «→ в «Предстоящие»»).
+    fn quick_where(&self, p: &Parsed) -> Option<String> {
+        let t = self.quick_task(p);
+        let here = section(std::slice::from_ref(&t), &[], &self.nav, &[], self.now(), &self.tz);
+        here.is_empty().then(|| tr!("tasks-added-where", list = self.nav_title(&self.home_of(&t))))
+    }
+
+    /// «завтра, 10:00», «пятница, 13 ноября», без срока — куда попала («во «Входящие»»).
+    fn added_when(&self, t: &Task) -> String {
+        let today = day_of(self.now(), &self.tz).unwrap_or_default();
+        match mailtask::due_when(t, &self.tz) {
+            Some(w) => {
+                let day = day_word(w.date, today);
+                match w.time {
+                    Some(time) => tr!("tasks-added-at", day = day, time = time.strftime("%H:%M").to_string()),
+                    None => day,
+                }
+            }
+            None => tr!("tasks-added-where", list = self.nav_title(&self.home_of(t))),
         }
-        true
     }
 
     /// Enter: письмо задачи.
@@ -1353,9 +1707,14 @@ impl TasksView {
 
     /// Строка состояния: «N задач из писем»; в «Поручениях» — сколько их в «Ждём».
     pub(crate) fn status_text(&self) -> String {
-        if matches!(self.nav, Nav::Delegations(_)) {
+        if let Nav::Delegations(tab) = self.nav {
             let c = flow::counts(&self.tasks, &self.me_email(), self.own_only);
-            return tr!("deleg-status-waiting", n = c.waiting as i64);
+            // «Мне поручили» (макет «Поручено мне»): сколько новых; «Я поручил» — сколько в «Ждём».
+            return match tab {
+                Tab::ToMe if c.new == 0 => tr!("deleg-status-no-new"),
+                Tab::ToMe => tr!("deleg-status-new", n = c.new as i64),
+                Tab::ByMe => tr!("deleg-status-waiting", n = c.waiting as i64),
+            };
         }
         let n = mailtask::from_mail(&self.tasks, &self.letters, &self.tz).len();
         tr!("tasks-status-mail", n = n as i64)
@@ -1364,6 +1723,10 @@ impl TasksView {
     /// Ctrl+N в модуле: новая задача — карточка с полем названия (в текущем списке: в «Сегодня» — срок сегодня,
     /// в проекте — с ним). Enter — сохранить, Esc или пустое название — не создавать.
     pub(crate) fn new_task(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // В «Поручениях» — новое поручение (T2-36, макет «Поручил я»).
+        if matches!(self.nav, Nav::Delegations(_)) {
+            return self.new_delegation(window, cx);
+        }
         let t = self.draft_for_nav("");
         self.selected = Some(t.uid.clone());
         self.draft = Some(t);
@@ -1390,6 +1753,38 @@ impl TasksView {
             _ => {}
         }
         t
+    }
+
+    /// Снимки: вид и данные демо — как при запуске.
+    pub(crate) fn screen_reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sort = Sort::Auto;
+        self.sort_open = false;
+        self.dense = false;
+        self.view_open = false;
+        self.nav_project = None;
+        self.new_projects.clear();
+        self.history_open = false;
+        self.own_only = true;
+        self.draft = None;
+        self.title = None;
+        self.open = None;
+        self.due_open = false;
+        self.deleg.edit = None;
+        self.deleg.to = None;
+        self.deleg.watchers.clear();
+        self.deleg.suggest.clear();
+        self.completing = Completing::default();
+        if !self.live {
+            self.tasks = demo(self.now(), &self.tz);
+        }
+        self.set_quick("", window, cx);
+        self.reshow(cx);
+    }
+
+    /// Снимок `task-added`: Enter в строке «Добавить задачу».
+    pub(crate) fn screen_quick_add(&mut self, cx: &mut Context<Self>) {
+        let text = self.quick.read(cx).value().to_string();
+        self.quick_add(&text, cx);
     }
 
     /// Снимок: выбрать задачу по названию (демо).
@@ -1497,14 +1892,33 @@ impl TasksView {
             cx,
         ));
         let heading = |key: &str| div().text_size(px(12.)).text_color(l.text2()).px(px(8.)).pt(px(14.)).pb(px(4.)).child(tr!(key));
-        let projects = model::projects(&self.tasks);
-        if !projects.is_empty() {
-            col = col.child(heading("tasks-projects"));
-            for (i, p) in projects.into_iter().enumerate() {
-                let open_n = p.total - p.done;
-                let ring = progress_ring(p.done, p.total, 14., &l).into_any_element();
-                col = col.child(item(("tasks-proj", i).into(), None, Some(ring), p.name.clone(), open_n, 0, Nav::Project(p.name.clone()), cx));
-            }
+        // «Проекты» и «+» нового проекта (макет «Задачи»): поле строкой под заголовком.
+        col = col.child(
+            div().flex().items_center().pr(px(4.)).child(heading("tasks-projects").flex_1()).child(
+                div()
+                    .id("tasks-project-add")
+                    .children(crate::screens::spot("tasks-project-add"))
+                    .mt(px(10.))
+                    .size(px(22.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(4.))
+                    .text_color(l.text2())
+                    .cursor_pointer()
+                    .hover(|d| d.bg(l.hover()))
+                    .tooltip(|window, cx| crate::screens::tip(tr!("tasks-project-add"), window, cx))
+                    .child(icon(g::ADD, 12.))
+                    .on_click(cx.listener(|this, _, window, cx| this.start_project(window, cx))),
+            ),
+        );
+        if let Some(state) = &self.nav_project {
+            col = col.child(div().relative().children(crate::screens::spot("tasks-project-name")).px(px(4.)).py(px(2.)).child(Input::new(state)));
+        }
+        for (i, p) in self.nav_projects().into_iter().enumerate() {
+            let open_n = p.total - p.done;
+            let ring = progress_ring(p.done, p.total, 14., &l).into_any_element();
+            col = col.child(item(("tasks-proj", i).into(), None, Some(ring), p.name.clone(), open_n, 0, Nav::Project(p.name.clone()), cx));
         }
         let cats: Vec<(String, String, String, usize)> = self
             .categories
@@ -1542,7 +1956,11 @@ impl TasksView {
     }
 
     fn title_of(&self) -> String {
-        match &self.nav {
+        self.nav_title(&self.nav)
+    }
+
+    fn nav_title(&self, nav: &Nav) -> String {
+        match nav {
             Nav::List(l) => tr!(list_key(*l)),
             Nav::Project(p) => p.clone(),
             Nav::Category(k) => self.categories.list.iter().find(|c| &c.keyword == k).map(|c| c.name.clone()).unwrap_or_else(|| k.clone()),
@@ -1593,7 +2011,49 @@ impl TasksView {
             .pl(px(18.))
             .pr(px(8.))
             .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).whitespace_nowrap().child(self.title_of()))
-            .child(div().pt(px(3.)).text_color(l.text2()).truncate().child(self.summary()));
+            .child(div().flex_1().min_w_0().pt(px(3.)).text_color(l.text2()).truncate().child(self.summary()))
+            .child(
+                // Порядок (макет «Задачи»: «По сроку ▾»): меню под кнопкой.
+                div()
+                    .id("tasks-sort")
+                    .children(crate::screens::spot("tasks-sort"))
+                    .flex_none()
+                    .h(px(28.))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .rounded(px(4.))
+                    .text_size(px(12.))
+                    .text_color(l.text2())
+                    .cursor_pointer()
+                    .hover(|d| d.bg(l.hover()))
+                    .child(self.sort_label(self.sort))
+                    .child(icon(crate::calendar::g::DOWN, 10.))
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_sort_menu(cx))),
+            );
+        let sort_menu = self.sort_open.then(|| {
+            let mut sorts = vec![Sort::Auto];
+            if self.sort_label(Sort::Auto) != self.sort_label(Sort::Due) {
+                sorts.push(Sort::Due);
+            }
+            sorts.extend([Sort::Title, Sort::Important]);
+            let items: Vec<AnyElement> = sorts
+                .into_iter()
+                .enumerate()
+                .map(|(i, s)| {
+                    menu_item(("tasks-sort-item", i).into(), self.sort_label(s), s == self.sort, &l)
+                        .on_click(cx.listener(move |this, _, _, cx| this.set_sort(s, cx)))
+                        .into_any_element()
+                })
+                .collect();
+            div().id("tasks-sort-menu").absolute().top(px(44.)).right(px(8.)).child(menu_panel(&l).children(items)).on_mouse_down_out(cx.listener(
+                |this, _, _, cx| {
+                    this.sort_open = false;
+                    cx.notify();
+                },
+            ))
+        });
         let quick_shown = !matches!(self.nav, Nav::List(List::Done) | Nav::List(List::FromMail) | Nav::Delegations(_));
         let deleg_bar = matches!(self.nav, Nav::Delegations(_)).then(|| self.deleg_bar(&l, cx));
         let deleg_hint = matches!(self.nav, Nav::Delegations(Tab::ByMe)).then(|| self.deleg_hint(&l, cx));
@@ -1617,6 +2077,7 @@ impl TasksView {
             .then(|| div().px(px(24.)).py(px(48.)).text_center().text_color(l.text2()).line_height(px(20.)).child(tr!(empty_key(&self.nav))));
         let body = list(self.list.clone(), cx.processor(|this, ix: usize, _window, cx| this.item(ix, cx))).size_full();
         crate::mailer::card(&l)
+            .relative()
             .flex_1()
             .min_w_0()
             .mr(px(8.))
@@ -1635,6 +2096,22 @@ impl TasksView {
                     .child(crate::chrome::vbar(&self.list, ScrollbarMode::Hover)),
             )
             .children(deleg_hint)
+            .children(sort_menu)
+    }
+
+    /// Подпись порядка: свой у раздела — «По сроку», «Вручную», «По дате выполнения», «По статусу».
+    fn sort_label(&self, s: Sort) -> String {
+        tr!(match s {
+            Sort::Auto => match self.nav {
+                Nav::List(List::Done) => "tasks-sort-done",
+                Nav::List(List::Inbox | List::Someday) => "tasks-sort-manual",
+                Nav::Delegations(_) => "tasks-sort-status",
+                _ => "tasks-sort-due",
+            },
+            Sort::Due => "tasks-sort-due",
+            Sort::Title => "tasks-sort-title",
+            Sort::Important => "tasks-sort-important",
+        })
     }
 
     fn item(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -1655,6 +2132,13 @@ impl TasksView {
                 .child(div().font_weight(FontWeight::SEMIBOLD).child(group_label(gr)))
                 .child(div().text_color(l.text2()).child(n.to_string()))
                 .when_some(group_sub(gr), |d, s| d.child(div().text_color(l.text3()).child(s)))
+                .when(gr == Group::Overdue, |d| {
+                    // «Перенести на сегодня» (макет «Задачи»): все просроченные — на сегодня, «Отменить» в тосте.
+                    d.child(div().flex_1()).child(
+                        crate::settings_tab::link("tasks-move-today", tr!("tasks-move-today"), &l)
+                            .on_click(cx.listener(|this, _, _, cx| this.move_overdue(cx))),
+                    )
+                })
                 .when(gr == Group::Deleg(Bucket::Waiting) && self.remind_all_count() > 0, |d| {
                     d.child(div().flex_1()).child(
                         crate::settings_tab::link("deleg-remind-all", tr!("deleg-remind-all"), &l)
@@ -1678,12 +2162,16 @@ impl TasksView {
         let cat = model::category(t, &self.categories).map(|c| (c.name.clone(), c.color.clone()));
         let mut meta: Vec<AnyElement> = Vec::new();
         if let Some(m) = &t.mail {
-            let from = mailtask::letter_key(t)
-                .and_then(|k| self.letter(k))
-                .map(|r| if r.from_name.is_empty() { r.from_addr.clone() } else { r.from_name.clone() });
+            let key = mailtask::letter_key(t).map(str::to_owned);
+            let row = key.as_deref().and_then(|k| self.letter(k));
+            let from = row.map(|r| if r.from_name.is_empty() { r.from_addr.clone() } else { r.from_name.clone() });
             let text = from.unwrap_or_else(|| if m.message_id.is_empty() { tr!("tasks-letter") } else { m.message_id.clone() });
+            // Отправитель — ссылка на письмо (макет «Задачи»): щелчок открывает письмо, строку не выбирает.
+            let tip = tr!("tasks-open-letter-tip", subject = row.map(|r| r.subject.clone()).unwrap_or_default());
             meta.push(
                 div()
+                    .id(("task-mail", ix))
+                    .children(crate::screens::spot(("task-mail", ix)))
                     .flex()
                     .items_center()
                     .gap(px(5.))
@@ -1691,6 +2179,15 @@ impl TasksView {
                     .text_color(l.text())
                     .child(icon(g::MAIL, 12.))
                     .child(div().truncate().child(text))
+                    .when_some(key, |d, key| {
+                        d.cursor_pointer()
+                            .hover(|d| d.text_color(l.accent_text()))
+                            .tooltip(move |window, cx| crate::screens::tip(tip.clone(), window, cx))
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.stop_propagation();
+                                cx.emit(TasksAction::OpenLetter(key.clone()));
+                            }))
+                    })
                     .into_any_element(),
             );
         }
@@ -1714,14 +2211,32 @@ impl TasksView {
         if sn > 0 && !done {
             meta.push(div().flex().items_center().gap(px(4.)).child(icon(g::SUBTASKS, 12.)).child(format!("{sd}/{sn}")).into_any_element());
         }
+        // Время блока в календаре (S6-08, макет «Задачи»): «15:00–16:00».
+        if let Some(b) = t.block.as_ref().filter(|_| !done) {
+            meta.push(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .whitespace_nowrap()
+                    .text_color(l.accent_text())
+                    .child(icon(crate::calendar::g::CALENDAR, 12.))
+                    .child(short_slot(Span::new(b.start, b.end), &self.tz))
+                    .into_any_element(),
+            );
+        }
         if let Some(r) = recur::rule_of(t) {
             meta.push(div().flex().items_center().gap(px(4.)).child(icon(g::REPEAT, 12.)).child(repeat_text(&r)).into_any_element());
         }
-        if !t.notes.trim().is_empty() && !l.compact() {
+        if !t.notes.trim().is_empty() && !self.dense(l) {
             meta.push(icon(g::NOTES, 12.).into_any_element());
         }
         if done && let Some(c) = t.completed_at {
             meta.insert(0, div().child(crate::calendar::hm(c, &self.tz)).into_any_element());
+        }
+        // «Входящие»: задача без срока и проекта — так и сказано второй строкой (макет).
+        if meta.is_empty() && self.nav == Nav::List(List::Inbox) {
+            meta.push(div().child(tr!("tasks-no-due-project")).into_any_element());
         }
         let in_deleg = matches!(self.nav, Nav::Delegations(_));
         let watched = in_deleg && postman_calendar::assign::is_watched_by(t, &self.me_email());
@@ -1730,7 +2245,7 @@ impl TasksView {
         if in_deleg {
             meta = self.deleg_meta(t, l);
         }
-        let two = !meta.is_empty() && !l.compact();
+        let two = !meta.is_empty() && !self.dense(l);
         let mut chips: Vec<AnyElement> = Vec::new();
         if watched {
             chips.push(
@@ -1805,7 +2320,7 @@ impl TasksView {
             .w_full()
             .h(px(if two {
                 ROW_TWO
-            } else if l.compact() {
+            } else if self.dense(l) {
                 34.
             } else {
                 ROW_H
@@ -2010,6 +2525,7 @@ impl TasksView {
         if p.important {
             parts.push(tr!("tasks-important"));
         }
+        let goes = self.quick_where(p);
         Some(
             div()
                 .flex()
@@ -2026,7 +2542,8 @@ impl TasksView {
                         .text_size(px(12.))
                         .text_color(l.text2())
                         .child(icon(g::CHECK, 11.))
-                        .child(parts.join(" · ")),
+                        .child(parts.join(" · "))
+                        .when_some(goes, |d, w| d.child(icon(crate::calendar::g::NEXT, 10.)).child(w)),
                 )
                 .into_any_element(),
         )
@@ -2130,58 +2647,7 @@ impl TasksView {
             .child(top)
             .child(div().flex().items_start().gap(px(12.)).child(circle).child(title).child(prio));
         // Письмо задачи.
-        let mail = t.mail.as_ref().map(|_| {
-            let row = mailtask::letter_key(t).and_then(|k| self.letter(k)).cloned();
-            let from = row
-                .as_ref()
-                .map(|r| if r.from_name.is_empty() { r.from_addr.clone() } else { r.from_name.clone() })
-                .unwrap_or_else(|| tr!("tasks-letter"));
-            let subject = row.as_ref().map(|r| r.subject.clone()).unwrap_or_default();
-            let when = row.as_ref().map(|r| crate::calendar::hm(r.received_at, &self.tz)).unwrap_or_default();
-            let has = row.is_some() || mailtask::letter_key(t).is_some();
-            div()
-                .id("card-mail")
-                .children(crate::screens::spot("card-mail"))
-                .mx(px(20.))
-                .mt(px(12.))
-                .flex_none()
-                .flex()
-                .gap(px(10.))
-                .py(px(8.))
-                .pr(px(10.))
-                .rounded(px(6.))
-                .border_1()
-                .border_color(l.stroke())
-                .when(has, |d| d.cursor_pointer().hover(|d| d.bg(l.hover())).on_click(cx.listener(|this, _, _, cx| this.open_letter(cx))))
-                .child(div().w(px(4.)).rounded_r(px(2.)).bg(l.accent()))
-                .child(icon(g::MAIL, 14.).mt(px(2.)).text_color(l.text2()))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(1.))
-                        .child(
-                            div()
-                                .flex()
-                                .gap(px(8.))
-                                .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD).child(from))
-                                .child(div().text_size(px(12.)).text_color(l.text2()).child(when)),
-                        )
-                        .child(div().truncate().text_color(l.text()).child(subject)),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(4.))
-                        .text_size(px(12.))
-                        .text_color(l.accent_text())
-                        .child(tr!("tasks-open"))
-                        .child(icon(g::OPEN, 11.)),
-                )
-        });
+        let mail = self.mail_block(t, &l, cx);
         // Поля.
         let field = |gl: char, key: &str, value: AnyElement| {
             div()
@@ -2375,28 +2841,7 @@ impl TasksView {
                 .collect();
             options(items)
         });
-        let project_opts = (self.open == Some(Field::Project)).then(|| {
-            let mut items: Vec<AnyElement> = model::projects(&self.tasks)
-                .into_iter()
-                .enumerate()
-                .map(|(i, p)| {
-                    let on = t.project.as_deref().is_some_and(|x| x.eq_ignore_ascii_case(&p.name));
-                    let name = p.name.clone();
-                    pill(("proj-opt", i).into(), p.name, on)
-                        .on_click(cx.listener(move |this, _, _, cx| this.set_project(Some(name.clone()), cx)))
-                        .into_any_element()
-                })
-                .collect();
-            items.push(
-                pill("proj-none".into(), tr!("tasks-no-project"), t.project.is_none())
-                    .on_click(cx.listener(|this, _, _, cx| this.set_project(None, cx)))
-                    .into_any_element(),
-            );
-            items.push(
-                div().relative().children(crate::screens::spot("proj-new")).w(px(180.)).child(Input::new(&self.project_input)).into_any_element(),
-            );
-            options(items)
-        });
+        let project_opts = (self.open == Some(Field::Project)).then(|| self.project_options(t, &l, cx));
         let category_opts = (self.open == Some(Field::Category)).then(|| {
             let cur = model::category(t, &self.categories).map(|c| c.keyword.clone());
             let mut items: Vec<AnyElement> = self
@@ -2550,7 +2995,148 @@ impl TasksView {
             } else {
                 div().line_height(px(19.)).text_color(l.text()).children(t.notes.lines().map(|line| div().child(line.to_string()))).into_any_element()
             });
-        div().size_full().flex().flex_col().child(head).children(mail).child(fields).children(block).child(subtasks).child(notes).into_any_element()
+        let history = self.history_view(t, &l, cx);
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(head)
+            .children(mail)
+            .child(fields)
+            .children(block)
+            .child(subtasks)
+            .child(notes)
+            .children(history)
+            .into_any_element()
+    }
+
+    /// Блок письма задачи (макеты «Задачи», «Поручил я», «Поручено мне»): отправитель, время, тема, «Открыть» — письмо во
+    /// вкладке. Нет ссылки на письмо — `None`.
+    pub(crate) fn mail_block(&self, t: &Task, l: &Look, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
+        t.mail.as_ref()?;
+        let row = mailtask::letter_key(t).and_then(|k| self.letter(k)).cloned();
+        let from = row
+            .as_ref()
+            .map(|r| if r.from_name.is_empty() { r.from_addr.clone() } else { r.from_name.clone() })
+            .unwrap_or_else(|| tr!("tasks-letter"));
+        let subject = row.as_ref().map(|r| r.subject.clone()).unwrap_or_default();
+        let when = row.as_ref().map(|r| crate::calendar::hm(r.received_at, &self.tz)).unwrap_or_default();
+        let has = row.is_some() || mailtask::letter_key(t).is_some();
+        let key = mailtask::letter_key(t).map(str::to_owned);
+        Some(
+            div()
+                .id("card-mail")
+                .children(crate::screens::spot("card-mail"))
+                .mx(px(20.))
+                .mt(px(12.))
+                .flex_none()
+                .flex()
+                .gap(px(10.))
+                .py(px(8.))
+                .pr(px(10.))
+                .rounded(px(6.))
+                .border_1()
+                .border_color(l.stroke())
+                .when(has, |d| {
+                    d.cursor_pointer().hover(|d| d.bg(l.hover())).on_click(cx.listener(move |_, _, _, cx| {
+                        if let Some(k) = &key {
+                            cx.emit(TasksAction::OpenLetter(k.clone()));
+                        }
+                    }))
+                })
+                .child(div().w(px(4.)).rounded_r(px(2.)).bg(l.accent()))
+                .child(icon(g::MAIL, 14.).mt(px(2.)).text_color(l.text2()))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(1.))
+                        .child(
+                            div()
+                                .flex()
+                                .gap(px(8.))
+                                .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD).child(from))
+                                .child(div().text_size(px(12.)).text_color(l.text2()).child(when)),
+                        )
+                        .child(div().truncate().text_color(l.text()).child(subject)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .text_size(px(12.))
+                        .text_color(l.accent_text())
+                        .child(tr!("tasks-open"))
+                        .child(icon(g::OPEN, 11.)),
+                ),
+        )
+    }
+
+    /// История обычной задачи (T2-33, макет «Задачи»): последняя запись строкой внизу карточки, «История · N» —
+    /// все записи (новые сверху). Записей нет — у задачи из письма «Создана из письма», иначе ничего.
+    fn history_view(&self, t: &Task, l: &Look, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.draft.as_ref().is_some_and(|d| d.uid == t.uid) {
+            return None;
+        }
+        let now = self.now();
+        let mut lines: Vec<String> = history::entries(t).iter().map(|e| hist_text(e, now, &self.tz)).collect();
+        if lines.is_empty() {
+            let subject = mailtask::letter_key(t).and_then(|k| self.letter(k)).map(|r| r.subject.clone());
+            match subject {
+                Some(s) => lines.push(tr!("tasks-hist-from-mail-plain", subject = s)),
+                None if t.mail.is_some() => lines.push(tr!("tasks-hist-from-mail-unknown")),
+                None => return None,
+            }
+        }
+        let n = lines.len();
+        let last = lines.last().cloned().unwrap_or_default();
+        let open = self.history_open && n > 1;
+        let all =
+            open.then(|| {
+                div().flex().flex_col().gap(px(4.)).pb(px(6.)).children(
+                    lines.iter().rev().enumerate().map(|(i, s)| div().text_color(if i == 0 { l.text() } else { l.text2() }).child(s.clone())),
+                )
+            });
+        Some(
+            div()
+                .mx(px(20.))
+                .py(px(8.))
+                .flex_none()
+                .flex()
+                .flex_col()
+                .border_t_1()
+                .border_color(l.border())
+                .text_size(px(12.))
+                .text_color(l.text2())
+                .children(all)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(icon(g::HISTORY, 12.))
+                        .when(!open, |d| d.child(div().flex_1().min_w_0().truncate().child(last)))
+                        .when(open, |d| d.child(div().flex_1()))
+                        .child(
+                            div()
+                                .id("task-history")
+                                .children(crate::screens::spot("task-history"))
+                                .flex_none()
+                                .text_color(l.accent_text())
+                                .when(n > 1, |d| {
+                                    d.cursor_pointer().on_click(cx.listener(|this, _, _, cx| {
+                                        this.history_open = !this.history_open;
+                                        cx.notify();
+                                    }))
+                                })
+                                .child(if n > 1 { tr!("tasks-history-n", n = n as i64) } else { tr!("tasks-history") }),
+                        ),
+                )
+                .into_any_element(),
+        )
     }
 }
 
@@ -2573,7 +3159,22 @@ impl Render for TasksView {
                 .child(tr!("tasks-pick"))
                 .into_any_element(),
         };
+        // «Вид: список» (командная строка, справа): меню под кнопкой.
+        let view_menu = self.view_open.then(|| {
+            let items = [(false, "tasks-view-item-list"), (true, "tasks-view-item-dense")].into_iter().enumerate().map(|(i, (dense, key))| {
+                menu_item(("tasks-view-item", i).into(), tr!(key), self.dense == dense, &l)
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_dense(dense, cx)))
+                    .into_any_element()
+            });
+            div().id("tasks-view-menu").absolute().top(px(0.)).right(px(12.)).child(menu_panel(&l).children(items)).on_mouse_down_out(cx.listener(
+                |this, _, _, cx| {
+                    this.view_open = false;
+                    cx.notify();
+                },
+            ))
+        });
         div()
+            .relative()
             .size_full()
             .flex()
             .min_w_0()
@@ -2581,7 +3182,41 @@ impl Render for TasksView {
             .child(self.nav_view(cx))
             .child(self.list_card(cx))
             .child(crate::mailer::card(&l).w(px(CARD_W)).flex_none().child(pane))
+            .children(view_menu)
     }
+}
+
+/// Меню над списком и командной строкой: панель.
+pub(crate) fn menu_panel(l: &Look) -> Div {
+    div()
+        .min_w(px(180.))
+        .p(px(4.))
+        .flex()
+        .flex_col()
+        .rounded(l.px(Metric::RadiusOverlay))
+        .border_1()
+        .border_color(l.c(pets_ui::theme::Role::StrokeCard))
+        .bg(l.c(pets_ui::theme::Role::LayerOverlay))
+        .text_color(l.text())
+        .text_size(px(13.))
+        .shadow_lg()
+}
+
+/// Пункт меню с галочкой у выбранного.
+pub(crate) fn menu_item(id: ElementId, text: String, on: bool, l: &Look) -> Stateful<Div> {
+    div()
+        .id(id.clone())
+        .children(crate::screens::spot(id))
+        .h(l.px(Metric::HMenuItem))
+        .px(px(10.))
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .rounded(l.px(Metric::RadiusControl))
+        .cursor_pointer()
+        .hover(|d| d.bg(l.hover()))
+        .child(div().w(px(14.)).flex_none().when(on, |d| d.child(icon(g::CHECK, 12.))))
+        .child(text)
 }
 
 /// Кольцо прогресса проекта: доля выполненного — дугой заливки (кругом внутри, по площади).
@@ -2649,6 +3284,70 @@ pub(crate) fn repeat_text(r: &Rule) -> String {
     }
 }
 
+/// Когда: сегодня — «09:05», на этой неделе — «пн 18:12», раньше — «19.10 14:05».
+fn ago_text(ts: i64, now: i64, tz: &TimeZone) -> String {
+    let t = crate::calendar::hm(ts, tz);
+    let (Some(d), Some(today)) = (day_of(ts, tz), day_of(now, tz)) else { return t };
+    match (today - d).get_days() {
+        0 => t,
+        1..=6 => format!("{} {t}", crate::calendar::day_name(d.weekday().to_monday_zero_offset() as usize)),
+        _ => format!("{} {t}", d.strftime("%d.%m")),
+    }
+}
+
+/// Срок записи истории: «сегодня», «завтра», «пт 23»; со временем — «, 10:00».
+fn hist_due(s: Option<&str>, today: Date) -> String {
+    let Some(dt) = HistEntry::moment(s) else { return tr!("tasks-no-due").to_lowercase() };
+    let d = dt.date();
+    let day = match (d - today).get_days() {
+        0 => tr!("tasks-day-today"),
+        1 => tr!("tasks-day-tomorrow"),
+        -1 => tr!("tasks-day-yesterday"),
+        _ => format!("{} {}", crate::calendar::day_name(d.weekday().to_monday_zero_offset() as usize), d.day()),
+    };
+    if dt.time() == jiff::civil::Time::midnight() { day } else { format!("{day}, {}", dt.time().strftime("%H:%M")) }
+}
+
+/// Строка истории задачи: «Создана из письма «Re: Договор» · пн 18:12».
+fn hist_text(e: &HistEntry, now: i64, tz: &TimeZone) -> String {
+    let when = ago_text(e.at, now, tz);
+    let today = day_of(now, tz).unwrap_or_default();
+    match e.kind {
+        HistKind::Created => tr!("tasks-hist-created", when = when),
+        HistKind::FromMail => tr!("tasks-hist-from-mail", subject = e.subject.clone(), when = when),
+        HistKind::DueMoved => match (&e.from, &e.to) {
+            (Some(_), Some(_)) => {
+                tr!("tasks-hist-due-moved", from = hist_due(e.from.as_deref(), today), to = hist_due(e.to.as_deref(), today), when = when)
+            }
+            (None, Some(_)) => tr!("tasks-hist-due-set", to = hist_due(e.to.as_deref(), today), when = when),
+            _ => tr!("tasks-hist-due-removed", when = when),
+        },
+        HistKind::Done => tr!("tasks-hist-done", when = when),
+        HistKind::Reopened => tr!("tasks-hist-reopened", when = when),
+        HistKind::Subtasks => tr!("tasks-hist-subtasks", done = e.done as i64, total = e.total as i64, when = when),
+    }
+}
+
+/// «сегодня», «завтра», «вчера», иначе — «Пятница, 13 ноября».
+fn day_word(d: Date, today: Date) -> String {
+    match (d - today).get_days() {
+        0 => tr!("tasks-day-today"),
+        1 => tr!("tasks-day-tomorrow"),
+        -1 => tr!("tasks-day-yesterday"),
+        _ => crate::calendar::long_day(d),
+    }
+}
+
+/// Строка списка: «15:00–16:00»; не сегодня — коротко с днём: «Ср 11, 09:00–09:30».
+fn short_slot(s: Span, tz: &TimeZone) -> String {
+    let time = format!("{}–{}", crate::calendar::hm(s.start, tz), crate::calendar::hm(s.end, tz));
+    let today = day_of(jiff::Timestamp::now().as_second(), tz);
+    match day_of(s.start, tz) {
+        Some(d) if Some(d) != today => format!("{} {}, {time}", crate::calendar::day_name(d.weekday().to_monday_zero_offset() as usize), d.day()),
+        _ => time,
+    }
+}
+
 /// «15:00–16:00»; не сегодня — с днём: «Пятница, 23 октября, 09:00–09:30».
 fn slot_label(s: Span, tz: &TimeZone) -> String {
     let time = format!("{}–{}", crate::calendar::hm(s.start, tz), crate::calendar::hm(s.end, tz));
@@ -2713,6 +3412,7 @@ fn group_label(g: Group) -> String {
             Bucket::Waiting => "deleg-group-waiting",
             Bucket::New => "deleg-group-new",
             Bucket::Checking => "deleg-group-checking",
+            Bucket::Declined => "deleg-group-declined",
         }),
     }
 }
@@ -2744,6 +3444,7 @@ impl TasksBar {
 
 impl Render for TasksBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use postman_calendar::assign::Action as A;
         let l = crate::roles::look(cx);
         let v = self.tasks.read(cx);
         let sel = v.selected_task();
@@ -2751,11 +3452,18 @@ impl Render for TasksBar {
         let done = sel.is_some_and(|t| t.progress.is_closed());
         let editable = sel.is_some();
         let deleg = v.delegation();
+        let me = v.me_email();
         let me_owner = deleg.as_ref().is_some_and(|(_, _, o)| *o);
-        let can = |a: postman_calendar::assign::Action| deleg.as_ref().is_some_and(|(_, st, o)| *o && postman_calendar::assign::next(*st, a).is_ok());
-        let can_delegate = editable && (deleg.is_none() || can(postman_calendar::assign::Action::Reassign));
-        let (can_remind, can_revoke) = (can(postman_calendar::assign::Action::Remind), can(postman_calendar::assign::Action::Revoke));
+        let watch = deleg.as_ref().is_some_and(|(t, _, o)| !*o && delegation::watcher_side(t, &me));
+        // Исполнитель (макет «Поручено мне»): «Ответить автору», «Запланировать», «В проект».
+        let worker = deleg.as_ref().is_some_and(|(_, _, o)| !*o) && !watch;
+        let can = |a: A| deleg.as_ref().is_some_and(|(_, st, o)| *o && postman_calendar::assign::next(*st, a).is_ok());
+        let can_delegate = editable && (deleg.is_none() || can(A::Reassign));
+        let (can_remind, can_revoke) = (can(A::Remind), can(A::Revoke));
+        let open = deleg.as_ref().is_none_or(|(_, st, _)| !st.is_final());
+        let can_plan = has && !done && !watch && open && sel.is_some_and(|t| t.block.is_none());
         let search_state = v.search.clone();
+        let dense = v.dense;
         use crate::tasks::task as cmd;
         let action = |id: &'static str, glyph: char, text: String, command: &'static str, on: bool, act: fn() -> Box<dyn Action>, cx: &App| {
             let b = crate::chrome::quiet_button(id, &l)
@@ -2765,6 +3473,7 @@ impl Render for TasksBar {
                 .on_click(move |_, window, cx| window.dispatch_action(act(), cx));
             crate::keytips::command(b, command, Some(text), &l, cx)
         };
+        let sep = || div().w(px(1.)).h(px(20.)).mx(px(8.)).bg(l.stroke());
         let new = div()
             .id("task-new")
             .children(crate::screens::spot("task-new"))
@@ -2784,42 +3493,57 @@ impl Render for TasksBar {
             .on_click(|_, window, cx| window.dispatch_action(Box::new(cmd::New), cx));
         let new = crate::keytips::command(new, "task.new", Some(tr!("tasks-new")), &l, cx);
         let search = Input::new(&search_state).prefix(crate::icons::icon(crate::icons::SEARCH, 18., l.text3()));
-        div()
-            .size_full()
-            .flex()
-            .items_center()
-            .gap(px(2.))
-            .px(px(12.))
-            .text_color(l.text())
-            .child(new)
-            .child(action(
-                "task-complete",
-                g::DONE,
-                tr!(if done { "tasks-reopen" } else { "tasks-complete" }),
-                "task.complete",
-                has,
-                || Box::new(cmd::Complete),
-                cx,
-            ))
-            .child(action("task-due", g::FLAG, tr!("tasks-field-due"), "task.due", has, || Box::new(cmd::Due), cx))
-            .child(div().w(px(1.)).h(px(20.)).mx(px(8.)).bg(l.stroke()))
-            .child(action("task-edit", g::EDIT, tr!("tasks-edit"), "task.edit", editable, || Box::new(cmd::Edit), cx))
-            .child(action("task-delete", g::DELETE, tr!("tasks-delete"), "task.delete", has, || Box::new(cmd::Delete), cx))
-            .child(div().w(px(1.)).h(px(20.)).mx(px(8.)).bg(l.stroke()))
-            .child(action("task-delegate", g::DELEGATE, tr!("tasks-delegate"), "task.delegate", can_delegate, || Box::new(cmd::Delegate), cx))
-            .when(me_owner, |d| {
-                d.child(action("task-remind", g::RINGER, tr!("tasks-remind"), "task.remind", can_remind, || Box::new(cmd::Remind), cx)).child(action(
-                    "task-revoke",
-                    g::REVOKE,
-                    tr!("tasks-revoke"),
-                    "task.revoke",
-                    can_revoke,
-                    || Box::new(cmd::Revoke),
+        let plan =
+            |cx: &App| action("task-plan", crate::calendar::g::CALENDAR, tr!("tasks-plan"), "task.block", can_plan, || Box::new(cmd::Block), cx);
+        let project =
+            |on: bool, cx: &App| action("task-project", g::FOLDER, tr!("tasks-to-project"), "task.project", on, || Box::new(cmd::Project), cx);
+        let mut bar = div().size_full().flex().items_center().gap(px(2.)).px(px(12.)).text_color(l.text()).child(new);
+        if worker {
+            bar = bar
+                .child(action("task-reply", g::REPLY, tr!("tasks-reply"), "task.reply", has, || Box::new(cmd::Reply), cx))
+                .child(plan(cx))
+                .child(sep())
+                .child(project(open, cx));
+        } else if me_owner || watch {
+            bar = bar
+                .child(action("task-delegate", g::DELEGATE, tr!("tasks-delegate"), "task.delegate", can_delegate, || Box::new(cmd::Delegate), cx))
+                .child(action("task-remind", g::RINGER, tr!("tasks-remind"), "task.remind", can_remind, || Box::new(cmd::Remind), cx))
+                .child(sep())
+                .child(action("task-revoke", g::REVOKE, tr!("tasks-revoke"), "task.revoke", can_revoke, || Box::new(cmd::Revoke), cx))
+                .child(action("task-delete", g::DELETE, tr!("tasks-delete"), "task.delete", me_owner && open, || Box::new(cmd::Delete), cx));
+        } else {
+            bar = bar
+                .child(action(
+                    "task-complete",
+                    g::DONE,
+                    tr!(if done { "tasks-reopen" } else { "tasks-complete" }),
+                    "task.complete",
+                    has,
+                    || Box::new(cmd::Complete),
                     cx,
                 ))
-            })
-            .child(div().flex_1())
-            .child(crate::keytips::badge(div().ml(px(12.)).w(px(300.)).flex_none().child(search), crate::keytips::key("search.focus", cx), &l, cx))
+                .child(action("task-due", g::FLAG, tr!("tasks-field-due"), "task.due", has, || Box::new(cmd::Due), cx))
+                .child(plan(cx))
+                .child(sep())
+                .child(action("task-edit", g::EDIT, tr!("tasks-edit"), "task.edit", editable, || Box::new(cmd::Edit), cx))
+                .child(action("task-delete", g::DELETE, tr!("tasks-delete"), "task.delete", has, || Box::new(cmd::Delete), cx))
+                .child(project(has && !done, cx))
+                .child(sep())
+                .child(action("task-delegate", g::DELEGATE, tr!("tasks-delegate"), "task.delegate", can_delegate, || Box::new(cmd::Delegate), cx));
+        }
+        let view = crate::chrome::quiet_button("task-view", &l)
+            .child(icon(g::VIEW, 16.))
+            .child(tr!(if dense { "tasks-view-dense" } else { "tasks-view-list" }))
+            .on_click(|_, window, cx| window.dispatch_action(Box::new(cmd::View), cx));
+        bar.child(div().flex_1())
+            // Поле поиска сжимается первым: кнопки и «Вид» — целиком.
+            .child(div().ml(px(12.)).w(px(260.)).min_w(px(120.)).flex_shrink(1.).child(crate::keytips::badge(
+                div().w_full().child(search),
+                crate::keytips::key("search.focus", cx),
+                &l,
+                cx,
+            )))
+            .child(div().ml(px(4.)).flex_none().child(crate::keytips::command(view, "task.view", Some(tr!("tasks-view")), &l, cx)))
     }
 }
 
@@ -2864,7 +3588,11 @@ impl crate::Mailer {
             TasksAction::OpenWaiting => self.open_waiting(cx),
             TasksAction::NeedBook => {
                 let book = self.compose.book.clone();
-                self.tasks.update(cx, |t, _| t.set_book(book));
+                let positions = self.contacts.read(cx).positions();
+                self.tasks.update(cx, |t, cx| {
+                    t.set_book(book);
+                    t.set_positions(positions, cx);
+                });
             }
             TasksAction::Remind { uid, title } => {
                 let view = self.tasks.downgrade();
@@ -2888,6 +3616,15 @@ impl crate::Mailer {
                     .detach();
                 }
             }
+            TasksAction::Added { text, uid } => {
+                let view = self.tasks.downgrade();
+                let uid = uid.clone();
+                let act = pets_ui::ToastAction::new(tr!("tasks-show"), move |_, cx| {
+                    let _ = view.update(cx, |v, cx| v.show_task(&uid, cx));
+                });
+                self.toasts.update(cx, |t, cx| t.push_action(Toast::Success, text.clone(), act, cx));
+            }
+            TasksAction::Compose(draft) => self.open_compose((**draft).clone(), cx),
             TasksAction::Undo { text, undo } => {
                 let view = self.tasks.downgrade();
                 let undo = undo.clone();
@@ -2939,6 +3676,12 @@ pub(crate) fn demo(now: i64, tz: &TimeZone) -> Vec<Task> {
         }
         if x.title == d::MAIN {
             t.notes = d::NOTES.to_owned();
+            // История (T2-33): создана, срок перенесён со вчера на сегодня, подзадачи.
+            let yesterday = Moment::new(add_days(today, -1).at(0, 0, 0, 0), None);
+            history::push(&mut t, HistEntry::new(HistKind::Created, now - 3 * 86_400));
+            let moved = HistEntry::due_moved(Some(&yesterday), t.due.as_ref(), now - 5 * 3600);
+            history::push(&mut t, moved);
+            history::push(&mut t, HistEntry::subtasks(2, 4, now - 3600));
             t.alerts = vec![postman_calendar::Alert {
                 trigger: postman_calendar::Trigger::Offset { secs: -1800, from: postman_calendar::Anchor::Due },
                 email: false,
@@ -2969,7 +3712,7 @@ pub(crate) fn demo(now: i64, tz: &TimeZone) -> Vec<Task> {
 
 /// Опись части (ADR 0005, `parts.rs`).
 pub(crate) const PART: crate::part::Part =
-    crate::part::Part { name: "tasks", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, ..crate::part::Part::NONE };
+    crate::part::Part { name: "tasks", texts: TEXTS, commands: COMMANDS, handlers, scenes: scenes::SCENES, reset: Some(scenes::reset) };
 
 /// Обработчики команд части — на корне экрана почты (`Mailer::render`).
 fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
@@ -2993,6 +3736,9 @@ fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
     .on_action(cx.listener(|this, _: &task::SlotNext, _, cx| this.tasks.update(cx, |t, cx| t.step_slot(1, cx))))
     .on_action(cx.listener(|this, _: &task::SlotPrev, _, cx| this.tasks.update(cx, |t, cx| t.step_slot(-1, cx))))
     .on_action(cx.listener(|this, _: &task::Block, _, cx| this.tasks.update(cx, |t, cx| t.place_block(cx))))
+    .on_action(cx.listener(|this, _: &task::Reply, _, cx| this.tasks.update(cx, |t, cx| t.reply_author(cx))))
+    .on_action(cx.listener(|this, _: &task::Project, _, cx| this.tasks.update(cx, |t, cx| t.move_to_project(cx))))
+    .on_action(cx.listener(|this, _: &task::View, _, cx| this.tasks.update(cx, |t, cx| t.toggle_view_menu(cx))))
 }
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
@@ -3000,7 +3746,10 @@ const TEXTS: &[pets_i18n::Resource] = &[("ru", include_str!("../i18n/ru/tasks.ft
 
 /// Задачи (S6-05): новая, выполнить / вернуть, срок, переименовать, удалить, открыть письмо, по списку.
 pub(crate) mod task {
-    gpui_kit::actions!(task, [New, Complete, Due, Edit, Delete, Open, Next, Prev, SlotNext, SlotPrev, Block, Delegate, Remind, RemindAll, Revoke]);
+    gpui_kit::actions!(
+        task,
+        [New, Complete, Due, Edit, Delete, Open, Next, Prev, SlotNext, SlotPrev, Block, Delegate, Remind, RemindAll, Revoke, Reply, Project, View]
+    );
 }
 
 /// Команды части (`commands.rs`: контексты и `cmd`).
@@ -3028,6 +3777,11 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("task.remind", &[], TASKS),
         cmd("task.remind_all", &[], TASKS),
         cmd("task.revoke", &[], TASKS),
+        // Исполнитель (T2-30, макет «Поручено мне»): Ctrl+R — ответить автору поручения письмом, как «Ответить» в почте.
+        cmd("task.reply", &["ctrl-r"], TASKS_ANY),
+        // «В проект» и «Вид: список» (T2-34) — кнопки командной строки, без клавиш.
+        cmd("task.project", &[], TASKS),
+        cmd("task.view", &[], TASKS_ANY),
     ]
 };
 
@@ -3079,17 +3833,84 @@ pub(crate) mod scenes {
         Scene::new("delegation-mail", letter, letter_ready),
         // Повтор (S6-07): варианты повтора в карточке.
         Scene::new("task-repeat", card, ready),
+        // Сверка макетов T2-G (T2-30…T2-36).
+        // «Входящие»: строка «Без срока и проекта».
+        Scene::new("tasks-inbox", list, ready),
+        // Порядок над списком: меню (по сроку, по названию, сначала важные).
+        Scene::new("tasks-sort", list, ready),
+        // «Вид: список» → плотный список, меню вида открыто.
+        Scene::new("tasks-view", list, ready),
+        // «+» у «Проекты»: поле нового проекта.
+        Scene::new("tasks-project-new", list, ready),
+        // История задачи раскрыта («История · 3»).
+        Scene::new("task-history", card, ready),
+        // «Добавить задачу» на завтра: тост «Добавлено · завтра, 10:00» с «Показать», в строке — «→ в «Предстоящие»».
+        Scene::new("task-added", card, added_ready),
+        // Исполнитель (T2-30): «Ответить автору», «Запланировать», «В проект»; блок письма в карточке поручения (T2-31).
+        Scene::new("delegation-in-mail", delegations, delegations_ready),
+        // Ctrl+N в «Поручениях» (T2-36): новое поручение с полем названия.
+        Scene::new("delegation-new", delegations, new_ready),
+        // Подсказки исполнителя «Поручить»: должность и загрузка (T2-36).
+        Scene::new("delegate-suggest", delegation, suggest_ready).input(SUGGEST),
     ];
+
+    const SUGGEST: &[screens::Input] = &[
+        screens::Input::Until(|_, m, _| !m.compose.book.borrow().suggest(d::SUGGEST, 1, 0).is_empty()),
+        screens::Input::Press("assign-person"),
+        screens::Input::Text(d::SUGGEST),
+    ];
+
+    fn suggest_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let t = m.tasks.read(cx);
+        m.section == Section::Tasks && !t.deleg.suggest.is_empty()
+    }
+
+    fn added_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.section == Section::Tasks && m.tasks.read(cx).ready() && m.toasts.read(cx).on_screen() > 0
+    }
+
+    fn new_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let t = m.tasks.read(cx);
+        m.section == Section::Tasks && t.drafting_delegation()
+    }
 
     fn ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
         m.section == Section::Tasks && m.tasks.read(cx).ready()
     }
 
-    fn list(s: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+    /// Перед своей сценой: вид, порядок, меню и задачи демо — как при запуске (сцена не зависит от прошлой).
+    pub(crate) fn reset(s: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) {
+        if !SCENES.iter().any(|x| x.name == s.name) {
+            return;
+        }
+        m.toasts.update(cx, |t, cx| t.hide_all(cx));
+        m.tasks.update(cx, |t, cx| t.screen_reset(window, cx));
+    }
+
+    fn list(s: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
         m.set_section(Section::Tasks, cx);
         m.tasks.update(cx, |t, cx| match s.name {
             "tasks-project" => t.set_nav(crate::tasks::Nav::Project(postman_demo::tasks::PROJECT.into()), cx),
             "tasks-done" => t.set_nav(crate::tasks::Nav::List(List::Done), cx),
+            "tasks-inbox" => t.set_nav(crate::tasks::Nav::List(List::Inbox), cx),
+            "tasks-sort" => {
+                t.set_nav(crate::tasks::Nav::List(List::Today), cx);
+                t.set_sort(crate::tasks::Sort::Title, cx);
+                t.toggle_sort_menu(cx);
+            }
+            "tasks-view" => {
+                t.set_nav(crate::tasks::Nav::List(List::Today), cx);
+                t.set_dense(true, cx);
+                t.toggle_view_menu(cx);
+            }
+            "tasks-project-new" => {
+                t.set_nav(crate::tasks::Nav::List(List::Today), cx);
+                t.select_title(postman_demo::tasks::MAIN, cx);
+                t.start_project(window, cx);
+                if let Some(p) = t.nav_project.clone() {
+                    p.update(cx, |s, cx| s.set_value(postman_demo::tasks::NEW_PROJECT, window, cx));
+                }
+            }
             _ => {
                 t.set_nav(crate::tasks::Nav::List(List::Today), cx);
                 let title = if s.name == "tasks" { postman_demo::tasks::MAIN } else { postman_demo::tasks::OVERDUE };
@@ -3115,6 +3936,13 @@ pub(crate) mod scenes {
                 }
                 "task-notes" => t.focus_notes(window, cx),
                 "task-repeat" => t.demo_repeat(cx),
+                "task-history" => t.history_open = true,
+                "task-added" => {
+                    t.set_quick(postman_demo::tasks::QUICK, window, cx);
+                    t.screen_quick_add(cx);
+                    // Строка снова с фразой: подпись «→ в «Предстоящие»» — на снимке.
+                    t.set_quick(postman_demo::tasks::QUICK, window, cx);
+                }
                 _ => t.demo_block(cx),
             }
         });
@@ -3123,11 +3951,26 @@ pub(crate) mod scenes {
 
     fn delegation(s: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
         m.set_section(Section::Tasks, cx);
+        let first = m.list.read(cx).row(0).cloned();
+        if s.name == "delegate-suggest" {
+            m.load_address_book(cx);
+        }
+        let book = m.compose.book.clone();
         m.tasks.update(cx, |t, cx| match s.name {
             "delegate" => {
                 t.set_nav(crate::tasks::Nav::List(List::Today), cx);
                 t.select_title(d::TO_ASSIGN, cx);
+                // Задача из письма: блок письма в форме (макет «Поручить», T2-31).
+                if let Some(row) = first {
+                    t.attach_letter_to(d::TO_ASSIGN, row, cx);
+                }
                 t.screen_form(window, cx);
+            }
+            "delegate-suggest" => {
+                t.set_nav(crate::tasks::Nav::List(List::Today), cx);
+                t.select_title(d::TO_ASSIGN, cx);
+                t.set_book(book);
+                t.delegate(window, cx);
             }
             _ => {
                 t.set_nav(crate::tasks::Nav::Project(d::PROJECT.into()), cx);
@@ -3147,11 +3990,22 @@ pub(crate) mod scenes {
         m.section == Section::Tasks && t.ready() && (s.name != "delegate" || t.screen_form_open())
     }
 
-    fn delegations(s: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+    fn delegations(s: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
         use postman_core::assign::Tab;
         m.set_section(Section::Tasks, cx);
+        let first = m.list.read(cx).row(0).cloned();
         m.tasks.update(cx, |t, cx| {
-            if s.name == "delegation-watch" {
+            if s.name == "delegation-new" {
+                t.set_tab(Tab::ByMe, cx);
+                t.new_delegation(window, cx);
+                t.deleg.title.update(cx, |s, cx| s.set_value(tr!("assign-screen-title"), window, cx));
+            } else if s.name == "delegation-in-mail" {
+                t.set_tab(Tab::ToMe, cx);
+                t.select_title(d::INCOMING, cx);
+                if let Some(row) = first {
+                    t.attach_letter_to(d::INCOMING, row, cx);
+                }
+            } else if s.name == "delegation-watch" {
                 t.own_only = false;
                 t.set_tab(Tab::ByMe, cx);
                 t.select_title(d::WATCHED, cx);
@@ -3166,6 +4020,9 @@ pub(crate) mod scenes {
         });
         Ok(())
     }
+
+    #[allow(unused_imports)]
+    use pets_i18n::tr;
 
     fn delegations_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
         let t = m.tasks.read(cx);
@@ -3220,7 +4077,7 @@ pub(crate) mod scenes {
 #[cfg(test)]
 mod tests {
     // Не `use super::*`: вместе с gpui пришёл бы атрибут `gpui::test`, он перекрывает `#[test]`.
-    use super::{Badge, Completing, DONE_DELAY, Group, Item, List, Nav, demo, due_badge, groups, model, section};
+    use super::{Badge, Completing, DONE_DELAY, Group, Item, List, Nav, Sort, demo, due_badge, groups, model, section, sort_tasks};
     use jiff::tz::TimeZone;
     use std::time::{Duration, Instant};
 
@@ -3266,6 +4123,30 @@ mod tests {
         let over = shown[first].uid.clone();
         let shown2 = section(&tasks, &[], &nav, std::slice::from_ref(&over), now(), &tz());
         assert!(shown2.iter().any(|t| t.uid == over));
+    }
+
+    /// Порядок над списком (T2-34): свой у раздела — как есть; по сроку, по названию, сначала важные — устойчиво.
+    #[test]
+    fn sort_keeps_section_order_and_sorts_stably() {
+        let tasks = demo(now(), &tz());
+        let nav = Nav::List(List::Today);
+        let shown = section(&tasks, &[], &nav, &[], now(), &tz());
+        let mut auto = shown.clone();
+        sort_tasks(&mut auto, Sort::Auto, &tz());
+        assert_eq!(auto, shown);
+        let mut by_title = shown.clone();
+        sort_tasks(&mut by_title, Sort::Title, &tz());
+        assert!(by_title.windows(2).all(|w| w[0].title.to_lowercase() <= w[1].title.to_lowercase()));
+        let mut important = shown.clone();
+        sort_tasks(&mut important, Sort::Important, &tz());
+        let first_plain = important.iter().position(|t| !t.important).unwrap_or(important.len());
+        assert!(important[first_plain..].iter().all(|t| !t.important));
+        // Внутри «важных» и «обычных» — порядок раздела.
+        let plain: Vec<_> = shown.iter().filter(|t| !t.important).map(|t| &t.uid).collect();
+        assert_eq!(important[first_plain..].iter().map(|t| &t.uid).collect::<Vec<_>>(), plain);
+        let mut by_due = shown.clone();
+        sort_tasks(&mut by_due, Sort::Due, &tz());
+        assert!(by_due.windows(2).all(|w| w[0].due_at(&tz()).unwrap_or(i64::MAX) <= w[1].due_at(&tz()).unwrap_or(i64::MAX)));
     }
 
     #[test]

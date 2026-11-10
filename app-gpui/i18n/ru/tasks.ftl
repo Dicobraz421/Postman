@@ -287,6 +287,7 @@ assign-mail-body-revoked = { $who } забирает задачу «{ $title }»
 assign-mail-body-reassigned = { $who } поручает вам задачу «{ $title }».
 # Снимок `delegate`: комментарий формы (демо).
 assign-screen-comment = Собрать вопросы заказчику: сроки поставки, требования, лицензии и SLA.
+assign-screen-title = Собрать требования к стенду для пилота
 
 # Раздел «Поручения» (S6-11, макеты «Поручил я», «Поручено мне»).
 tasks-delegations = Поручения
@@ -339,3 +340,63 @@ assign-toast-reminded-all = { $n ->
    *[other] {" "}· { $soon } — уже сегодня
 }
 assign-remind-all-soon = Всем уже напомнили сегодня — следующее напоминание через сутки
+
+# Сверка макетов T2-G (T2-30…T2-36): строка задачи, порядок, вид, проекты, история, тосты, исполнитель, поручения.
+tasks-open-letter-tip = Открыть письмо «{ $subject }»
+tasks-no-due-project = Без срока и проекта
+tasks-sort-due = По сроку
+tasks-sort-manual = Вручную
+tasks-sort-done = По дате выполнения
+tasks-sort-status = По статусу
+tasks-sort-title = По названию
+tasks-sort-important = Сначала важные
+tasks-move-today = Перенести на сегодня
+tasks-moved-today = { $n ->
+    [one] Перенесено на сегодня: { $n } задача
+    [few] Перенесено на сегодня: { $n } задачи
+   *[many] Перенесено на сегодня: { $n } задач
+}
+tasks-project-add = Новый проект
+tasks-added = Добавлено · { $when }
+tasks-added-where = в «{ $list }»
+tasks-added-at = { $day }, { $time }
+tasks-show = Показать
+tasks-day-today = сегодня
+tasks-day-tomorrow = завтра
+tasks-day-yesterday = вчера
+tasks-plan = Запланировать
+tasks-to-project = В проект
+tasks-reply = Ответить автору
+tasks-reply-subject = Re: { $title }
+tasks-view = Вид списка
+tasks-view-list = Вид: список
+tasks-view-dense = Вид: плотный
+tasks-view-item-list = Список
+tasks-view-item-dense = Плотный список — в одну строку
+tasks-history = История
+tasks-history-n = История · { $n }
+tasks-hist-created = Создана · { $when }
+tasks-hist-from-mail = Создана из письма «{ $subject }» · { $when }
+tasks-hist-from-mail-plain = Создана из письма «{ $subject }»
+tasks-hist-from-mail-unknown = Создана из письма
+tasks-hist-due-moved = Срок перенесён с { $from } на { $to } · { $when }
+tasks-hist-due-set = Срок: { $to } · { $when }
+tasks-hist-due-removed = Срок снят · { $when }
+tasks-hist-done = Выполнена · { $when }
+tasks-hist-reopened = Снова в работе · { $when }
+tasks-hist-subtasks = Подзадачи: { $done } из { $total } · { $when }
+assign-form-title-new = Новое поручение
+assign-form-title-placeholder = Что поручить — название задачи
+assign-form-title-first = Сначала напишите, что поручить
+assign-load = { $n } в работе
+assign-load-none = нет поручений
+assign-hint-return = Статус станет «В работе»
+assign-hint-propose = Пока автор не решит, срок прежний
+assign-hint-decline = Задача уйдёт из ваших списков
+deleg-group-declined = Отклонённые
+deleg-status-new = { $n ->
+    [one] { $n } новое поручение
+    [few] { $n } новых поручения
+   *[many] { $n } новых поручений
+}
+deleg-status-no-new = Новых поручений нет

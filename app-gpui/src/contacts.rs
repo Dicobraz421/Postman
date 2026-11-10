@@ -2279,6 +2279,25 @@ fn demo_directory() -> Vec<Entry> {
     v
 }
 
+impl ContactsView {
+    /// Должность по адресу (справочник и мои контакты; нет должности — отдел): подсказки и карточка поручения в
+    /// задачах (T2-36). Адрес — в нижнем регистре.
+    pub(crate) fn positions(&self) -> std::collections::HashMap<String, String> {
+        let mut out = std::collections::HashMap::new();
+        for e in self.mine.iter().chain(self.directory.iter()) {
+            let c = &e.card;
+            let what = if c.title.trim().is_empty() { c.organization.trim() } else { c.title.trim() };
+            if what.is_empty() {
+                continue;
+            }
+            for m in &c.emails {
+                out.entry(m.to_lowercase()).or_insert_with(|| what.to_owned());
+            }
+        }
+        out
+    }
+}
+
 /// Демо: личные контакты и справочник — в подсказки адресов окна письма и вкладки встречи.
 pub(crate) fn add_demo(book: &mut AddressBook) {
     let mine = postman_demo::contacts::mine();
