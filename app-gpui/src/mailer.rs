@@ -285,6 +285,7 @@ impl Mailer {
                 }
                 ReadingEvent::Error(text) => this.toasts.update(cx, |t, cx| t.push(Toast::Error, text.clone(), cx)),
                 ReadingEvent::Toast(level, text) => this.toasts.update(cx, |t, cx| t.push(*level, text.clone(), cx)),
+                ReadingEvent::Categorize => this.category_key(cx),
                 ReadingEvent::AnswerQueued(text) => {
                     let reading = this.reading.downgrade();
                     let action = pets_ui::ToastAction::new(tr!("bulk-undo"), move |_, cx| {
@@ -618,6 +619,21 @@ impl Render for Mailer {
         // «Последняя вкладка» (T2-11): вкладки — в настройки при каждой смене.
         self.keep_session(cx);
         crate::lifecycle::set_expire_to_archive(crate::prefs::with(cx, |p| p.lifecycle.expire_to == postman_core::prefs::ExpireTo::Archive));
+        // Шапка письма (T2-25): категории и «Внешний» — по строке открытого письма.
+        let head = self.reading.read(cx).reading.as_ref().map(|r| r.row.clone()).map(|row| {
+            let list = self.list.read(cx);
+            (crate::labels::row_labels(&list.labels, &row).chips, list.me.external(&row.from_addr))
+        });
+        if let Some((chips, external)) = head {
+            let r = self.reading.read(cx);
+            if r.chips != chips || r.external != external {
+                self.reading.update(cx, |r, cx| {
+                    r.chips = chips;
+                    r.external = external;
+                    cx.notify();
+                });
+            }
+        }
         // Общие ящики (T2-22): их календари — группой «Общие».
         let boxes: Vec<String> = self.folders.read(cx).accounts.iter().filter(|a| !a.is_personal).map(|a| a.name.clone()).collect();
         if self.cal.read(cx).shared_boxes != boxes {

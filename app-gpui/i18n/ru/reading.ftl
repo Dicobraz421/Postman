@@ -58,3 +58,5 @@ reading-link-mismatch = Текст ссылки — «{ $shown }», а ведё�
 reading-link-go = Перейти
 reading-quick-reply = Ответить — { $name }
 reading-quick-reply-tip = Ответить
+reading-external = Внешний
+reading-add-category = + категория

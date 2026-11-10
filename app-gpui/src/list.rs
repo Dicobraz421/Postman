@@ -1384,6 +1384,10 @@ impl Render for MailList {
                             let mut labels = crate::labels::row_labels(&this.labels, &r);
                             // Сроки (S5-04) — после категорий.
                             labels.marks = crate::lifecycle::row_badges(&r, &now);
+                            // «Внешний» (T2-25, макет `Thread`): отправитель не из моих доменов — нейтральной меткой.
+                            if this.me.external(&r.from_addr) {
+                                labels.chips.push((tr!("reading-external"), postman_core::palette::NEUTRAL));
+                            }
                             labels.assigned = crate::shared::assigned(&r, cx);
                             labels.meeting = this.meetings.get(&r.id).map(|w| w.text(&tz));
                             // Ждёт отправки — первой меткой, нейтральной (DESIGN.md: служебные — серые).

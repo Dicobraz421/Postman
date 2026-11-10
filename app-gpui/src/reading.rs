@@ -102,6 +102,34 @@ impl Reading {
     }
 }
 
+/// Кнопка шапки письма 32×32 (T2-25): действие — как у командной строки (окно его разошлёт).
+fn header_button(
+    id: &'static str,
+    glyph: char,
+    cmd: &'static str,
+    name: &'static str,
+    l: &crate::roles::Look,
+    cx: &App,
+    action: fn() -> Box<dyn Action>,
+) -> Stateful<Div> {
+    let tip = crate::keytips::with_key(tr!(name), crate::keytips::key(cmd, cx));
+    div()
+        .id(id)
+        .children(crate::screens::spot(id))
+        .size(px(32.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(4.))
+        .text_color(l.text2())
+        .cursor_pointer()
+        .hover(|d| d.bg(l.hover()))
+        .child(crate::chrome::icon(glyph, 16.))
+        .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx))
+        .on_click(move |_, window, cx| window.dispatch_action(action(), cx))
+}
+
 /// Сколько ответ на приглашение ждёт отмены (T2-22): тост «Отменить» и Ctrl+Z.
 pub(crate) const ANSWER_UNDO: Duration = Duration::from_secs(5);
 
@@ -157,6 +185,9 @@ pub(crate) struct ReadingPane {
     pub(crate) meetings_busy: usize,
     /// Ответ на приглашение ждёт [`ANSWER_UNDO`] (T2-22, макет: «· Ctrl+Z — отменить»): номер и запрос.
     pub(crate) pending_answer: Option<(u64, SyncRequest)>,
+    /// Шапка письма (T2-25, макет `Main`): категории открытого письма и внешний ли отправитель — их ставит экран.
+    pub(crate) chips: Vec<(String, &'static str)>,
+    pub(crate) external: bool,
     /// Куда «Открыть» кладёт файл перед запуском системного приложения.
     pub(crate) open_dir: PathBuf,
     /// Картинки закрытого письма: убрать из атласа gpui при следующей отрисовке (S4-08). Сам gpui их не
@@ -199,6 +230,8 @@ const READING_INSET: f32 = 48.;
 /// Итог разбора и действий: уровень песочницы (строка состояния), тосты, запросы к серверу.
 pub(crate) enum ReadingEvent {
     Sandbox(Level),
+    /// «+ категория» в шапке письма (T2-25): меню категорий, как кнопка «Категория».
+    Categorize,
     /// Ответ на приглашение поставлен (T2-22): тост с «Отменить» на [`ANSWER_UNDO`].
     AnswerQueued(String),
     /// Время встреч писем-приглашений (T2-18): в строки списка вместо превью.
@@ -286,6 +319,8 @@ impl ReadingPane {
             meetings_wanted: HashMap::new(),
             meetings_busy: 0,
             pending_answer: None,
+            chips: Vec::new(),
+            external: false,
             open_dir: data_dir().join("open"),
             retired: Vec::new(),
             feed: None,
@@ -1187,6 +1222,35 @@ impl Render for ReadingPane {
             .border_b_1()
             .border_color(l.border())
             .child(div().text_size(l.px(pets_ui::theme::Metric::TypeSubtitle)).line_height(px(26.)).font_weight(FontWeight::SEMIBOLD).child(subject))
+            // Категории, «Внешний» и «+ категория» (T2-25, макет `Main`).
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(px(6.))
+                    .items_center()
+                    .children(self.chips.iter().map(|(name, color)| crate::labels::chip(name.clone(), color, &l).max_w(px(200.)).text_size(px(12.))))
+                    .when(self.external, |d| {
+                        d.child(crate::labels::chip(tr!("reading-external"), postman_core::palette::NEUTRAL, &l).text_size(px(12.)))
+                    })
+                    .child(
+                        div()
+                            .id("reading-add-category")
+                            .children(crate::screens::spot("reading-add-category"))
+                            .px(px(8.))
+                            .rounded(px(4.))
+                            .border_1()
+                            .border_dashed()
+                            .border_color(l.stroke())
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .text_color(l.text2())
+                            .cursor_pointer()
+                            .hover(|d| d.bg(l.hover()))
+                            .child(tr!("reading-add-category"))
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(ReadingEvent::Categorize))),
+                    ),
+            )
             .child(
                 div()
                     .flex()
@@ -1214,7 +1278,14 @@ impl Render for ReadingPane {
                             ))),
                     )
                     .children(lock)
-                    .children(seal),
+                    .children(seal)
+                    // «Ответить» и «Переслать» у письма (T2-25, макет `Main`).
+                    .child(header_button("reading-reply", crate::chrome::glyph::REPLY, "mail.reply", "cmd-mail-reply", &l, cx, || {
+                        Box::new(crate::actions::mail::Reply)
+                    }))
+                    .child(header_button("reading-forward", crate::chrome::glyph::FORWARD, "mail.forward", "cmd-mail-forward", &l, cx, || {
+                        Box::new(crate::actions::mail::Forward)
+                    })),
             )
             // Вердикт сервера (T2-16): письмо помечено опасным — полоса-предупреждение, без своих проверок.
             .children(threat_strip(&r.row, &l))
