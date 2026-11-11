@@ -1413,6 +1413,12 @@ mod tests {
         assert_eq!(cards[0]["uid"], "c1");
         assert_eq!(cards[0]["titles"]["k1"]["name"], "Директор");
         assert_eq!(cards[1]["name"]["full"], "Вторая");
+        // Личная группа (T2-47): `KIND:group` и `MEMBER` — JSContact `kind` и `members`.
+        let group = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:g1\r\nFN:Руководители\r\nKIND:group\r\nMEMBER:mailto:a@example.test\r\nMEMBER:urn:uuid:f81d4fae\r\nEND:VCARD\r\n";
+        let g = &super::parse_contacts(group.as_bytes()).unwrap()[0];
+        assert_eq!(g["kind"], "group", "{g}");
+        assert_eq!(g["members"]["mailto:a@example.test"], true, "{g}");
+        assert_eq!(g["members"]["urn:uuid:f81d4fae"], true, "{g}");
         assert!(super::parse_contacts(b"BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n").is_err());
         assert!(super::parse_contacts(b"").is_err());
     }

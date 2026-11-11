@@ -57,3 +57,10 @@ compose-attached-skipped = { $n ->
     [few] { $n } письма не вложено: их нет на сервере
    *[many] { $n } писем не вложено: их нет на сервере
 }
+# Личные группы в письме (T2-47).
+compose-group-expand = Показать участников
+compose-group-suggestion = { $name } · { $n ->
+    [one] { $n } участник
+    [few] { $n } участника
+   *[many] { $n } участников
+}

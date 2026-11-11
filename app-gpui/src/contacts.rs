@@ -15,6 +15,10 @@
 //! «Встреча в 15:00» в ближайшее окно, «Руководитель» и «Кабинет», рабочий и мобильный телефоны, «Фамилия» и «Имя» в
 //! форме, Ctrl+N / Ctrl+Shift+Q / Ctrl+C, подсказка исправленной раскладки в поиске, «Справочник обновлён ЧЧ:ММ».
 //!
+//! Личные группы (T2-47): слева «Группы» с числом участников и «Новая группа» (форма на месте карточки), в командной
+//! строке — «В группу» (выбранный — в группу из меню), карточка группы — участники с «Убрать», «Написать» всей группе
+//! (в письме — чип группы, при отправке — адреса участников).
+//!
 //! Своя кэшируемая view: перерисовывается только по своему `notify`. С экраном говорит событиями [`ContactsAction`].
 
 use std::collections::{HashMap, HashSet};
@@ -63,6 +67,8 @@ pub(crate) enum Source {
     Directory,
     Frequent,
     Lists,
+    /// Личные группы (T2-47).
+    Groups,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -76,6 +82,8 @@ pub(crate) enum Kind {
     Correspondent,
     /// Список рассылки справочника (группа с адресом, T2-41): писать можно, состава сервер не даёт.
     List,
+    /// Личная группа (T2-47): своего адреса нет, письмо — участникам.
+    Group,
 }
 
 impl Kind {
@@ -97,6 +105,7 @@ impl Kind {
             Kind::Resource => "contacts-kind-resource",
             Kind::Correspondent => "contacts-kind-correspondent",
             Kind::List => "contacts-kind-list",
+            Kind::Group => "contacts-kind-group",
         })
     }
 }
@@ -166,6 +175,8 @@ impl Entry {
             organization: p.department.trim().to_owned(),
             title: p.title.trim().to_owned(),
             free_busy: None,
+            group: false,
+            members: Vec::new(),
         };
         let mut e = Self::new(card, Kind::of_principal(&p.kind));
         e.office = Office { manager: p.manager.trim().to_owned(), room: p.office.trim().to_owned() };
@@ -471,6 +482,16 @@ impl MenuItem {
 /// «Добавить в мои контакты» (`personal` — у сервера есть личные контакты).
 pub(crate) fn menu_items(e: &Entry, personal: bool, meet: bool) -> Vec<Vec<MenuItem>> {
     let mut groups = Vec::new();
+    // Личная группа (T2-47): «Написать» всем участникам; «Изменить» и «Удалить» — своя карточка.
+    if e.kind == Kind::Group {
+        if !e.card.members.is_empty() {
+            groups.push(vec![MenuItem::Write]);
+        }
+        if personal {
+            groups.push(vec![MenuItem::Edit, MenuItem::Delete]);
+        }
+        return groups;
+    }
     if !e.card.emails.is_empty() {
         let mut g = vec![MenuItem::Write];
         if meet {
@@ -547,6 +568,8 @@ pub(crate) struct FormText {
 pub(crate) enum FormError {
     NeedName,
     BadEmail(String),
+    /// У группы нет названия (T2-47).
+    NeedGroupName,
 }
 
 impl FormError {
@@ -554,6 +577,7 @@ impl FormError {
         match self {
             FormError::NeedName => tr!("contacts-need-name"),
             FormError::BadEmail(e) => tr!("contacts-bad-email", email = e.clone()),
+            FormError::NeedGroupName => tr!("contacts-group-need-name"),
         }
     }
 }
@@ -595,6 +619,8 @@ impl FormText {
             organization: self.organization.trim().to_string(),
             title: self.title.trim().to_string(),
             free_busy: None,
+            group: false,
+            members: Vec::new(),
         };
         if card.name.is_empty() && card.emails.is_empty() {
             return Err(FormError::NeedName);
@@ -635,6 +661,8 @@ impl Form {
 enum Mode {
     View,
     Edit(Box<Form>),
+    /// Форма группы (T2-47): «Новая группа» и «Изменить» группы.
+    Group(Box<GroupForm>),
     /// Строка «Удалить контакт? Да / Нет».
     Confirm,
 }
@@ -719,6 +747,8 @@ pub(crate) enum ContactsAction {
     FindPeople(String),
     /// Новое письмо с адресом.
     Write(Address),
+    /// Новое письмо личной группе (T2-47): в «Кому» — чип группы, при отправке — адреса участников.
+    WriteGroup(crate::compose::Group),
     /// Письмо «Последней переписки» — вкладкой (T2-40).
     OpenLetter(Box<EmailRow>),
     /// Вкладка встречи с этим участником; начало — ближайшее окно (T2-42), иначе по умолчанию.
@@ -761,6 +791,12 @@ pub(crate) struct ContactsView {
     directory: Vec<Entry>,
     /// Списки рассылки справочника (T2-41): группы с адресом.
     lists: Vec<Entry>,
+    /// Личные группы (T2-47): карточки-группы «Моих контактов».
+    groups: Vec<Entry>,
+    /// Открыто меню «В группу» командной строки.
+    pub(crate) group_menu: bool,
+    /// Сохранение группы без формы («В группу», «Убрать из группы»): тикет и тост об успехе.
+    quiet: Option<(u64, String)>,
     /// «Часто пишу»: адресаты из адресной книги по частоте и строки списка из них (S5-25) в выбранном порядке (T1-24).
     frequent_src: Vec<Frequent>,
     frequent: Vec<Entry>,
@@ -833,6 +869,9 @@ impl ContactsView {
             mine: demo_mine(),
             directory: demo_directory().into_iter().filter(|e| e.kind != Kind::List).collect(),
             lists: demo_directory().into_iter().filter(|e| e.kind == Kind::List).collect(),
+            groups: demo_groups(),
+            group_menu: false,
+            quiet: None,
             frequent_src: Vec::new(),
             frequent: Vec::new(),
             order: Order::default(),
@@ -876,6 +915,8 @@ impl ContactsView {
         self.mine.clear();
         self.directory.clear();
         self.lists.clear();
+        self.groups.clear();
+        self.quiet = None;
         self.presence = Presences::default();
         self.mail = Mail::default();
         self.directory_at = None;
@@ -929,6 +970,7 @@ impl ContactsView {
             Source::Directory => &self.directory,
             Source::Frequent => &self.frequent,
             Source::Lists => &self.lists,
+            Source::Groups => &self.groups,
         }
     }
 
@@ -1044,11 +1086,12 @@ impl ContactsView {
         self.layout = None;
         if self.searching() {
             // По всем источникам: справочник, мои, адресаты переписки (кого нет ни там, ни там), списки рассылки.
-            let groups: [(Source, Vec<Entry>); 4] = [
+            let groups: [(Source, Vec<Entry>); 5] = [
                 (Source::Directory, self.directory.clone()),
                 (Source::Mine, self.mine.clone()),
                 (Source::Frequent, self.frequent.iter().filter(|e| e.kind == Kind::Correspondent).cloned().collect()),
                 (Source::Lists, self.lists.clone()),
+                (Source::Groups, self.groups.clone()),
             ];
             // Другая раскладка (T2-45): набранное как есть не подходит никому, а в другой раскладке — подходит.
             if let Some(fixed) = postman_core::fuzzy::other_layout(self.query.trim()) {
@@ -1195,9 +1238,10 @@ impl ContactsView {
     }
 
     fn select(&mut self, id: String, cx: &mut Context<Self>) {
-        if matches!(self.mode, Mode::Edit(_)) && self.selected.as_deref() == Some(id.as_str()) {
+        if matches!(self.mode, Mode::Edit(_) | Mode::Group(_)) && self.selected.as_deref() == Some(id.as_str()) {
             return;
         }
+        self.group_menu = false;
         self.selected = Some(id);
         self.mode = Mode::View;
         self.ask_today(cx);
@@ -1314,8 +1358,12 @@ impl ContactsView {
             self.close_menu(window, cx);
             return true;
         }
+        if std::mem::take(&mut self.group_menu) {
+            cx.notify();
+            return true;
+        }
         match self.mode {
-            Mode::Confirm | Mode::Edit(_) => {
+            Mode::Confirm | Mode::Edit(_) | Mode::Group(_) => {
                 self.mode = Mode::View;
                 self.pending = None;
             }
@@ -1339,14 +1387,15 @@ impl ContactsView {
     pub(crate) fn edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.selected_entry().map(|e| (e.kind, e.card.clone())) {
             Some((Kind::Contact, card)) => self.start_edit(Some(card), window, cx),
+            Some((Kind::Group, card)) => self.start_group_form(Some(card), String::new(), window, cx),
             Some((_, card)) => self.copy_to_mine(card, window, cx),
             None => {}
         }
     }
 
-    /// «Удалить» (Delete): строка подтверждения у личного контакта.
+    /// «Удалить» (Delete): строка подтверждения у личного контакта и своей группы (T2-47).
     pub(crate) fn ask_delete(&mut self, cx: &mut Context<Self>) {
-        if self.selected_entry().is_some_and(|e| e.kind == Kind::Contact) && matches!(self.mode, Mode::View) {
+        if self.selected_entry().is_some_and(|e| matches!(e.kind, Kind::Contact | Kind::Group)) && matches!(self.mode, Mode::View) {
             self.mode = Mode::Confirm;
             cx.notify();
         }
@@ -1364,6 +1413,10 @@ impl ContactsView {
 
     /// «Написать» (Ctrl+N): письмо выбранному; без адреса — пустое письмо, как Ctrl+N в почте.
     pub(crate) fn write(&mut self, cx: &mut Context<Self>) {
+        // Личная группа (T2-47): письмо всем участникам.
+        if let Some(id) = self.selected_entry().filter(|e| e.kind == Kind::Group).map(|e| e.card.id.clone()) {
+            return self.write_group(&id, cx);
+        }
         match self.selected_address() {
             Some(a) => cx.emit(ContactsAction::Write(a)),
             None => cx.emit(ContactsAction::WriteBlank),
@@ -1453,6 +1506,7 @@ impl ContactsView {
             self.select(id.clone(), cx);
         }
         match it {
+            MenuItem::Write if self.entry(&id).is_some_and(|e| e.kind == Kind::Group) => self.write_group(&id, cx),
             MenuItem::Write | MenuItem::Meet | MenuItem::Copy => {
                 let Some(a) = self.address(&id) else { return };
                 match it {
@@ -1644,10 +1698,11 @@ impl ContactsView {
     }
 
     fn delete(&mut self, cx: &mut Context<Self>) {
-        let Some(e) = self.selected_entry().filter(|e| e.kind == Kind::Contact) else { return };
+        let Some(e) = self.selected_entry().filter(|e| matches!(e.kind, Kind::Contact | Kind::Group)) else { return };
         let (id, name) = (e.card.id.clone(), e.name());
         if !self.live {
             self.mine.retain(|e| e.card.id != id);
+            self.groups.retain(|e| e.card.id != id);
             self.selected = None;
             self.mode = Mode::View;
             self.refilter(cx);
@@ -1663,8 +1718,11 @@ impl ContactsView {
     pub(crate) fn on_sync(&mut self, ev: &SyncEvent, cx: &mut Context<Self>) {
         match ev {
             SyncEvent::ContactsLoaded(cards) if self.live => {
-                self.mine = cards.iter().cloned().map(|c| Entry::new(c, Kind::Contact)).collect();
+                // Карточки-группы (T2-47) — в «Группы», не в «Мои контакты».
+                self.mine = cards.iter().filter(|c| !c.group).cloned().map(|c| Entry::new(c, Kind::Contact)).collect();
                 sort(&mut self.mine);
+                self.groups = cards.iter().filter(|c| c.group).cloned().map(|c| Entry::new(c, Kind::Group)).collect();
+                sort(&mut self.groups);
                 self.loading = false;
                 self.loaded = true;
                 self.error = None;
@@ -1736,19 +1794,29 @@ impl ContactsView {
                 cx.notify();
                 return;
             }
+            // «В группу» и «Убрать из группы» (T2-47): тост, выбор в панели — прежний.
+            SyncEvent::ContactSaved { ticket, .. } if self.quiet.as_ref().is_some_and(|(t, _)| t == ticket) => {
+                if let Some((_, note)) = self.quiet.take() {
+                    cx.emit(ContactsAction::Toast(Toast::Success, note));
+                }
+                cx.notify();
+                return;
+            }
             SyncEvent::ContactSaved { ticket, id } if self.pending == Some(*ticket) => {
                 self.pending = None;
                 let name = match &self.mode {
                     Mode::Edit(f) => f.text(cx).name(),
+                    Mode::Group(f) => f.text(cx).name.trim().to_owned(),
                     _ => String::new(),
                 };
+                let key = if matches!(self.mode, Mode::Group(_)) { "contacts-group-saved" } else { "contacts-saved" };
                 self.mode = Mode::View;
                 self.selected = Some(id.clone());
-                cx.emit(ContactsAction::Toast(Toast::Success, tr!("contacts-saved", name = name)));
+                cx.emit(ContactsAction::Toast(Toast::Success, tr!(key, name = name)));
             }
             SyncEvent::ContactDeleted { ticket, id } if self.pending == Some(*ticket) => {
                 self.pending = None;
-                let name = self.mine.iter().find(|e| &e.card.id == id).map(Entry::name).unwrap_or_default();
+                let name = self.mine.iter().chain(&self.groups).find(|e| &e.card.id == id).map(Entry::name).unwrap_or_default();
                 self.mode = Mode::View;
                 self.selected = None;
                 cx.emit(ContactsAction::Toast(Toast::Success, tr!("contacts-deleted", name = name)));
@@ -1758,10 +1826,14 @@ impl ContactsView {
                 if *ticket == 0 {
                     self.loading = false;
                     self.error = Some(text);
+                } else if self.quiet.as_ref().is_some_and(|(t, _)| t == ticket) {
+                    self.quiet = None;
+                    cx.emit(ContactsAction::Toast(Toast::Error, text));
                 } else if self.pending == Some(*ticket) {
                     self.pending = None;
                     match &mut self.mode {
                         Mode::Edit(f) => f.error = Some(text.clone()),
+                        Mode::Group(f) => f.error = Some(text.clone()),
                         _ => self.mode = Mode::View,
                     }
                     cx.emit(ContactsAction::Toast(Toast::Error, text));
@@ -1840,6 +1912,7 @@ impl ContactsView {
         const LIST_ITEMS: usize = 4;
         let lists: Vec<AnyElement> = self.lists.iter().take(LIST_ITEMS).enumerate().map(|(i, e)| list_item(i, e, cx).into_any_element()).collect();
         let more = (self.lists.len() > LIST_ITEMS).then(|| item("src-lists", "contacts-lists-all", self.lists.len(), Source::Lists, cx));
+        let groups = self.nav_groups(&l, cx);
         div()
             .w(px(NAV_W))
             .flex_none()
@@ -1856,6 +1929,7 @@ impl ContactsView {
             .child(div().text_size(px(12.)).text_color(l.text2()).px(px(8.)).pt(px(12.)).pb(px(4.)).truncate().child(account))
             .child(item("src-dir", "contacts-directory", self.pages.total.map_or(self.directory.len(), |t| t as usize), Source::Directory, cx))
             .child(item("src-mine", "contacts-mine", self.mine.len(), Source::Mine, cx))
+            .children(groups)
             .when(!lists.is_empty(), |d| d.child(caption(tr!("contacts-lists"))).children(lists).children(more))
             .when(self.loading, |d| d.child(div().px(px(8.)).pt(px(6.)).text_size(px(12.)).text_color(l.text2()).child(tr!("contacts-loading"))))
             .child(div().flex_1())
@@ -1887,6 +1961,7 @@ impl ContactsView {
             Source::Directory => "contacts-directory",
             Source::Frequent => "contacts-frequent",
             Source::Lists => "contacts-lists",
+            Source::Groups => "contacts-groups",
         });
         let summary = match self.source {
             _ if searching => tr!("contacts-found", n = self.shown.len()),
@@ -2104,6 +2179,7 @@ impl ContactsView {
                     Source::Mine => "contacts-mine",
                     Source::Frequent => "contacts-group-correspondents",
                     Source::Lists => "contacts-lists",
+                    Source::Groups => "contacts-groups",
                 })))
                 .child(div().text_color(l.text2()).child(n.to_string()))
                 .into_any_element(),
@@ -2133,6 +2209,9 @@ impl ContactsView {
     // --- карточка ---
 
     fn card_pane(&self, e: &Entry, cx: &mut Context<Self>) -> AnyElement {
+        if e.kind == Kind::Group {
+            return self.group_pane(e, cx);
+        }
         let l = crate::roles::look(cx);
         let c = &e.card;
         let mine = e.kind == Kind::Contact;
@@ -2315,7 +2394,7 @@ impl ContactsView {
                 }
                 v
             }
-            Kind::List | Kind::Correspondent => vec![cell("contacts-emails", emails), cell("contacts-kind", kind())],
+            Kind::List | Kind::Correspondent | Kind::Group => vec![cell("contacts-emails", emails), cell("contacts-kind", kind())],
         }
         .into_iter()
         .map(IntoElement::into_any_element)
@@ -2729,6 +2808,7 @@ fn row(ix: usize, e: &Entry, state: RowState, l: &Look, cx: &mut Context<Contact
     let email = e.card.emails.first().filter(|m| !m.eq_ignore_ascii_case(&name)).cloned();
     let second = match (e.kind, e.card.title.as_str(), e.card.organization.as_str(), email) {
         (Kind::Room | Kind::Resource, _, _, _) => e.kind.label(),
+        (Kind::Group, _, _, _) => tr!("contacts-group-count", n = e.card.members.len()),
         (_, t, o, _) if !t.is_empty() && !o.is_empty() => format!("{t} · {o}"),
         (_, t, _, _) if !t.is_empty() => t.to_string(),
         (_, _, o, Some(m)) if !o.is_empty() => format!("{m} · {o}"),
@@ -2772,6 +2852,7 @@ fn row(ix: usize, e: &Entry, state: RowState, l: &Look, cx: &mut Context<Contact
         )
         .when(matches!(e.kind, Kind::Room | Kind::Resource), |d| d.child(icon(g::PIN, 12.).text_color(l.text2())))
         .when(e.kind == Kind::List, |d| d.child(icon(g::MAIL, 12.).text_color(l.text2())))
+        .when(e.kind == Kind::Group, |d| d.child(icon(crate::chrome::glyph::CONTACTS, 12.).text_color(l.text2())))
         .when_some(presence, |d, p| {
             let color = match p {
                 Presence::Me | Presence::Hidden => l.text2(),
@@ -2800,6 +2881,7 @@ impl Render for ContactsView {
         let l = crate::roles::look(cx);
         let pane = match &self.mode {
             Mode::Edit(f) => self.form_pane(f, cx),
+            Mode::Group(f) => self.group_form_pane(f, cx),
             _ => match self.selected_entry() {
                 Some(e) => self.card_pane(e, cx),
                 None => div()
@@ -2864,6 +2946,9 @@ impl Render for ContactsBar {
         let c = self.contacts.read(cx);
         let kind = c.selected_entry().map(|e| e.kind);
         let has_mail = c.selected_entry().is_some_and(|e| !e.card.emails.is_empty());
+        // Личная группа (T2-47): «Написать» — участникам.
+        let can_write = has_mail || c.selected_entry().is_some_and(|e| e.kind == Kind::Group && !e.card.members.is_empty());
+        let to_group = c.to_group_menu(&l, self.contacts.clone());
         let search_state = c.search.clone();
         let layout = c.layout.clone().filter(|_| c.searching());
         // Клавиши (T2-43) — подсказкой и KeyTips у кнопок, не в тексте.
@@ -2924,7 +3009,7 @@ impl Render for ContactsBar {
             .px(px(12.))
             .text_color(l.text())
             .when(personal, |d| d.child(new))
-            .child(action("contacts-write", "contacts.write", g::MAIL, "contacts-write", has_mail, || Box::new(cmd::Write)))
+            .child(action("contacts-write", "contacts.write", g::MAIL, "contacts-write", can_write, || Box::new(cmd::Write)))
             .when(meet, |d| d.child(action("contacts-meet", "contacts.meeting", g::CALENDAR, "contacts-meet", has_mail, || Box::new(cmd::Meeting))))
             .child(action("contacts-copy", "contacts.copy_address", g::COPY, "contacts-copy", has_mail, || Box::new(cmd::CopyAddress)))
             .when(personal, |d| {
@@ -2933,13 +3018,32 @@ impl Render for ContactsBar {
                         "contacts-edit",
                         "contacts.edit",
                         g::EDIT,
-                        if kind.is_some_and(|k| k != Kind::Contact) { "contacts-add-mine" } else { "contacts-edit" },
+                        if kind.is_some_and(|k| !matches!(k, Kind::Contact | Kind::Group)) { "contacts-add-mine" } else { "contacts-edit" },
                         kind.is_some(),
                         || Box::new(cmd::Edit),
                     ))
-                    .child(action("contacts-delete", "contacts.delete", g::DELETE, "contacts-delete", kind == Some(Kind::Contact), || {
-                        Box::new(cmd::Delete)
-                    }))
+                    .child(action(
+                        "contacts-delete",
+                        "contacts.delete",
+                        g::DELETE,
+                        "contacts-delete",
+                        matches!(kind, Some(Kind::Contact | Kind::Group)),
+                        || Box::new(cmd::Delete),
+                    ))
+                    // «В группу» (T2-47): выбранный — в группу из меню под кнопкой.
+                    .child(
+                        div()
+                            .relative()
+                            .child(action(
+                                "contacts-to-group",
+                                "contacts.to_group",
+                                crate::chrome::glyph::CONTACTS,
+                                "contacts-to-group",
+                                to_group.0,
+                                || Box::new(cmd::ToGroup),
+                            ))
+                            .children(to_group.1),
+                    )
             })
             .child(div().flex_1())
             .child(crate::keytips::badge(div().ml(px(12.)).w(px(300.)).flex_none().child(search), crate::keytips::key("search.focus", cx), &l, cx))
@@ -2964,6 +3068,11 @@ impl crate::Mailer {
             }
             ContactsAction::WriteBlank => {
                 self.open_compose(Draft::default(), cx);
+                return;
+            }
+            ContactsAction::WriteGroup(group) => {
+                let how = crate::compose::OpenAs { group: Some(group.clone()), ..Default::default() };
+                self.open_draft(Draft::default(), how, cx);
                 return;
             }
             ContactsAction::Meet(address, start) => {
@@ -3057,6 +3166,8 @@ fn demo_mine() -> Vec<Entry> {
                 organization: c.organization.into(),
                 title: c.title.into(),
                 free_busy: None,
+                group: false,
+                members: Vec::new(),
             };
             Entry::new(card, Kind::Contact)
         })
@@ -3108,11 +3219,693 @@ impl ContactsView {
     }
 }
 
+// --- личные группы (T2-47) ---
+
+/// Поля формы группы (без gpui): название и участники через «;» или «,» — адрес, «Имя <адрес>» или имя контакта.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct GroupText {
+    pub(crate) name: String,
+    pub(crate) members: String,
+}
+
+impl GroupText {
+    /// Поля группы: участники-адреса через «; » (чужие ссылки других программ в поле не показываются).
+    pub(crate) fn of(card: &ContactCard) -> Self {
+        let members: Vec<&str> = card.members.iter().filter_map(|m| postman_core::model::member_address(m)).collect();
+        Self { name: card.name.clone(), members: members.join("; ") }
+    }
+
+    /// Карточка-группа (`id` — прежней, у новой пустой). Участник — адрес; имя без адреса — контакт из `known` с таким
+    /// именем (один адрес на имя). `keep` — чужие ссылки участников прежней карточки: остаются как были.
+    pub(crate) fn card(&self, id: &str, keep: &[String], known: &[&Entry]) -> Result<ContactCard, FormError> {
+        let name = self.name.trim();
+        if name.is_empty() {
+            return Err(FormError::NeedGroupName);
+        }
+        let (mut tokens, open) = crate::compose::segments(&self.members);
+        tokens.push(open);
+        let mut members: Vec<String> = Vec::new();
+        for t in tokens.iter().map(|t| t.trim()).filter(|t| !t.is_empty()) {
+            let email = match parse_addresses(t).0.into_iter().next() {
+                Some(a) => a.email,
+                None => {
+                    let mut found: Vec<&str> =
+                        known.iter().filter(|e| e.name().eq_ignore_ascii_case(t)).filter_map(|e| e.card.emails.first().map(String::as_str)).collect();
+                    found.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+                    match found.as_slice() {
+                        [one] => (*one).to_owned(),
+                        _ => return Err(FormError::BadEmail(t.to_owned())),
+                    }
+                }
+            };
+            if !members.iter().any(|m| m.eq_ignore_ascii_case(&email)) {
+                members.push(email);
+            }
+        }
+        members.extend(keep.iter().filter(|k| postman_core::model::member_address(k).is_none()).cloned());
+        Ok(ContactCard { id: id.to_owned(), name: name.to_owned(), group: true, members, ..ContactCard::default() })
+    }
+}
+
+/// Форма группы на экране.
+struct GroupForm {
+    /// Прежняя группа (правка); `None` — новая.
+    old: Option<ContactCard>,
+    name: Entity<InputState>,
+    members: Entity<InputState>,
+    error: Option<String>,
+}
+
+impl GroupForm {
+    fn text(&self, cx: &App) -> GroupText {
+        GroupText { name: self.name.read(cx).value().to_string(), members: self.members.read(cx).value().to_string() }
+    }
+}
+
+impl ContactsView {
+    /// Группы — с первой выбранной (снимок `contacts-groups`).
+    pub(crate) fn show_groups(&mut self, cx: &mut Context<Self>) {
+        self.set_source(Source::Groups, cx);
+        if let Some(id) = self.groups.first().map(|e| e.card.id.clone()) {
+            self.select(id, cx);
+        }
+    }
+
+    /// Открыта форма группы.
+    pub(crate) fn group_editing(&self) -> bool {
+        matches!(self.mode, Mode::Group(_))
+    }
+
+    /// «Новая группа» (слева и в палитре).
+    pub(crate) fn new_group(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.start_group_form(None, String::new(), window, cx);
+    }
+
+    /// Снимок `contacts-new-group`: форма с названием и участниками (адрес, имя контакта, адрес справочника).
+    pub(crate) fn screen_new_group(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.start_group_form(None, "o.belova@partner.example; Гусев Дмитрий; a.petrov@corp.example".into(), window, cx); // i18n-ok: ввод сцены
+        if let Mode::Group(f) = &self.mode {
+            f.name.update(cx, |s, cx| s.set_value("Проект «Партнёр»", window, cx)); // i18n-ok: ввод сцены
+        }
+    }
+
+    /// Форма группы на месте карточки: `old` — правка, `members` — участники новой (из «В группу» — выбранный).
+    fn start_group_form(&mut self, old: Option<ContactCard>, members: String, window: &mut Window, cx: &mut Context<Self>) {
+        let text = old.as_ref().map(GroupText::of).unwrap_or(GroupText { name: String::new(), members });
+        let mut field = |value: String, placeholder: &str, cx: &mut Context<Self>| {
+            let state = cx.new(|cx| InputState::new(window, cx).default_value(value).placeholder(tr!(placeholder)));
+            self._subscriptions.push(cx.subscribe_in(&state, window, |this, _, ev: &InputEvent, _, cx| {
+                if let InputEvent::PressEnter { .. } = ev {
+                    this.save_group(cx);
+                }
+            }));
+            state
+        };
+        let name = field(text.name, "contacts-group-name-placeholder", cx);
+        let members = field(text.members, "contacts-group-members-placeholder", cx);
+        name.update(cx, |s, cx| s.focus(window, cx));
+        if old.is_none() {
+            self.set_source(Source::Groups, cx);
+        }
+        self.menu = None;
+        self.group_menu = false;
+        self.pending = None;
+        self.mode = Mode::Group(Box::new(GroupForm { old, name, members, error: None }));
+        cx.notify();
+    }
+
+    fn save_group(&mut self, cx: &mut Context<Self>) {
+        let (text, old) = match &self.mode {
+            Mode::Group(f) if self.pending.is_none() => (f.text(cx), f.old.clone()),
+            _ => return,
+        };
+        let id = old.as_ref().map(|c| c.id.clone()).unwrap_or_default();
+        let keep = old.as_ref().map(|c| c.members.clone()).unwrap_or_default();
+        let known: Vec<&Entry> = self.mine.iter().chain(&self.directory).collect();
+        let card = match text.card(&id, &keep, &known) {
+            Ok(c) => c,
+            Err(e) => {
+                if let Mode::Group(f) = &mut self.mode {
+                    f.error = Some(e.text());
+                }
+                cx.notify();
+                return;
+            }
+        };
+        if !self.live {
+            let name = card.name.clone();
+            let card = self.store_group(card);
+            self.selected = Some(card);
+            self.mode = Mode::View;
+            self.refilter(cx);
+            cx.emit(ContactsAction::Toast(Toast::Success, tr!("contacts-group-saved", name = name)));
+            return self.note_demo(cx);
+        }
+        let ticket = self.ticket();
+        self.pending = Some(ticket);
+        cx.emit(ContactsAction::Save { card: Box::new(card), old: old.map(Box::new), ticket });
+        cx.notify();
+    }
+
+    /// Демо: группа — в памяти окна (новой — свой id) → её id.
+    fn store_group(&mut self, mut card: ContactCard) -> String {
+        if card.id.is_empty() {
+            card.id = format!("local-{}", self.next_local);
+            self.next_local += 1;
+        }
+        let id = card.id.clone();
+        self.groups.retain(|e| e.card.id != id);
+        self.groups.push(Entry::new(card, Kind::Group));
+        sort(&mut self.groups);
+        id
+    }
+
+    /// Группа без формы («В группу», «Убрать из группы»): сохранить, по ответу — тост `note`.
+    fn save_group_quietly(&mut self, card: ContactCard, old: ContactCard, note: String, cx: &mut Context<Self>) {
+        if !self.live {
+            self.store_group(card);
+            self.refilter(cx);
+            cx.emit(ContactsAction::Toast(Toast::Success, note));
+            return self.note_demo(cx);
+        }
+        let ticket = self.ticket();
+        self.quiet = Some((ticket, note));
+        cx.emit(ContactsAction::Save { card: Box::new(card), old: Some(Box::new(old)), ticket });
+        cx.notify();
+    }
+
+    /// Запись участника по адресу: справочник, мои контакты.
+    fn member_entry(&self, email: &str) -> Option<&Entry> {
+        let has = |e: &&Entry| e.card.emails.iter().any(|m| m.eq_ignore_ascii_case(email));
+        self.directory.iter().find(has).or_else(|| self.mine.iter().find(has))
+    }
+
+    /// Группа для письма: участники-адреса с именами из справочника и контактов.
+    fn group_of(&self, e: &Entry) -> crate::compose::Group {
+        let members = e
+            .card
+            .members
+            .iter()
+            .filter_map(|m| postman_core::model::member_address(m))
+            .map(|m| Address::new(self.member_entry(m).map(|x| x.card.name.clone()).unwrap_or_default(), m))
+            .collect();
+        crate::compose::Group { name: e.name(), members }
+    }
+
+    /// «Написать» группе `id` (T2-47): письмо с чипом группы.
+    fn write_group(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(g) = self.groups.iter().find(|e| e.card.id == id).map(|e| self.group_of(e)) else { return };
+        if !g.members.is_empty() {
+            cx.emit(ContactsAction::WriteGroup(g));
+        }
+    }
+
+    /// «Убрать из группы» у участника выбранной группы.
+    fn remove_member(&mut self, email: String, cx: &mut Context<Self>) {
+        let Some(old) = self.selected_entry().filter(|e| e.kind == Kind::Group).map(|e| e.card.clone()) else { return };
+        let mut card = old.clone();
+        card.members.retain(|m| !m.eq_ignore_ascii_case(&email));
+        let who = self.member_entry(&email).map(Entry::name).unwrap_or_else(|| email.clone());
+        let note = tr!("contacts-removed-from-group", name = who, group = old.name.clone());
+        self.save_group_quietly(card, old, note, cx);
+    }
+
+    /// Участник группы по щелчку — его карточка в справочнике или в моих контактах.
+    fn open_member(&mut self, email: String, cx: &mut Context<Self>) {
+        let has = |e: &&Entry| e.card.emails.iter().any(|m| m.eq_ignore_ascii_case(&email));
+        let found = match self.directory.iter().find(has) {
+            Some(e) => Some((Source::Directory, e.card.id.clone())),
+            None => self.mine.iter().find(has).map(|e| (Source::Mine, e.card.id.clone())),
+        };
+        if let Some((source, id)) = found {
+            self.set_source(source, cx);
+            self.select(id, cx);
+        }
+    }
+
+    /// «В группу» (`contacts.to_group`): меню групп под кнопкой — у записи с адресом.
+    pub(crate) fn toggle_group_menu(&mut self, cx: &mut Context<Self>) {
+        let can = self.selected_entry().is_some_and(|e| e.kind != Kind::Group && !e.card.emails.is_empty());
+        self.group_menu = can && !self.group_menu;
+        cx.notify();
+    }
+
+    /// Выбранный — в группу `id`; уже там — тост.
+    pub(crate) fn add_selected_to(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.group_menu = false;
+        let Some((who, email)) =
+            self.selected_entry().filter(|e| e.kind != Kind::Group).and_then(|e| Some((e.name(), e.card.emails.first()?.clone())))
+        else {
+            return cx.notify();
+        };
+        let Some(old) = self.groups.iter().find(|g| g.card.id == id).map(|g| g.card.clone()) else { return cx.notify() };
+        if old.members.iter().any(|m| m.eq_ignore_ascii_case(&email)) {
+            cx.emit(ContactsAction::Toast(Toast::Info, tr!("contacts-already-in-group", name = who, group = old.name.clone())));
+            return cx.notify();
+        }
+        let mut card = old.clone();
+        card.members.push(email);
+        let note = tr!("contacts-added-to-group", name = who, group = old.name.clone());
+        self.save_group_quietly(card, old, note, cx);
+    }
+
+    /// «Новая группа…» из меню «В группу»: форма, выбранный — первым участником.
+    pub(crate) fn new_group_with_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let first = self.selected_address().map(|a| a.display()).unwrap_or_default();
+        self.start_group_form(None, first, window, cx);
+    }
+
+    /// «В группу» командной строки: можно ли (выбрана запись с адресом) и меню групп, если открыто.
+    pub(crate) fn to_group_menu(&self, l: &Look, contacts: Entity<ContactsView>) -> (bool, Option<AnyElement>) {
+        let selected = self.selected_entry().filter(|e| e.kind != Kind::Group);
+        let email = selected.and_then(|e| e.card.emails.first().cloned());
+        let on = email.is_some();
+        if !self.group_menu || !on {
+            return (on, None);
+        }
+        let email = email.unwrap_or_default();
+        let mut items: Vec<AnyElement> = self
+            .groups
+            .iter()
+            .enumerate()
+            .map(|(i, g)| {
+                let member = g.card.members.iter().any(|m| m.eq_ignore_ascii_case(&email));
+                let id = g.card.id.clone();
+                let c = contacts.clone();
+                crate::composer::menu_item(ElementId::NamedInteger("to-group".into(), i as u64), l, false)
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(icon(if member { g::CHECK } else { crate::chrome::glyph::CONTACTS }, 12.).text_color(l.text2()))
+                    .child(div().flex_1().min_w_0().truncate().child(g.name()))
+                    .child(div().text_size(px(12.)).text_color(l.text2()).child(g.card.members.len().to_string()))
+                    .on_click(move |_, _, cx| c.update(cx, |c, cx| c.add_selected_to(&id, cx)))
+                    .into_any_element()
+            })
+            .collect();
+        if !items.is_empty() {
+            items.push(crate::bulk::separator(l).into_any_element());
+        }
+        let c = contacts.clone();
+        items.push(
+            crate::composer::menu_item(ElementId::Name("to-group-new".into()), l, false)
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(icon(g::ADD, 12.).text_color(l.text2()))
+                .child(tr!("contacts-to-group-new"))
+                .on_click(move |_, window, cx| c.update(cx, |c, cx| c.new_group_with_selected(window, cx)))
+                .into_any_element(),
+        );
+        let close = contacts.clone();
+        let menu = crate::composer::menu_box("to-group-menu", l)
+            .top(px(34.))
+            .left_0()
+            .min_w(px(260.))
+            .text_size(px(13.))
+            .text_color(l.text())
+            .children(items)
+            .on_mouse_down_out(move |_, _, cx| {
+                close.update(cx, |c, cx| {
+                    c.group_menu = false;
+                    cx.notify();
+                })
+            });
+        (true, Some(deferred(menu).with_priority(1).into_any_element()))
+    }
+
+    /// Слева «Группы» (T2-47): свои группы с числом участников (первые по имени, больше — «Все группы») и «Новая
+    /// группа»; без личных контактов у сервера — ничего.
+    fn nav_groups(&self, l: &Look, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        if !crate::features::available("contacts.new", crate::features::get(cx)) {
+            return Vec::new();
+        }
+        const GROUP_ITEMS: usize = 5;
+        let line = |id: ElementId, on: bool| {
+            div()
+                .id(id)
+                .h(px(30.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .px(px(8.))
+                .rounded(px(4.))
+                .cursor_pointer()
+                .when(on, |d| d.bg(l.panel()).font_weight(FontWeight::SEMIBOLD))
+                .when(!on, |d| d.hover(|d| d.bg(l.hover())))
+        };
+        let mut out: Vec<AnyElement> =
+            vec![div().text_size(px(12.)).text_color(l.text2()).px(px(8.)).pt(px(12.)).pb(px(4.)).child(tr!("contacts-groups")).into_any_element()];
+        for (i, e) in self.groups.iter().take(GROUP_ITEMS).enumerate() {
+            let on = !self.searching() && self.source == Source::Groups && self.selected.as_deref() == Some(e.card.id.as_str());
+            let id = e.card.id.clone();
+            out.push(
+                line(ElementId::NamedInteger("src-group".into(), i as u64), on)
+                    .child(icon(crate::chrome::glyph::CONTACTS, 14.).text_color(l.text2()))
+                    .child(div().flex_1().min_w_0().truncate().child(e.name()))
+                    .child(div().text_color(l.text2()).font_weight(FontWeight::NORMAL).child(e.card.members.len().to_string()))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_source(Source::Groups, cx);
+                        this.select(id.clone(), cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+        if self.groups.len() > GROUP_ITEMS {
+            let on = !self.searching() && self.source == Source::Groups && self.selected.is_none();
+            out.push(
+                line(ElementId::Name("src-groups".into()), on)
+                    .child(div().flex_1().child(tr!("contacts-groups-all")))
+                    .child(div().text_color(l.text2()).font_weight(FontWeight::NORMAL).child(self.groups.len().to_string()))
+                    .on_click(cx.listener(|this, _, _, cx| this.set_source(Source::Groups, cx)))
+                    .into_any_element(),
+            );
+        }
+        out.push(
+            line(ElementId::Name("src-new-group".into()), false)
+                .relative()
+                .children(crate::screens::spot("src-new-group"))
+                .text_color(l.accent_text())
+                .child(icon(g::ADD, 14.))
+                .child(div().flex_1().child(tr!("contacts-new-group")))
+                .on_click(cx.listener(|this, _, window, cx| this.new_group(window, cx)))
+                .into_any_element(),
+        );
+        out
+    }
+
+    /// Карточка группы: имя, «Группа · N участников», «Написать» всем; участники — кружок, имя, адрес, «Убрать»;
+    /// строка «Удалить группу?».
+    fn group_pane(&self, e: &Entry, cx: &mut Context<Self>) -> AnyElement {
+        let l = crate::roles::look(cx);
+        let busy = self.pending.is_some() || self.quiet.is_some();
+        let personal = crate::features::available("contacts.new", crate::features::get(cx));
+        let confirm = matches!(self.mode, Mode::Confirm).then(|| {
+            let answer = |id: &'static str, text: String, yes: bool, cx: &mut Context<Self>| {
+                div()
+                    .id(id)
+                    .relative()
+                    .children(crate::screens::spot(id))
+                    .px_3()
+                    .py_0p5()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .when(yes, |d| d.bg(l.error_bg()).text_color(l.error()).font_weight(FontWeight::SEMIBOLD))
+                    .when(!yes, |d| d.bg(l.fill()).hover(|d| d.bg(l.pressed())))
+                    .child(text)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if yes {
+                            this.delete(cx);
+                        } else {
+                            this.mode = Mode::View;
+                            cx.notify();
+                        }
+                    }))
+            };
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .px(px(24.))
+                .py_1p5()
+                .bg(l.warning_bg())
+                .border_b_1()
+                .border_color(l.border())
+                .child(div().flex_1().child(if self.pending.is_some() {
+                    tr!("contacts-deleting")
+                } else {
+                    tr!("contacts-group-delete-confirm", name = e.name())
+                }))
+                .when(self.pending.is_none(), |d| {
+                    d.child(answer("delete-yes", tr!("contacts-yes"), true, cx)).child(answer("delete-no", tr!("contacts-no"), false, cx))
+                })
+        });
+        let n = e.card.members.len();
+        let head = div()
+            .flex()
+            .items_center()
+            .gap(px(16.))
+            .child(avatar(&e.name(), 64., &l))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .line_height(px(24.))
+                    .child(div().text_size(px(22.)).font_weight(FontWeight::SEMIBOLD).line_height(px(30.)).child(e.name()))
+                    .child(div().text_size(px(14.)).child(tr!("contacts-group-summary", n = n))),
+            )
+            .child(
+                div()
+                    .self_start()
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .h(px(24.))
+                            .px(px(10.))
+                            .flex()
+                            .items_center()
+                            .rounded(px(12.))
+                            .bg(l.fill())
+                            .text_size(px(12.))
+                            .child(tr!("contacts-badge-group")),
+                    )
+                    .when(personal, |d| {
+                        d.child(
+                            div()
+                                .id("card-link")
+                                .text_size(px(12.))
+                                .text_color(l.accent_text())
+                                .cursor_pointer()
+                                .child(tr!("contacts-edit"))
+                                .on_click(cx.listener(|this, _, window, cx| this.edit(window, cx))),
+                        )
+                    }),
+            );
+        let write = crate::buttons::primary("contact-write", &l)
+            .child(icon(g::MAIL, 14.))
+            .child(tr!("contacts-write-group"))
+            .when(n == 0, |d| d.opacity(0.45))
+            .on_click(cx.listener(|this, _, _, cx| this.write(cx)));
+        let actions =
+            div().flex().flex_wrap().gap(px(8.)).child(crate::keytips::command(write, "contacts.write", Some(tr!("contacts-write")), &l, cx));
+        let rows: Vec<AnyElement> = e
+            .card
+            .members
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                let address = postman_core::model::member_address(m).map(str::to_owned);
+                let known = address.as_deref().and_then(|a| self.member_entry(a));
+                let name = known.map(Entry::name).unwrap_or_else(|| address.clone().unwrap_or_else(|| tr!("contacts-group-foreign")));
+                let second = address.clone().unwrap_or_else(|| m.clone());
+                let remove = address.clone().filter(|_| personal && !busy).map(|a| {
+                    div()
+                        .id(("member-remove", i))
+                        .relative()
+                        .children(crate::screens::spot(("member-remove", i)))
+                        .size(px(24.))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .cursor_pointer()
+                        .text_color(l.text2())
+                        .hover(|d| d.bg(l.pressed()).text_color(l.text()))
+                        .child(icon(crate::chrome::glyph::CLOSE, 9.))
+                        .tooltip(|window, cx| crate::screens::tip(tr!("contacts-group-remove"), window, cx))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.remove_member(a.clone(), cx);
+                        }))
+                });
+                let open = address.clone();
+                div()
+                    .id(("member", i))
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .px(px(12.))
+                    .py(px(6.))
+                    .when(i + 1 < n, |d| d.border_b_1().border_color(l.border()))
+                    .when(known.is_some(), |d| d.cursor_pointer().hover(|d| d.bg(l.row_hover())))
+                    .child(avatar(&name, 28., &l))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(div().truncate().child(name))
+                            .child(div().truncate().text_size(px(12.)).text_color(l.text2()).child(second)),
+                    )
+                    .children(remove)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(a) = open.clone() {
+                            this.open_member(a, cx);
+                        }
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        let members = div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(div().font_weight(FontWeight::SEMIBOLD).child(tr!("contacts-group-members")))
+                    .child(div().text_color(l.text2()).child(n.to_string())),
+            )
+            .child(if rows.is_empty() {
+                div().p(px(14.)).text_color(l.text2()).child(tr!("contacts-group-empty")).into_any_element()
+            } else {
+                div().border_1().border_color(l.border()).rounded(px(6.)).overflow_hidden().children(rows).into_any_element()
+            });
+        div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .children(confirm)
+            .child(
+                div()
+                    .id("contact-card")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap(px(16.))
+                    .px(px(24.))
+                    .pt(px(20.))
+                    .pb(px(16.))
+                    .child(head)
+                    .child(actions)
+                    .child(members)
+                    .child(div().text_size(px(12.)).line_height(px(17.)).text_color(l.text2()).child(tr!("contacts-group-hint"))),
+            )
+            .into_any_element()
+    }
+
+    /// Форма группы: название, участники одной строкой (адреса и имена через «;»), подсказка о рассылке.
+    fn group_form_pane(&self, f: &GroupForm, cx: &mut Context<Self>) -> AnyElement {
+        let l = crate::roles::look(cx);
+        let busy = self.pending.is_some();
+        let field = |label: &str, state: &Entity<InputState>| {
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!(label)))
+                .child(div().relative().children(crate::screens::spot(SharedString::from(label.to_owned()))).child(Input::new(state)))
+        };
+        let title = tr!(if f.old.is_some() { "contacts-group-form-edit" } else { "contacts-group-form-new" });
+        let note = tr!(if self.live { "contacts-group-form-where" } else { "contacts-form-where-demo" });
+        div()
+            .id("group-form")
+            .size_full()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(px(14.))
+            .px(px(24.))
+            .pt(px(20.))
+            .pb(px(16.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(16.))
+                    .child(
+                        div()
+                            .size(px(64.))
+                            .rounded_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .bg(l.fill())
+                            .text_color(l.text2())
+                            .child(icon(crate::chrome::glyph::CONTACTS, 22.)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(div().text_size(px(22.)).font_weight(FontWeight::SEMIBOLD).child(title))
+                            .child(div().text_color(l.text2()).child(note)),
+                    ),
+            )
+            .child(div().flex().child(field("contacts-group-name", &f.name)))
+            .child(div().flex().child(field("contacts-group-members", &f.members)))
+            .child(div().text_size(px(12.)).line_height(px(17.)).text_color(l.text2()).child(tr!("contacts-group-form-hint")))
+            .when_some(f.error.clone(), |d, e| d.child(div().text_color(l.error()).child(e)))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .when(!busy, |d| {
+                        d.child(button("group-save", tr!("contacts-save"), true).on_click(cx.listener(|this, _, _, cx| this.save_group(cx))))
+                    })
+                    .when(busy, |d| d.child(div().text_color(l.text2()).child(tr!("contacts-saving"))))
+                    .child(button("group-cancel", tr!("contacts-cancel"), false).on_click(cx.listener(|this, _, _, cx| {
+                        this.mode = Mode::View;
+                        this.pending = None;
+                        cx.notify();
+                    }))),
+            )
+            .into_any_element()
+    }
+}
+
+/// Демо: личные группы (T2-47) — «Руководители отделов» (девять коллег) и «Проект „Партнёр“».
+fn demo_groups() -> Vec<Entry> {
+    let card = |i: usize, name: &str, members: &[&str]| ContactCard {
+        id: format!("demo-group-{i}"),
+        name: name.into(),
+        group: true,
+        members: members.iter().map(|m| m.to_string()).collect(),
+        ..ContactCard::default()
+    };
+    let heads = [
+        "a.shchukin@corp.example",
+        "m.ivanova@corp.example",
+        "a.petrov@corp.example",
+        "e.kuznetsova@corp.example",
+        "i.sidorov@corp.example",
+        "anna.smirnova@corp.example",
+        "n.fedorova@corp.example",
+        "s.volkov@corp.example",
+        "ivan.petrov@corp.example",
+    ];
+    let partner = ["o.belova@partner.example", "d.gusev@integrator.example", "a.petrov@corp.example"];
+    let mut v = vec![
+        Entry::new(card(0, "Руководители отделов", &heads), Kind::Group), // i18n-ok: демо-данные
+        Entry::new(card(1, "Проект «Партнёр»", &partner), Kind::Group),   // i18n-ok: демо-данные
+    ];
+    sort(&mut v);
+    v
+}
+
 /// Демо: личные контакты и справочник — в подсказки адресов окна письма и вкладки встречи.
 pub(crate) fn add_demo(book: &mut AddressBook) {
     let mine = postman_demo::contacts::mine();
     book.add_contacts(mine.iter().flat_map(|c| c.emails.iter().map(|e| (c.name, *e))));
     book.add_directory(postman_demo::contacts::directory().iter().map(|p| (p.name, p.email)));
+    let groups: Vec<ContactCard> = demo_groups().into_iter().map(|e| e.card).collect();
+    book.set_groups(postman_core::contacts::Group::of_cards(&groups));
 }
 
 /// Опись части (ADR 0005, `parts.rs`).
@@ -3136,6 +3929,10 @@ fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
     .on_action(cx.listener(|this, _: &contacts::ContextMenu, window, cx| {
         this.contacts.update(cx, |c, cx| c.context_menu_key(window, cx));
     }))
+    .on_action(cx.listener(|this, _: &contacts::NewGroup, window, cx| {
+        this.contacts.update(cx, |c, cx| c.new_group(window, cx));
+    }))
+    .on_action(cx.listener(|this, _: &contacts::ToGroup, _, cx| this.contacts.update(cx, |c, cx| c.toggle_group_menu(cx))))
 }
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
@@ -3145,7 +3942,7 @@ const TEXTS: &[pets_i18n::Resource] = &[("ru", include_str!("../i18n/ru/contacts
 // Имя — область действий (`contacts::…`), как в id команд: так обработчики читаются и их находит `docs/PARITY.md`.
 #[allow(clippy::module_inception)]
 pub(crate) mod contacts {
-    gpui_kit::actions!(contacts, [New, Edit, Delete, Write, Meeting, CopyAddress, ContextMenu]);
+    gpui_kit::actions!(contacts, [New, Edit, Delete, Write, Meeting, CopyAddress, ContextMenu, NewGroup, ToGroup]);
 }
 
 /// Команды части (`commands.rs`: контексты и `cmd`).
@@ -3163,6 +3960,9 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("contacts.copy_address", &["ctrl-c"], CONTACTS),
         // Меню строки (T1-23): как у письма — Shift+F10 и клавиша «Меню».
         cmd("contacts.context_menu", &["shift-f10", "menu"], CONTACTS),
+        // Личные группы (T2-47): «Новая группа» и «В группу» — кнопками и в палитре, без клавиш (у Outlook их нет).
+        cmd("contacts.new_group", &[], CONTACTS_ANY),
+        cmd("contacts.to_group", &[], CONTACTS),
     ]
 };
 
@@ -3189,7 +3989,81 @@ pub(crate) mod scenes {
         // Присутствие (T2-42): коллега занят сейчас (занятость — от времени снимка), другой — вне офиса; в карточке —
         // «Занят до …» и ближайшее окно (в рабочее время).
         Scene::new("contacts-busy", busy, busy_ready).continues(),
+        // Личные группы (T2-47), по запросу: «Группы» с первой выбранной (участники, «Написать»).
+        Scene::new("contacts-groups", groups, groups_ready).on_request(),
+        // «Новая группа»: форма на месте карточки — название и участники (адреса и имена контактов).
+        Scene::new("contacts-new-group", new_group, new_group_ready).continues().on_request(),
+        // «В группу»: коллега справочника выбран, меню групп под кнопкой командной строки.
+        Scene::new("contacts-to-group", to_group, to_group_ready).continues().on_request(),
+        // Письмо группе: в «Кому» — чип «Руководители отделов 9» с «+».
+        Scene::new("compose-group", compose_group, compose_group_ready).continues().on_request(),
+        // «+» у чипа — участники чипами (так же группа раскрывается при отправке).
+        Scene::new("compose-group-expanded", compose_expand, compose_expand_ready).continues().on_request(),
     ];
+
+    fn groups(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.cal.update(cx, |c, cx| c.close_details(cx));
+        m.close_all_meetings(window, cx);
+        m.set_section(Section::Contacts, cx);
+        m.contacts.update(cx, |c, cx| {
+            c.escape(window, cx);
+            c.show_groups(cx);
+        });
+        Ok(())
+    }
+
+    fn groups_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let c = m.contacts.read(cx);
+        m.section == Section::Contacts && c.source == super::Source::Groups && c.selected.is_some() && c.ready()
+    }
+
+    fn new_group(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.contacts.update(cx, |c, cx| c.screen_new_group(window, cx));
+        Ok(())
+    }
+
+    fn new_group_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.contacts.read(cx).group_editing()
+    }
+
+    fn to_group(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.contacts.update(cx, |c, cx| {
+            c.escape(window, cx);
+            c.set_source(super::Source::Directory, cx);
+            c.select_email("a.petrov@corp.example", cx);
+            c.toggle_group_menu(cx);
+        });
+        Ok(())
+    }
+
+    fn to_group_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let c = m.contacts.read(cx);
+        c.group_menu && c.ready()
+    }
+
+    fn compose_group(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.contacts.update(cx, |c, cx| {
+            c.escape(window, cx);
+            c.show_groups(cx);
+            c.write(cx);
+        });
+        Ok(())
+    }
+
+    fn compose_group_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        screens::compose_tab(m).is_some_and(|c| c.read(cx).drawn() && c.read(cx).model.to.contains("<group:"))
+    }
+
+    fn compose_expand(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        let Some(c) = m.compose.last().cloned() else { return Err("no compose tab".into()) };
+        c.update(cx, |c, cx| c.expand_group(crate::compose::Field::To, 0, window, cx));
+        Ok(())
+    }
+
+    fn compose_expand_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        screens::compose_tab(m)
+            .is_some_and(|c| c.read(cx).drawn() && !c.read(cx).model.to.contains("<group:") && c.read(cx).model.recipients().len() > 1)
+    }
 
     fn busy(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
         m.contacts.update(cx, |c, cx| {
@@ -3301,8 +4175,8 @@ pub(crate) mod scenes {
 mod tests {
     // Не `super::*`: из `gpui_kit::*` пришёл бы атрибут `test` gpui вместо встроенного.
     use super::{
-        ContactCard, Entry, FormError, FormText, Frequent, Item, Kind, Latest, MenuItem, Order, Presence, demo_directory, demo_mine, feminine,
-        filter, frequent, items, menu_items, next_window, presence,
+        ContactCard, Entry, FormError, FormText, Frequent, GroupText, Item, Kind, Latest, MenuItem, Order, Presence, demo_directory, demo_groups,
+        demo_mine, feminine, filter, frequent, items, menu_items, next_window, presence,
     };
     use postman_calendar::{Busy, BusyKind, Span};
 
@@ -3452,6 +4326,8 @@ mod tests {
             organization: "ООО Ромашка".into(),
             title: String::new(),
             free_busy: None,
+            group: false,
+            members: Vec::new(),
         };
         let mut text = FormText::of(&old);
         assert_eq!((text.last.as_str(), text.first.as_str()), ("Петров", "Алексей"), "фамилия и имя — отдельно (T2-44)");
@@ -3572,5 +4448,34 @@ mod tests {
         let dir = demo_directory();
         assert_eq!(dir.iter().filter(|e| e.kind == Kind::List).count(), 2, "списки рассылки демо");
         assert_eq!(names(&dir, "916 310"), ["Волков Сергей"], "поиск и по мобильному");
+    }
+
+    /// Личные группы (T2-47): форма — название и участники (адрес, «Имя <адрес>», имя контакта — один без вариантов),
+    /// без повторов; чужие ссылки прежней карточки остаются; без названия — ошибка. Меню строки группы — «Написать»,
+    /// «Изменить», «Удалить». Демо — «Руководители отделов» из девяти.
+    #[test]
+    fn group_form_and_menu() {
+        let dir = demo_directory();
+        let known: Vec<&Entry> = dir.iter().collect();
+        let text = GroupText {
+            name: " Проект ".into(),
+            members: "a@example.test; Петров Иван, Гусев <d.gusev@integrator.example>; A@example.test".into(),
+        };
+        let g = text.card("g1", &["urn:uuid:1".into()], &known).unwrap();
+        assert!(g.group && g.name == "Проект");
+        assert_eq!(g.members, ["a@example.test", "ivan.petrov@corp.example", "d.gusev@integrator.example", "urn:uuid:1"]);
+        assert_eq!(GroupText { name: String::new(), members: "a@example.test".into() }.card("", &[], &known), Err(FormError::NeedGroupName));
+        assert_eq!(
+            GroupText { name: "x".into(), members: "Никто Никакой".into() }.card("", &[], &known),
+            Err(FormError::BadEmail("Никто Никакой".into()))
+        );
+        assert_eq!(GroupText::of(&g).members, "a@example.test; ivan.petrov@corp.example; d.gusev@integrator.example", "чужая ссылка — не в поле");
+        let groups = demo_groups();
+        let heads = groups.iter().find(|g| g.card.name == "Руководители отделов").unwrap();
+        assert_eq!(heads.card.members.len(), 9);
+        use MenuItem::*;
+        assert_eq!(menu_items(heads, true, true), [vec![Write], vec![Edit, Delete]]);
+        let empty = Entry::new(ContactCard { id: "g".into(), name: "g".into(), group: true, ..Default::default() }, Kind::Group);
+        assert_eq!(menu_items(&empty, false, true), Vec::<Vec<MenuItem>>::new());
     }
 }

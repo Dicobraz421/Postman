@@ -68,6 +68,33 @@ pub struct ContactCard {
     pub title: String,
     /// Ссылка на занятость: JSContact `calendars` вида `freeBusy`, в vCard — `FBURL` (S8-42).
     pub free_busy: Option<String>,
+    /// Личная группа (T2-47): JSContact `kind: group` (RFC 9553), vCard `KIND:group`, Exchange `DistributionList`.
+    pub group: bool,
+    /// Участники группы: адрес (в JSContact и vCard — `mailto:`); чужая ссылка (`urn:uuid:…` другой программы) —
+    /// как есть, она сохраняется при правке, но письма по ней не уходят ([`member_address`]).
+    pub members: Vec<String>,
+}
+
+/// Ссылка на участника группы (ключ JSContact `members`, значение vCard `MEMBER`) → запись [`ContactCard::members`]:
+/// `mailto:` — адрес, иначе ссылка как есть.
+pub fn member_of_uri(uri: &str) -> String {
+    let t = uri.trim();
+    match t.get(..7) {
+        Some(p) if p.eq_ignore_ascii_case("mailto:") => t[7..].split('?').next().unwrap_or_default().trim().to_owned(),
+        _ => t.to_owned(),
+    }
+}
+
+/// Запись [`ContactCard::members`] → ссылка для JSContact и vCard: адрес — `mailto:`, ссылка — как есть.
+pub fn member_uri(member: &str) -> String {
+    let m = member.trim();
+    if member_address(m).is_some() { format!("mailto:{m}") } else { m.to_owned() }
+}
+
+/// Адрес участника группы; чужая ссылка (`urn:uuid:…`) — `None`.
+pub fn member_address(member: &str) -> Option<&str> {
+    let m = member.trim();
+    (m.contains('@') && !m.contains(':') && !m.contains(char::is_whitespace)).then_some(m)
 }
 
 impl ContactCard {
@@ -119,8 +146,20 @@ impl ContactCard {
             organization,
             title,
             free_busy: entries("calendars").into_iter().find(|c| c["kind"] == "freeBusy").and_then(|c| c["uri"].as_str()).map(str::to_string),
+            group: v["kind"] == "group",
+            members: group_members(v),
         }
     }
+}
+
+/// Участники карточки-группы JSContact (`members`: ссылка → `true`), по порядку ссылок.
+pub fn group_members(v: &Value) -> Vec<String> {
+    let mut out: Vec<String> =
+        v["members"].as_object().into_iter().flatten().filter(|(_, on)| on.as_bool() == Some(true)).map(|(k, _)| member_of_uri(k)).collect();
+    out.retain(|m| !m.is_empty());
+    out.sort_by_key(|m| m.to_lowercase());
+    out.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    out
 }
 
 /// Запись справочника: человек, группа, ресурс.
@@ -566,5 +605,23 @@ mod tests {
         assert_eq!(c.emails, ["a@example.test", "b@example.test"]);
         assert_eq!(c.phones, ["+7 900"]);
         assert_eq!(c.mobile, ["+7 916"], "мобильный — отдельно (T2-44)");
+        assert!(!c.group && c.members.is_empty());
+    }
+
+    /// Группа (T2-47): `kind: group`, участники — `mailto:` (адрес) и чужие ссылки как есть; `false` — не участник.
+    #[test]
+    fn jscontact_group() {
+        let v = serde_json::json!({
+            "id": "g1", "kind": "group", "name": { "full": "Руководители" },
+            "members": { "mailto:b@example.test": true, "MAILTO:a@example.test?subject=x": true,
+                         "urn:uuid:f81d4fae": true, "mailto:gone@example.test": false }
+        });
+        let c = ContactCard::from_jscontact(&v);
+        assert!(c.group);
+        assert_eq!(c.members, ["a@example.test", "b@example.test", "urn:uuid:f81d4fae"]);
+        assert_eq!(member_uri(&c.members[0]), "mailto:a@example.test");
+        assert_eq!(member_uri("urn:uuid:f81d4fae"), "urn:uuid:f81d4fae");
+        assert_eq!(member_address("urn:uuid:f81d4fae"), None);
+        assert_eq!(member_address(" a@example.test "), Some("a@example.test"));
     }
 }

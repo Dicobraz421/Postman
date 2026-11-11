@@ -609,6 +609,7 @@ pub(crate) fn command_icon(id: &str) -> Option<char> {
         "compose.expand" => EXPAND,
         "contacts.new" | "meeting.add_person" => ADD_CONTACT,
         "contacts.edit" => EDIT,
+        "contacts.new_group" | "contacts.to_group" => CONTACTS,
         "contacts.copy_address" => COPY,
         "invite.accept" => CHECK,
         "invite.tentative" => TENTATIVE,

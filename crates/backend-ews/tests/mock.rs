@@ -1006,7 +1006,7 @@ fn contacts(body: &str) -> Option<String> {
         )
     } else if op("GetItem") && body.contains("AllProperties") {
         Some(fixture("get_item_contacts.xml"))
-    } else if op("CreateItem") && body.contains("<t:Contact>") {
+    } else if op("CreateItem") && (body.contains("<t:Contact>") || body.contains("<t:DistributionList>")) {
         Some(fixture("create_item.xml"))
     } else {
         None
@@ -1018,16 +1018,21 @@ fn contacts_loaded(live: &Live) -> Vec<postman_core::model::ContactCard> {
     cards
 }
 
-/// «Мои контакты»: карточки из папки (без списков рассылки); новая и правка — `CreateItem` и `UpdateItem` в
-/// «Контакты», удаление — `DeleteItem` в «Удалённые», после каждой — `ContactsLoaded`. Справочник — поиском:
-/// страницы 0 и 100 — пустые, «только поиском».
+/// «Мои контакты»: карточки из папки, личный список рассылки — группа (T2-47); новая и правка — `CreateItem` и
+/// `UpdateItem` в «Контакты», удаление — `DeleteItem` в «Удалённые», после каждой — `ContactsLoaded`. Группа: новая —
+/// `CreateItem` `DistributionList`, правка состава — добавка новых адресов и снятие убранного по ключу. Справочник —
+/// поиском: страницы 0 и 100 — пустые, «только поиском».
 #[test]
 fn exchange_contacts_and_directory() {
     let (url, log) = server_with(contacts);
     let live = ready(&url);
     live.commands.send(Command::Contacts).unwrap();
-    let cards = contacts_loaded(&live);
-    assert_eq!(cards.len(), 1, "список рассылки — не карточка");
+    let all = contacts_loaded(&live);
+    assert_eq!(all.len(), 2, "контакт и группа");
+    let group = all.iter().find(|c| c.group).cloned().expect("группа");
+    assert_eq!((group.id.as_str(), group.name.as_str()), ("AAMkADlist1", "Команда проекта"));
+    assert_eq!(group.members, ["anna@example.test", "anton@example.test"]);
+    let cards: Vec<_> = all.into_iter().filter(|c| !c.group).collect();
     assert_eq!((cards[0].id.as_str(), cards[0].name.as_str()), ("AAMkADcontact1", "Петрова Анна"));
     assert_eq!(cards[0].emails, ["anna@example.test", "a.petrova@example.test"]);
     let Event::DirectoryLoaded(dir) = live.wait("DirectoryLoaded", |e| matches!(e, Event::DirectoryLoaded(_))) else { unreachable!() };
@@ -1049,6 +1054,31 @@ fn exchange_contacts_and_directory() {
     let update = requests(&log, n, "UpdateItem").pop().expect("UpdateItem");
     assert!(update.contains(r#"<t:ItemId Id="AAMkADcontact1"/>"#) && update.contains("<t:JobTitle>Руководитель</t:JobTitle>"), "{update}");
     assert!(update.contains("<t:Department>Отдел разработки</t:Department>"), "отдел — с сервера, не стёрт: {update}");
+
+    // Группа (T2-47): новая — список рассылки с участником.
+    let n = log.lock().unwrap().len();
+    let fresh = postman_core::model::ContactCard {
+        name: "Руководители".into(),
+        group: true,
+        members: vec!["boris@example.test".into()],
+        ..Default::default()
+    };
+    live.commands.send(Command::SaveContact { card: Box::new(fresh), old: None, ticket: 4 }).unwrap();
+    live.wait("ContactSaved", |e| matches!(e, Event::ContactSaved { ticket: 4, .. }));
+    contacts_loaded(&live);
+    let create = requests(&log, n, "CreateItem").pop().expect("CreateItem");
+    assert!(create.contains("<t:DistributionList><t:DisplayName>Руководители</t:DisplayName>"), "{create}");
+    assert!(create.contains("<t:EmailAddress>boris@example.test</t:EmailAddress>"), "{create}");
+    // Правка: Антон убран, Борис добавлен; Анна — как была.
+    let n = log.lock().unwrap().len();
+    let edited = postman_core::model::ContactCard { members: vec!["anna@example.test".into(), "boris@example.test".into()], ..group.clone() };
+    live.commands.send(Command::SaveContact { card: Box::new(edited), old: Some(Box::new(group)), ticket: 5 }).unwrap();
+    live.wait("ContactSaved", |e| matches!(e, Event::ContactSaved { ticket: 5, .. }));
+    contacts_loaded(&live);
+    let update = requests(&log, n, "UpdateItem").pop().expect("UpdateItem");
+    assert!(update.contains(r#"<t:ItemId Id="AAMkADlist1"/>"#) && update.contains(r#"FieldURI="distributionlist:Members""#), "{update}");
+    assert!(update.contains("<t:EmailAddress>boris@example.test</t:EmailAddress>") && !update.contains("anna@example.test"), "{update}");
+    assert!(update.contains(r#"FieldURI="distributionlist:Members:Member" FieldIndex="AAAAAB==""#), "Антон — по ключу: {update}");
 
     let n = log.lock().unwrap().len();
     live.commands.send(Command::DeleteContact { id: "AAMkADcontact1".into(), ticket: 3 }).unwrap();
