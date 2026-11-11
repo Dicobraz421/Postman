@@ -72,10 +72,15 @@ pub(crate) enum Status {
     Sending,
     /// Дата или время не разобраны: что ввёл пользователь.
     BadTime(String),
+    /// Конец серии не разобран (T3-08): что введено в поле «до даты» или «N раз».
+    BadRepeatEnd(String),
     BadAddresses(Vec<String>),
     NoServer,
     Failed(String),
 }
+
+/// Сколько раз самое большее повторяется серия «N раз» (T3-08).
+pub(crate) const MAX_REPEATS: u32 = 999;
 
 /// Поля встречи и итог отправки — без gpui.
 #[derive(Debug)]
@@ -102,6 +107,10 @@ pub(crate) struct MeetingModel {
     pub(crate) reminder: Option<i64>,
     /// Повтор новой встречи («Повтор ▾», макет `Meeting`, T2-13); правка своей встречи — не меняем.
     pub(crate) repeat: Option<postman_core::recur::Rule>,
+    /// Конец серии (T3-08): без конца, до даты, N раз — и что введено в его поле («дд.мм.гггг» или число);
+    /// значение внутри `repeat_end` — то, что было при выборе, отправляется разобранное из поля.
+    pub(crate) repeat_end: postman_core::recur::End,
+    pub(crate) repeat_end_text: String,
     /// Весь день и частная (T2-14, макет `Meeting`).
     pub(crate) all_day: bool,
     pub(crate) private: bool,
@@ -333,6 +342,8 @@ impl MeetingModel {
             late: false,
             reminder: None,
             repeat: None,
+            repeat_end: postman_core::recur::End::Never,
+            repeat_end_text: String::new(),
             all_day: false,
             private: false,
             zone: None,
@@ -407,6 +418,50 @@ impl MeetingModel {
         }
     }
 
+    /// Выбрать конец серии (T3-08): в поле — его значение («30.12.2026», «10»).
+    pub(crate) fn set_repeat_end(&mut self, end: postman_core::recur::End) {
+        use postman_core::recur::End;
+        self.repeat_end = end;
+        self.repeat_end_text = match end {
+            End::Never => String::new(),
+            End::Until(d) => d.strftime("%d.%m.%Y").to_string(),
+            End::Count(n) => n.to_string(),
+        };
+        if !self.busy() {
+            self.status = Status::None;
+        }
+    }
+
+    /// Введено в поле конца серии.
+    pub(crate) fn set_repeat_end_text(&mut self, text: String) {
+        self.repeat_end_text = text;
+        if !self.busy() {
+            self.status = Status::None;
+        }
+    }
+
+    /// Конец серии из поля: дата не раньше первой встречи, число повторов — от 1 до [`MAX_REPEATS`]. Не повторяется —
+    /// «без конца»; не разобрано — `Err` с введённым.
+    pub(crate) fn series_end(&self, today: Date) -> Result<postman_core::recur::End, String> {
+        use postman_core::recur::End;
+        let text = self.repeat_end_text.trim();
+        match self.repeat_end {
+            _ if self.repeat.is_none() => Ok(End::Never),
+            End::Never => Ok(End::Never),
+            End::Until(_) => {
+                let first = parse_date(&self.date, today);
+                parse_date(text, today).filter(|d| first.is_none_or(|f| *d >= f)).map(End::Until).ok_or_else(|| text.to_owned())
+            }
+            End::Count(_) => text.parse::<u32>().ok().filter(|n| (1..=MAX_REPEATS).contains(n)).map(End::Count).ok_or_else(|| text.to_owned()),
+        }
+    }
+
+    /// RRULE серии с её концом; не повторяется — `None`.
+    fn recurrence(&self, today: Date) -> Result<Option<String>, String> {
+        let end = self.series_end(today)?;
+        Ok(self.repeat.as_ref().and_then(|r| postman_core::recur::rrule_of_series(r, end)))
+    }
+
     pub(crate) fn busy(&self) -> bool {
         self.sending.is_some()
     }
@@ -445,6 +500,7 @@ impl MeetingModel {
             return Err(Status::BadAddresses(bad));
         }
         let start = self.start_at(today).ok_or_else(|| Status::BadTime(format!("{} {}", self.date.trim(), self.start.trim())))?;
+        let recurrence = self.recurrence(today).map_err(Status::BadRepeatEnd)?;
         let (start, duration) = self.sent_time(start);
         // Зона без имени IANA (редко на Windows) — время в UTC: сервер его поймёт.
         let (start, time_zone) = match tz.iana_name() {
@@ -459,7 +515,7 @@ impl MeetingModel {
         Ok(Meeting {
             private: self.private,
             all_day: self.all_day,
-            recurrence: self.repeat.as_ref().and_then(postman_core::recur::rrule_of_rule),
+            recurrence,
             reminder_secs: self.reminder,
             uid,
             title: self.title.trim().to_string(),
@@ -784,7 +840,10 @@ impl MeetingDraft {
             description: m.description.clone(),
             all_day: m.all_day,
             private: m.private,
-            repeat: m.repeat.as_ref().and_then(postman_core::recur::rrule_of_rule),
+            // Конец серии (T3-08) — в правиле; недописанный в поле — серия пока без конца.
+            repeat: m
+                .recurrence(jiff::Zoned::now().with_time_zone(tz.clone()).date())
+                .unwrap_or_else(|_| m.repeat.as_ref().and_then(postman_core::recur::rrule_of_rule)),
             zone: tz.iana_name().map(str::to_owned),
         }
     }
@@ -809,7 +868,9 @@ impl MeetingDraft {
         m.description = self.description;
         m.all_day = self.all_day;
         m.private = self.private;
-        m.repeat = self.repeat.as_deref().and_then(postman_core::recur::rule_of_rrule);
+        let series = self.repeat.as_deref().and_then(postman_core::recur::series_of_rrule);
+        m.set_repeat_end(series.as_ref().map_or(postman_core::recur::End::Never, |(_, end)| *end));
+        m.repeat = series.map(|(rule, _)| rule);
         m.zone = self.zone;
     }
 }
@@ -929,6 +990,8 @@ pub(crate) struct MeetingView {
     from_menu: bool,
     /// Открыт выбор повтора.
     pub(crate) repeat_menu: bool,
+    /// Поле конца серии (T3-08): дата «до» или число повторов.
+    pub(crate) end_input: Entity<InputState>,
     busy: Availability,
     /// Строка ссылки занятости (S8-42): адрес, для которого она открыта, поле, ссылка не годится.
     link_for: Option<String>,
@@ -1018,6 +1081,17 @@ impl MeetingView {
             }
             _ => {}
         }));
+        let end_text = model.repeat_end_text.clone();
+        let end_input = cx.new(|cx| InputState::new(window, cx).default_value(end_text));
+        subscriptions.push(cx.subscribe_in(&end_input, window, |this, state, ev: &InputEvent, _, cx| {
+            if let InputEvent::Change = ev {
+                let value = state.read(cx).value().to_string();
+                if value != this.model.repeat_end_text {
+                    this.model.set_repeat_end_text(value);
+                    cx.notify();
+                }
+            }
+        }));
         title.update(cx, |s, cx| s.focus(window, cx));
         // «Настройки → Календарь» (S5-20): пояс, рабочее время, необязательные, цвет свободного времени; цвет и часы
         // меняются на лету, пояс и флажок — у новой вкладки.
@@ -1059,6 +1133,7 @@ impl MeetingView {
             senders: open.senders,
             from_menu: false,
             repeat_menu: false,
+            end_input,
             busy: Availability::default(),
             link_for: None,
             link_input,
@@ -1729,6 +1804,7 @@ impl MeetingView {
             Status::None => return None,
             Status::Sending => (tr!("meeting-sending"), false),
             Status::BadTime(t) => (tr!("meeting-bad-time", text = t.clone()), true),
+            Status::BadRepeatEnd(t) => (tr!("meeting-bad-repeat-end", text = t.clone()), true),
             Status::BadAddresses(b) => (tr!("meeting-bad-addresses", list = b.join(", ")), true),
             Status::NoServer => (tr!("meeting-no-server"), true),
             Status::Failed(e) => (tr!("meeting-failed", error = e.clone()), true),
@@ -1811,11 +1887,12 @@ impl MeetingView {
 
     /// «Повтор ▾» (макет `Meeting`, T2-13): не повторяется, каждый день, по будням, каждую неделю (день начала), каждый
     /// месяц (число начала), каждый год. У правки своей встречи — нет: серия меняется на сервере как есть.
+    /// Конец серии (T3-08) — ниже в том же меню: без конца, до даты, N раз; дата и число — в поле рядом с кнопкой.
     fn repeat_button(&self, cx: &mut Context<Self>) -> Option<Div> {
         if self.model.editing.is_some() {
             return None;
         }
-        use postman_core::recur::{Freq, Rule};
+        use postman_core::recur::{End, Freq, Rule};
         let l = crate::roles::look(cx);
         let start = self.model.start_at(self.today()).map(|d| d.date()).unwrap_or_else(|| self.today());
         let every = |freq| Rule::Every { freq, interval: 1 };
@@ -1855,22 +1932,64 @@ impl MeetingView {
             let items = options.into_iter().enumerate().map(|(i, r)| {
                 let label = text(&r);
                 crate::composer::menu_item(ElementId::NamedInteger("meeting-repeat-item".into(), i as u64), &l, r == current).child(label).on_click(
-                    cx.listener(move |this, _, _, cx| {
+                    cx.listener(move |this, _, window, cx| {
+                        // Не повторяется — и конца нет.
+                        if r.is_none() {
+                            this.pick_repeat_end(End::Never, window, cx);
+                        }
                         this.model.repeat = r.clone();
                         this.repeat_menu = false;
                         cx.notify();
                     }),
                 )
             });
-            deferred(crate::composer::menu_box("meeting-repeat-menu", &l).top(px(36.)).left(px(0.)).children(items).on_mouse_down_out(cx.listener(
-                |this, _, _, cx| {
+            // Конец серии (T3-08): у выбранного повтора. По умолчанию — через три месяца после начала и 10 раз;
+            // тот же вид конца — введённое остаётся.
+            let kind = std::mem::discriminant(&self.model.repeat_end);
+            let ends = [
+                (End::Never, tr!("meeting-repeat-end-never")),
+                (End::Until(start.checked_add(jiff::Span::new().months(3)).unwrap_or(start)), tr!("meeting-repeat-end-until")),
+                (End::Count(10), tr!("meeting-repeat-end-count")),
+            ];
+            let ends = current.is_some().then(|| {
+                let items = ends.into_iter().enumerate().map(|(i, (end, label))| {
+                    let on = std::mem::discriminant(&end) == kind;
+                    crate::composer::menu_item(ElementId::NamedInteger("meeting-repeat-end-item".into(), i as u64), &l, on).child(label).on_click(
+                        cx.listener(move |this, _, window, cx| {
+                            if !on {
+                                this.pick_repeat_end(end, window, cx);
+                            }
+                            this.repeat_menu = false;
+                            cx.notify();
+                        }),
+                    )
+                });
+                div().flex().flex_col().child(div().h(px(1.)).my(px(4.)).bg(l.border())).children(items)
+            });
+            deferred(crate::composer::menu_box("meeting-repeat-menu", &l).top(px(36.)).left(px(0.)).children(items).children(ends).on_mouse_down_out(
+                cx.listener(|this, _, _, cx| {
                     this.repeat_menu = false;
                     cx.notify();
-                },
-            )))
+                }),
+            ))
             .with_priority(1)
         });
-        Some(div().relative().child(button).children(menu))
+        // Поле конца: «до [30.12.2026]» или «[10] раз».
+        let field = |w: f32| div().w(px(w)).flex_none().child(Input::new(&self.end_input));
+        let note = |text: String| div().flex_none().text_color(l.text2()).child(text);
+        let end = match (&self.model.repeat, self.model.repeat_end) {
+            (None, _) | (_, End::Never) => None,
+            (_, End::Until(_)) => Some(div().flex().items_center().gap(px(6.)).child(note(tr!("meeting-repeat-until"))).child(field(124.))),
+            (_, End::Count(_)) => Some(div().flex().items_center().gap(px(6.)).child(field(64.)).child(note(tr!("meeting-repeat-times")))),
+        };
+        Some(div().flex().items_center().gap(px(8.)).child(div().relative().child(button).children(menu)).children(end))
+    }
+
+    /// Выбран конец серии: в модель и в поле.
+    fn pick_repeat_end(&mut self, end: postman_core::recur::End, window: &mut Window, cx: &mut Context<Self>) {
+        self.model.set_repeat_end(end);
+        let text = self.model.repeat_end_text.clone();
+        self.end_input.update(cx, |s, cx| s.set_value(text, window, cx));
     }
 
     /// Пояс встречи (T2-23, макет «Москва, UTC+3 ▾»): время в полях — в нём, на сервер уходит его имя.
@@ -3124,7 +3243,7 @@ pub(crate) mod scenes {
         Scene::new("assistant", assistant, ready).continues(),
         // Внешний участник с занятостью по ссылке (S8-42): строка помечена «по ссылке».
         Scene::new("meeting-link", link, link_ready).continues(),
-        // «Повтор ▾» (T2-13, макет `Meeting`): выбран «По будням», меню открыто.
+        // «Повтор ▾» (T2-13, макет `Meeting`): выбран «По будням», меню открыто; конец серии — «до даты» (T3-08).
         Scene::new("meeting-repeat", repeat, repeat_ready).continues(),
         // Пояс встречи ▾ (T2-23, макет `Meeting`): меню открыто; «Новая ссылка», «Черновик сохранён».
         Scene::new("meeting-zone", zone, zone_ready).continues(),
@@ -3134,6 +3253,7 @@ pub(crate) mod scenes {
         let Some(v) = m.meetings.last() else { return Err("no meeting tab".into()) };
         v.update(cx, |v, cx| {
             v.repeat_menu = false;
+            v.model.set_repeat_end(postman_core::recur::End::Never);
             v.zone_menu = true;
             v.draft_saved = jiff::civil::date(2026, 11, 10).at(14, 22, 0, 0).to_zoned(v.tz.clone()).ok().map(|z| z.timestamp().as_second());
             cx.notify();
@@ -3151,11 +3271,12 @@ pub(crate) mod scenes {
         Ok(())
     }
 
-    fn repeat(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
-        use postman_core::recur::{Freq, Rule};
+    fn repeat(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        use postman_core::recur::{End, Freq, Rule};
         let Some(v) = m.meetings.last() else { return Err("no meeting tab".into()) };
         v.update(cx, |v, cx| {
             v.model.repeat = Some(Rule::Every { freq: Freq::Weekdays, interval: 1 });
+            v.pick_repeat_end(End::Until(jiff::civil::date(2026, 12, 30)), window, cx);
             v.repeat_menu = true;
             cx.notify();
         });
@@ -3290,6 +3411,45 @@ mod tests {
         // 11:00 МСК — 08:00 UTC: так встреча стоит в помощнике.
         let start = "2026-10-21T08:00:00Z".parse::<jiff::Timestamp>().unwrap().as_second();
         assert_eq!(m.span(&tz, today()), Some(Span::new(start, start + 1800)));
+    }
+
+    /// Конец серии (T3-08): из поля — в RRULE встречи; не разобран или раньше начала — ошибка во вкладке; черновик
+    /// хранит правило с концом.
+    #[test]
+    fn series_end_goes_to_the_rule() {
+        use postman_core::recur::{End, Freq, Rule};
+        let tz = TimeZone::UTC;
+        let rule = |m: &MeetingModel| m.meeting("u".into(), &tz, today()).map(|m| m.recurrence);
+        let mut m = filled();
+        m.set_repeat_end(End::Count(5));
+        assert_eq!(rule(&m).unwrap(), None, "не повторяется — конца нет");
+        m.repeat = Some(Rule::Every { freq: Freq::Weekly(vec![jiff::civil::Weekday::Wednesday]), interval: 1 });
+        assert_eq!(rule(&m).unwrap().as_deref(), Some("FREQ=WEEKLY;BYDAY=WE;COUNT=5"));
+        m.set_repeat_end_text(" 1 ".into());
+        assert_eq!(rule(&m).unwrap().as_deref(), Some("FREQ=WEEKLY;BYDAY=WE;COUNT=1"));
+        for bad in ["0", "1000", "много", ""] {
+            m.set_repeat_end_text(bad.into());
+            assert_eq!(rule(&m).unwrap_err(), Status::BadRepeatEnd(bad.into()));
+        }
+        m.set_repeat_end(End::Until(jiff::civil::date(2026, 12, 30)));
+        assert_eq!(m.repeat_end_text, "30.12.2026");
+        assert_eq!(rule(&m).unwrap().as_deref(), Some("FREQ=WEEKLY;BYDAY=WE;UNTIL=20261230T235959"));
+        // День первой встречи — можно (одна встреча); раньше — нет.
+        m.set_repeat_end_text("21.10".into());
+        assert_eq!(rule(&m).unwrap().as_deref(), Some("FREQ=WEEKLY;BYDAY=WE;UNTIL=20261021T235959"));
+        m.set_repeat_end_text("20.10.2026".into());
+        assert!(m.begin(1, "u".into(), &tz, today()).is_none());
+        assert_eq!(m.status, Status::BadRepeatEnd("20.10.2026".into()));
+        m.set_repeat_end_text("30.12.2026".into());
+        assert_eq!(m.status, Status::None, "правка поля снимает ошибку");
+        // Черновик: правило с концом — и обратно в «Повтор ▾» и поле.
+        let d = super::MeetingDraft::of(&m, &tz);
+        assert_eq!(d.repeat.as_deref(), Some("FREQ=WEEKLY;BYDAY=WE;UNTIL=20261230T235959"));
+        let mut fresh = MeetingModel::new("2026-10-21T11:00:00".parse().unwrap(), 3600);
+        d.apply(&mut fresh);
+        assert_eq!((fresh.repeat.clone(), fresh.repeat_end, fresh.repeat_end_text.as_str()), (m.repeat.clone(), m.repeat_end, "30.12.2026"));
+        m.set_repeat_end(End::Never);
+        assert_eq!(rule(&m).unwrap().as_deref(), Some("FREQ=WEEKLY;BYDAY=WE"));
     }
 
     #[test]

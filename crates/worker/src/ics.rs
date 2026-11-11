@@ -713,6 +713,26 @@ mod tests {
         assert!(starts(&event("a", &series), from + 7 * DAY, to + 7 * DAY, "UTC").is_empty());
     }
 
+    /// Конец серии на границах (T3-08): `COUNT=1` — одна встреча; она же исключена — пусто; `UNTIL` в день первой
+    /// встречи — одна; исключён последний экземпляр перед `UNTIL` — серия на нём и кончается, новый не появляется.
+    #[test]
+    fn series_end_at_the_edges() {
+        let (from, to) = week();
+        let once = "DTSTART:20261103T090000Z\nDURATION:PT1H\nRRULE:FREQ=DAILY;COUNT=1";
+        assert_eq!(starts(&event("a", once), from, to, "UTC"), pairs(&[("a", date(2026, 11, 3, 9, 0))]));
+        assert!(starts(&event("a", &format!("{once}\nEXDATE:20261103T090000Z")), from, to, "UTC").is_empty());
+        // «До даты» из «Повтор ▾»: конец дня по Москве в UTC (как пишет CalDAV) и датой (как Exchange).
+        for until in ["20261103T205959Z", "20261103"] {
+            let body = event("a", &format!("DTSTART;TZID=Europe/Moscow:20261103T120000\nDURATION:PT1H\nRRULE:FREQ=DAILY;UNTIL={until}"));
+            assert_eq!(starts(&body, from, to, "UTC"), pairs(&[("a", date(2026, 11, 3, 9, 0))]), "{until}");
+        }
+        let body = event("a", "DTSTART:20261102T090000Z\nDURATION:PT1H\nRRULE:FREQ=DAILY;UNTIL=20261104T090000Z\nEXDATE:20261104T090000Z");
+        assert_eq!(starts(&body, from, to, "UTC"), pairs(&[("a", date(2026, 11, 2, 9, 0)), ("a", date(2026, 11, 3, 9, 0))]));
+        // `COUNT` считает и исключённые: три раза с исключённым вторым — два экземпляра, четвёртого дня нет.
+        let body = event("a", "DTSTART:20261102T090000Z\nDURATION:PT1H\nRRULE:FREQ=DAILY;COUNT=3\nEXDATE:20261103T090000Z");
+        assert_eq!(starts(&body, from, to, "UTC"), pairs(&[("a", date(2026, 11, 2, 9, 0)), ("a", date(2026, 11, 4, 9, 0))]));
+    }
+
     /// Весь день: в свой день в поясе показа, повтор без конца, несколько дней, `DTEND` равен началу, перевод часов внутри дня.
     #[test]
     fn all_day_stays_in_its_day() {
