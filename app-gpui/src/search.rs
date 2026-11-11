@@ -68,13 +68,21 @@ impl Find {
 pub(crate) type Attached = Arc<HashMap<String, AttachmentHit>>;
 
 /// Подпись строки результата «во вложении: имя — …отрывок…» (T3-10); совпало только имя файла — без отрывка.
-pub(crate) fn attachment_line(hit: &AttachmentHit) -> String {
-    if hit.snippet.is_empty() {
-        tr!("search-in-attachment", name = hit.name.clone())
-    } else {
-        tr!("search-in-attachment-text", name = hit.name.clone(), snippet = hit.snippet.clone())
+/// Половину строки занимает имя, поэтому отрывок начинается за слово до совпадения: иначе оно уходит за край.
+pub(crate) fn attachment_line(hit: &AttachmentHit, marks: Option<&[String]>) -> String {
+    match attachment_snippet(hit, marks) {
+        None => tr!("search-in-attachment", name = hit.name.clone()),
+        Some(snippet) => tr!("search-in-attachment-text", name = hit.name.clone(), snippet = snippet),
     }
 }
+
+/// Отрывок для [`attachment_line`]; совпало только имя — `None`.
+fn attachment_snippet(hit: &AttachmentHit, marks: Option<&[String]>) -> Option<String> {
+    (!hit.snippet.is_empty()).then(|| marks.map_or_else(|| hit.snippet.clone(), |m| cut_before(&hit.snippet, m, ATTACHMENT_LEAD)))
+}
+
+/// Знаков перед совпадением в отрывке вложения.
+const ATTACHMENT_LEAD: usize = 12;
 
 /// Что показывает список во время поиска: строка запроса, слова для подсветки, чипы «Уточнить».
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -112,14 +120,19 @@ impl EventEmitter<ClearRefines> for crate::list::MailList {}
 /// Отрывок текста вокруг первого совпадения (T2-27, макет `Search`): начало дальше ~40 знаков — «…» и текст от
 /// границы слова перед совпадением.
 pub(crate) fn snippet(text: &str, marks: &[String]) -> String {
+    cut_before(text, marks, 30)
+}
+
+/// Отрывок от границы слова за `lead` знаков до первого совпадения; совпадение и так близко к началу — текст как есть.
+fn cut_before(text: &str, marks: &[String], lead: usize) -> String {
     let lower = text.to_lowercase();
     let hit = marks.iter().filter(|m| !m.is_empty()).filter_map(|m| lower.find(&m.to_lowercase())).min();
     let Some(at) = hit else { return text.to_owned() };
     // Позиции — по `lower`; у кириллицы длина в байтах та же, у редких букв — нет: тогда отрывка не режем.
-    if lower.len() != text.len() || at < 40 {
+    if lower.len() != text.len() || at < lead + 10 {
         return text.to_owned();
     }
-    let from = text[..at].char_indices().rev().nth(30).map_or(0, |(i, _)| i);
+    let from = text[..at].char_indices().rev().nth(lead).map_or(0, |(i, _)| i);
     let from = text[from..at].find(' ').map_or(from, |s| from + s + 1);
     format!("…{}", &text[from..])
 }
@@ -776,5 +789,22 @@ mod snippet_tests {
         assert!(!s.contains("Коллеги"));
         assert_eq!(super::snippet(text, &["коллеги".into()]), text);
         assert_eq!(super::snippet(text, &["нет-такого".into()]), text);
+    }
+
+    /// Отрывок вложения (T3-10): за слово до совпадения — имя файла уже заняло полстроки; без слов — как пришёл.
+    #[test]
+    fn attachment_line_starts_near_the_match() {
+        let hit = postman_core::indexer::AttachmentHit {
+            name: "Протокол.txt".into(),
+            snippet: "Протокол совещания по складу. Решили: продлить аренду причала до 15 декабря".into(),
+        };
+        let marks = ["причала".to_string()];
+        let cut = super::attachment_snippet(&hit, Some(&marks));
+        assert_eq!(cut.as_deref(), Some("…аренду причала до 15 декабря"));
+        assert_eq!(super::attachment_snippet(&hit, None), Some(hit.snippet.clone()));
+        let near = postman_core::indexer::AttachmentHit { snippet: "Аренда причала".into(), ..hit.clone() };
+        assert_eq!(super::attachment_snippet(&near, Some(&marks)).as_deref(), Some("Аренда причала"));
+        let named = postman_core::indexer::AttachmentHit { snippet: String::new(), ..hit };
+        assert_eq!(super::attachment_snippet(&named, Some(&marks)), None);
     }
 }

@@ -276,6 +276,11 @@ impl Live {
     pub(crate) fn index(&self) -> Index {
         self.index.clone()
     }
+
+    /// Свой индекс поиска у демо-ящика — только для снимков (`mail-t310-attachment`): у демо индекса нет.
+    pub(crate) fn set_index(&mut self, index: Index) {
+        self.index = index;
+    }
 }
 
 /// Что сделать с экраном по пачке событий синхронизации (чистая функция — тестируется без окна).
