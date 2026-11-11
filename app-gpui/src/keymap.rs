@@ -69,6 +69,8 @@ pub(crate) enum Place {
     Tasks,
     /// Палитра команд (S5-10).
     Palette,
+    /// Адресная книга письма «Кому…» (T3-03).
+    Recipients,
     /// Всё главное окно.
     Main,
 }
@@ -81,6 +83,7 @@ impl Place {
         let context = context.map(|c| c.replace("!Composer", "").replace("!ContextMenu", "").replace("!TasksView", "").replace("!ContactsView", ""));
         match context.as_deref() {
             Some(c) if c.contains("Palette") => Place::Palette,
+            Some(c) if c.contains("Recipients") => Place::Recipients,
             Some(c) if c.contains("Composer") => Place::Composer,
             Some(c) if c.contains("Meeting") => Place::Meeting,
             Some(c) if c.contains("CalendarView") => Place::Calendar,
@@ -101,6 +104,7 @@ impl Place {
             Place::Contacts => "settings-keys-where-contacts",
             Place::Tasks => "settings-keys-where-tasks",
             Place::Palette => "settings-keys-where-palette",
+            Place::Recipients => "settings-keys-where-recipients",
             Place::Main => "settings-keys-where-main",
         }
     }
@@ -109,8 +113,8 @@ impl Place {
     pub(crate) fn overlaps(self, other: Place) -> bool {
         use Place::*;
         match (self, other) {
-            (Composer, Composer) | (Meeting, Meeting) | (Palette, Palette) => true,
-            (Composer | Meeting | Palette, _) | (_, Composer | Meeting | Palette) => false,
+            (Composer, Composer) | (Meeting, Meeting) | (Palette, Palette) | (Recipients, Recipients) => true,
+            (Composer | Meeting | Palette | Recipients, _) | (_, Composer | Meeting | Palette | Recipients) => false,
             (Main, _) | (_, Main) => true,
             (a, b) => a == b,
         }

@@ -85,6 +85,13 @@ const SCENES: &[Scene] = &[
     scene("mail-23-tab", only_main, TAB),
     // Раздел 23, шаг 3: адрес и «;» — чип; Backspace — чип обратно; «Копия», «Скрытая» — строки.
     scene("mail-23-chips", |_, m, cx| screens::compose_tab(m).is_some_and(|c| c.read(cx).copies_shown() == (true, true)), CHIPS),
+    // T3-02: кнопка «Отправить и получить» и F9 — `Command::SyncNow`; в демо сервера нет — тост «нужен сервер» на каждое.
+    scene("mail-t302-sync", |_, m, cx| m.toasts.read(cx).unread() == 1 && needs_server_toast(m, cx), SEND_RECEIVE),
+    // T3-03: «Кому…» — панель адресной книги: поиск, флажки (↓, Пробел), «Кому →» двоих, другой поиск, «Копия →» список
+    // рассылки (метка «Список рассылки»). Снимок — панель открыта, отложенные внизу.
+    scene("mail-t303-picker", |_, m, cx| picker(m, cx).is_some_and(|p| p.picked.to.len() == 2 && p.picked.cc.len() == 1), PICKER),
+    // T3-03: то же, Esc сначала закрывает панель без изменений, Enter — «ОК»: чипы в «Кому» и «Копия», строка «Копия» видна.
+    scene("mail-t303-added", picker_added, PICKER_ADDED),
     // Раздел 23, шаг 4: Ctrl+B / Ctrl+I / Ctrl+U вокруг выделенного слова; кнопки списков, ссылки, цитаты.
     scene("mail-23-format", |_, m, cx| body_has(m, cx, "> "), FORMAT),
     // Раздел 23, шаг 8: Ctrl+R — ответ над письмом; Esc с текстом — вопрос; «Развернуть» — тот же черновик во вкладке.
@@ -484,6 +491,87 @@ const TAB: &[Input] = &[
     until!(|m, cx| model(m, cx).is_some_and(|c| c.confirm_close)),
     Input::Click(at!("close-discard"), Held::No),
 ];
+
+fn needs_server_toast(m: &Mailer, cx: &App) -> bool {
+    m.toasts.read(cx).latest().is_some_and(|t| t == tr!("needs-server"))
+}
+
+const SEND_RECEIVE: &[Input] = &[
+    READY,
+    Input::Press("bar-sync"),
+    until!(|m, cx| needs_server_toast(m, cx)),
+    // История уведомлений обнуляет счётчик: тост F9 — новый.
+    Input::Click(at!("notifications"), Held::No),
+    until!(|m, cx| m.toasts.read(cx).is_history_open() && m.toasts.read(cx).unread() == 0),
+    Input::Keys(&["escape"]),
+    until!(|m, cx| !m.toasts.read(cx).is_history_open()),
+    Input::Keys(&["f9"]),
+];
+
+fn picker<'a>(m: &'a Mailer, cx: &'a App) -> Option<&'a crate::recipients::Picker> {
+    screens::compose_tab(m).and_then(|c| c.read(cx).picker.as_ref()).map(|p| p.read(cx))
+}
+
+/// Поиск «Кому…» дал строки, и все — по запросу.
+fn picker_found(m: &Mailer, cx: &App, part: &str) -> bool {
+    picker(m, cx).is_some_and(|p| !p.rows().is_empty() && p.rows().iter().all(|r| r.name.to_lowercase().contains(part)))
+}
+
+const PETROV: &str = "петров"; // i18n-ok: ввод сценария
+const DEV: &str = "отдел разработки"; // i18n-ok: ввод сценария
+
+macro_rules! picker_steps {
+    ($($before:expr),* ; $($after:expr),*) => {
+        &[
+            READY,
+            NEW,
+            COMPOSE,
+            until!(|m, _| !m.compose.book.borrow().is_empty()),
+            $($before,)*
+            Input::Press("compose-pick-to"),
+            until!(|m, cx| picker(m, cx).is_some_and(|p| !p.rows().is_empty())),
+            Input::Text(PETROV),
+            until!(|m, cx| picker_found(m, cx, PETROV)),
+            // ↓ из поля — в список; Пробел — флажок, ↓ — следующий.
+            Input::Keys(&["down", "space", "down", "space"]),
+            until!(|m, cx| picker(m, cx).is_some_and(|p| p.checked().len() == 2)),
+            Input::Press("recipients-add-to"),
+            until!(|m, cx| picker(m, cx).is_some_and(|p| p.picked.to.len() == 2 && p.checked().is_empty())),
+            // ↑ на первой строке — в поле поиска.
+            Input::Keys(&["up", "up", "ctrl-a", "backspace"]),
+            Input::Text(DEV),
+            until!(|m, cx| picker_found(m, cx, DEV) && picker(m, cx).is_some_and(|p| p.rows()[0].kind == crate::recipients::Kind::List)),
+            Input::Keys(&["down", "space"]),
+            Input::Press("recipients-add-cc"),
+            until!(|m, cx| picker(m, cx).is_some_and(|p| p.picked.cc.len() == 1)),
+            $($after,)*
+        ]
+    };
+}
+
+const PICKER: &[Input] = picker_steps!(;);
+
+// Esc закрывает панель, письмо остаётся и адресатов нет; Enter в конце — «ОК».
+const PICKER_ADDED: &[Input] = picker_steps!(
+    Input::Press("compose-pick-to"),
+    until!(|m, cx| picker(m, cx).is_some()),
+    Input::Keys(&["escape"]),
+    until!(|m, cx| picker(m, cx).is_none() && screens::compose_tab(m).is_some() && model(m, cx).is_some_and(|c| c.to.trim().is_empty()));
+    Input::Keys(&["enter"])
+);
+
+/// Чипы «Кому…»: двое Петровых в «Кому», список рассылки в «Копии», панель закрыта, письмо открыто.
+fn picker_added(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    let Some(c) = screens::compose_tab(m).map(|c| c.read(cx)) else { return false };
+    let (to, _) = segments(&c.model.to);
+    let (cc, _) = segments(&c.model.cc);
+    c.picker.is_none()
+        && to.len() == 2
+        && to.iter().all(|t| t.to_lowercase().contains(PETROV))
+        && cc.len() == 1
+        && cc[0].contains("dev@corp.example")
+        && c.copies_shown().0
+}
 
 const CHIPS: &[Input] = &[
     READY,

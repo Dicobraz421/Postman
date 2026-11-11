@@ -3,7 +3,8 @@
 //! вкладку. Модель — `compose::Model`; экрану — события [`ComposerEvent`] и команды через шов `Backend::send`.
 //!
 //! Адресаты — чипами: готовые адреса — чипы (с меткой «Внешний»), в поле ввода — только набираемый адрес;
-//! «;», «,» и Enter делают его чипом, Backspace в пустом поле возвращает последний чип в поле.
+//! «;», «,» и Enter делают его чипом, Backspace в пустом поле возвращает последний чип в поле. Подписи «Кому»,
+//! «Копия», «Скрытая» — кнопки «Кому…» (T3-03): адресная книга панелью под строками адресатов (`recipients.rs`).
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -32,6 +33,7 @@ use crate::compose::{
     Book, CloseAnswer, CloseStep, Field, Format, Model, Purpose, SentDraft, Status, accept_suggestion, apply_format, compose_field, current_token,
     next_ticket, segments, size_text,
 };
+use crate::recipients::{Picked, Picker, PickerEvent};
 use crate::roles::{Look, Pm};
 use crate::smime_seal::DirectoryStatus;
 
@@ -73,6 +75,8 @@ pub(crate) struct Open {
     pub(crate) senders: Vec<Sender>,
     pub(crate) max_delay: u64,
     pub(crate) book: Book,
+    /// Адреса списков рассылки справочника (метка в «Кому…», T3-03); пополняются событиями справочника.
+    pub(crate) lists: std::collections::HashSet<String>,
     pub(crate) mailer: WeakEntity<Mailer>,
     /// Категории аккаунта: ключевое слово, имя, цвет Fluent.
     pub(crate) categories: Vec<(String, String, &'static str)>,
@@ -137,6 +141,10 @@ pub(crate) struct Composer {
     focus: FocusHandle,
     mailer: WeakEntity<Mailer>,
     book: Book,
+    lists: std::collections::HashSet<String>,
+    /// «Кому…» (T3-03): панель адресной книги и подписка на её итог.
+    pub(crate) picker: Option<Entity<Picker>>,
+    picker_sub: Option<Subscription>,
     suggest: Suggest,
     /// Таймер автосохранения запущен.
     autosave_armed: bool,
@@ -279,6 +287,9 @@ impl Composer {
             focus: cx.focus_handle(),
             mailer: open.mailer,
             book: open.book,
+            lists: open.lists,
+            picker: None,
+            picker_sub: None,
             marks: None,
             marks_look: None,
             suggest: Suggest::default(),
@@ -410,6 +421,51 @@ impl Composer {
         }
     }
 
+    /// «Кому…» (T3-03): панель адресной книги под строками адресатов, фокус — в её поиске; открыта для того же поля —
+    /// закрыть, как «Отмена».
+    pub(crate) fn open_recipients(&mut self, f: Field, window: &mut Window, cx: &mut Context<Self>) {
+        let same = self.picker.as_ref().is_some_and(|p| p.read(cx).field == f);
+        self.picker = None;
+        self.picker_sub = None;
+        if !same {
+            let (book, lists, mailer) = (self.book.clone(), self.lists.clone(), self.mailer.clone());
+            let picker = cx.new(|cx| Picker::new(f, book, lists, mailer, window, cx));
+            self.picker_sub = Some(cx.subscribe_in(&picker, window, |this, _, ev: &PickerEvent, window, cx| match ev {
+                PickerEvent::Done(picked) => this.recipients_done(picked.clone(), window, cx),
+            }));
+            picker.update(cx, |p, cx| p.focus_search(window, cx));
+            self.picker = Some(picker);
+        }
+        cx.notify();
+    }
+
+    /// Панель закрыта: отложенные — чипами в свои поля (без повторов по адресу), курсор — в поле, у которого её открыли.
+    fn recipients_done(&mut self, picked: Option<Picked>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(p) = self.picker.take() else { return };
+        self.picker_sub = None;
+        let opener = p.read(cx).field;
+        for f in [Field::To, Field::Cc, Field::Bcc] {
+            let Some(people) = picked.as_ref().map(|picked| picked.get(f)).filter(|p| !p.is_empty()) else { continue };
+            let (mut closed, open) = segments(self.model.field(f));
+            for person in people {
+                let known = closed.iter().any(|c| parse_addresses(c).0.iter().any(|a| a.email.eq_ignore_ascii_case(&person.email)));
+                if !known {
+                    closed.push(person.display());
+                }
+            }
+            self.set_field(f, &closed, &open, window, cx);
+            match f {
+                Field::Cc => self.show_cc = true,
+                Field::Bcc => self.show_bcc = true,
+                _ => {}
+            }
+        }
+        if let Some(state) = self.input(opener) {
+            state.update(cx, |s, cx| s.focus(window, cx));
+        }
+        cx.notify();
+    }
+
     fn refresh_suggestions(&mut self) {
         self.suggest.selected = 0;
         self.suggest.items.clear();
@@ -522,8 +578,18 @@ impl Composer {
             Event::ComposeFailed { ticket, error } => {
                 self.model.on_failed(*ticket, error.clone());
             }
-            // Справочник нашёл людей (они уже в книге адресов) — подсказки по набранному заново.
-            Event::PeopleFound { .. } if self.suggest.field.is_some() => self.refresh_suggestions(),
+            // Справочник нашёл людей (они уже в книге адресов) — подсказки по набранному и «Кому…» заново.
+            Event::PeopleFound { people, .. } | Event::DirectoryLoaded(people) => {
+                let lists = people.iter().filter(|p| matches!(p.kind.as_str(), "group" | "list")).filter_map(|p| p.email.as_deref());
+                self.lists.extend(lists.map(str::to_lowercase));
+                if self.suggest.field.is_some() {
+                    self.refresh_suggestions();
+                }
+                if let Some(p) = &self.picker {
+                    let lists = self.lists.clone();
+                    p.update(cx, |p, cx| p.lists_changed(lists, cx));
+                }
+            }
             Event::Me { address, signature } => {
                 // Нетронутое письмо получило подпись Identity — своя по умолчанию (настройки) сильнее.
                 if self.model.set_identity(address.clone(), signature) {
@@ -1044,6 +1110,37 @@ impl Composer {
         div().w(px(LABEL_W)).flex_none().text_size(px(13.)).text_color(if bad { l.error() } else { l.pm(Pm::LabelAccent) }).child(tr!(key))
     }
 
+    /// Подпись поля адресата — кнопка «Кому…» (T3-03): открывает адресную книгу панелью; нажата, пока панель этого поля
+    /// открыта.
+    fn pick_label(&self, f: Field, key: &str, bad: bool, l: &Look, cx: &mut Context<Self>) -> Stateful<Div> {
+        let id = match f {
+            Field::Cc => "compose-pick-cc",
+            Field::Bcc => "compose-pick-bcc",
+            _ => "compose-pick-to",
+        };
+        let open = self.picker.as_ref().is_some_and(|p| p.read(cx).field == f);
+        let tip = tr!("recipients-open-hint");
+        div()
+            .id(id)
+            .children(crate::screens::spot(id))
+            .w(px(LABEL_W))
+            .flex_none()
+            .h(px(26.))
+            .px(px(6.))
+            .ml(px(-6.))
+            .flex()
+            .items_center()
+            .rounded(l.px(Metric::RadiusControl))
+            .cursor_pointer()
+            .text_size(px(13.))
+            .text_color(if bad { l.error() } else { l.pm(Pm::LabelAccent) })
+            .when(open, |d| d.bg(l.pressed()))
+            .when(!open, |d| d.hover(|d| d.bg(l.hover())))
+            .child(tr!(key))
+            .tooltip(move |window, cx| crate::screens::tip(tip.clone(), window, cx))
+            .on_click(cx.listener(move |this, _, window, cx| this.open_recipients(f, window, cx)))
+    }
+
     fn row(&self, l: &Look) -> Div {
         div().flex().items_center().gap(px(12.)).min_h(px(ROW_H)).border_b_1().border_color(l.border())
     }
@@ -1225,7 +1322,8 @@ impl Composer {
                     cx.notify();
                 }))
         };
-        let mut row = self.row(l).flex_wrap().gap(px(6.)).py(px(4.)).child(self.label(label, bad, l).mr(px(6.))).children(chips).child(field);
+        let mut row =
+            self.row(l).flex_wrap().gap(px(6.)).py(px(4.)).child(self.pick_label(f, label, bad, l, cx).mr(px(12.))).children(chips).child(field);
         if f == Field::To {
             row = row
                 .when(!self.show_cc, |d| d.child(link("show-cc", "compose-cc", cx, |c| c.show_cc = true)))
@@ -2243,6 +2341,7 @@ impl Render for Composer {
             .child(self.address_row(Field::To, "compose-to", &l, cx))
             .when(self.show_cc, |d| d.child(self.address_row(Field::Cc, "compose-cc", &l, cx)))
             .when(self.show_bcc, |d| d.child(self.address_row(Field::Bcc, "compose-bcc", &l, cx)))
+            .children(self.picker.clone())
             .when(!inline || !self.model.is_reply(), |d| d.child(self.subject_row(&l)));
         let editor = div()
             .size_full()
@@ -2279,6 +2378,7 @@ impl Render for Composer {
                     cx.emit(ComposerEvent::Expand);
                 }
             }))
+            .on_action(cx.listener(|this, _: &compose::AddressBook, window, cx| this.open_recipients(Field::To, window, cx)))
             .on_action(cx.listener(|this, _: &compose::Discard, _, cx| {
                 this.model.confirm_close = false;
                 this.model.confirm_delete = true;

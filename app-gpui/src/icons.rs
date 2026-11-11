@@ -42,6 +42,7 @@ set! {
     CLOCK = "clock",
     SEARCH = "search",
     VIEW = "view",
+    SYNC = "arrow-sync",
     // Дерево папок.
     INBOX = "inbox",
     SEND = "send",
