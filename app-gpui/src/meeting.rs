@@ -557,11 +557,13 @@ pub(crate) struct Meetings {
 
 impl Meetings {
     /// Событие синхронизации — вкладкам (каждая ищет свой тикет); созданные встречи — экрану.
-    pub(crate) fn on_sync(&mut self, ev: &Event, cx: &mut App) -> Vec<Created> {
+    /// `pending` — мои неотвеченные приглашения из календаря: экран передаёт их сам, вкладка не читает `Mailer` —
+    /// он в этот момент обновляется (чтение — паника gpui, краш при создании встречи на живом сервере, #552).
+    pub(crate) fn on_sync(&mut self, ev: &Event, pending: &[Span], cx: &mut App) -> Vec<Created> {
         let mut created = Vec::new();
         for (tab, view) in &self.tabs {
             view.update(cx, |m, cx| {
-                if let Some(mut c) = m.on_sync(ev, cx) {
+                if let Some(mut c) = m.on_sync(ev, pending, cx) {
                     c.tab = *tab;
                     created.push(c);
                 }
@@ -1447,14 +1449,25 @@ impl MeetingView {
         cx.notify();
     }
 
+    /// Сцена #552: вкладка ждёт ответа сервера о занятости по тикету — как после запроса на живом сервере.
+    pub(crate) fn await_server_busy(&mut self) -> u64 {
+        let ticket = next_ticket();
+        self.busy.ticket = Some(ticket);
+        ticket
+    }
+
+    /// Ответ сервера о занятости принят: тикет погашен, моя занятость есть.
+    pub(crate) fn server_busy_taken(&self) -> bool {
+        self.busy.ticket.is_none() && self.busy.me.is_some()
+    }
+
     /// Итог по тикету: занятость; встреча создана — экран закроет вкладку и покажет тост.
-    fn on_sync(&mut self, ev: &Event, cx: &mut Context<Self>) -> Option<Created> {
+    fn on_sync(&mut self, ev: &Event, pending: &[Span], cx: &mut Context<Self>) -> Option<Created> {
         match ev {
             Event::Availability { ticket, me, people, error, .. } if self.busy.ticket == Some(*ticket) => {
                 self.busy.ticket = None;
                 // Мои неотвеченные приглашения (T2-08в): «под вопросом», а выключено — свободно; одинаково на любом
                 // сервере.
-                let pending = self.mailer.upgrade().map(|m| m.read(cx).cal.read(cx).pending_spans()).unwrap_or_default();
                 let me: Vec<Busy> = me
                     .iter()
                     .filter(|b| crate::calendar::pending_shown() || !pending.contains(&b.span))

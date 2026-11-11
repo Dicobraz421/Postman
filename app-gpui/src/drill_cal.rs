@@ -82,6 +82,8 @@ const SCENES: &[Scene] = &[
     Scene::new("cal-s844-http", start, subscription_refused).input(SUBSCRIPTION).on_request(),
     // S8-42, шаги 1, 2: «Указать ссылку» у внешнего участника, `http://` отвергнут, строка не закрылась.
     Scene::new("cal-s842-link", meeting, link_refused).input(LINK).on_request(),
+    // #552: ответ сервера о занятости при открытой встрече — без краша (вкладка не читает `Mailer` в его обновлении).
+    Scene::new("cal-552-server-busy", meeting, server_busy_taken).input(SERVER_BUSY).on_request(),
     // Раздел 41, шаг 2: узкое окно, кнопки карточки приглашения не вылезают за панель.
     Scene::new("cal-41-narrow", narrow, invite_fits).input(INVITE).wait(new_invite).on_request(),
     // Раздел 41, шаг 3: схема «Одиночные клавиши», A в списке — ответ; демо — тост «нужен сервер».
@@ -1250,6 +1252,23 @@ fn all_kept(s: &Scene, m: &Mailer, cx: &App) -> bool {
 }
 
 // Встреча.
+
+/// Ответ сервера о занятости приходит как на живом ящике: через `Mailer::on_sync`, пока `Mailer` обновляется.
+const SERVER_BUSY: &[Input] = &[
+    Input::Until(|_, m, _| m.meetings.last().is_some()),
+    Input::Run(|_, m, _, cx| {
+        let view = m.meetings.last().ok_or("нет вкладки встречи")?;
+        let ticket = view.update(cx, |v, _| v.await_server_busy());
+        let busy = postman_calendar::Busy { span: postman_calendar::Span::new(0, 3600), kind: postman_calendar::BusyKind::Busy };
+        let ev = postman_core::sync::Event::Availability { ticket, me: vec![busy], people: Vec::new(), notes: Vec::new(), error: None };
+        m.on_sync(&ev, cx);
+        Ok(())
+    }),
+];
+
+fn server_busy_taken(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    meeting_view(m, cx).is_some_and(MeetingView::server_busy_taken)
+}
 
 fn meeting_view<'a>(m: &Mailer, cx: &'a App) -> Option<&'a MeetingView> {
     m.meetings.last().map(|v| v.read(cx))

@@ -495,7 +495,8 @@ impl Mailer {
                 t.set_me(me, cx);
             });
         }
-        let created = self.meetings.on_sync(ev, cx);
+        let pending = if matches!(ev, postman_core::sync::Event::Availability { .. }) { self.cal.read(cx).pending_spans() } else { Vec::new() };
+        let created = self.meetings.on_sync(ev, &pending, cx);
         self.meetings_created(created, cx);
         self.on_settings_sync(ev, cx);
         self.on_lifecycle_sync(ev, cx);
