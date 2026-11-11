@@ -1691,6 +1691,10 @@ impl Imap {
                 Some(back) => cmd = back,
             }
         }
+        // Справочника у IMAP нет; не ответила ни одна область — состав списка «не поддерживается» (T3-09).
+        if let Command::ExpandList { ticket, address } = cmd {
+            return notify(Event::ListMembers { ticket, address, members: Vec::new(), error: Some(postman_core::sync::ListError::Unsupported) });
+        }
         tracing::debug!("imap: command not supported: {}", command_name(&cmd));
     }
 }
