@@ -140,9 +140,24 @@ pub fn rule_value(rule: &Rule) -> Option<Value> {
     }
 }
 
-/// Правило RRULE модели событий (T2-13): из него — подпись, из подписи — RRULE.
+pub use postman_calendar::rrule::End;
+
+/// Правило RRULE модели событий (T2-13): из него — подпись, из подписи — RRULE. Конец серии (T3-08) правило
+/// «особым» не делает — он отдельно ([`series_of_rrule`]).
 pub fn rule_of_rrule(s: &str) -> Option<Rule> {
-    rule_of_value(&postman_calendar::rrule::from_rrule(s)?)
+    series_of_rrule(s).map(|(rule, _)| rule)
+}
+
+/// Серия встречи (T3-08): правило и её конец — «Повтор ▾» выбирает их порознь.
+pub fn series_of_rrule(s: &str) -> Option<(Rule, End)> {
+    use postman_calendar::rrule::{end_of, from_rrule, with_end};
+    let rule = rule_of_value(&from_rrule(&with_end(s, End::Never))?)?;
+    Some((rule, end_of(s)))
+}
+
+/// RRULE серии: правило с концом; «после выполнения» у встречи не бывает — `None`.
+pub fn rrule_of_series(rule: &Rule, end: End) -> Option<String> {
+    rrule_of_rule(rule).map(|r| postman_calendar::rrule::with_end(&r, end))
 }
 
 pub fn rrule_of_rule(rule: &Rule) -> Option<String> {
@@ -323,9 +338,20 @@ mod tests {
     fn meeting_rules_through_rrule() {
         let weekly = Rule::Every { freq: Freq::Weekly(vec![Weekday::Tuesday]), interval: 1 };
         assert_eq!(rrule_of_rule(&weekly).as_deref(), Some("FREQ=WEEKLY;BYDAY=TU"));
-        assert_eq!(rule_of_rrule("FREQ=WEEKLY;BYDAY=TU"), Some(weekly));
+        assert_eq!(rule_of_rrule("FREQ=WEEKLY;BYDAY=TU"), Some(weekly.clone()));
         assert_eq!(rule_of_rrule("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR"), Some(Rule::Every { freq: Freq::Weekdays, interval: 1 }));
-        assert!(matches!(rule_of_rrule("FREQ=WEEKLY;COUNT=5"), Some(Rule::Other(_))), "с концом серии — особое правило");
+        // Конец серии (T3-08) — отдельно от правила: правило с концом не «особое».
+        let plain = Rule::Every { freq: Freq::Weekly(vec![]), interval: 1 };
+        assert_eq!(series_of_rrule("FREQ=WEEKLY;COUNT=5"), Some((plain.clone(), End::Count(5))));
+        assert_eq!(rule_of_rrule("FREQ=WEEKLY;COUNT=5"), Some(plain));
+        let until = End::Until(jiff::civil::date(2026, 12, 30));
+        assert_eq!(series_of_rrule("FREQ=WEEKLY;INTERVAL=1;BYDAY=TU;WKST=MO;UNTIL=20261230"), Some((weekly.clone(), until)), "как у Exchange");
+        assert_eq!(series_of_rrule("FREQ=WEEKLY;BYDAY=TU"), Some((weekly.clone(), End::Never)));
+        assert_eq!(rrule_of_series(&weekly, until).as_deref(), Some("FREQ=WEEKLY;BYDAY=TU;UNTIL=20261230T235959"));
+        assert_eq!(rrule_of_series(&weekly, End::Count(1)).as_deref(), Some("FREQ=WEEKLY;BYDAY=TU;COUNT=1"));
+        assert_eq!(rrule_of_series(&weekly, End::Never).as_deref(), Some("FREQ=WEEKLY;BYDAY=TU"));
+        // Редкое правило остаётся «особым» и с концом; конец — при нём.
+        assert!(matches!(series_of_rrule("FREQ=MONTHLY;BYDAY=2TU;COUNT=3"), Some((Rule::Other(_), End::Count(3)))));
         assert_eq!(rrule_of_rule(&Rule::AfterDone(3)), None);
     }
     use jiff::civil::date;
