@@ -266,8 +266,9 @@ impl Look {
     }
 }
 
-/// «Безопасность» (S5-30). Внешние картинки не грузятся никогда (политика, не настройка); макросы не открываются
-/// никогда (решение №7) — настройка только у сохранения. Выбор — только строже, чем по умолчанию (решение владельца
+/// «Безопасность» (S5-30). Внешние картинки не грузятся сами: «Не загружаются никогда» или «Спрашивать» — тогда
+/// письмо предлагает загрузить их и запомнить домен отправителя (T3-04, `docs/decisions/2026-11-11-remote-images.md`);
+/// макросы не открываются никогда (решение №7) — настройка только у сохранения. Выбор — только строже, чем по умолчанию (решение владельца
 /// 2026-10-22); политика организации может закрепить любое из значений (`app-gpui/src/security.rs`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -276,6 +277,13 @@ pub struct Security {
     pub macro_save: bool,
     /// Внешние картинки.
     pub images: Images,
+    /// Домены отправителей, в письмах которых внешние картинки загружаются сами (при «Спрашивать», T3-04): нижний
+    /// регистр, без повторов, по алфавиту ([`image_domain`]).
+    pub trusted_image_domains: Vec<String>,
+    /// Умолчание «Спрашивать» уже применено (решение владельца 2026-11-11): в прежнем файле записано «никогда» — до
+    /// T3-04 «Спрашивать» ничего не меняло, поэтому один раз переводим на «Спрашивать». Нет поля — `false`.
+    #[serde(default)]
+    pub images_ask_applied: bool,
     /// Только TLS 1.3 (иначе — 1.2 и выше).
     pub tls13: bool,
     /// Хранить пароль в Диспетчере учётных данных Windows (иначе — спрашивать при каждом запуске).
@@ -288,8 +296,57 @@ pub struct Security {
 
 impl Default for Security {
     fn default() -> Self {
-        Self { macro_save: true, images: Images::Never, tls13: false, store_password: true, sign_all: true, directory: Directory::default() }
+        Self {
+            macro_save: true,
+            images: Images::Ask,
+            trusted_image_domains: Vec::new(),
+            images_ask_applied: true,
+            tls13: false,
+            store_password: true,
+            sign_all: true,
+            directory: Directory::default(),
+        }
     }
+}
+
+impl Security {
+    /// Письма отправителя `from` (адрес) — с доверенного домена: точное совпадение домена адреса, без поддоменов.
+    pub fn trusts_images_from(&self, from: &str) -> bool {
+        sender_domain(from).is_some_and(|d| self.trusted_image_domains.contains(&d))
+    }
+
+    /// Запомнить домен (`false` — не домен или уже есть).
+    pub fn trust_image_domain(&mut self, text: &str) -> bool {
+        let Some(d) = image_domain(text) else { return false };
+        if self.trusted_image_domains.contains(&d) {
+            return false;
+        }
+        self.trusted_image_domains.push(d);
+        self.trusted_image_domains.sort();
+        true
+    }
+
+    pub fn forget_image_domain(&mut self, domain: &str) {
+        self.trusted_image_domains.retain(|d| d != domain);
+    }
+}
+
+/// Длиннее — не имя домена (RFC 1035).
+const MAX_DOMAIN: usize = 253;
+
+/// Домен из ввода пользователя (T3-04): `corp.example`, `@corp.example`, `user@corp.example` → `corp.example`; без точки,
+/// с пробелами, лишними знаками или длиннее 253 — `None`. Нижний регистр, без точки в конце.
+pub fn image_domain(text: &str) -> Option<String> {
+    let t = text.trim();
+    let t = t.rsplit_once('@').map_or(t, |(_, d)| d).trim_end_matches('.').to_lowercase();
+    let label_ok = |l: &str| !l.is_empty() && !l.starts_with('-') && !l.ends_with('-') && l.chars().all(|c| c.is_alphanumeric() || c == '-');
+    let ok = t.len() <= MAX_DOMAIN && t.contains('.') && t.split('.').all(label_ok);
+    ok.then_some(t)
+}
+
+/// Домен адреса отправителя (`m.ivanova@corp.example` → `corp.example`); не адрес — `None`.
+pub fn sender_domain(from: &str) -> Option<String> {
+    from.trim().rsplit_once('@').and_then(|(local, d)| (!local.is_empty()).then(|| image_domain(d)).flatten())
 }
 
 /// Каталог сертификатов адресатов (S5-12 Ф5, решение владельца №12): пустой сервер — контроллер домена компьютера,
@@ -324,9 +381,9 @@ pub enum DirectoryLogin {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Images {
-    #[default]
     Never,
-    /// Спрашивать в письме.
+    /// Спрашивать в письме (по умолчанию, решение владельца 2026-11-11).
+    #[default]
     Ask,
 }
 
@@ -401,6 +458,15 @@ impl Prefs {
         self.keys_single.retain(|id, _| !id.is_empty());
         // Адрес для фишинга: пробелы по краям — прочь, пустой и без «@» — нет адреса.
         self.general.phishing_report = phishing_address(self.general.phishing_report.as_deref());
+        // Доверенные домены картинок (T3-04): файл правили руками — только домены, без повторов, по алфавиту.
+        let mut domains: Vec<String> = self.security.trusted_image_domains.iter().filter_map(|d| image_domain(d)).collect();
+        domains.sort();
+        domains.dedup();
+        self.security.trusted_image_domains = domains;
+        if !self.security.images_ask_applied {
+            self.security.images = Images::Ask;
+            self.security.images_ask_applied = true;
+        }
         if !QUIET_FROM.contains(&self.general.quiet_from) {
             self.general.quiet_from = General::default().quiet_from;
         }
@@ -1346,6 +1412,7 @@ mod tests {
         p.look.keytips_delay = 800;
         p.security.macro_save = false;
         p.security.images = Images::Ask;
+        p.security.trusted_image_domains = vec!["corp.example".into()];
         p.security.tls13 = true;
         p.security.store_password = false;
         p.look.accent = Accent::Teal;
@@ -1384,11 +1451,47 @@ mod tests {
             assert_eq!(p.normalized().general.density, Some(now), "{was}");
         }
         let old: Prefs = serde_json::from_str(r#"{"version":1,"general":{"language":"ru"}}"#).unwrap();
+        let old = old.normalized();
         assert_eq!(old.security, Security::default(), "по умолчанию — не слабее прежнего");
-        assert_eq!((old.security.images, old.security.tls13, old.security.store_password), (Images::Never, false, true));
+        assert_eq!((old.security.images, old.security.tls13, old.security.store_password), (Images::Ask, false, true));
+        // Прежний файл с «никогда» (до T3-04 «Спрашивать» ничего не меняло) — один раз на «Спрашивать»; выбор после
+        // этого — как записан.
+        let saved: Prefs = serde_json::from_str(r#"{"version":1,"security":{"images":"never"}}"#).unwrap();
+        assert_eq!(saved.normalized().security.images, Images::Ask);
+        let chosen: Prefs = serde_json::from_str(r#"{"version":1,"security":{"images":"never","images_ask_applied":true}}"#).unwrap();
+        assert_eq!(chosen.normalized().security.images, Images::Never);
         assert_eq!(old.general.language.as_deref(), Some("ru"));
         assert!(old.general.quiet && old.look.avatars && old.keytips, "прежний файл — умолчания новых полей");
         assert_eq!(LogLevel::Debug.filter(), "debug");
+    }
+
+    /// T3-04: доверенные домены картинок — домен из ввода и адреса, без повторов, по алфавиту, точное совпадение.
+    #[test]
+    fn trusted_image_domains() {
+        assert_eq!(image_domain(" @News.Example.TEST. ").as_deref(), Some("news.example.test"));
+        assert_eq!(image_domain("m.ivanova@corp.example").as_deref(), Some("corp.example"));
+        for bad in ["", "corp", "corp .example", "corp..example", "-corp.example", "corp.example/x", "*.corp.example"] {
+            assert_eq!(image_domain(bad), None, "{bad}");
+        }
+        assert_eq!(image_domain(&format!("{}.example", "a".repeat(250))), None);
+        assert_eq!(sender_domain("@corp.example"), None);
+        let mut s = Security::default();
+        assert!(s.trusted_image_domains.is_empty(), "по умолчанию доверенных нет");
+        assert!(s.trust_image_domain("news.example.test"));
+        assert!(s.trust_image_domain("Corp.Example"));
+        assert!(!s.trust_image_domain("corp.example"), "повтор");
+        assert!(!s.trust_image_domain("не домен"));
+        assert_eq!(s.trusted_image_domains, ["corp.example", "news.example.test"]);
+        assert!(s.trusts_images_from("M.Ivanova@CORP.example"));
+        assert!(!s.trusts_images_from("a@mail.corp.example"), "поддомен — отдельно");
+        assert!(!s.trusts_images_from("a@evilcorp.example"));
+        s.forget_image_domain("corp.example");
+        assert_eq!(s.trusted_image_domains, ["news.example.test"]);
+        let old: Security = serde_json::from_str(r#"{"images":"ask"}"#).unwrap_or_default();
+        assert!(old.trusted_image_domains.is_empty(), "прежний файл — без доверенных");
+        let mut p = Prefs::default();
+        p.security.trusted_image_domains = vec!["Corp.Example".into(), "мусор".into(), "corp.example".into(), "a.example.test".into()];
+        assert_eq!(p.normalized().security.trusted_image_domains, ["a.example.test", "corp.example"]);
     }
 
     /// Ширины панелей (T1-05а): старый файл — макет; на узком окне — минимумы, на широком — свои; круг записи.

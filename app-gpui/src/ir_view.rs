@@ -286,6 +286,9 @@ fn flatten(
                 }
             }
             Inline::LineBreak => text.push('\n'),
+            // Внешняя картинка, не загруженная (T3-04): подпись, как прежде выброшенная картинка.
+            Inline::Remote { alt, .. } if !alt.is_empty() => text.push_str(&format!("[{alt}]")),
+            Inline::Remote { .. } => {}
             Inline::Image { alt, .. } => {
                 let start = text.len();
                 text.push_str(&if alt.is_empty() { tr!("reading-image") } else { tr!("reading-image-alt", alt = alt.as_str()) });
@@ -328,12 +331,33 @@ fn style(m: Marks, l: &Look) -> Option<HighlightStyle> {
     })
 }
 
-/// Куски абзаца: текст и показанные картинки верхнего уровня (в ссылке картинка остаётся подписью).
+/// Куски абзаца: текст и показанные картинки верхнего уровня; ссылка, в которой одна картинка (баннер рассылки,
+/// логотип подписи), — картинкой со ссылкой (T3-04); в ссылке с текстом картинка остаётся подписью.
 #[derive(Debug, PartialEq)]
 enum Piece<'a> {
     Text(&'a [Inline]),
-    /// `cid:` и задуманный размер из HTML (T1-10б).
-    Image(&'a str, Want),
+    /// Ключ картинки (`cid:` или адрес внешней), задуманный размер из HTML (T1-10б) и ссылка с пометкой «подозрительная».
+    Image(&'a str, Want, Option<(&'a str, bool)>),
+}
+
+/// Ключ картинки в [`Images`] и задуманный размер: `cid:` или адрес внешней (T3-04).
+fn image_of(item: &Inline) -> Option<(&str, Want)> {
+    match item {
+        Inline::Image { cid, width, height, .. } => Some((cid, (*width, *height))),
+        Inline::Remote { url, width, height, .. } => Some((url, (*width, *height))),
+        _ => None,
+    }
+}
+
+/// Видно ли что-то из инлайнов: текст не из одних пробелов, картинка `cid:` (подпись), внешняя с подписью.
+fn visible(items: &[Inline]) -> bool {
+    items.iter().any(|i| match i {
+        Inline::Text { text, .. } => !text.trim().is_empty(),
+        Inline::LineBreak => false,
+        Inline::Remote { alt, .. } => !alt.is_empty(),
+        Inline::Link { content, .. } => visible(content),
+        Inline::Image { .. } => true,
+    })
 }
 
 /// Задуманные ширина и высота картинки в CSS px из IR (`width`/`height` HTML и `style`); `None` — не задана.
@@ -343,22 +367,28 @@ fn pieces<'a>(items: &'a [Inline], shown: impl Fn(&str) -> bool) -> Vec<Piece<'a
     let mut out = Vec::new();
     let mut start = 0;
     for (i, item) in items.iter().enumerate() {
-        if let Inline::Image { cid, width, height, .. } = item
-            && shown(cid)
-        {
+        let piece = match item {
+            Inline::Link { href, suspicious, content, .. } => {
+                // Ссылка из одной картинки (пробелы и переводы строк вокруг — не в счёт).
+                let mut inner = content.iter().filter(|c| visible(std::slice::from_ref(*c)) || image_of(c).is_some());
+                match (inner.next().and_then(image_of), inner.next()) {
+                    (Some((key, want)), None) if shown(key) => Some(Piece::Image(key, want, Some((href.as_str(), *suspicious)))),
+                    _ => None,
+                }
+            }
+            _ => image_of(item).filter(|(key, _)| shown(key)).map(|(key, want)| Piece::Image(key, want, None)),
+        };
+        if let Some(piece) = piece {
             out.push(Piece::Text(&items[start..i]));
-            out.push(Piece::Image(cid, (*width, *height)));
+            out.push(piece);
             start = i + 1;
         }
     }
     out.push(Piece::Text(&items[start..]));
-    // Пустые куски и одни переводы строк вокруг картинки не дают пустых строк.
+    // Пустые куски, одни переводы строк вокруг картинки и незагруженные внешние картинки без подписи не дают пустых
+    // строк.
     out.retain(|p| match p {
-        Piece::Text(t) => t.iter().any(|i| match i {
-            Inline::Text { text, .. } => !text.trim().is_empty(),
-            Inline::LineBreak => false,
-            _ => true,
-        }),
+        Piece::Text(t) => visible(t),
         Piece::Image(..) => true,
     });
     out
@@ -366,6 +396,10 @@ fn pieces<'a>(items: &'a [Inline], shown: impl Fn(&str) -> bool) -> Vec<Piece<'a
 
 fn paragraph(items: &[Inline], key: &str, images: &Images, hits: &Hits, col: Pixels, l: &Look) -> AnyElement {
     let parts = pieces(items, |cid| images.contains_key(cid));
+    if parts.is_empty() {
+        // Одни незагруженные внешние картинки без подписи (T3-04): места не занимает.
+        return div().into_any_element();
+    }
     if !parts.iter().any(|p| matches!(p, Piece::Image(..))) {
         return text(items, key, hits, l);
     }
@@ -375,9 +409,24 @@ fn paragraph(items: &[Inline], key: &str, images: &Images, hits: &Hits, col: Pix
         .gap_1()
         .children(parts.into_iter().enumerate().map(|(n, p)| match p {
             Piece::Text(t) => text(t, &format!("{key}.{n}"), hits, l),
-            Piece::Image(cid, want) => match images.get(cid) {
-                Some(image) => picture(image, want, col),
-                None => div().into_any_element(),
+            Piece::Image(cid, want, link) => match (images.get(cid), link) {
+                (Some(image), None) => picture(image, want, col),
+                // Картинка-ссылка: щелчок — как по ссылке текста (адрес под курсором, проверка несовпадения).
+                (Some(image), Some((href, suspicious))) => {
+                    let (target, over) = (href.to_owned(), href.to_owned());
+                    div()
+                        .id(SharedString::from(format!("{key}.{n}")))
+                        .cursor_pointer()
+                        .child(picture(image, want, col))
+                        .on_click(move |_, _, cx| open_link(&target, suspicious, "", cx))
+                        .on_hover(move |on, window, _| {
+                            if set_hovered(on.then(|| over.clone())) {
+                                window.refresh();
+                            }
+                        })
+                        .into_any_element()
+                }
+                (None, _) => div().into_any_element(),
             },
         }))
         .into_any_element()
@@ -414,7 +463,7 @@ fn widest(items: &[Inline], images: &Images, col: Pixels) -> f32 {
     pieces(items, |cid| images.contains_key(cid))
         .into_iter()
         .filter_map(|p| match p {
-            Piece::Image(cid, want) => images.get(cid).map(|i| fitted(i, want, col).0),
+            Piece::Image(cid, want, _) => images.get(cid).map(|i| fitted(i, want, col).0),
             Piece::Text(_) => None,
         })
         .fold(0., f32::max)
@@ -539,10 +588,10 @@ mod tests {
         let items = [image("logo"), Inline::LineBreak, Inline::text("Коллеги"), image("missing"), image("chart")];
         let p = pieces(&items, |c| c != "missing");
         assert_eq!(p.len(), 3, "{p:?}");
-        assert_eq!(p[0], Piece::Image("logo", (None, None)));
+        assert_eq!(p[0], Piece::Image("logo", (None, None), None));
         // Текст и подпись картинки, которой нет, — одним куском.
         assert_eq!(p[1], Piece::Text(&items[1..4]));
-        assert_eq!(p[2], Piece::Image("chart", (None, None)));
+        assert_eq!(p[2], Piece::Image("chart", (None, None), None));
         assert_eq!(pieces(&items[1..3], |_| false), [Piece::Text(&items[1..3])]);
     }
 
@@ -575,7 +624,26 @@ mod tests {
     #[test]
     fn pieces_carry_the_html_size() {
         let items = [Inline::Image { cid: "logo".into(), alt: String::new(), width: Some(180), height: None }];
-        assert_eq!(pieces(&items, |_| true), [Piece::Image("logo", (Some(180), None))]);
+        assert_eq!(pieces(&items, |_| true), [Piece::Image("logo", (Some(180), None), None)]);
+    }
+
+    /// T3-04: внешняя картинка — по адресу; ссылка из одной картинки — картинкой со ссылкой; не загруженная без
+    /// подписи — места не занимает, с подписью — подпись в тексте.
+    #[test]
+    fn remote_pictures_and_linked_ones() {
+        let remote = |url: &str, alt: &str| Inline::Remote { url: url.into(), alt: alt.into(), width: Some(600), height: None };
+        let link = |content: Vec<Inline>| Inline::Link { href: "https://news.example.test/q3".into(), host: None, suspicious: false, content };
+        let items = [
+            remote("https://cdn.example.test/a.png", ""),
+            link(vec![Inline::text(" "), remote("https://cdn.example.test/b.png", "Итоги")]),
+            link(vec![Inline::text("Итоги "), remote("https://cdn.example.test/c.png", "")]),
+        ];
+        let p = pieces(&items, |_| true);
+        assert_eq!(p[0], Piece::Image("https://cdn.example.test/a.png", (Some(600), None), None));
+        assert_eq!(p[1], Piece::Image("https://cdn.example.test/b.png", (Some(600), None), Some(("https://news.example.test/q3", false))));
+        assert_eq!(p[2], Piece::Text(&items[2..]), "в ссылке с текстом — подпись");
+        assert!(pieces(&items[..1], |_| false).is_empty(), "не загружена, без подписи");
+        assert_eq!(pieces(&items[1..2], |_| false), [Piece::Text(&items[1..2])], "подпись «[Итоги]»");
     }
 
     #[test]

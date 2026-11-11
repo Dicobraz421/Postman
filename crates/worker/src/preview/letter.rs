@@ -141,7 +141,13 @@ mod tests {
             blocks,
             [Block::Paragraph {
                 align: Align::Start,
-                content: vec![Inline::text("Привет, "), Inline::Text { text: "мир".into(), marks: bold }, Inline::text(" "), Inline::text("x")]
+                content: vec![
+                    Inline::text("Привет, "),
+                    Inline::Text { text: "мир".into(), marks: bold },
+                    Inline::text(" "),
+                    Inline::text("x"),
+                    Inline::Remote { url: "https://tracker.example/p.gif".into(), alt: String::new(), width: None, height: None }
+                ]
             }]
         );
         assert_eq!(attachments, [("report.pdf".to_string(), "application/pdf".to_string(), 5)]);

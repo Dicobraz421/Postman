@@ -69,6 +69,8 @@ pub(crate) struct Reading {
     pub(crate) images: Images,
     /// `cid:`, за которыми уже пошли (байты, декодирование).
     pub(crate) requested: HashSet<String>,
+    /// Внешние картинки (T3-04, `remote_images.rs`): загружены — в `images` по адресу.
+    pub(crate) remote: crate::remote_images::Remote,
     pub(crate) invite: Option<Card>,
     /// Письмо-поручение (S6-10): вложение `text/calendar` с VTODO вместо приглашения.
     pub(crate) task_mail: Option<Box<postman_calendar::assign::Incoming>>,
@@ -91,6 +93,7 @@ impl Reading {
             doc: None,
             images: Images::new(),
             requested: HashSet::new(),
+            remote: Default::default(),
             invite: None,
             task_mail: None,
             scans: HashMap::new(),
@@ -710,6 +713,7 @@ impl ReadingPane {
         for a in wanted {
             self.fetch(&a, cx);
         }
+        self.ensure_remote(cx);
     }
 
     /// Приглашение во вложениях — на разбор в песочницу (сначала байты).
@@ -1395,15 +1399,12 @@ impl Render for ReadingPane {
                 .child(pane)
                 .into_any_element();
         }
+        let remote = self.remote_banner(&l, cx);
         let body: AnyElement = match &r.doc {
             None => div().text_color(l.text2()).child("…").into_any_element(),
             Some(doc) => {
-                let mut col = div().flex().flex_col().gap_2();
-                if doc.remote_images_blocked > 0 {
-                    col = col.child(
-                        div().px_2().py_1().rounded_md().bg(l.warning_bg()).child(tr!("reading-remote-blocked", n = doc.remote_images_blocked)),
-                    );
-                }
+                // Внешние картинки (T3-04): строка «не загружаются (N)» с «Загрузить» и «Всегда для домена».
+                let col = div().flex().flex_col().gap_2().children(remote);
                 col.children(ir_view::blocks_marked(&doc.blocks, "doc", &r.images, &hits, self.column.get(), cx)).into_any_element()
             }
         };
