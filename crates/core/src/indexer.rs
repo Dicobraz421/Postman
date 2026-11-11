@@ -6,11 +6,15 @@
 //! формата 5, с пустой базой, со стёртым индексом); до готовности [`search`] ищет по кэшу. Письма, пришедшие в базу мимо
 //! [`rows`] (пути IMAP и EWS), [`search`] догоняет сам, а документы писем, которых в базе больше нет, убирает, встретив
 //! в выдаче: удаляют письма многие пути, и ни один из них индекс не трогает.
+//!
+//! Вложения (T3-10): имена — из тела, текст — от воркера ([`crate::extract`]); [`search_hits`] называет вложение, в
+//! котором совпало. Формат базы тот же: схема индекса сменилась — он пересоздаётся пустым и собирается в фоне заново.
 
 use std::collections::HashSet;
 
 use postman_cache::{BodyRow, Cache, EmailRow, LetterRow};
-use postman_search::{Doc, SearchIndex};
+pub use postman_search::AttachmentHit;
+use postman_search::{Attachment, Doc, SearchIndex};
 
 use crate::model::{FolderId, LetterId};
 use crate::store::{self, cache_id};
@@ -30,7 +34,7 @@ pub fn rows(index: &SearchIndex, cache: &Cache, rows: &[EmailRow]) {
         .zip(&ids)
         .zip(&people)
         .filter_map(|((r, id), p)| {
-            Some(Doc { id: id.as_deref()?, subject: &r.subject, people: p, body: &r.preview, attachments: "", received_at: r.received_at })
+            Some(Doc { id: id.as_deref()?, subject: &r.subject, people: p, body: &r.preview, attachments: &[], received_at: r.received_at })
         })
         .collect();
     if index.upsert(&docs).is_ok() {
@@ -49,13 +53,12 @@ fn people(name: &str, addr: &str, body: Option<&BodyRow>) -> String {
     people
 }
 
-fn attachments(body: &BodyRow) -> String {
-    body.attachments.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(" ")
-}
-
-/// Письмо целиком, когда известен его текст: получатели, тело, имена вложений. Коммит — пакетно, у вызывающего.
-pub fn letter(index: &SearchIndex, id: LetterId, row: &LetterRow, body: &BodyRow, text: &str) {
-    let (key, people, attachments) = (store::letter_ref(id), people(&row.from_name, &row.from_addr, Some(body)), attachments(body));
+/// Письмо целиком, когда известен его текст: получатели, тело, вложения — имена и текст (`attached` — по порядку
+/// вложений тела, от воркера; нет текста — пусто или короче). Коммит — пакетно, у вызывающего.
+pub fn letter(index: &SearchIndex, id: LetterId, row: &LetterRow, body: &BodyRow, text: &str, attached: &[String]) {
+    let (key, people) = (store::letter_ref(id), people(&row.from_name, &row.from_addr, Some(body)));
+    let attachments: Vec<Attachment> =
+        body.attachments.iter().enumerate().map(|(i, a)| Attachment { name: &a.name, text: attached.get(i).map_or("", String::as_str) }).collect();
     let doc = Doc { id: &key, subject: &row.subject, people: &people, body: text, attachments: &attachments, received_at: row.received_at };
     let _ = index.upsert(&[doc]);
 }
@@ -94,7 +97,7 @@ fn walk(index: &SearchIndex, cache: &Cache, from: u64, stop: &dyn Fn() -> bool) 
             }
             let body = store::body(cache, id)?.unwrap_or_default();
             let text = body.text.as_deref().unwrap_or(&row.preview);
-            letter(index, id, row, &body, text);
+            letter(index, id, row, &body, text, &[]);
         }
         let _ = index.commit();
         if page.len() < PAGE {
@@ -131,6 +134,14 @@ fn catch_up(index: &SearchIndex, cache: &Cache) -> postman_cache::Result<()> {
     Ok(())
 }
 
+/// Найденное письмо.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hit {
+    pub id: LetterId,
+    /// Совпало во вложении: его имя и отрывок текста (T3-10). Поиск по кэшу, пока индекс не собран, вложений не знает.
+    pub matched_in: Option<AttachmentHit>,
+}
+
 /// Поиск писем, по релевантности: по индексу, если он собран ([`ready`]); иначе — по кэшу (тема, отправитель, превью),
 /// новые сверху. `folder` — только письма этой папки.
 pub fn search(
@@ -140,16 +151,27 @@ pub fn search(
     folder: Option<FolderId>,
     limit: usize,
 ) -> postman_cache::Result<Vec<LetterId>> {
+    Ok(search_hits(index, cache, query, folder, limit)?.into_iter().map(|h| h.id).collect())
+}
+
+/// [`search`] — и где совпало ([`Hit::matched_in`]).
+pub fn search_hits(
+    index: Option<&SearchIndex>,
+    cache: &Cache,
+    query: &str,
+    folder: Option<FolderId>,
+    limit: usize,
+) -> postman_cache::Result<Vec<Hit>> {
     let in_folder = |row: &LetterRow| folder.is_none_or(|f| row.folders.contains(&postman_cache::FolderId(f.0)));
     if let Some(index) = index.filter(|_| ready(cache)) {
         if let Err(e) = catch_up(index, cache) {
             tracing::warn!("search index: {e}");
         }
-        if let Ok(hits) = index.search(query, limit.saturating_mul(4).max(limit)) {
+        if let Ok(hits) = index.hits(query, limit.saturating_mul(4).max(limit)) {
             let (mut out, mut gone) = (Vec::with_capacity(limit.min(hits.len())), Vec::new());
-            for id in hits.iter().filter_map(|h| store::parse_ref(h)) {
+            for (id, matched_in) in hits.into_iter().filter_map(|h| Some((store::parse_ref(&h.id)?, h.attachment))) {
                 match cache.letter(cache_id(id))? {
-                    Some(row) if in_folder(&row) => out.push(id),
+                    Some(row) if in_folder(&row) => out.push(Hit { id, matched_in }),
                     Some(_) => {}
                     None => gone.push(id),
                 }
@@ -185,7 +207,7 @@ pub fn search(
         }
     }
     hits.sort_by_key(|h| std::cmp::Reverse(h.0));
-    Ok(hits.into_iter().take(limit).map(|(_, id)| id).collect())
+    Ok(hits.into_iter().take(limit).map(|(_, id)| Hit { id, matched_in: None }).collect())
 }
 
 #[cfg(test)]
@@ -252,7 +274,7 @@ mod tests {
         let row = LetterRow { subject: "Телеграмма запоздалая".into(), folders: vec![inbox], ..LetterRow::default() };
         let (late, indexed) = (cache.upsert_remote("", "late", &row).unwrap(), cache.upsert_remote("", "full", &row).unwrap());
         let (late, indexed) = (LetterId(late.0), LetterId(indexed.0));
-        super::letter(&index, indexed, &row, &BodyRow::default(), "квитанция");
+        super::letter(&index, indexed, &row, &BodyRow::default(), "квитанция", &[]);
         let _ = index.commit();
         let before = seen_up_to(&cache);
         let found = search(Some(&index), &cache, "телеграмма", None, 50).unwrap();
@@ -280,7 +302,7 @@ mod tests {
         let (_dir, cache) = demo();
         let index = SearchIndex::in_memory().unwrap();
         let row = cache.rows_by_ids(&["demo7".to_owned()]).unwrap().remove(0);
-        let old = Doc { id: &row.id, subject: "Прежний документ", people: "", body: "", attachments: "", received_at: 0 };
+        let old = Doc { id: &row.id, subject: "Прежний документ", people: "", body: "", attachments: &[], received_at: 0 };
         index.upsert(&[old]).unwrap();
         index.commit().unwrap();
         let letter = store::letter_ref(id(&cache, "demo7"));
@@ -290,5 +312,29 @@ mod tests {
         assert!(rebuild(&index, &cache, &|| false).unwrap());
         assert!(index.search("прежний", 10).unwrap().is_empty());
         assert!(!index.contains(&row.id).unwrap() && index.contains(&letter).unwrap());
+    }
+
+    /// T3-10: слова нашлись в тексте вложения — поиск называет вложение и отрывок; в теле — не называет; пока индекс
+    /// не собран (поиск по кэшу) — тоже.
+    #[test]
+    fn search_tells_the_attachment() {
+        let (_dir, cache) = demo();
+        let index = SearchIndex::in_memory().unwrap();
+        assert!(rebuild(&index, &cache, &|| false).unwrap());
+        let inbox = cache.folder_of("", "inbox").unwrap().unwrap();
+        let row = LetterRow { subject: "Опись бандероли".into(), folders: vec![inbox], ..LetterRow::default() };
+        let id = LetterId(cache.upsert_remote("", "attached", &row).unwrap().0);
+        let file = |name: &str| postman_cache::AttachmentRow { name: name.into(), ..Default::default() };
+        let body = BodyRow { attachments: vec![file("logo.png"), file("Договор.docx")], ..BodyRow::default() };
+        super::letter(&index, id, &row, &body, "Квитанция прилагается", &[String::new(), "Ставка аренды причала — 1200 рублей за метр".into()]);
+        let _ = index.commit();
+        let hits = search_hits(Some(&index), &cache, "причал", None, 50).unwrap();
+        let hit = AttachmentHit {
+            name: "Договор.docx".into(), snippet: "Ставка аренды причала — 1200 рублей за метр".into()
+        };
+        assert_eq!(hits, [Hit { id, matched_in: Some(hit) }]);
+        assert_eq!(search_hits(Some(&index), &cache, "квитанция", None, 50).unwrap(), [Hit { id, matched_in: None }]);
+        assert_eq!(search(Some(&index), &cache, "причал", None, 50).unwrap(), [id]);
+        assert_eq!(search_hits(None, &cache, "бандероли", None, 50).unwrap(), [Hit { id, matched_in: None }]);
     }
 }
