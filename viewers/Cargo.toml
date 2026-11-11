@@ -7,7 +7,7 @@ members = ["sdk", "fb2"]
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
-license = "Apache-2.0"
+license = "LicenseRef-Proprietary"
 
 [workspace.dependencies]
 postman-viewer-sdk = { path = "sdk" }

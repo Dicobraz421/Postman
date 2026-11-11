@@ -54,7 +54,7 @@ fn files(version: &str, sha: &str) -> Result<[(String, String); 4]> {
     );
     let en = format!(
         "{}PackageLocale: en-US\nPublisher: {MANUFACTURER}\nPublisherUrl: https://github.com/Dicobraz421\nPackageName: Postman\n\
-         PackageUrl: {REPO}\nLicense: Apache-2.0\nLicenseUrl: {REPO}/blob/main/LICENSE\n\
+         PackageUrl: {REPO}\nLicense: Proprietary\nLicenseUrl: {REPO}/blob/main/LICENSE\n\
          ShortDescription: Mail, calendar and contacts for Windows (JMAP, IMAP, Exchange).\n\
          Tags:\n- email\n- calendar\n- contacts\n- jmap\n- imap\n- exchange\n\
          ReleaseNotesUrl: {REPO}/releases/tag/v{version}\n{}",
@@ -62,7 +62,7 @@ fn files(version: &str, sha: &str) -> Result<[(String, String); 4]> {
         tail("defaultLocale"),
     );
     let ru = format!(
-        "{}PackageLocale: ru-RU\nPublisher: {MANUFACTURER}\nPackageName: Postman\nLicense: Apache-2.0\n\
+        "{}PackageLocale: ru-RU\nPublisher: {MANUFACTURER}\nPackageName: Postman\nLicense: Proprietary\n\
          ShortDescription: Почта, календарь и контакты для Windows (JMAP, IMAP, Exchange).\n{}",
         head("locale"),
         tail("locale"),

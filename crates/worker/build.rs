@@ -12,7 +12,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let v = env::var("CARGO_PKG_VERSION")?;
     let n = |k: &str| env::var(k).map_err(|e| format!("{k}: {e}"));
     let comma = format!("{},{},{},0", n("CARGO_PKG_VERSION_MAJOR")?, n("CARGO_PKG_VERSION_MINOR")?, n("CARGO_PKG_VERSION_PATCH")?);
-    let license = env::var("CARGO_PKG_LICENSE").unwrap_or_default();
     let rc = Path::new(&env::var("OUT_DIR")?).join("postman-worker.rc");
     fs::write(
         &rc,
@@ -34,7 +33,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                    VALUE \"FileDescription\", \"Postman sandbox worker\"\n\
                    VALUE \"FileVersion\", \"{v}\"\n\
                    VALUE \"InternalName\", \"postman-worker.exe\"\n\
-                   VALUE \"LegalCopyright\", \"License: {license}\"\n\
+                   VALUE \"LegalCopyright\", \"Copyright (c) 2026 Anton Antropov. All rights reserved.\"\n\
                    VALUE \"OriginalFilename\", \"postman-worker.exe\"\n\
                    VALUE \"ProductName\", \"Postman\"\n\
                    VALUE \"ProductVersion\", \"{v}\"\n\
