@@ -2,6 +2,8 @@
 compose-title-new = Новое письмо
 compose-send = Отправить
 compose-attach = Вложить
+# Таблица и вставка из Word (T3-06), картинки подписи (T3-07).
+compose-fmt-table-tip = Вставить таблицу: 3 столбца, заголовок и 2 строки; Tab — к следующей ячейке, в последней — новая строка
 compose-to = Кому
 compose-cc = Копия
 compose-bcc = Скрытая

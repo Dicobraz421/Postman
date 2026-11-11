@@ -80,6 +80,7 @@ cmd-compose-bullets = Bulleted list
 cmd-compose-numbers = Numbered list
 cmd-compose-link = Link
 cmd-compose-quote = Quote
+cmd-compose-table = Insert table
 cmd-compose-expand = Pop the reply out to a tab
 cmd-compose-discard = Delete the draft
 cmd-compose-address-book = Address book: choose recipients

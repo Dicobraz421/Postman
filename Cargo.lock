@@ -2831,8 +2831,7 @@ dependencies = [
 [[package]]
 name = "gpui-base"
 version = "0.7.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e9955b6f4b048fd50ca15fc8e225d80bb00ba9ebc8fecdddde5ad26dbef9270"
+source = "git+https://github.com/Dicobraz/pets?rev=8c78403360e0963708821a6d5cb0219f50773108#8c78403360e0963708821a6d5cb0219f50773108"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -5964,7 +5963,7 @@ dependencies = [
 [[package]]
 name = "pets-shell"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz/pets?rev=b1e344098d9ce15bec9bfa5f273f211ca0fec81f#b1e344098d9ce15bec9bfa5f273f211ca0fec81f"
+source = "git+https://github.com/Dicobraz/pets?rev=8c78403360e0963708821a6d5cb0219f50773108#8c78403360e0963708821a6d5cb0219f50773108"
 dependencies = [
  "thiserror 2.0.21",
  "tracing",

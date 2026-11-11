@@ -80,6 +80,7 @@ cmd-compose-bullets = Маркированный список
 cmd-compose-numbers = Нумерованный список
 cmd-compose-link = Ссылка
 cmd-compose-quote = Цитата
+cmd-compose-table = Вставить таблицу
 cmd-compose-expand = Развернуть ответ во вкладку
 cmd-compose-discard = Удалить черновик
 cmd-compose-address-book = Адресная книга: выбрать адресатов

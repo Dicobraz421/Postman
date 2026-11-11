@@ -248,13 +248,7 @@ fn mb_list(list: &[Address]) -> MbAddress<'_> {
 /// Собрать письмо. `date` — Unix-время; `message_id` — без угловых скобок.
 pub fn build(d: &Draft, date: i64, message_id: &str) -> std::io::Result<Vec<u8>> {
     let html = format!("<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head><body>{}</body></html>", postman_ir::markdown_to_html(&d.markdown));
-    let mut m = MessageBuilder::new()
-        .from(mb_list(std::slice::from_ref(&d.from)))
-        .subject(header_safe(&d.subject))
-        .date(date)
-        .message_id(message_id)
-        .text_body(d.markdown.as_str())
-        .html_body(html.as_str());
+    let mut m = MessageBuilder::new().from(mb_list(std::slice::from_ref(&d.from))).subject(header_safe(&d.subject)).date(date).message_id(message_id);
     if !d.to.is_empty() {
         m = m.to(mb_list(&d.to));
     }
@@ -267,39 +261,35 @@ pub fn build(d: &Draft, date: i64, message_id: &str) -> std::io::Result<Vec<u8>>
     if !d.references.is_empty() {
         m = m.references(d.references.as_slice());
     }
+    // multipart/mixed [alternative [text, html | related [html, картинки cid:], text/calendar; method=…], файлы]:
+    // картинки текста (подпись, T3-07) — в related рядом с HTML, как их ждут Outlook и Gmail; iMIP — в alternative.
+    let (inline, files): (Vec<&Attachment>, Vec<&Attachment>) = d.attachments.iter().partition(|a| a.inline_cid.is_some());
+    let html_part = if inline.is_empty() {
+        MimePart::new("text/html", html.as_str())
+    } else {
+        let mut parts = vec![MimePart::new("text/html", html.as_str())];
+        parts.extend(inline.iter().filter_map(|a| {
+            let cid = a.inline_cid.as_deref()?;
+            Some(MimePart::new(a.mime.as_str(), a.data.as_slice()).inline().cid(header_safe(cid).into_owned()))
+        }));
+        MimePart::new("multipart/related", parts)
+    };
+    let mut alt = vec![MimePart::new("text/plain", d.markdown.as_str()), html_part];
     if let Some(cal) = &d.calendar {
-        // multipart/alternative [text, html, text/calendar; method=…] — так его понимают Outlook и Gmail.
-        let alt = MimePart::new(
-            "multipart/alternative",
-            vec![
-                MimePart::new("text/plain", d.markdown.as_str()),
-                MimePart::new("text/html", html.as_str()),
-                MimePart::new(
-                    ContentType::new("text/calendar").attribute("method", cal.method.as_str()).attribute("charset", "utf-8"),
-                    cal.ics.as_str(),
-                ),
-            ],
-        );
-        let body = if d.attachments.is_empty() {
-            alt
-        } else {
-            let mut parts = vec![alt];
-            parts.extend(d.attachments.iter().map(|a| match &a.inline_cid {
-                Some(cid) => MimePart::new(a.mime.as_str(), a.data.as_slice()).inline().cid(cid.as_str()),
-                None => MimePart::new(a.mime.as_str(), a.data.as_slice()).attachment(header_safe(&a.name)),
-            }));
-            MimePart::new("multipart/mixed", parts)
-        };
-        return m.body(body).write_to_vec();
+        alt.push(MimePart::new(
+            ContentType::new("text/calendar").attribute("method", cal.method.as_str()).attribute("charset", "utf-8"),
+            cal.ics.as_str(),
+        ));
     }
-    for a in &d.attachments {
-        let name = header_safe(&a.name).into_owned();
-        m = match &a.inline_cid {
-            Some(cid) => m.inline(a.mime.clone(), cid.clone(), a.data.as_slice()),
-            None => m.attachment(a.mime.clone(), name, a.data.as_slice()),
-        };
-    }
-    m.write_to_vec()
+    let alt = MimePart::new("multipart/alternative", alt);
+    let body = if files.is_empty() {
+        alt
+    } else {
+        let mut parts = vec![alt];
+        parts.extend(files.iter().map(|a| MimePart::new(a.mime.as_str(), a.data.as_slice()).attachment(header_safe(&a.name).into_owned())));
+        MimePart::new("multipart/mixed", parts)
+    };
+    m.body(body).write_to_vec()
 }
 
 /// Message-ID в домене отправителя: `<время.случайное@домен>`.
@@ -374,6 +364,64 @@ mod tests {
         assert!(html.contains("<strong>коллеги</strong>"));
         assert!(!html.contains("<script>"));
         assert!(msg.body_text(0).unwrap().contains("**коллеги**"));
+    }
+
+    /// Таблица GFM композера (T3-06) уходит в HTML-части таблицей, в text/plain — как набрана.
+    #[test]
+    fn markdown_table_becomes_html_table() {
+        let d = Draft {
+            from: me(),
+            to: vec![Address::new("", "ivan@corp.example")],
+            subject: "Таблица".into(),
+            markdown: "Итоги:\n\n| Город | План |\n| --- | --- |\n| Омск | 10 |\n".into(),
+            ..Default::default()
+        };
+        let raw = build(&d, 0, "t@corp.example").unwrap();
+        let msg = MessageParser::default().parse(&raw).unwrap();
+        let html = msg.body_html(0).unwrap();
+        assert!(html.contains("<table>") && html.contains("<th>Город</th>") && html.contains("<td>Омск</td>"), "{html}");
+        assert!(msg.body_text(0).unwrap().contains("| Омск | 10 |"));
+    }
+
+    /// Картинка подписи (T3-07): вложение inline с Content-ID в `multipart/related` рядом с HTML, `<img src="cid:…">`
+    /// ссылается на тот же Content-ID; обычное вложение — отдельно.
+    #[test]
+    fn inline_image_goes_into_related_part() {
+        let png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3];
+        let d = Draft {
+            from: me(),
+            to: vec![Address::new("", "ivan@corp.example")],
+            subject: "Логотип".into(),
+            markdown: "Текст\n\nИван\n![logo.png](cid:sig42@postman)".into(),
+            attachments: vec![
+                Attachment {
+                    name: "logo.png".into(),
+                    mime: "image/png".into(),
+                    data: png.clone(),
+                    inline_cid: Some("sig42@postman".into()),
+                    blob_id: None,
+                },
+                Attachment { name: "a.txt".into(), mime: "text/plain".into(), data: b"x".to_vec(), inline_cid: None, blob_id: None },
+            ],
+            ..Default::default()
+        };
+        let raw = build(&d, 0, "t@corp.example").unwrap();
+        let text = String::from_utf8_lossy(&raw);
+        assert!(text.contains("multipart/related"), "{text}");
+        let msg = MessageParser::default().parse(&raw).unwrap();
+        let html = msg.body_html(0).unwrap();
+        assert!(html.contains("src=\"cid:sig42@postman\""), "{html}");
+        let img_part = msg.parts.iter().position(|p| p.content_id() == Some("sig42@postman")).expect("часть с Content-ID");
+        assert!(msg.parts[img_part].is_content_type("image", "png"));
+        assert_eq!(msg.parts[img_part].contents(), png.as_slice());
+        let related = msg.parts.iter().position(|p| p.is_content_type("multipart", "related")).expect("multipart/related");
+        let html_part = msg.parts.iter().position(|p| p.is_content_type("text", "html")).unwrap();
+        match &msg.parts[related].body {
+            mail_parser::PartType::Multipart(kids) => {
+                assert!(kids.contains(&(html_part as u32)) && kids.contains(&(img_part as u32)), "HTML и картинка — в одной related: {kids:?}");
+            }
+            _ => panic!("related без частей"),
+        }
     }
 
     #[test]

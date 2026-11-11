@@ -1155,6 +1155,79 @@ pub struct Signature {
     #[serde(default)]
     pub identity: Option<String>,
     pub text: String,
+    /// Картинки подписи (T3-07): логотип в тексте — `![имя](cid:<cid>)`, в письмо — вложением inline.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<SignImage>,
+}
+
+/// Больше картинку подписи не берём: она уходит в каждом письме.
+pub const MAX_SIGN_IMAGE: usize = 1 << 20;
+
+/// Картинка подписи (T3-07). В файле настроек — только описание; байты — файлом в каталоге
+/// [`AccountPrefs::images_dir`] рядом с ним (имя — по `cid`), в памяти — вместе с подписью.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignImage {
+    /// Content-ID без угловых скобок: `sig<время в мс>@postman`; на него ссылается текст подписи.
+    pub cid: String,
+    /// Имя файла, как его выбрали: подпись картинки и имя вложения.
+    pub name: String,
+    pub mime: String,
+    #[serde(skip)]
+    pub data: Arc<Vec<u8>>,
+}
+
+/// Почему картинку нельзя поставить в подпись.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ImageError {
+    #[error("signature image is larger than {MAX_SIGN_IMAGE} bytes")]
+    TooLarge,
+    #[error("signature image is not PNG, JPEG or GIF")]
+    NotImage,
+}
+
+/// Тип картинки по первым байтам: только PNG, JPEG и GIF (декодирует воркер, здесь — подпись формата).
+pub fn image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else {
+        None
+    }
+}
+
+impl SignImage {
+    /// Картинка из выбранного файла: не больше [`MAX_SIGN_IMAGE`], только PNG, JPEG, GIF; `cid` — по времени.
+    pub fn new(name: &str, data: Vec<u8>, now_ms: i64) -> Result<SignImage, ImageError> {
+        if data.len() > MAX_SIGN_IMAGE {
+            return Err(ImageError::TooLarge);
+        }
+        let mime = image_mime(&data).ok_or(ImageError::NotImage)?;
+        Ok(SignImage { cid: format!("sig{}@postman", now_ms.max(0)), name: name.to_owned(), mime: mime.to_owned(), data: Arc::new(data) })
+    }
+
+    /// Ссылка на картинку в Markdown подписи: `![имя](cid:…)`.
+    pub fn markdown(&self) -> String {
+        let alt: String = self.name.chars().filter(|c| !matches!(c, '[' | ']' | '\\') && !c.is_control()).collect();
+        format!("![{alt}](cid:{})", self.cid)
+    }
+
+    /// Файл картинки в каталоге настроек: `<id>.<png|jpg|gif>`; `cid` не своего вида (правка файла руками) — `None`.
+    pub fn file_name(&self) -> Option<String> {
+        let id = self.cid.strip_suffix("@postman")?;
+        if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return None;
+        }
+        let ext = match self.mime.as_str() {
+            "image/png" => "png",
+            "image/jpeg" => "jpg",
+            "image/gif" => "gif",
+            _ => return None,
+        };
+        Some(format!("{id}.{ext}"))
+    }
 }
 
 /// Шаблон письма: вставляется в новое письмо (меню «Шаблон» или `/команда` в тексте, T2-52).
@@ -1221,17 +1294,67 @@ impl AccountPrefs {
         cache.with_file_name(name)
     }
 
+    /// Каталог картинок подписей рядом с файлом настроек `path`: `<кэш>.settings.images`.
+    pub fn images_dir(path: &Path) -> PathBuf {
+        path.with_extension("images")
+    }
+
+    /// Настройки и картинки подписей (T3-07). Картинки нет на диске, она велика или не картинка — её нет и в подписи.
     pub fn load(path: &Path) -> Result<AccountPrefs, Error> {
         let Some(text) = read(path)? else { return Ok(AccountPrefs::default()) };
         let version = version_of(&text)?;
         if version > VERSION {
             return Err(Error::Version(version));
         }
-        Ok(serde_json::from_str::<AccountPrefs>(&text)?.normalized())
+        let mut prefs = serde_json::from_str::<AccountPrefs>(&text)?.normalized();
+        let dir = Self::images_dir(path);
+        for s in &mut prefs.signatures {
+            s.images.retain_mut(|img| {
+                let Some(file) = img.file_name() else { return false };
+                match std::fs::read(dir.join(file)) {
+                    Ok(data) if data.len() <= MAX_SIGN_IMAGE && image_mime(&data) == Some(img.mime.as_str()) => {
+                        img.data = Arc::new(data);
+                        true
+                    }
+                    _ => false,
+                }
+            });
+        }
+        Ok(prefs)
     }
 
+    /// Файл настроек и картинки подписей: новые — файлами, картинки удалённых подписей — с диска.
     pub fn save(&self, path: &Path) -> Result<(), Error> {
-        write(path, &serde_json::to_string_pretty(self)?)
+        write(path, &serde_json::to_string_pretty(self)?)?;
+        let dir = Self::images_dir(path);
+        let images: Vec<(String, &SignImage)> =
+            self.signatures.iter().flat_map(|s| &s.images).filter_map(|i| i.file_name().map(|f| (f, i))).collect();
+        if images.is_empty() && !dir.exists() {
+            return Ok(());
+        }
+        std::fs::create_dir_all(&dir)?;
+        for (file, img) in &images {
+            let at = dir.join(file);
+            if std::fs::metadata(&at).is_ok_and(|m| m.len() == img.data.len() as u64) {
+                continue;
+            }
+            let mut tmp = at.as_os_str().to_owned();
+            tmp.push(".tmp");
+            std::fs::write(&tmp, img.data.as_slice())?;
+            std::fs::rename(&tmp, &at)?;
+        }
+        for entry in std::fs::read_dir(&dir)?.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !images.iter().any(|(f, _)| *f == name) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+        Ok(())
+    }
+
+    /// Картинки всех подписей по `cid` (письмо прикладывает те, на которые ссылается его текст).
+    pub fn sign_images(&self) -> impl Iterator<Item = &SignImage> {
+        self.signatures.iter().flat_map(|s| &s.images)
     }
 
     /// Умолчания ссылаются только на существующие подписи этого адреса (или любого).
@@ -1703,10 +1826,16 @@ mod tests {
         assert!(path.to_string_lossy().ends_with("account-u-1234.redb.settings.json"));
         let mut a = AccountPrefs::default();
         let main = a.new_id('s', 10);
-        a.signatures.push(Signature { id: main.clone(), name: "Main".into(), identity: None, text: "--\nMe".into() });
+        a.signatures.push(Signature { id: main.clone(), name: "Main".into(), identity: None, text: "--\nMe".into(), images: Vec::new() });
         let short = a.new_id('s', 10);
         assert_ne!(main, short);
-        a.signatures.push(Signature { id: short.clone(), name: "Short".into(), identity: Some("me@corp.example".into()), text: "Me".into() });
+        a.signatures.push(Signature {
+            id: short.clone(),
+            name: "Short".into(),
+            identity: Some("me@corp.example".into()),
+            text: "Me".into(),
+            images: Vec::new(),
+        });
         a.templates.push(Template { id: a.new_id('t', 10), name: "Offer".into(), subject: "S".into(), body: "B".into(), ..Default::default() });
         a.defaults.insert("me@corp.example".into(), Defaults { new: Some(main.clone()), reply: Some(short.clone()) });
         // Подпись другого адреса умолчанием не станет.
@@ -1730,6 +1859,46 @@ mod tests {
         let old: Calendar = serde_json::from_str(r#"{"owner_names": false}"#).unwrap();
         assert!(!old.side_by_side);
         assert!(!Calendar::default().side_by_side);
+    }
+
+    /// Картинка подписи (T3-07): только PNG, JPEG, GIF до 1 МиБ; файлом рядом с настройками, после загрузки — с
+    /// байтами; удалена подпись — удалён и файл.
+    #[test]
+    fn signature_images_round_trip() {
+        const PNG: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13];
+        assert_eq!(SignImage::new("a.txt", b"text".to_vec(), 1), Err(ImageError::NotImage));
+        assert_eq!(SignImage::new("big.png", vec![0x89; MAX_SIGN_IMAGE + 1], 1), Err(ImageError::TooLarge));
+        assert_eq!(image_mime(b"GIF89a..."), Some("image/gif"));
+        assert_eq!(image_mime(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("image/jpeg"));
+        let img = SignImage::new("logo [1].png", PNG.to_vec(), 42).unwrap();
+        assert_eq!(img.cid, "sig42@postman");
+        assert_eq!(img.markdown(), "![logo 1.png](cid:sig42@postman)");
+        assert_eq!(img.file_name().as_deref(), Some("sig42.png"));
+        let bad = SignImage { cid: "../x@postman".into(), ..img.clone() };
+        assert_eq!(bad.file_name(), None, "имя файла — только из своего cid");
+
+        let d = dir();
+        let path = AccountPrefs::beside(&d.path().join("account.redb"));
+        let mut a = AccountPrefs::default();
+        let text = format!("Иван\n{}", img.markdown());
+        a.signatures.push(Signature { id: "s1".into(), name: "Logo".into(), identity: None, text, images: vec![img.clone()] });
+        a.save(&path).unwrap();
+        let file = AccountPrefs::images_dir(&path).join("sig42.png");
+        assert_eq!(std::fs::read(&file).unwrap(), PNG);
+        let json = std::fs::read_to_string(&path).unwrap();
+        assert!(json.contains("sig42@postman") && !json.contains("data"), "{json}");
+        let back = AccountPrefs::load(&path).unwrap();
+        assert_eq!(back, a);
+        assert_eq!(back.sign_images().next().map(|i| i.data.len()), Some(PNG.len()));
+        // Файл картинки пропал — подпись без неё.
+        std::fs::remove_file(&file).unwrap();
+        assert!(AccountPrefs::load(&path).unwrap().signatures[0].images.is_empty());
+        // Подпись удалена — картинка с диска тоже.
+        a.save(&path).unwrap();
+        assert!(file.exists());
+        a.remove_signature("s1");
+        a.save(&path).unwrap();
+        assert!(!file.exists());
     }
 
     /// Поздняя запись не затирает более новую.

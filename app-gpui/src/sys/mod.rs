@@ -72,6 +72,18 @@ pub mod credentials {
     }
 }
 
+/// HTML из буфера обмена (Word, браузер, T3-06): фрагмент `CF_HTML` — `pets_shell::clipboard`. Нет HTML, он больше
+/// `max` байт или буфер занят — `None` (вставится текст).
+pub fn clipboard_html(max: usize) -> Option<String> {
+    match pets_shell::clipboard::read_html(max) {
+        Ok(html) => html.map(|h| h.fragment),
+        Err(e) => {
+            tracing::warn!("clipboard HTML is not read: {e}");
+            None
+        }
+    }
+}
+
 /// Автозапуск, клиент `mailto:`, журнал в файл, открытие в Проводнике (S5-30).
 #[cfg(windows)]
 pub mod shell;
