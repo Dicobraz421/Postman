@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Header>
+    <h:ServerVersionInfo MajorVersion="15" MinorVersion="1" MajorBuildNumber="2507" MinorBuildNumber="6" Version="V2017_07_11" xmlns:h="http://schemas.microsoft.com/exchange/services/2006/types" xmlns="http://schemas.microsoft.com/exchange/services/2006/types" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>
+  </s:Header>
+  <s:Body xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+    <m:ExpandDLResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+      <m:ResponseMessages>
+        <m:ExpandDLResponseMessage ResponseClass="Success">
+          <m:ResponseCode>NoError</m:ResponseCode>
+          <m:DLExpansion TotalItemsInView="5" IncludesLastItemInRange="true">
+            <t:Mailbox>
+              <t:Name>Петрова Анна Сергеевна</t:Name>
+              <t:EmailAddress>anna@example.test</t:EmailAddress>
+              <t:RoutingType>SMTP</t:RoutingType>
+              <t:MailboxType>Mailbox</t:MailboxType>
+            </t:Mailbox>
+            <t:Mailbox>
+              <t:Name>Смирнов Антон</t:Name>
+              <t:EmailAddress>SMTP:anton@example.test</t:EmailAddress>
+              <t:RoutingType>SMTP</t:RoutingType>
+              <t:MailboxType>Mailbox</t:MailboxType>
+            </t:Mailbox>
+            <t:Mailbox>
+              <t:Name>Дежурные</t:Name>
+              <t:EmailAddress>duty@example.test</t:EmailAddress>
+              <t:RoutingType>SMTP</t:RoutingType>
+              <t:MailboxType>PublicDL</t:MailboxType>
+            </t:Mailbox>
+            <t:Mailbox>
+              <t:EmailAddress>partner@corp.example</t:EmailAddress>
+              <t:RoutingType>SMTP</t:RoutingType>
+              <t:MailboxType>Contact</t:MailboxType>
+            </t:Mailbox>
+            <t:Mailbox>
+              <t:Name>Без адреса</t:Name>
+              <t:RoutingType>SMTP</t:RoutingType>
+              <t:MailboxType>Contact</t:MailboxType>
+            </t:Mailbox>
+          </m:DLExpansion>
+        </m:ExpandDLResponseMessage>
+      </m:ResponseMessages>
+    </m:ExpandDLResponse>
+  </s:Body>
+</s:Envelope>
