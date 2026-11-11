@@ -1,0 +1,21 @@
+# Обновление Postman (решение 2026-11-11 «self-update»): тосты, полоса скачивания, строки «Настроек → Общие».
+update-available = Вышла версия { $version }
+update-install = Установить
+update-done = Postman обновлён до версии { $version }
+update-failed = Не удалось обновить до версии { $version }: { $error }
+update-idle = Нажмите «Проверить обновления», чтобы узнать, нет ли новой версии.
+update-checking = Проверка обновлений…
+update-latest = Установлена последняя версия
+update-check-failed = Не удалось проверить обновления: { $error }
+update-install-failed = Не удалось установить обновление: { $error }
+update-no-key = В этой сборке нет ключа подписи обновлений: проверка выключена. Новые версии — на странице выпусков.
+update-policy = Обновление выключено политикой организации.
+update-downloading = Скачивается Postman { $version }
+update-progress = { $done } из { $total } МБ
+update-cancel = Отменить
+update-installing = Устанавливается Postman { $version }: окно закроется, новая версия запустится сама.
+update-uac = Windows спросит разрешение: Postman установлен для всех пользователей.
+settings-auto-update = Проверять обновления автоматически
+settings-auto-update-on-hint = Раз в сутки Postman спрашивает у GitHub номер последней версии — без данных о вас. Скачивает только по «Установить».
+settings-auto-update-off-hint = Сетевых запросов нет; новую версию можно проверить кнопкой ниже.
+settings-releases = Все выпуски

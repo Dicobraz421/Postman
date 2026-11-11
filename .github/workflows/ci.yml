@@ -224,8 +224,8 @@ jobs:
           if-no-files-found: error
 
   # Выпуск на GitHub по тегу `v*`, если тесты и сборки всех платформ зелёные. Файлы — плоско:
-  # postman-<версия>-<os>-<arch>.zip и .msi, компоненты под своими именами, SHA256SUMS.txt. Версия с дефисом
-  # (0.2.0-beta.1) — предварительный выпуск: его видит канал «Предварительный» в настройках.
+  # postman-<версия>-<os>-<arch>.zip и .msi с подписями .minisig, компоненты под своими именами, SHA256SUMS.txt.
+  # Версия с дефисом (0.2.0-beta.1) — предварительный выпуск: его видит канал «Предварительный» в настройках.
   publish:
     needs: [test, release]
     if: github.ref_type == 'tag'
@@ -242,6 +242,27 @@ jobs:
           pattern: release-*
           path: assets
           merge-multiple: true
+      # Подпись обновления (решение 2026-11-11 «self-update», pets `crates/pets-update/README.md`): каждый .msi и .zip —
+      # minisign, рядом `<файл>.minisig`; программа ставит только подписанное вшитым ключом. Подписывается готовый файл
+      # (MSI — после Authenticode), до SHA256SUMS.txt. Без секрета выпуск красный, а не «без подписи»: выпуск без
+      # .minisig программа не предлагает. Ключ в журнал не попадает: файл во временной папке, удаляется по выходу.
+      - name: Подпись обновления (minisign)
+        shell: bash
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          UPDATE_PUBLIC_KEY: ${{ vars.UPDATE_PUBLIC_KEY }}   # та же строка RW…, что вшита в программу
+        run: |
+          if [ -z "$UPDATE_SIGNING_KEY" ]; then echo "::error::нет секрета UPDATE_SIGNING_KEY"; exit 1; fi
+          if [ -z "$UPDATE_PUBLIC_KEY" ]; then echo "::error::нет переменной UPDATE_PUBLIC_KEY"; exit 1; fi
+          sudo apt-get update -qq && sudo apt-get install -y minisign >/dev/null
+          key="$RUNNER_TEMP/update.key"
+          (umask 077; printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key")
+          trap 'rm -f "$key"' EXIT
+          cd assets
+          for f in *.msi *.zip; do
+            minisign -S -s "$key" -m "$f"            # пишет $f.minisig; в подписи — file:$f
+            minisign -V -P "$UPDATE_PUBLIC_KEY" -m "$f"
+          done
       # Страница — для пользователей (.github/release-notes.md): готовность и что скачать, без списка PR.
       # Блоки: pre или stable — по версии; unsigned (подсказка про SmartScreen) — пока нет подписи.
       - name: Выпуск

@@ -1,5 +1,5 @@
 # S4-01: the delivery zip postman-<version>-windows-x64.zip: postman.exe, postman-worker.exe, README.txt, install.ps1,
-# and postman-viewer.exe (S8-24, ADR 0007). WASM viewer modules (viewers/*) are not packaged.
+# postman.portable (the self-update flag) and postman-viewer.exe (S8-24, ADR 0007). WASM viewer modules (viewers/*) are not packaged.
 # The MSI postman-<version>-windows-x64.msi (owner decision 2026-11-07) - the same files without install.ps1, made by
 # postman-pack.exe of the same build (tools/pack); signed afterwards by scripts\windows\sign.ps1 in CI.
 # Takes the exes of a finished release build (cargo build --release --workspace --features postman-worker/viewer);
@@ -39,6 +39,9 @@ $viewer = Join-Path $release "postman-viewer.exe"
 if (-not (Test-Path -LiteralPath $viewer)) { throw "no $viewer - build with --features postman-worker/viewer" }
 Copy-Item -LiteralPath $viewer -Destination $dir
 Copy-Item -LiteralPath "$PSScriptRoot\README.txt", "$PSScriptRoot\install.ps1" -Destination $dir
+# Portable flag (self-update, decision 2026-11-11): next to postman.exe the update takes the zip, not the MSI.
+# The MSI lists its files itself (tools/pack ITEMS) and does not install the flag.
+Set-Content -LiteralPath (Join-Path $dir "postman.portable") -Value "Postman portable: updates replace these files from the zip." -Encoding ascii
 if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
 Compress-Archive -Path "$dir\*" -DestinationPath $zip -CompressionLevel Optimal
 # Release files: the zip and the components a user can download alone ("Component missing", S8-38).

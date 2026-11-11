@@ -13,8 +13,8 @@ const KEEP: Duration = Duration::from_secs(7 * 86_400);
 /// Выпуски — страница Releases репозитория (схема — docs/DEV.md «Выпуск»).
 const REPO: &str = "https://github.com/Dicobraz421/Postman";
 
-/// Обновления — по явному действию, в браузере (в фоне сети нет): последний стабильный выпуск или все выпуски,
-/// с предварительными.
+/// «Все выпуски» в браузере (проверка и установка — `update.rs`): последний стабильный выпуск или все выпуски, с
+/// предварительными.
 pub(crate) fn releases(channel: Channel) -> String {
     match channel {
         Channel::Stable => format!("{REPO}/releases/latest"),

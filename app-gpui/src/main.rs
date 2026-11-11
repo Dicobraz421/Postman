@@ -97,6 +97,7 @@ mod sys;
 mod tabs;
 mod tasks;
 mod thread;
+mod update;
 mod vacation;
 
 pub(crate) use mailer::{Mailer, Section};
@@ -184,6 +185,9 @@ cmd waits for postman.exe only with 'start /wait'; PowerShell - with '| Out-Defa
 ";
 
 fn main() {
+    // Помощник установки обновления (pets-update): копия exe ставит версию и выходит — раньше всего, до одиночного
+    // экземпляра и любого кода, которому нужны файлы из папки программы.
+    update::helper();
     let mut start = Instant::now();
     let args: Vec<String> = std::env::args().skip(1).collect();
     // Release без консоли: вывод этих режимов — в консоль родителя (если поток не перенаправлен).
@@ -302,6 +306,8 @@ fn main() {
         // Клавиши — из реестра команд (S2-02) и свои из настроек (S5-09); в поле ввода клавиши без модификаторов — текст.
         commands::bind(cx, &user_prefs);
         prefs::init(user_prefs, prefs_path, cx);
+        // Обновление (решение 2026-11-11 «self-update»): замер и снимки — без сети и файлов.
+        update::init(persist.then(data_dir).as_deref(), cx);
         let minimized = args.iter().any(|a| a == "--minimized");
         let mailto = args.iter().find(|a| a.get(..7).is_some_and(|p| p.eq_ignore_ascii_case("mailto:"))).cloned();
         let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
@@ -354,6 +360,10 @@ fn main() {
                 });
                 if let Some(l) = listener {
                     listen_second_instance(l, handle, cx);
+                }
+                // Итог прошлой установки и проверки по расписанию — когда тостам уже есть где появиться.
+                if persist {
+                    update::start(cx);
                 }
             }
             Err(e) => fatal("fatal-window", e),

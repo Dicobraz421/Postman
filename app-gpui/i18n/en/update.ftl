@@ -1,0 +1,21 @@
+# Postman updates (decision 2026-11-11 "self-update"): toasts, download bar, "Settings → General" rows.
+update-available = Version { $version } is available
+update-install = Install
+update-done = Postman is updated to version { $version }
+update-failed = Could not update to version { $version }: { $error }
+update-idle = Click “Check for updates” to see whether a new version is out.
+update-checking = Checking for updates…
+update-latest = You have the latest version
+update-check-failed = Could not check for updates: { $error }
+update-install-failed = Could not install the update: { $error }
+update-no-key = This build has no update signing key, so checks are off. New versions are on the releases page.
+update-policy = Updates are turned off by your organization's policy.
+update-downloading = Downloading Postman { $version }
+update-progress = { $done } of { $total } MB
+update-cancel = Cancel
+update-installing = Installing Postman { $version }: the window closes and the new version starts by itself.
+update-uac = Windows will ask for permission: Postman is installed for all users.
+settings-auto-update = Check for updates automatically
+settings-auto-update-on-hint = Once a day Postman asks GitHub for the latest version number, with no data about you. It downloads only when you click “Install”.
+settings-auto-update-off-hint = No network requests; you can check for a new version with the button below.
+settings-releases = All releases

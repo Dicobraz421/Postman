@@ -148,6 +148,9 @@ pub struct General {
     pub sound: bool,
     /// Канал обновлений.
     pub channel: Channel,
+    /// Проверять обновления раз в сутки в фоне (решение 2026-11-11 «self-update»). Выключено — сетевых запросов по
+    /// расписанию нет, кнопка «Проверить обновления» работает.
+    pub auto_update: bool,
     /// Уровень журнала (без `POSTMAN_LOG`; действует со следующего запуска).
     pub log: LogLevel,
 }
@@ -166,7 +169,8 @@ impl Default for General {
             quiet_from: 22,
             quiet_to: 8,
             sound: false,
-            channel: Channel::Stable,
+            channel: Channel::for_build(env!("CARGO_PKG_VERSION")),
+            auto_update: true,
             log: LogLevel::Info,
         }
     }
@@ -200,6 +204,14 @@ pub enum Channel {
     #[default]
     Stable,
     Preview,
+}
+
+impl Channel {
+    /// Канал по умолчанию у сборки `version`: у предварительной (`0.1.0-beta.4`) — «Предварительный», иначе её
+    /// пользователь не увидит следующих бет; у стабильной — «Стабильный». Выбор пользователя сильнее.
+    pub fn for_build(version: &str) -> Channel {
+        if version.contains('-') { Channel::Preview } else { Channel::Stable }
+    }
 }
 
 /// Уровень журнала.
@@ -1549,6 +1561,18 @@ mod tests {
         assert_eq!(back.lifecycle.archive_newsletters(), Some(Duration::from_secs(14 * DAY)));
         // Временного файла не остаётся.
         assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
+    }
+
+    /// Самообновление: проверка включена и в старом файле, канал по умолчанию — по сборке.
+    #[test]
+    fn update_prefs_default_on_and_channel_by_build() {
+        // Файл до самообновления (без `auto_update`): проверка включена (решение 2026-11-11 «self-update»).
+        let old: Prefs = serde_json::from_str(r#"{"version":1,"general":{"channel":"stable"}}"#).unwrap();
+        assert!(old.general.auto_update);
+        assert_eq!(old.general.channel, Channel::Stable, "выбор пользователя сильнее сборки");
+        assert_eq!(Channel::for_build("0.1.0-beta.4"), Channel::Preview);
+        assert_eq!(Channel::for_build("0.1.0"), Channel::Stable);
+        assert_eq!(General::default().channel, Channel::for_build(env!("CARGO_PKG_VERSION")));
     }
 
     /// S5-30: значения вне выбора — к умолчанию; размер шрифта — в пределах 12…18, без своего — 13.
