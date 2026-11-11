@@ -1,5 +1,6 @@
 //! Адресная книга для автодополнения «Кому/Копия»: недавние корреспонденты из
-//! хранилища, личные контакты (JMAP ContactCard) и справочник сотрудников (Principals).
+//! хранилища, личные контакты (JMAP ContactCard) и справочник сотрудников (Principals); личные группы (T2-47) —
+//! отдельно ([`Group`]): у группы нет своего адреса, письмо уходит её участникам.
 //! Ищет по началу слов имени и адреса, в любой раскладке и транслитом
 //! («ivan» → «Иван», «bdfy» → «иван»); выше — частые и недавние.
 
@@ -30,6 +31,31 @@ pub struct Entry {
 #[derive(Default)]
 pub struct AddressBook {
     entries: HashMap<String, Entry>,
+    groups: Vec<Group>,
+}
+
+/// Личная группа (T2-47) для подсказок адреса: id карточки, имя, адреса участников (чужие ссылки участников —
+/// не адреса — сюда не попадают).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Group {
+    pub id: String,
+    pub name: String,
+    pub members: Vec<String>,
+}
+
+impl Group {
+    /// Группы из карточек «Моих контактов»: карточки-группы с именем.
+    pub fn of_cards(cards: &[crate::model::ContactCard]) -> Vec<Group> {
+        cards
+            .iter()
+            .filter(|c| c.group && !c.name.trim().is_empty())
+            .map(|c| Group {
+                id: c.id.clone(),
+                name: c.name.trim().to_owned(),
+                members: c.members.iter().filter_map(|m| crate::model::member_address(m)).map(str::to_owned).collect(),
+            })
+            .collect()
+    }
 }
 
 /// Письма, которые я отправил, весят больше: адресат выбран мной.
@@ -119,6 +145,24 @@ impl AddressBook {
         for e in other.entries.into_values() {
             self.touch(&e.name, &e.email, e.source, e.count, e.last);
         }
+        if !other.groups.is_empty() {
+            self.groups = other.groups;
+        }
+    }
+
+    /// Личные группы (T2-47) — заново: с сервера (`ContactsLoaded`) или демо.
+    pub fn set_groups(&mut self, groups: Vec<Group>) {
+        self.groups = groups;
+    }
+
+    pub fn groups(&self) -> &[Group] {
+        &self.groups
+    }
+
+    /// Группы, чьё имя подходит под набранное, как в подсказках адреса (начала слов, раскладка, транслит); с
+    /// участниками, не больше `limit`.
+    pub fn suggest_groups(&self, query: &str, limit: usize) -> Vec<&Group> {
+        self.groups.iter().filter(|g| !g.members.is_empty() && matches(&g.name, "", query)).take(limit).collect()
     }
 
     /// Убрать адрес (например, свой — себе писать не подсказываем).
@@ -457,5 +501,34 @@ mod tests {
         let names: Vec<&str> = people.iter().map(|p| p.display_name()).collect();
         // Группа с адресом — список рассылки (T2-41): в справочнике, раздел «Списки рассылки».
         assert_eq!(names, ["Анна", "Борисов Иван", "Все сотрудники", "Переговорная 3", "Щукин Алексей"]);
+    }
+
+    /// Личные группы (T2-47): из карточек-групп с именем, участники — адреса; подсказка — по имени в любой раскладке;
+    /// пустая группа не подсказывается; книга с сервера не теряет группы при сборке из кэша.
+    #[test]
+    fn personal_groups() {
+        use crate::model::ContactCard;
+        let cards = [
+            ContactCard {
+                id: "g1".into(),
+                name: "Руководители отделов".into(),
+                group: true,
+                members: vec!["a@corp.example".into(), "urn:uuid:1".into()],
+                ..Default::default()
+            },
+            ContactCard { id: "g2".into(), name: "Пустая".into(), group: true, ..Default::default() },
+            ContactCard { id: "c1".into(), name: "Анна".into(), emails: vec!["anna@corp.example".into()], ..Default::default() },
+        ];
+        let groups = Group::of_cards(&cards);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].members, ["a@corp.example"], "чужая ссылка — не адрес");
+        let mut b = AddressBook::default();
+        b.set_groups(groups);
+        assert_eq!(b.suggest_groups("рук", 5).iter().map(|g| g.id.as_str()).collect::<Vec<_>>(), ["g1"]);
+        assert_eq!(b.suggest_groups("her", 5).len(), 1, "другая раскладка");
+        assert!(b.suggest_groups("пуст", 5).is_empty(), "пустую группу не подсказываем");
+        let mut built = AddressBook::default();
+        built.absorb(b);
+        assert_eq!(built.groups().len(), 2);
     }
 }

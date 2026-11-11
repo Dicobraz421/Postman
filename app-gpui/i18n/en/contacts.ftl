@@ -106,3 +106,38 @@ contacts-book = Address book
 contacts-layout-fixed = layout fixed: { $text }
 contacts-layout-reset = Clear search
 contacts-directory-updated = Directory updated { $time }
+# Personal groups (T2-47).
+contacts-groups = Groups
+contacts-groups-all = All groups
+contacts-new-group = New group
+contacts-kind-group = Group
+contacts-badge-group = My group
+contacts-group-count = { $n ->
+    [one] { $n } member
+   *[other] { $n } members
+}
+contacts-group-summary = Group · { $n ->
+    [one] { $n } member
+   *[other] { $n } members
+}
+contacts-group-members = Members
+contacts-group-empty = No one in the group yet: "Edit" to add members, or "To group" on a contact.
+contacts-group-remove = Remove from group
+contacts-group-foreign = Member from another app
+contacts-group-hint = A message to the group goes to every member: recipients see the members' addresses, not the group. A group address on the server is a "Distribution list".
+contacts-write-group = Write to group
+contacts-group-form-new = New group
+contacts-group-form-edit = Edit group
+contacts-group-form-where = Saved to "My contacts" on the server
+contacts-group-form-hint = Members separated by ";": an address, "Name <address>" or a name from the directory and contacts. Enter saves, Esc cancels.
+contacts-group-name = Name
+contacts-group-name-placeholder = For example, Department heads
+contacts-group-members-placeholder = addresses or names separated by ";"
+contacts-group-need-name = Enter a group name
+contacts-group-saved = Group saved: { $name }
+contacts-group-delete-confirm = Delete group "{ $name }"? The contacts stay.
+contacts-to-group = To group
+contacts-to-group-new = New group…
+contacts-added-to-group = { $name } added to "{ $group }"
+contacts-already-in-group = { $name } is already in "{ $group }"
+contacts-removed-from-group = { $name } removed from "{ $group }"

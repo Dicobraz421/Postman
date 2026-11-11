@@ -490,6 +490,8 @@ async fn contacts_are_edited_and_directory_is_listed() {
         organization: "ООО Стенд".into(),
         title: "Инженер".into(),
         free_busy: None,
+        group: false,
+        members: Vec::new(),
     };
     let id = c.client.create_contact(&new).await.unwrap();
     let find = |cards: Vec<ContactCard>| cards.into_iter().find(|x| x.id == id);

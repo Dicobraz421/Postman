@@ -154,6 +154,30 @@ pub(crate) struct Model {
     cert_checks: Vec<Check>,
     pub(crate) encrypt_to: Vec<postman_smime::seal::To>,
     dismissed: HashSet<String>,
+    /// Личные группы письма (T2-47): чип группы в поле — `"Имя" <group:N>`, N — номер здесь ([`Model::add_group`]).
+    groups: Vec<Group>,
+}
+
+/// Личная группа в письме (T2-47): чип «Имя · N»; при отправке и сохранении черновика — адреса участников, адреса
+/// у группы нет (получатели видят участников, как в Outlook).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Group {
+    pub(crate) name: String,
+    pub(crate) members: Vec<Address>,
+}
+
+/// Чип группы в поле адресов: `"Имя" <group:N>`.
+const GROUP_REF: &str = "group:";
+
+/// Номер группы письма в готовом адресе поля (`"Имя" <group:N>`); обычный адрес — `None`.
+pub(crate) fn group_ref(segment: &str) -> Option<usize> {
+    let inner = segment.trim().strip_suffix('>')?.rsplit_once('<')?.1;
+    inner.strip_prefix(GROUP_REF)?.parse().ok()
+}
+
+/// Адрес для поля ввода: имя с запятыми — в кавычках (как [`join`]).
+fn shown(a: &Address) -> String {
+    if a.name.contains([',', ';', '"']) { format!("\"{}\" <{}>", a.name.replace('"', ""), a.email) } else { a.display() }
 }
 
 /// Адреса для поля ввода; имена с запятыми — в кавычках, чтобы разбор вернул то же. Непустое поле кончается
@@ -226,6 +250,7 @@ impl Model {
             cert_checks: Vec::new(),
             encrypt_to: Vec::new(),
             dismissed: HashSet::new(),
+            groups: Vec::new(),
         };
         // Нетронутое новое письмо — не «изменения»: закрывается без вопроса.
         m.saved = m.snapshot();
@@ -309,9 +334,79 @@ impl Model {
         if f.is_address() { parse_addresses(self.field(f)).1 } else { Vec::new() }
     }
 
-    /// Получатели (Кому, Копия, Скрытая), которые разобрались.
+    /// Получатели (Кому, Копия, Скрытая), которые разобрались; группы — участниками (T2-47).
     pub(crate) fn recipients(&self) -> Vec<Address> {
-        [&self.to, &self.cc, &self.bcc].into_iter().flat_map(|t| parse_addresses(t).0).collect()
+        [&self.to, &self.cc, &self.bcc].into_iter().flat_map(|t| parse_addresses(&self.expanded(t)).0).collect()
+    }
+
+    // --- личные группы (T2-47) ---
+
+    /// Группа письма → текст её чипа (`"Имя" <group:N>`); та же группа второй раз — тот же номер.
+    pub(crate) fn add_group(&mut self, g: Group) -> String {
+        let n = match self.groups.iter().position(|x| *x == g) {
+            Some(n) => n,
+            None => {
+                self.groups.push(g);
+                self.groups.len() - 1
+            }
+        };
+        let name = self.groups.get(n).map(|g| g.name.replace(['"', '<', '>'], "")).unwrap_or_default();
+        format!("\"{name}\" <{GROUP_REF}{n}>")
+    }
+
+    /// Группа готового адреса поля; обычный адрес или чужой номер — `None`.
+    pub(crate) fn group(&self, segment: &str) -> Option<&Group> {
+        self.groups.get(group_ref(segment)?)
+    }
+
+    /// Группа — чипом в поле `f` (письмо из «Контактов»: «Написать» группе). Нетронутое письмо остаётся нетронутым.
+    pub(crate) fn add_group_to(&mut self, f: Field, g: Group) {
+        let clean = !self.is_dirty();
+        let chip = self.add_group(g);
+        let (mut closed, open) = segments(self.field(f));
+        closed.push(chip);
+        self.set(f, compose_field(&closed, &open));
+        if clean {
+            self.saved = self.snapshot();
+        }
+    }
+
+    /// «+» у чипа группы (как в Outlook): готовый адрес `i` поля `f` — участниками группы (кого в поле ещё нет).
+    /// `false` — там не группа.
+    pub(crate) fn expand_group(&mut self, f: Field, i: usize) -> bool {
+        let (mut closed, open) = segments(self.field(f));
+        let Some(g) = closed.get(i).and_then(|c| self.group(c)).cloned() else { return false };
+        let has = |closed: &[String], email: &str| closed.iter().any(|c| parse_addresses(c).0.iter().any(|a| a.email.eq_ignore_ascii_case(email)));
+        let mut members = Vec::new();
+        for a in &g.members {
+            if !has(&closed, &a.email) && !members.iter().any(|m: &Address| m.email.eq_ignore_ascii_case(&a.email)) {
+                members.push(a.clone());
+            }
+        }
+        closed.splice(i..=i, members.iter().map(shown));
+        self.set(f, compose_field(&closed, &open));
+        true
+    }
+
+    /// Текст поля адресов с группами участниками (их адресами); повторы адреса — один раз. Без групп — как есть.
+    fn expanded(&self, text: &str) -> String {
+        let (closed, open) = segments(text);
+        if !closed.iter().any(|c| group_ref(c).is_some()) {
+            return text.to_owned();
+        }
+        let mut out: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        for c in closed {
+            let list: Vec<String> = match self.group(&c) {
+                Some(g) => g.members.iter().filter(|a| seen.insert(a.email.to_lowercase())).map(shown).collect(),
+                None => match parse_addresses(&c).0.first() {
+                    Some(a) if !seen.insert(a.email.to_lowercase()) => Vec::new(),
+                    _ => vec![c],
+                },
+            };
+            out.extend(list);
+        }
+        compose_field(&out, &open)
     }
 
     /// Ключевые слова письма на сервере: чужие, категория, «Конфиденциально», «Ждать ответа» (срок от `today`).
@@ -333,7 +428,8 @@ impl Model {
         let mut d = self.base.clone();
         let mut bad = Vec::new();
         for (text, out) in [(&self.to, &mut d.to), (&self.cc, &mut d.cc), (&self.bcc, &mut d.bcc)] {
-            let (ok, b) = parse_addresses(text);
+            // Личные группы (T2-47) — адресами участников: у группы своего адреса нет.
+            let (ok, b) = parse_addresses(&self.expanded(text));
             *out = ok;
             bad.extend(b);
         }
@@ -908,6 +1004,8 @@ impl Composers {
             Event::Contacts(list) => {
                 self.book.borrow_mut().add_contacts(list.iter().map(|(n, e)| (n.as_str(), e.as_str())));
             }
+            // Личные группы (T2-47) — в подсказки адреса.
+            Event::ContactsLoaded(cards) => self.book.borrow_mut().set_groups(postman_core::contacts::Group::of_cards(cards)),
             // Сотрудники, переговорные и ресурсы (S4-02).
             Event::DirectoryLoaded(people) | Event::PeopleFound { people, .. } => {
                 let items = people.iter().filter_map(|p| Some((p.display_name(), p.email.as_deref()?)));
@@ -999,6 +1097,8 @@ pub(crate) struct OpenAs {
     pub(crate) server_id: Option<String>,
     /// Вкладка — позади активной (T2-11: вкладки прошлого запуска).
     pub(crate) behind: bool,
+    /// Личная группа (T2-47) — чипом в «Кому» («Написать» группе из «Контактов»).
+    pub(crate) group: Option<Group>,
 }
 
 impl Mailer {
@@ -1073,6 +1173,12 @@ impl Mailer {
         let id = view.read(cx).id;
         if let Some(server_id) = how.server_id {
             view.update(cx, |c, _| c.model.set_server_id(server_id));
+        }
+        if let Some(g) = how.group {
+            view.update(cx, |c, cx| {
+                c.model.add_group_to(Field::To, g);
+                cx.notify();
+            });
         }
         let events = cx.subscribe(&view, move |this, _, ev: &ComposerEvent, cx| match ev {
             ComposerEvent::Close => this.close_composer(id, cx),
@@ -1592,8 +1698,8 @@ pub(crate) mod scenes {
 mod tests {
     // Не `use super::*`: вместе с gpui пришёл бы атрибут `gpui::test`, он перекрывает `#[test]`.
     use super::{
-        AUTOSAVE, Address, Attachment, Check, CloseAnswer, CloseStep, Command, Draft, Field, Format, Instant, Model, Purpose, Release, Status,
-        accept_suggestion, apply_format, compose_field, current_token, own_end, segments, send_later, swap_signature,
+        AUTOSAVE, Address, Attachment, Check, CloseAnswer, CloseStep, Command, Draft, Field, Format, Group, Instant, Model, Purpose, Release, Status,
+        accept_suggestion, apply_format, compose_field, current_token, group_ref, own_end, segments, send_later, swap_signature,
     };
     use postman_core::contacts::{AddressBook, Source};
 
@@ -1942,5 +2048,36 @@ mod tests {
         assert_eq!(m.to, "Анна <anna@corp.example>; irina.s@partner.example; ");
         m.refresh_recipient_checks(&own, &book);
         assert_eq!(m.checks().count(), 1, "осталось только «внешние»");
+    }
+
+    /// Личная группа (T2-47): чип `"Имя" <group:N>` в «Кому»; письмо (и черновик) уходит участникам, повтор адреса —
+    /// один раз; «+» — участники чипами (кто уже в поле — не повторяется); нетронутое письмо с группой — не «изменено»;
+    /// Backspace по чипу группы его убирает, а не возвращает текст.
+    #[test]
+    fn personal_group_expands_to_members() {
+        let g = Group {
+            name: "Руководители, отделы".into(),
+            members: vec![Address::new("Анна", "anna@corp.example"), Address::new("", "boris@corp.example")],
+        };
+        let mut m = Model::new(Draft::default(), Some(Address::new("Я", "me@corp.example")), "", Instant::now());
+        m.add_group_to(Field::To, g.clone());
+        assert!(!m.is_dirty(), "письмо из «Контактов» не спрашивает о сохранении");
+        let (closed, _) = segments(&m.to);
+        assert_eq!(closed.len(), 1);
+        assert_eq!(group_ref(&closed[0]), Some(0));
+        assert_eq!(m.group(&closed[0]), Some(&g));
+        assert!(m.bad(Field::To).len() == 1, "сам по себе чип — не адрес; отправка его раскрывает");
+        m.set(Field::To, format!("{}anna@corp.example; ", m.to));
+        let d = m.draft(true).unwrap();
+        let to: Vec<&str> = d.to.iter().map(|a| a.email.as_str()).collect();
+        assert_eq!(to, ["anna@corp.example", "boris@corp.example"], "участники; Анна — один раз");
+        assert_eq!(d.to[0].name, "Анна");
+        assert_eq!(m.recipients().len(), 2);
+        assert_eq!(m.add_group(g.clone()), closed[0], "та же группа — тот же чип");
+        // «+»: участники — чипами, Анна уже есть.
+        assert!(m.expand_group(Field::To, 0));
+        assert_eq!(m.to, "boris@corp.example; anna@corp.example; ", "Анна уже была в поле");
+        assert!(!m.expand_group(Field::To, 0), "уже не группа");
+        assert!(group_ref("Анна <anna@corp.example>").is_none());
     }
 }

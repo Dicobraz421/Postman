@@ -3,9 +3,12 @@
 //! - **Папки** — `GetFolder` `contacts` и `FindFolder` (Deep) под ней.
 //! - **Первое чтение** — `FindItem` по страницам (id), затем карточки `GetItem`; **изменения** — `SyncFolderItems`.
 //! - **Карточка** — имя, фамилия, отображаемое имя, адреса (до трёх), телефоны, компания, должность, отдел,
-//!   заметки (тело текстом). Списки рассылки (`DistributionList`) — только чтение: имя и участники.
+//!   заметки (тело текстом). Личные списки рассылки (`DistributionList`, группы Postman T2-47) — имя и участники.
 //! - **Запись** — `CreateItem`, `UpdateItem` (все поля карточки: есть — поставить, пусто — снять), `DeleteItem`
-//!   в «Удалённые».
+//!   в «Удалённые». Список рассылки — `CreateItem` `<t:DistributionList>`; правка — имя (`SetItemField`), новые
+//!   участники — `AppendToItemField` `distributionlist:Members`, убранные — `DeleteItemField` по ключу участника
+//!   (`distributionlist:Members:Member`, как EWS Managed API): прочие участники (из справочника, вложенные списки)
+//!   остаются как были.
 
 use crate::calendar::SyncChanges;
 use crate::soap::{self, text_el};
@@ -42,6 +45,19 @@ pub struct Phone {
 pub struct Member {
     pub name: String,
     pub email: String,
+    /// Ключ участника в списке (`Member Key`): по нему участник убирается.
+    pub key: String,
+    /// `RoutingType`: `SMTP`, `EX`…; адрес для письма — только у `SMTP` ([`Member::smtp`]).
+    pub routing: String,
+}
+
+impl Member {
+    /// Адрес SMTP участника; участник справочника без SMTP (`EX`), вложенный список без адреса — `None`.
+    pub fn smtp(&self) -> Option<&str> {
+        let e = self.email.trim();
+        let smtp = self.routing.is_empty() || self.routing.eq_ignore_ascii_case("SMTP");
+        (smtp && e.contains('@')).then_some(e)
+    }
 }
 
 /// Поля карточки, которые Postman показывает и правит.
@@ -165,8 +181,11 @@ fn contact(el: &El) -> Option<Contact> {
                 .child("Members")
                 .into_iter()
                 .flat_map(|m| m.all("Member"))
-                .filter_map(|m| m.child("Mailbox"))
-                .map(|m| Member { name: m.str_at(&["Name"]), email: m.str_at(&["EmailAddress"]) })
+                .filter_map(|m| {
+                    let b = m.child("Mailbox")?;
+                    let key = m.attr("Key").unwrap_or_default().to_owned();
+                    Some(Member { name: b.str_at(&["Name"]), email: b.str_at(&["EmailAddress"]), key, routing: b.str_at(&["RoutingType"]) })
+                })
                 .collect();
             Some(Contact {
                 id,
@@ -355,6 +374,53 @@ pub(crate) mod req {
         )
     }
 
+    /// Участник для записи: адрес SMTP разовым (`OneOff`) — так Outlook добавляет адрес, которого нет в контактах.
+    fn member(email: &str) -> String {
+        format!(
+            "<t:Member><t:Mailbox>{}<t:RoutingType>SMTP</t:RoutingType><t:MailboxType>OneOff</t:MailboxType></t:Mailbox></t:Member>",
+            text_el("t:EmailAddress", email.trim())
+        )
+    }
+
+    /// Новый список рассылки — поля в порядке схемы `DistributionListType`: DisplayName, FileAs, Members.
+    pub(crate) fn create_list(folder: &FolderRef, name: &str, members: &[String]) -> String {
+        let name = name.trim();
+        let members: String = members.iter().filter(|m| !m.trim().is_empty()).map(|m| member(m)).collect();
+        let members = if members.is_empty() { String::new() } else { format!("<t:Members>{members}</t:Members>") };
+        format!(
+            "<m:CreateItem><m:SavedItemFolderId>{}</m:SavedItemFolderId><m:Items><t:DistributionList>{}{}{members}</t:DistributionList></m:Items></m:CreateItem>",
+            folder.xml(),
+            text_el("t:DisplayName", name),
+            text_el("t:FileAs", name)
+        )
+    }
+
+    /// Правка списка: имя; `add` — новые адреса (`AppendToItemField`), `remove` — ключи убранных участников.
+    pub(crate) fn update_list(id: &ItemId, name: &str, add: &[String], remove: &[String]) -> String {
+        let list = |inner: String| format!("<t:DistributionList>{inner}</t:DistributionList>");
+        let mut u = String::new();
+        for (uri, el) in [("contacts:DisplayName", "t:DisplayName"), ("contacts:FileAs", "t:FileAs")] {
+            u.push_str(&format!(r#"<t:SetItemField><t:FieldURI FieldURI="{uri}"/>{}</t:SetItemField>"#, list(text_el(el, name.trim()))));
+        }
+        let added: String = add.iter().filter(|m| !m.trim().is_empty()).map(|m| member(m)).collect();
+        if !added.is_empty() {
+            u.push_str(&format!(
+                r#"<t:AppendToItemField><t:FieldURI FieldURI="distributionlist:Members"/>{}</t:AppendToItemField>"#,
+                list(format!("<t:Members>{added}</t:Members>"))
+            ));
+        }
+        for key in remove {
+            u.push_str(&format!(
+                r#"<t:DeleteItemField><t:IndexedFieldURI FieldURI="distributionlist:Members:Member" FieldIndex="{}"/></t:DeleteItemField>"#,
+                esc(key)
+            ));
+        }
+        format!(
+            r#"<m:UpdateItem ConflictResolution="AlwaysOverwrite"><m:ItemChanges><t:ItemChange>{}<t:Updates>{u}</t:Updates></t:ItemChange></m:ItemChanges></m:UpdateItem>"#,
+            id.xml("t:ItemId")
+        )
+    }
+
     pub(crate) fn delete_items(ids: &[ItemId]) -> String {
         let ids: String = ids.iter().map(|i| i.xml("t:ItemId")).collect();
         format!(r#"<m:DeleteItem DeleteType="MoveToDeletedItems"><m:ItemIds>{ids}</m:ItemIds></m:DeleteItem>"#)
@@ -404,6 +470,18 @@ impl Client {
     /// Записать карточку целиком → новая версия.
     pub async fn update_contact(&mut self, id: &ItemId, data: &ContactData) -> Result<ItemId> {
         let resp = self.call("UpdateItem", &req::update(id, data)).await?;
+        soap::single(&resp)?;
+        Ok(crate::mail::parse::updated(&resp, id))
+    }
+
+    /// Новый личный список рассылки (группа T2-47) в папке → его id.
+    pub async fn create_list(&mut self, folder: &FolderRef, name: &str, members: &[String]) -> Result<ItemId> {
+        parse::created(&self.call("CreateItem", &req::create_list(folder, name, members)).await?)
+    }
+
+    /// Правка списка рассылки: имя, новые адреса, ключи убранных участников → новая версия.
+    pub async fn update_list(&mut self, id: &ItemId, name: &str, add: &[String], remove: &[String]) -> Result<ItemId> {
+        let resp = self.call("UpdateItem", &req::update_list(id, name, add, remove)).await?;
         soap::single(&resp)?;
         Ok(crate::mail::parse::updated(&resp, id))
     }
@@ -487,6 +565,39 @@ mod tests {
         assert_eq!(dl.data.display_name, "Команда проекта");
         let m = dl.members.as_ref().expect("участники");
         assert_eq!(m.iter().map(|m| m.email.as_str()).collect::<Vec<_>>(), ["anna@example.test", "anton@example.test"]);
+        assert_eq!((m[0].key.as_str(), m[0].smtp()), ("AAAAAA==", Some("anna@example.test")));
+        let ex = Member { email: "/o=Example/cn=anna".into(), routing: "EX".into(), ..Member::default() };
+        assert_eq!(ex.smtp(), None, "участник справочника без SMTP — не адрес");
+    }
+
+    /// Группа (T2-47): новый список — DisplayName, FileAs, Members (разовые адреса SMTP); правка — имя, новые участники
+    /// добавкой, убранные — по ключу; без изменений состава — только имя.
+    #[test]
+    fn list_requests() {
+        let x = body(req::create_list(&FolderRef::WellKnown(WellKnown::Contacts), " Команда ", &["a@example.test".into(), " ".into()]));
+        let dl = x.at(&["Body", "CreateItem", "Items", "DistributionList"]).unwrap();
+        assert_eq!(dl.children.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["DisplayName", "FileAs", "Members"]);
+        assert_eq!(dl.text_at(&["DisplayName"]), Some("Команда"));
+        let mb = dl.at(&["Members", "Member", "Mailbox"]).unwrap();
+        let fields = (mb.text_at(&["EmailAddress"]), mb.text_at(&["RoutingType"]), mb.text_at(&["MailboxType"]));
+        assert_eq!(fields, (Some("a@example.test"), Some("SMTP"), Some("OneOff")));
+        assert_eq!(dl.child("Members").map(|m| m.all("Member").count()), Some(1));
+        let empty = body(req::create_list(&FolderRef::WellKnown(WellKnown::Contacts), "Пусто", &[]));
+        assert!(empty.at(&["Body", "CreateItem", "Items", "DistributionList", "Members"]).is_none());
+
+        let id = ItemId { id: "AAMkADlist1".into(), change_key: Some("EgAAAA==".into()) };
+        let x = body(req::update_list(&id, "Команда проекта", &["b@example.test".into()], &["AAAAAB==".into()]));
+        let updates = x.at(&["Body", "UpdateItem", "ItemChanges", "ItemChange", "Updates"]).unwrap();
+        let set: Vec<&str> = updates.all("SetItemField").filter_map(|e| e.child("FieldURI")?.attr("FieldURI")).collect();
+        assert_eq!(set, ["contacts:DisplayName", "contacts:FileAs"]);
+        let append = updates.child("AppendToItemField").unwrap();
+        assert_eq!(append.child("FieldURI").and_then(|f| f.attr("FieldURI")), Some("distributionlist:Members"));
+        assert_eq!(append.text_at(&["DistributionList", "Members", "Member", "Mailbox", "EmailAddress"]), Some("b@example.test"));
+        let del = updates.child("DeleteItemField").and_then(|d| d.child("IndexedFieldURI")).unwrap();
+        assert_eq!((del.attr("FieldURI"), del.attr("FieldIndex")), (Some("distributionlist:Members:Member"), Some("AAAAAB==")));
+        let rename = body(req::update_list(&id, "Новое", &[], &[]));
+        let u = rename.at(&["Body", "UpdateItem", "ItemChanges", "ItemChange", "Updates"]).unwrap();
+        assert!(u.child("AppendToItemField").is_none() && u.child("DeleteItemField").is_none());
     }
 
     #[test]

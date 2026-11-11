@@ -104,16 +104,16 @@ impl FromJmap<postman_jmap::Release> for Release {
 
 impl FromJmap<postman_jmap::ContactCard> for ContactCard {
     fn from_jmap(c: postman_jmap::ContactCard) -> Self {
-        let postman_jmap::ContactCard { id, name, emails, phones, mobile, organization, title, free_busy } = c;
-        ContactCard { id, name, emails, phones, mobile, organization, title, free_busy }
+        let postman_jmap::ContactCard { id, name, emails, phones, mobile, organization, title, free_busy, group, members } = c;
+        ContactCard { id, name, emails, phones, mobile, organization, title, free_busy, group, members }
     }
 }
 
 impl ToJmap for ContactCard {
     type Jmap = postman_jmap::ContactCard;
     fn to_jmap(&self) -> postman_jmap::ContactCard {
-        let ContactCard { id, name, emails, phones, mobile, organization, title, free_busy } = self.clone();
-        postman_jmap::ContactCard { id, name, emails, phones, mobile, organization, title, free_busy }
+        let ContactCard { id, name, emails, phones, mobile, organization, title, free_busy, group, members } = self.clone();
+        postman_jmap::ContactCard { id, name, emails, phones, mobile, organization, title, free_busy, group, members }
     }
 }
 
@@ -209,8 +209,14 @@ mod tests {
             organization: "ИТТ".into(),
             title: "инженер".into(),
             free_busy: None,
+            group: false,
+            members: Vec::new(),
         };
         assert_eq!(ContactCard::from_jmap(card.to_jmap()), card);
+        // Группа (T2-47) — туда и обратно с участниками.
+        let group =
+            ContactCard { id: "g1".into(), name: "Группа".into(), group: true, members: vec!["a@example.test".into()], ..Default::default() };
+        assert_eq!(ContactCard::from_jmap(group.to_jmap()), group);
         // Патч карточки — по-прежнему только изменённые свойства (форма «Контакты», `app-gpui/src/contacts.rs`).
         let edited = ContactCard { phones: Vec::new(), mobile: Vec::new(), title: "Директор".into(), ..card.clone() };
         let patch = edited.to_jmap().patch(&card.to_jmap());
@@ -232,5 +238,7 @@ mod tests {
             "organizations": { "o1": { "name": "ИТТ" } }, "titles": { "t1": { "kind": "role", "name": "x" } }
         });
         assert_eq!(ContactCard::from_jscontact(&v), ContactCard::from_jmap(postman_jmap::ContactCard::from_jscontact(&v)));
+        let g = serde_json::json!({ "kind": "group", "members": { "mailto:b@example.test": true, "urn:uuid:1": true } });
+        assert_eq!(ContactCard::from_jscontact(&g), ContactCard::from_jmap(postman_jmap::ContactCard::from_jscontact(&g)));
     }
 }

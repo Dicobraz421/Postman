@@ -75,11 +75,18 @@ pub struct EwsAreas {
 const CONTACTS_LIMIT: u32 = 5000;
 const CONTACT_PAGE: u32 = 100;
 
-/// Контакт Exchange → карточка Postman: отображаемое имя, адреса, телефоны, компания, должность. Списков рассылки
-/// нет (`None`).
+/// Контакт Exchange → карточка Postman: отображаемое имя, адреса, телефоны, компания, должность. Личный список
+/// рассылки (`DistributionList`) — группа (T2-47): имя и адреса SMTP участников (участник справочника без SMTP и
+/// вложенный список в группу не попадают, на сервере они остаются).
 pub fn card(c: postman_ews::Contact) -> Option<ContactCard> {
-    if c.members.is_some() {
-        return None;
+    if let Some(members) = &c.members {
+        let mut emails: Vec<String> = Vec::new();
+        for m in members.iter().filter_map(|m| m.smtp()) {
+            if !emails.iter().any(|e| e.eq_ignore_ascii_case(m)) {
+                emails.push(m.to_owned());
+            }
+        }
+        return Some(ContactCard { id: c.id.id, name: c.data.shown_name(), group: true, members: emails, ..ContactCard::default() });
     }
     Some(ContactCard {
         id: c.id.id,
@@ -89,7 +96,7 @@ pub fn card(c: postman_ews::Contact) -> Option<ContactCard> {
         mobile: c.data.phones.iter().filter(|p| p.kind == postman_ews::PhoneKind::Mobile).map(|p| p.number.clone()).collect(),
         organization: c.data.company,
         title: c.data.job_title,
-        free_busy: None,
+        ..ContactCard::default()
     })
 }
 
@@ -116,6 +123,19 @@ pub fn contact_data(card: &ContactCard, base: Option<&postman_ews::ContactData>)
     d.company = card.organization.trim().to_owned();
     d.job_title = card.title.trim().to_owned();
     d
+}
+
+/// Состав списка на сервере `now` → нужный `want` (адреса): новые адреса и ключи убранных участников с адресом SMTP.
+/// Участники без SMTP (справочник `EX`, вложенные списки) не трогаются.
+pub fn list_changes(now: &[postman_ews::Member], want: &[String]) -> (Vec<String>, Vec<String>) {
+    let add = want.iter().filter(|w| !now.iter().filter_map(|m| m.smtp()).any(|x| x.eq_ignore_ascii_case(w))).cloned().collect();
+    let remove = now
+        .iter()
+        .filter(|m| !m.key.is_empty())
+        .filter(|m| m.smtp().is_some_and(|e| !want.iter().any(|w| w.eq_ignore_ascii_case(e))))
+        .map(|m| m.key.clone())
+        .collect();
+    (add, remove)
 }
 
 impl std::fmt::Debug for EwsAreas {
@@ -294,8 +314,12 @@ impl EwsAreas {
         Ok(changed && !first)
     }
 
-    /// Записать карточку: новая — `CreateItem` в «Контакты», правка — поверх прочитанной с сервера → id.
+    /// Записать карточку: новая — `CreateItem` в «Контакты», правка — поверх прочитанной с сервера → id. Группа
+    /// (T2-47) — личный список рассылки ([`EwsAreas::save_list`]).
     async fn save_contact(&mut self, card: &ContactCard, old: Option<&ContactCard>) -> Result<String, Error> {
+        if card.group {
+            return self.save_list(card, old).await;
+        }
         let Some(old) = old.filter(|o| !o.id.is_empty()) else {
             let id = self.client.create_contact(&FolderRef::WellKnown(WellKnown::Contacts), &contact_data(card, None)).await?;
             return Ok(id.id);
@@ -304,6 +328,27 @@ impl EwsAreas {
         let base = self.client.get_contacts(std::slice::from_ref(&id)).await?.into_iter().find(|c| c.id.id == id.id && c.members.is_none());
         let base = base.ok_or_else(|| Error::Ews { code: "ErrorItemNotFound".into(), message: String::new() })?;
         self.client.update_contact(&id, &contact_data(card, Some(&base.data))).await?;
+        Ok(old.id.clone())
+    }
+
+    /// Группа (T2-47) — личный список рассылки: новый — `CreateItem`; правка — имя, добавленные адреса и убранные
+    /// участники по ключу относительно списка на сервере (прочие участники остаются).
+    async fn save_list(&mut self, card: &ContactCard, old: Option<&ContactCard>) -> Result<String, Error> {
+        let mut want: Vec<String> = Vec::new();
+        for m in card.members.iter().filter_map(|m| postman_core::model::member_address(m)) {
+            if !want.iter().any(|w| w.eq_ignore_ascii_case(m)) {
+                want.push(m.to_owned());
+            }
+        }
+        let folder = FolderRef::WellKnown(WellKnown::Contacts);
+        let Some(old) = old.filter(|o| !o.id.is_empty()) else {
+            return Ok(self.client.create_list(&folder, &card.name, &want).await?.id);
+        };
+        let id = ItemId::new(old.id.clone());
+        let base = self.client.get_contacts(std::slice::from_ref(&id)).await?.into_iter().find(|c| c.id.id == id.id);
+        let now = base.and_then(|c| c.members).ok_or_else(|| Error::Ews { code: "ErrorItemNotFound".into(), message: String::new() })?;
+        let (add, remove) = list_changes(&now, &want);
+        self.client.update_list(&id, &card.name, &add, &remove).await?;
         Ok(old.id.clone())
     }
 
@@ -740,7 +785,8 @@ mod tests {
         assert_eq!((c.id.as_str(), c.name.as_str(), c.organization.as_str(), c.title.as_str()), ("AAMk1", "Петрова Анна", "Пример", "Инженер"));
         assert!(c.phones.is_empty());
         assert_eq!(c.mobile, ["+7 900"], "мобильный — отдельно (T2-44)");
-        assert!(card(Contact { id: ItemId::new("AAMk2"), folder_id: None, data: data.clone(), members: Some(vec![]) }).is_none(), "список рассылки");
+        let list = card(Contact { id: ItemId::new("AAMk2"), folder_id: None, data: data.clone(), members: Some(vec![]) }).unwrap();
+        assert!(list.group && list.members.is_empty(), "список рассылки — группа (T2-47)");
 
         let edited = ContactCard { phones: vec!["+7 901".into(), "+7 495".into()], title: "Ведущий".into(), ..c };
         let d = contact_data(&edited, Some(&data));
@@ -754,6 +800,22 @@ mod tests {
         let new =
             contact_data(&ContactCard { name: " Борис ".into(), emails: vec![" ".into(), "b@example.test".into()], ..Default::default() }, None);
         assert_eq!((new.display_name.as_str(), new.emails.as_slice()), ("Борис", ["b@example.test".to_owned()].as_slice()));
+    }
+
+    /// Состав группы (T2-47): новые адреса — добавкой, убранные — ключом; участник справочника без SMTP и адрес в
+    /// другом регистре не трогаются.
+    #[test]
+    fn group_member_changes() {
+        let m = |key: &str, email: &str, routing: &str| postman_ews::Member {
+            key: key.into(),
+            email: email.into(),
+            routing: routing.into(),
+            ..Default::default()
+        };
+        let now = [m("k1", "anna@example.test", "SMTP"), m("k2", "boris@example.test", "SMTP"), m("k3", "/o=Example/cn=vera", "EX")];
+        let want = ["ANNA@example.test".to_owned(), "gleb@example.test".to_owned()];
+        assert_eq!(list_changes(&now, &want), (vec!["gleb@example.test".to_owned()], vec!["k2".to_owned()]));
+        assert_eq!(list_changes(&now, &["anna@example.test".into(), "boris@example.test".into()]), (vec![], vec![]));
     }
 
     #[test]

@@ -56,3 +56,9 @@ compose-attached-skipped = { $n ->
     [one] { $n } message not attached: it is not on the server
    *[other] { $n } messages not attached: they are not on the server
 }
+# Personal groups in a message (T2-47).
+compose-group-expand = Show members
+compose-group-suggestion = { $name } · { $n ->
+    [one] { $n } member
+   *[other] { $n } members
+}
