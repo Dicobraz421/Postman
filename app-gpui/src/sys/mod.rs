@@ -1,7 +1,6 @@
 //! Платформенный код интерфейса — прослойка над нейтральным API pets (решение владельца 2026-10-28): окно —
 //! `gpui_windows::pets` (pets-gpui-windows), без UI — `pets_shell`. Вызовов ОС здесь нет, на других ОС — заглушки.
-//! `unsafe` — только счётчик кучи (`alloc`), `set_var` в начале `main` (`shell::default_env`) и чтение `CF_HTML`
-//! буфера обмена (`clipboard`, T3-06: у gpui и pets его нет — отступление, см. карточку T3-06).
+//! `unsafe` — только счётчик кучи (`alloc`) и `set_var` в начале `main` (`shell::default_env`).
 
 use gpui_kit::Window;
 #[cfg(windows)]
@@ -73,41 +72,16 @@ pub mod credentials {
     }
 }
 
-/// HTML буфера обмена (`CF_HTML`, T3-06): своя прослойка — у gpui и pets его нет (см. модуль).
-#[cfg(windows)]
-mod clipboard;
-
-/// HTML из буфера обмена (Word, браузер): фрагмент между `StartFragment` и `EndFragment` `CF_HTML`; нет — `None`.
-/// Больше `max` байт — тоже `None` (вставится текст).
+/// HTML из буфера обмена (Word, браузер, T3-06): фрагмент `CF_HTML` — `pets_shell::clipboard`. Нет HTML, он больше
+/// `max` байт или буфер занят — `None` (вставится текст).
 pub fn clipboard_html(max: usize) -> Option<String> {
-    #[cfg(windows)]
-    {
-        clipboard::html(max).and_then(|raw| cf_html_fragment(&raw))
+    match pets_shell::clipboard::read_html(max) {
+        Ok(html) => html.map(|h| h.fragment),
+        Err(e) => {
+            tracing::warn!("clipboard HTML is not read: {e}");
+            None
+        }
     }
-    #[cfg(not(windows))]
-    {
-        let _ = max;
-        None
-    }
-}
-
-/// Фрагмент `CF_HTML`: заголовок `Version:0.9 … StartFragment:000123 … EndFragment:000456`, смещения — байты всего
-/// буфера. Смещений нет или они вне буфера — весь HTML после заголовка (`StartHTML`), иначе — весь текст.
-pub fn cf_html_fragment(raw: &[u8]) -> Option<String> {
-    let raw = raw.strip_suffix(&[0]).unwrap_or(raw);
-    let head_end = raw.iter().position(|&b| b == b'<').unwrap_or(raw.len());
-    let head = String::from_utf8_lossy(&raw[..head_end]);
-    let field =
-        |name: &str| -> Option<usize> { head.lines().find_map(|l| l.trim().strip_prefix(name)?.strip_prefix(':')?.trim().parse::<usize>().ok()) };
-    let slice = match (field("StartFragment"), field("EndFragment")) {
-        (Some(a), Some(b)) if a < b && b <= raw.len() => &raw[a..b],
-        _ => match field("StartHTML").filter(|&a| a < raw.len()) {
-            Some(a) => &raw[a..],
-            None => &raw[head_end..],
-        },
-    };
-    let html = String::from_utf8_lossy(slice).trim().to_owned();
-    (!html.is_empty()).then_some(html)
 }
 
 /// Автозапуск, клиент `mailto:`, журнал в файл, открытие в Проводнике (S5-30).
@@ -272,23 +246,6 @@ pub fn set_icons(_window: &Window) -> Result<(), String> {
 #[cfg(all(test, windows))]
 mod tests {
     use gpui_windows::pets;
-
-    /// T3-06: фрагмент `CF_HTML` — по смещениям заголовка; без них — HTML после заголовка.
-    #[test]
-    fn cf_html_fragment_by_offsets() {
-        let body = "<html><body><!--StartFragment--><b>Ж</b><!--EndFragment--></body></html>";
-        let head_len = "Version:0.9\r\nStartHTML:0000000000\r\nEndHTML:0000000000\r\nStartFragment:0000000000\r\nEndFragment:0000000000\r\n".len();
-        let start = head_len + body.find("<b>").unwrap();
-        let end = head_len + body.find("<!--EndFragment").unwrap();
-        let raw = format!(
-            "Version:0.9\r\nStartHTML:{head_len:010}\r\nEndHTML:{:010}\r\nStartFragment:{start:010}\r\nEndFragment:{end:010}\r\n{body}\0",
-            head_len + body.len()
-        );
-        assert_eq!(super::cf_html_fragment(raw.as_bytes()).as_deref(), Some("<b>Ж</b>"));
-        assert_eq!(super::cf_html_fragment(b"Version:0.9\r\n<p>x</p>").as_deref(), Some("<p>x</p>"));
-        assert_eq!(super::cf_html_fragment(b"Version:0.9\r\nStartFragment:999\r\nEndFragment:1000\r\n<p>y</p>").as_deref(), Some("<p>y</p>"));
-        assert_eq!(super::cf_html_fragment(b""), None);
-    }
 
     /// Манифест из build.rs действует, хотя gpui вшивает свой: кодовая страница процесса — UTF-8.
     #[test]

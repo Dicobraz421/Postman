@@ -41,7 +41,8 @@ serde_json.workspace = true
 postman-compose.workspace = true
 pets-commands = { git = "https://github.com/Dicobraz/pets", rev = "b1e344098d9ce15bec9bfa5f273f211ca0fec81f" }
 pets-i18n = { git = "https://github.com/Dicobraz/pets", rev = "b1e344098d9ce15bec9bfa5f273f211ca0fec81f" }
-pets-shell = { git = "https://github.com/Dicobraz/pets", rev = "b1e344098d9ce15bec9bfa5f273f211ca0fec81f" }
+# T3-06: `clipboard` (HTML буфера обмена) — ветка pets#44; после слияния — rev коммита main pets.
+pets-shell = { git = "https://github.com/Dicobraz/pets", rev = "b016cbd2232d45875ab537a96b34071c1ac7493b" }
 pets-ui = { git = "https://github.com/Dicobraz/pets", rev = "b1e344098d9ce15bec9bfa5f273f211ca0fec81f" }
 futures = "0.3"
 tracing = "0.1"
