@@ -280,6 +280,10 @@ pub struct Security {
     /// Домены отправителей, в письмах которых внешние картинки загружаются сами (при «Спрашивать», T3-04): нижний
     /// регистр, без повторов, по алфавиту ([`image_domain`]).
     pub trusted_image_domains: Vec<String>,
+    /// Умолчание «Спрашивать» уже применено (решение владельца 2026-11-11): в прежнем файле записано «никогда» — до
+    /// T3-04 «Спрашивать» ничего не меняло, поэтому один раз переводим на «Спрашивать». Нет поля — `false`.
+    #[serde(default)]
+    pub images_ask_applied: bool,
     /// Только TLS 1.3 (иначе — 1.2 и выше).
     pub tls13: bool,
     /// Хранить пароль в Диспетчере учётных данных Windows (иначе — спрашивать при каждом запуске).
@@ -294,8 +298,9 @@ impl Default for Security {
     fn default() -> Self {
         Self {
             macro_save: true,
-            images: Images::Never,
+            images: Images::Ask,
             trusted_image_domains: Vec::new(),
+            images_ask_applied: true,
             tls13: false,
             store_password: true,
             sign_all: true,
@@ -376,9 +381,9 @@ pub enum DirectoryLogin {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Images {
-    #[default]
     Never,
-    /// Спрашивать в письме.
+    /// Спрашивать в письме (по умолчанию, решение владельца 2026-11-11).
+    #[default]
     Ask,
 }
 
@@ -458,6 +463,10 @@ impl Prefs {
         domains.sort();
         domains.dedup();
         self.security.trusted_image_domains = domains;
+        if !self.security.images_ask_applied {
+            self.security.images = Images::Ask;
+            self.security.images_ask_applied = true;
+        }
         if !QUIET_FROM.contains(&self.general.quiet_from) {
             self.general.quiet_from = General::default().quiet_from;
         }
@@ -1438,8 +1447,15 @@ mod tests {
             assert_eq!(p.normalized().general.density, Some(now), "{was}");
         }
         let old: Prefs = serde_json::from_str(r#"{"version":1,"general":{"language":"ru"}}"#).unwrap();
+        let old = old.normalized();
         assert_eq!(old.security, Security::default(), "по умолчанию — не слабее прежнего");
-        assert_eq!((old.security.images, old.security.tls13, old.security.store_password), (Images::Never, false, true));
+        assert_eq!((old.security.images, old.security.tls13, old.security.store_password), (Images::Ask, false, true));
+        // Прежний файл с «никогда» (до T3-04 «Спрашивать» ничего не меняло) — один раз на «Спрашивать»; выбор после
+        // этого — как записан.
+        let saved: Prefs = serde_json::from_str(r#"{"version":1,"security":{"images":"never"}}"#).unwrap();
+        assert_eq!(saved.normalized().security.images, Images::Ask);
+        let chosen: Prefs = serde_json::from_str(r#"{"version":1,"security":{"images":"never","images_ask_applied":true}}"#).unwrap();
+        assert_eq!(chosen.normalized().security.images, Images::Never);
         assert_eq!(old.general.language.as_deref(), Some("ru"));
         assert!(old.general.quiet && old.look.avatars && old.keytips, "прежний файл — умолчания новых полей");
         assert_eq!(LogLevel::Debug.filter(), "debug");

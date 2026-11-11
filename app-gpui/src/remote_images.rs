@@ -482,9 +482,9 @@ pub(crate) mod scenes {
             return;
         }
         let p = crate::prefs::get(cx).security;
-        if p.images != Images::Never || !p.trusted_image_domains.is_empty() {
+        if p.images != Images::default() || !p.trusted_image_domains.is_empty() {
             crate::prefs::update(cx, |p| {
-                p.security.images = Images::Never;
+                p.security.images = Images::default();
                 p.security.trusted_image_domains.clear();
             });
         }
