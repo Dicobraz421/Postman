@@ -59,6 +59,8 @@ pub(crate) struct RowLabels {
     pub(crate) migration: Option<(char, String)>,
     /// Встреча письма-приглашения (T2-18, `meeting_row`): время вместо превью; ставит список.
     pub(crate) meeting: Option<String>,
+    /// Поиск нашёл слова во вложении (T3-10, `search::attachment_line`): подпись вместо превью; ставит список.
+    pub(crate) attached: Option<postman_core::indexer::AttachmentHit>,
 }
 
 pub(crate) fn row_labels(book: &Book, row: &EmailRow) -> RowLabels {

@@ -17,6 +17,7 @@ use pets_ui::Level as Toast;
 use postman_cache::{Cache, MailboxRow};
 use postman_core::categories;
 use postman_core::extract::Extractor;
+use postman_core::indexer::AttachmentHit;
 use postman_core::sync::{self, Account, Command, ErrorKind, Event, Index, SendReceive, Status, SyncError};
 
 use crate::Mailer;
@@ -482,16 +483,21 @@ pub(crate) fn bench_store(warm: bool, keep: bool, start: &mut std::time::Instant
 
 /// Поиск по своим данным (в фоне): индекс ядра, пока он не собран — кэш. Письма — ключами строк списка.
 pub(crate) fn local_search(index: &Index, cache: &Cache, query: &str, mailbox: Option<&str>) -> Vec<String> {
+    local_hits(index, cache, query, mailbox).into_iter().map(|h| h.0).collect()
+}
+
+/// [`local_search`] — и вложение, в котором совпало (T3-10; знает только индекс).
+pub(crate) fn local_hits(index: &Index, cache: &Cache, query: &str, mailbox: Option<&str>) -> Vec<(String, Option<AttachmentHit>)> {
     let folder = match mailbox.map(|mb| crate::local::folder_id(cache, mb)) {
         Some(Some(f)) => Some(postman_core::model::FolderId(f.0)),
         Some(None) => return Vec::new(),
         None => None,
     };
-    let ids = postman_core::indexer::search(index.as_deref(), cache, query, folder, SEARCH_LIMIT).unwrap_or_else(|e| {
+    let hits = postman_core::indexer::search_hits(index.as_deref(), cache, query, folder, SEARCH_LIMIT).unwrap_or_else(|e| {
         tracing::warn!("search: {e}");
         Vec::new()
     });
-    ids.into_iter().map(|id| crate::local::letter_key(cache, id)).collect()
+    hits.into_iter().map(|h| (crate::local::letter_key(cache, h.id), h.matched_in)).collect()
 }
 
 /// Индекс не собран или пуст (кэш старше индекса): собрать в фоне — строки и тела, затем тексты HTML.
