@@ -690,7 +690,7 @@ settings-cal-preview-zone = Пояс: { $zone }.
 
 # «Настройки»: Общие, Безопасность, Внешний вид (S5-30).
 settings-nav-security = Безопасность
-settings-nav-security-keywords = безопасность картинки ссылки макросы вложения песочница фишинг пароли tls сертификат отзыв входы
+settings-nav-security-keywords = безопасность картинки домены ссылки макросы вложения песочница фишинг пароли tls сертификат отзыв входы
 settings-hint-security = Чужие письма, ссылки и вложения, сообщения о фишинге, хранение входов.
 settings-nav-look = Внешний вид
 settings-nav-look-keywords = тема оформление светлая тёмная контрастность акцент плотность шрифт размер аватары превью keytips подсказки клавиш
@@ -845,7 +845,7 @@ settings-accent-green = Зелёный
 settings-accent-violet = Фиолетовый
 settings-accent-graphite = Графит
 settings-images-ask = Спрашивать
-settings-images-ask-hint = Письмо спросит, загружать ли картинки; без ответа — не загружаются.
+settings-images-ask-hint = Письмо предложит загрузить картинки или запомнить домен отправителя; без ответа — не загружаются.
 settings-policy-pinned = Задано организацией.
 settings-tls-13 = TLS 1.3
 settings-tls-13-hint = Только TLS 1.3: серверы с 1.2 перестанут подключаться (со следующего подключения).

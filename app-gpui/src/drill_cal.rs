@@ -94,6 +94,9 @@ const SCENES: &[Scene] = &[
     Scene::new("cal-d9-event", start, write_free).input(EVENT_TOASTS).on_request(),
     // Решение владельца п. 9: поле поиска «Клавиатура» берёт фокус с первого щелчка при стопке тостов.
     Scene::new("cal-d9-keys", keyboard, key_typed).input(KEYS_UNDER_TOASTS).on_request(),
+    // T3-08: конец серии в подробностях события — «По будням, до 30.12.2027» (год не нынешний), затем «…, 5 раз».
+    Scene::new("cal-t308-until", series_end, series_shown).on_request(),
+    Scene::new("cal-t308-count", series_end, series_shown).continues().on_request(),
     // T3-05 (#552, п. 2): календари рядом. Сцены снимают флажки всех календарей, кроме Ивановой, — идут своим запуском с
     // `POSTMAN_SCREENS_PREFS=1`, по порядку. Раб. неделя наложением (как было, по умолчанию).
     Scene::new("cal-t305-overlay", one_colleague, overlay_shown).input(SIDE_OVERLAY).on_request(),
@@ -108,6 +111,33 @@ const SCENES: &[Scene] = &[
     // Второй запуск с тем же каталогом данных: календари рядом сразу, из настроек.
     Scene::new("cal-t305-kept", start, side_kept).input(SIDE_KEPT).on_request(),
 ];
+
+/// Планёрка демо (по будням) и правило с концом серии сцены `cal-t308-…`.
+const SERIES: &str = "Планёрка отдела"; // i18n-ok: тема в демо-данных
+
+fn series_rule(scene: &Scene) -> &'static str {
+    if scene.name == "cal-t308-count" { "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;COUNT=5" } else { "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;UNTIL=20271230T235959" }
+}
+
+/// Планёрка с концом серии — в подробностях.
+fn series_end(s: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+    let rule = series_rule(s);
+    m.cal.update(cx, |c, cx| {
+        c.set_view(V::WorkWeek, cx);
+        c.go_to_demo_week(cx);
+        for e in c.events.iter_mut().filter(|e| e.title == SERIES) {
+            e.recurrence = Some(rule.into());
+        }
+        c.select_titled(SERIES, cx);
+    });
+    m.set_section(Section::Calendar, cx);
+    Ok(())
+}
+
+fn series_shown(s: &Scene, m: &Mailer, cx: &App) -> bool {
+    let c = m.cal.read(cx);
+    m.section == Section::Calendar && c.selected() && c.events.iter().any(|e| e.title == SERIES && e.recurrence.as_deref() == Some(series_rule(s)))
+}
 
 const OPEN: &[Input] = &[
     Input::Until(mail_ready),

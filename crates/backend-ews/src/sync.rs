@@ -1814,6 +1814,9 @@ impl Ews {
             // Без областей (календарь не подключился) справочник пуст.
             Command::FindPeople { text, offset } => notify(Event::PeopleFound { text, offset, people: Vec::new(), more: false }),
             Command::PersonDetails { email } => notify(Event::PersonDetails { email, person: None }),
+            Command::ExpandList { ticket, address } => {
+                notify(Event::ListMembers { ticket, address, members: Vec::new(), error: Some(postman_core::sync::ListError::Unsupported) });
+            }
             other => tracing::debug!("ews: command not supported: {}", name(&other)),
         }
     }

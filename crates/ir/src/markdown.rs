@@ -115,6 +115,9 @@ fn write_inlines(inlines: &[Inline], out: &mut String) {
         match i {
             Inline::Text { text, marks } => write_text(text, *marks, out),
             Inline::LineBreak => out.push_str("  \n"),
+            // Внешняя картинка в цитате ответа — подписью, как до загрузки: адрес слежения дальше не уходит.
+            Inline::Remote { alt, .. } if !alt.is_empty() => write_text(&format!("[{alt}]"), Marks::default(), out),
+            Inline::Remote { .. } => {}
             Inline::Image { cid, alt, .. } => {
                 out.push_str("![");
                 out.push_str(&escape(alt));

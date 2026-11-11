@@ -1396,6 +1396,40 @@ mod tests {
         assert_eq!(back.rrule(), "FREQ=WEEKLY;INTERVAL=2;BYDAY=MO");
     }
 
+    /// Конец серии (T3-08): RRULE → `NoEndRecurrence` / `EndDateRecurrence` / `NumberedRecurrence` → XML → разбор →
+    /// тот же конец в RRULE. `UNTIL` — дата, местное время или UTC: в EWS — дата.
+    #[test]
+    fn series_end_ranges() {
+        let start: Date = "2026-11-04".parse().unwrap();
+        let end: Date = "2026-12-30".parse().unwrap();
+        let through = |rule: &str| -> (Recurrence, String) {
+            let r = Recurrence::from_rrule(rule, start).unwrap();
+            let x = xml(soap::envelope(&r.to_xml()).as_bytes()).unwrap();
+            let back = Recurrence::from_el(x.at(&["Body", "Recurrence"]).unwrap()).unwrap();
+            assert_eq!(back, r, "{rule}");
+            (r, back.rrule())
+        };
+        let (r, rule) = through("FREQ=WEEKLY;BYDAY=WE");
+        assert_eq!(r.range, Range::NoEnd { start });
+        assert!(r.to_xml().contains("<t:NoEndRecurrence><t:StartDate>2026-11-04</t:StartDate></t:NoEndRecurrence>"), "{}", r.to_xml());
+        assert_eq!(rule, "FREQ=WEEKLY;INTERVAL=1;BYDAY=WE");
+        for until in ["20261230", "20261230T235959", "20261230T205959Z"] {
+            let (r, rule) = through(&format!("FREQ=WEEKLY;BYDAY=WE;UNTIL={until}"));
+            assert_eq!(r.range, Range::EndDate { start, end }, "{until}");
+            assert!(r.to_xml().contains("<t:EndDateRecurrence><t:StartDate>2026-11-04</t:StartDate><t:EndDate>2026-12-30</t:EndDate>"));
+            assert_eq!(rule, "FREQ=WEEKLY;INTERVAL=1;BYDAY=WE;UNTIL=20261230");
+        }
+        for count in [1u32, 12] {
+            let (r, rule) = through(&format!("FREQ=DAILY;COUNT={count}"));
+            assert_eq!(r.range, Range::Numbered { start, count });
+            assert!(r.to_xml().contains(&format!("<t:NumberOfOccurrences>{count}</t:NumberOfOccurrences></t:NumberedRecurrence>")));
+            assert_eq!(rule, format!("FREQ=DAILY;INTERVAL=1;COUNT={count}"));
+        }
+        assert!(
+            Recurrence::from_rrule("FREQ=DAILY;COUNT=много", start).is_none() && Recurrence::from_rrule("FREQ=DAILY;UNTIL=скоро", start).is_none()
+        );
+    }
+
     #[test]
     fn new_item_from_event() {
         let ev = NewEvent {

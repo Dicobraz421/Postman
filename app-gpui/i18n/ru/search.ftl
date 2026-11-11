@@ -29,3 +29,6 @@ search-matches-none = Совпадения: нет в тексте
 search-matches-query = «{ $query }»
 search-refine-only = только { $folder }
 search-clear-refines = Сбросить уточнения
+# Строка результата: слова нашлись во вложении (T3-10).
+search-in-attachment = во вложении: { $name }
+search-in-attachment-text = во вложении: { $name } — { $snippet }

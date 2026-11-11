@@ -85,7 +85,7 @@ mod tests {
         assert_eq!(Policy::parse(Some("always"), Some("1.0"), Some("yes")), Policy::default(), "слабее — не бывает");
         let mut p = Prefs::default();
         let e = effective_with(&p, Policy::default());
-        assert_eq!(e, Effective { images: Images::Never, tls13: false, store_password: true });
+        assert_eq!(e, Effective { images: Images::Ask, tls13: false, store_password: true });
         p.security.tls13 = true;
         p.security.store_password = false;
         let e = effective_with(&p, Policy { tls13: Some(false), ..Policy::default() });

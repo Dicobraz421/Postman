@@ -90,6 +90,30 @@ fn person(r: &El) -> Option<Person> {
     })
 }
 
+pub(crate) fn expand_request(address: &str) -> String {
+    format!("<m:ExpandDL><m:Mailbox>{}</m:Mailbox></m:ExpandDL>", soap::text_el("t:EmailAddress", address))
+}
+
+/// Участник списка (`Mailbox` из `DLExpansion`): имя, адрес и «это тоже список» (`PublicDL`, `PrivateDL`) —
+/// вложенный список не раскрывается. Подробностей (должность, телефон) `ExpandDL` не отдаёт.
+fn member(m: &El) -> Option<Person> {
+    let email = smtp(m.text_at(&["EmailAddress"])?.trim());
+    if email.is_empty() {
+        return None;
+    }
+    let name = match m.str_at(&["Name"]) {
+        n if !n.is_empty() => n,
+        _ => email.clone(),
+    };
+    Some(Person { name, email, group: matches!(m.text_at(&["MailboxType"]), Some("PublicDL" | "PrivateDL")), ..Person::default() })
+}
+
+/// Участники списка рассылки — один уровень, в порядке сервера. Списка нет или это не список — ошибка сервера.
+pub(crate) fn parse_members(resp: &El) -> Result<Vec<Person>> {
+    let msg = soap::single(resp)?;
+    Ok(msg.child("DLExpansion").into_iter().flat_map(|d| d.all("Mailbox")).filter_map(member).collect())
+}
+
 /// Найденные: «не найдено» — пусто; несколько совпадений (`Warning`) — все.
 pub(crate) fn parse(resp: &El, max: usize) -> Result<Vec<Person>> {
     let Some(msg) = soap::messages(resp).into_iter().next() else { return Ok(Vec::new()) };
@@ -272,6 +296,15 @@ impl Client {
         tracing::debug!(found = people.len(), "ews resolve names");
         Ok(people)
     }
+
+    /// Участники списка рассылки по его адресу (`ExpandDL`, T3-09): один уровень — вложенный список приходит
+    /// участником с `group`. Сервер отдаёт состав целиком, страниц у операции нет.
+    pub async fn expand_dl(&mut self, address: &str) -> Result<Vec<Person>> {
+        let resp = self.call("ExpandDL", &expand_request(address.trim())).await?;
+        let members = parse_members(&resp)?;
+        tracing::debug!(members = members.len(), "ews expand dl");
+        Ok(members)
+    }
 }
 
 #[cfg(test)]
@@ -281,6 +314,25 @@ mod tests {
 
     fn resp(b: &[u8]) -> El {
         soap::response(xml(b).unwrap()).unwrap()
+    }
+
+    /// `ExpandDL` (T3-09): люди и вложенный список одним уровнем; адрес без `SMTP:`; запись без адреса — мимо.
+    #[test]
+    fn list_members() {
+        let m = parse_members(&resp(include_bytes!("../tests/fixtures/expand_dl.xml"))).unwrap();
+        let got: Vec<(&str, &str, bool)> = m.iter().map(|p| (p.name.as_str(), p.email.as_str(), p.group)).collect();
+        assert_eq!(
+            got,
+            [
+                ("Петрова Анна Сергеевна", "anna@example.test", false),
+                ("Смирнов Антон", "anton@example.test", false),
+                ("Дежурные", "duty@example.test", true),
+                ("partner@example.test", "partner@example.test", false),
+            ]
+        );
+        assert!(expand_request("a&b@example.test").contains("<m:Mailbox><t:EmailAddress>a&amp;b@example.test</t:EmailAddress></m:Mailbox>"));
+        let none = parse_members(&resp(include_bytes!("../tests/fixtures/expand_dl_none.xml")));
+        assert_eq!(none.unwrap_err().code(), Some("ErrorNameResolutionNoResults"));
     }
 
     #[test]

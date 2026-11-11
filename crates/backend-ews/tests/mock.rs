@@ -450,6 +450,53 @@ fn new_meeting_request_and_server_uid() {
     assert!(requests(&log, n, "GetItem").iter().any(|b| b.contains(r#"Id="AAMkADnew""#)), "UID — из GetItem новой встречи");
 }
 
+/// Серия с концом (T3-08): «N раз» — `NumberedRecurrence`, «до даты» — `EndDateRecurrence` (дата — местная, в поясе
+/// встречи), без конца — `NoEndRecurrence`; начало серии — день первой встречи.
+#[test]
+fn new_series_with_an_end() {
+    let (url, log) = server_with(new_meeting);
+    let live = ready(&url);
+    let series = |rule: &str| postman_core::schedule::Meeting {
+        private: false,
+        all_day: false,
+        recurrence: Some(rule.into()),
+        reminder_secs: None,
+        uid: "client-uid".into(),
+        title: "Планёрка".into(),
+        location: String::new(),
+        description: String::new(),
+        start: "2026-11-02T10:00:00".parse().unwrap(),
+        time_zone: "Europe/Moscow".into(),
+        duration_secs: 3600,
+        attendees: vec![("Борис".into(), "boris@example.test".into())],
+        optional: Vec::new(),
+        from: None,
+    };
+    let start = "<t:StartDate>2026-11-02</t:StartDate>";
+    for (ticket, rule, range) in [
+        (
+            11,
+            "FREQ=WEEKLY;BYDAY=MO;COUNT=1",
+            format!("<t:NumberedRecurrence>{start}<t:NumberOfOccurrences>1</t:NumberOfOccurrences></t:NumberedRecurrence>"),
+        ),
+        (
+            12,
+            "FREQ=WEEKLY;BYDAY=MO;UNTIL=20261230T235959",
+            format!("<t:EndDateRecurrence>{start}<t:EndDate>2026-12-30</t:EndDate></t:EndDateRecurrence>"),
+        ),
+        (13, "FREQ=WEEKLY;BYDAY=MO", format!("<t:NoEndRecurrence>{start}</t:NoEndRecurrence>")),
+    ] {
+        let n = log.lock().unwrap().len();
+        live.commands.send(Command::CreateMeeting { meeting: Box::new(series(rule)), ticket }).unwrap();
+        let created =
+            move |e: &Event| matches!(e, Event::MeetingCreated { ticket: t, .. } if *t == ticket) || matches!(e, Event::MeetingFailed { .. });
+        let Event::MeetingCreated { .. } = live.wait("MeetingCreated", created) else { panic!("серия не создана: {rule}") };
+        let create = requests(&log, n, "CreateItem");
+        assert_eq!(create.len(), 1, "{rule}");
+        assert!(create[0].contains("<t:WeeklyRecurrence>") && create[0].contains(&range), "нет «{range}» в {}", create[0]);
+    }
+}
+
 /// Занятость: моя — первым адресом запроса, затем участники в порядке вкладки встречи; адрес, которого сервер не нашёл,
 /// — «нет данных» (`None`), а не «свободен».
 #[test]
@@ -525,6 +572,48 @@ fn unchanged_meeting_is_not_fetched_again() {
     assert_eq!(again.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), first.iter().map(|e| e.id.as_str()).collect::<Vec<_>>());
     assert_eq!(requests(&log, n, "FindItem").len(), 1, "окно — снова");
     assert_eq!(details(n), 0, "те же версии — без GetItem");
+}
+
+/// Состав списка рассылки (T3-09): `ExpandList` → `ExpandDL` по адресу → `ListMembers` с участниками в порядке
+/// сервера; вложенный список — участник вида `group`, не раскрыт. Сервер отказал — `error`, участников нет.
+#[test]
+fn list_members_by_expand_dl() {
+    use postman_core::sync::ListError;
+    let (url, log) = server_with(|b| {
+        (b.contains("<m:ExpandDL") && b.contains("dev-team@example.test"))
+            .then(|| fixture("expand_dl.xml"))
+            .or_else(|| b.contains("<m:ExpandDL").then(|| fixture("expand_dl_none.xml")))
+    });
+    let live = ready(&url);
+    let n = log.lock().unwrap().len();
+    let expand = |ticket: u64, address: &str| {
+        live.commands.send(Command::ExpandList { ticket, address: address.into() }).unwrap();
+        let Event::ListMembers { ticket: t, address: a, members, error } = live.wait("ListMembers", |e| matches!(e, Event::ListMembers { .. }))
+        else {
+            unreachable!()
+        };
+        assert_eq!((t, a.as_str()), (ticket, address));
+        (members, error)
+    };
+    let (members, error) = expand(7, "dev-team@example.test");
+    assert_eq!(error, None);
+    let got: Vec<(&str, Option<&str>, &str)> = members.iter().map(|p| (p.name.as_str(), p.email.as_deref(), p.kind.as_str())).collect();
+    assert_eq!(
+        got,
+        [
+            ("Петрова Анна Сергеевна", Some("anna@example.test"), "individual"),
+            ("Смирнов Антон", Some("anton@example.test"), "individual"),
+            ("Дежурные", Some("duty@example.test"), "group"),
+            ("partner@example.test", Some("partner@example.test"), "individual"),
+        ]
+    );
+    let sent = requests(&log, n, "ExpandDL");
+    assert_eq!(sent.len(), 1, "один уровень: вложенный список не раскрываем");
+    assert!(sent[0].contains("<t:EmailAddress>dev-team@example.test</t:EmailAddress>"));
+
+    let (members, error) = expand(8, "nobody@example.test");
+    assert!(members.is_empty());
+    assert!(matches!(error, Some(ListError::Failed(e)) if e.contains("ErrorNameResolutionNoResults")), "отказ сервера — ошибкой");
 }
 
 /// Сервер без `FindPeople` (отказ схемы): справочник — `ResolveNames`, и дальше `FindPeople` не спрашивается.

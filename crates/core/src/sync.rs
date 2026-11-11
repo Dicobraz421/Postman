@@ -269,6 +269,12 @@ pub enum Command {
     PersonDetails {
         email: String,
     },
+    /// Состав списка рассылки справочника по его адресу → `ListMembers` (T3-09): EWS — `ExpandDL`, JMAP — `members`
+    /// группы `Principal`, если сервер их даёт. Один уровень: вложенный список — участник с видом `group`.
+    ExpandList {
+        ticket: u64,
+        address: String,
+    },
     /// Создать (`old: None`) или изменить карточку → `ContactSaved` или `ContactFailed`, затем `ContactsLoaded`.
     SaveContact {
         card: Box<ContactCard>,
@@ -682,6 +688,15 @@ pub struct Sender {
     pub signature: String,
 }
 
+/// Почему состава списка рассылки нет (`Event::ListMembers`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListError {
+    /// Путь или сервер состав списков не отдаёт — показывать список без состава.
+    Unsupported,
+    /// Запрос не удался: текст — для журнала, по-английски.
+    Failed(String),
+}
+
 pub enum Event {
     Status(Status),
     MailboxesChanged,
@@ -862,6 +877,14 @@ pub enum Event {
     PersonDetails {
         email: String,
         person: Option<Principal>,
+    },
+    /// Состав списка рассылки (`ExpandList`, T3-09), в порядке сервера: число участников — `members.len()`, вложенный
+    /// список — участник с `kind == "group"` (не раскрыт). `error` — состава нет, `members` пуст.
+    ListMembers {
+        ticket: u64,
+        address: String,
+        members: Vec<Principal>,
+        error: Option<ListError>,
     },
     ContactSaved {
         ticket: u64,

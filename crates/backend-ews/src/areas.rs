@@ -30,7 +30,7 @@ use postman_calendar::{Busy, Event, EventStatus, Invitation, Partstat, Span};
 use postman_core::backend::{AreaCtx, Areas, BoxFuture};
 use postman_core::model::{ContactCard, Feature, Features, Principal};
 use postman_core::schedule::{Meeting, SEARCH_LIMIT};
-use postman_core::sync::{Command, Event as SyncEvent, owned_by};
+use postman_core::sync::{Command, Event as SyncEvent, ListError, owned_by};
 use postman_ews::{CalendarItem, Changes, Client, DeleteMode, Error, FolderRef, ItemId, ItemKind, NewItem, Notify, Reply, SyncState, WellKnown};
 
 /// Встреч в окне календаря — не больше (месяц с запасом).
@@ -517,6 +517,11 @@ impl EwsAreas {
         Ok(found.into_iter().find(|p| p.email.eq_ignore_ascii_case(email.trim())).map(principal))
     }
 
+    /// Состав списка рассылки по адресу (`ExpandDL`, T3-09): один уровень, вложенный список — участник вида `group`.
+    pub async fn list_members(&mut self, address: &str) -> Result<Vec<Principal>, Error> {
+        Ok(self.client.expand_dl(address).await?.into_iter().map(principal).collect())
+    }
+
     /// Ответ на приглашение по встрече в календаре около приглашения ([`pick`]); встречи нет — `false` (ответ письмом).
     /// Приглашение на серию — ответ всей серии (по экземпляру сервер ответил бы только ему), на один экземпляр — ему.
     /// `answer` (T2-15): комментарий — текст ответа Exchange, «без ответа» — [`Client::respond_quietly`].
@@ -647,6 +652,13 @@ impl EwsAreas {
                 });
                 notify(SyncEvent::PersonDetails { email, person });
             }
+            Command::ExpandList { ticket, address } => notify(match self.list_members(&address).await {
+                Ok(members) => SyncEvent::ListMembers { ticket, address, members, error: None },
+                Err(e) => {
+                    tracing::debug!("ews list members: {e}");
+                    SyncEvent::ListMembers { ticket, address, members: Vec::new(), error: Some(ListError::Failed(e.to_string())) }
+                }
+            }),
             Command::Contacts => {
                 self.contacts_loaded(0, notify).await;
                 // Справочник — поиском с подсказкой (`FindPeople`): GAL целиком не читаем.

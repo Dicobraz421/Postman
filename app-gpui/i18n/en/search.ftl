@@ -26,3 +26,6 @@ search-matches-none = Matches: none in the text
 search-matches-query = “{ $query }”
 search-refine-only = only { $folder }
 search-clear-refines = Clear refinements
+# Result row: the words were found in an attachment (T3-10).
+search-in-attachment = in attachment: { $name }
+search-in-attachment-text = in attachment: { $name } — { $snippet }

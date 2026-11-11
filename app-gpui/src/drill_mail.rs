@@ -143,6 +143,9 @@ const SCENES: &[Scene] = &[
     scene("mail-32-hits", search_over, HITS),
     // S8-09, решение 5: «Везде» находит письмо «На этом компьютере» без индекса (демо — откат на кэш), оно открывается.
     scene("mail-s809-local", search_over, LOCAL_FOUND),
+    // T3-10: слова нашлись только в тексте вложения — строка результата «во вложении: имя — …отрывок…» со скрепкой
+    // вместо превью. Индекс — свой (у демо его нет), текст вложения достаёт воркер тем же путём, что у живого ящика.
+    scene(ATTACHMENT_SCENE, attachment_found, ATTACHMENT_HIT),
     // Раздел 35, шаг 1: стрелки ходят, J, K, Ctrl+Shift+G, Ctrl+Shift+F — ничего; Insert и кнопка «Срок» — панель срока.
     scene("mail-35-keys", |_, m, _| m.lifecycle.picker.is_some(), OUTLOOK),
     // Раздел 35, шаг 5 (без фильтров): Ctrl+T, своё письмо у вкладки, Ctrl+W закрывает, «Почта» — нет.
@@ -1056,6 +1059,63 @@ fn archive_found(m: &Mailer, cx: &App) -> Option<usize> {
 fn search_over(_: &Scene, m: &Mailer, cx: &App) -> bool {
     !m.find.active() && m.reading.read(cx).marks.is_none() && m.list.read(cx).search_ids.is_none()
 }
+
+const ATTACHMENT_SCENE: &str = "mail-t310-attachment";
+
+/// Письмо демо с текстом Outlook, которому сцена добавляет протокол (`postman_demo::minutes`).
+fn minutes_letter(m: &Mailer) -> Option<String> {
+    (0..200)
+        .map(|i| format!("demo{i}"))
+        .find(|k| screens::outlook_letter(&postman_demo::body(k)) && postman_core::store::letter_of_key(&m.cache, k).ok().flatten().is_some())
+}
+
+/// Свой индекс демо-ящика: строки и тела, затем протокол во вложении письма — текст извлекает воркер (в фоне).
+fn index_minutes(m: &mut Mailer) -> Result<(), String> {
+    let key = minutes_letter(m).ok_or("no Outlook letter in the demo")?;
+    let mut body = postman_demo::body(&key);
+    body.attachments.push(postman_demo::minutes());
+    let blob = postman_demo::blob(postman_demo::MINUTES_BLOB).ok_or("no minutes blob")?;
+    m.cache.put_blob(postman_demo::MINUTES_BLOB, &blob).map_err(|e| e.to_string())?;
+    m.cache.put_body(&key, &body).map_err(|e| e.to_string())?;
+    let index = std::sync::Arc::new(postman_search::SearchIndex::in_memory().map_err(|e| e.to_string())?);
+    let (cache, built) = (m.cache.clone(), index.clone());
+    std::thread::Builder::new()
+        .name("screens-index".into())
+        .spawn(move || {
+            if let Err(e) = postman_core::indexer::rebuild(&built, &cache, &|| false) {
+                tracing::warn!("screens index: {e}");
+            }
+            postman_core::extract::Extractor::spawn(cache, built).queue(vec![key]);
+        })
+        .map_err(|e| e.to_string())?;
+    m.live.set_index(Some(index));
+    Ok(())
+}
+
+/// Протокол уже в индексе: слово запроса находится.
+fn minutes_indexed(m: &Mailer) -> bool {
+    m.live.index().is_some_and(|i| i.search(postman_demo::MINUTES_WORD, 1).is_ok_and(|h| !h.is_empty()))
+}
+
+/// В результатах — письмо с протоколом и подписью вложения.
+fn attachment_found(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    let list = m.list.read(cx);
+    let named = list.found.as_ref().is_some_and(|f| f.attached.values().any(|a| a.name == postman_demo::MINUTES_NAME));
+    named && found(m, cx) && screens::rows_loaded(list)
+}
+
+const ATTACHMENT_HIT: &[Input] = &[
+    READY,
+    Input::Run(|_, m, _, _| index_minutes(m)),
+    until!(|m, _| minutes_indexed(m)),
+    Input::Run(|_, m, window, cx| {
+        let word = postman_demo::MINUTES_WORD;
+        m.bar.update(cx, |b, _| b.scope = crate::bar::Scope::All);
+        m.search.update(cx, |s, cx| s.set_value(word, window, cx));
+        m.run_search(word, cx);
+        Ok(())
+    }),
+];
 
 const LOCAL_FOUND: &[Input] = &[
     READY,
@@ -2383,7 +2443,11 @@ const INVITE: &[Input] = &[
 ];
 
 /// Вернуть настройки своих сцен перед следующей.
-fn reset(s: &Scene, _: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) {
+fn reset(s: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) {
+    // Свой индекс сцены поиска по вложениям (T3-10) другим сценам демо не достаётся: у демо поиск — по кэшу.
+    if screens::demo(m) && s.name != ATTACHMENT_SCENE {
+        m.live.set_index(None);
+    }
     if !s.name.starts_with("mail-") {
         return;
     }

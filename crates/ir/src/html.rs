@@ -427,10 +427,21 @@ impl Builder {
         if !src.is_empty() {
             self.remote_images += 1;
         }
-        if !alt.is_empty() {
-            sink.text(&format!("[{alt}]"), ctx);
+        // Внешняя картинка (T3-04) — адресом в IR: грузит её интерфейс по явному выбору. Пиксель слежения (1×1, 0×0)
+        // показывать нечем — только подпись, как у адреса, который не годится.
+        let (width, height) = image_size(node);
+        match crate::remote_image_url(src).filter(|_| !tracking_pixel(node, width, height)) {
+            Some(url) => sink.inline(Inline::Remote { url, alt, width, height }, ctx.align),
+            None if !alt.is_empty() => sink.text(&format!("[{alt}]"), ctx),
+            None => {}
         }
     }
+}
+
+/// Пиксель слежения: сторона не больше 1 px (атрибут или `style`) или атрибут `0`.
+fn tracking_pixel(node: &Handle, width: Option<u32>, height: Option<u32>) -> bool {
+    let zero = |a: &str| attr(node, a).is_some_and(|v| matches!(v.trim().trim_end_matches("px").trim(), "0" | "1"));
+    width.is_some_and(|w| w <= 1) || height.is_some_and(|h| h <= 1) || zero("width") || zero("height")
 }
 
 /// Задуманный размер картинки (T1-10б): атрибуты `width`/`height`, поверх них — `style` (CSS главнее
@@ -604,6 +615,28 @@ mod tests {
         assert_eq!(content[0], text("клик "));
         assert!(matches!(&content[1], Inline::Link { suspicious: true, .. }));
         assert!(matches!(&content[3], Inline::Image { cid, width: None, height: None, .. } if cid == "logo@x"));
+    }
+
+    /// T3-04: внешняя картинка — адресом (с подписью и размером), пиксель слежения и чужие схемы — нет; в ссылке —
+    /// внутри ссылки; адреса — по порядку, без повторов.
+    #[test]
+    fn remote_images_keep_the_address() {
+        let d = from_html(
+            r#"<p><img src=" https://cdn.example.test/a.png " alt="Баннер" width=600>
+            <img src="http://cdn.example.test/p.gif" width="1" height="1"><img src="https://cdn.example.test/z.gif" height=0>
+            <img src="data:image/png;base64,AAAA" alt="Данные"><img src="ftp://corp.example/x.png">
+            <img src="https://user:pw@corp.example/x.png"><a href="https://corp.example/go"><img src="https://cdn.example.test/a.png"></a></p>"#,
+        );
+        assert_eq!(d.remote_images_blocked, 7);
+        let Block::Paragraph { content, .. } = &d.blocks[0] else { panic!("{d:?}") };
+        assert_eq!(content[0], Inline::Remote { url: "https://cdn.example.test/a.png".into(), alt: "Баннер".into(), width: Some(600), height: None });
+        assert!(content.iter().any(|i| matches!(i, Inline::Text { text, .. } if text.contains("[Данные]"))));
+        let Some(Inline::Link { content: inner, .. }) = content.last() else { panic!("{content:?}") };
+        assert!(matches!(&inner[..], [Inline::Remote { alt, .. }] if alt.is_empty()));
+        assert_eq!(d.remote_urls(), ["https://cdn.example.test/a.png"]);
+        let long = format!(r#"<p><img src="https://corp.example/{}"></p>"#, "a".repeat(crate::MAX_REMOTE_URL));
+        assert!(from_html(&long).remote_urls().is_empty(), "длинный адрес — не картинка");
+        assert_eq!(crate::plain_text(&content[..1]), "[Баннер]");
     }
 
     /// T1-10б: размер из атрибутов и `style`; CSS главнее атрибутов; мусор, проценты и огромное — не размер.
