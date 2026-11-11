@@ -42,7 +42,7 @@ postman-compose.workspace = true
 pets-commands = { git = "https://github.com/Dicobraz/pets", rev = "b1e344098d9ce15bec9bfa5f273f211ca0fec81f" }
 pets-i18n = { git = "https://github.com/Dicobraz/pets", rev = "b1e344098d9ce15bec9bfa5f273f211ca0fec81f" }
 # T3-06: `clipboard` (HTML буфера обмена, pets#44) — с этого коммита main pets.
-pets-shell = { git = "https://github.com/Dicobraz/pets", rev = "819640c4d36fcd4e2c7bc75c3ba01feaa0029851" }
+pets-shell = { git = "https://github.com/Dicobraz/pets", rev = "8c78403360e0963708821a6d5cb0219f50773108" }
 pets-ui = { git = "https://github.com/Dicobraz/pets", rev = "b1e344098d9ce15bec9bfa5f273f211ca0fec81f" }
 futures = "0.3"
 tracing = "0.1"

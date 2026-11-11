@@ -2831,7 +2831,7 @@ dependencies = [
 [[package]]
 name = "gpui-base"
 version = "0.7.3"
-source = "git+https://github.com/Dicobraz/pets?rev=6310984330a823708555e373253e928b9259a44a#6310984330a823708555e373253e928b9259a44a"
+source = "git+https://github.com/Dicobraz/pets?rev=8c78403360e0963708821a6d5cb0219f50773108#8c78403360e0963708821a6d5cb0219f50773108"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -5963,7 +5963,7 @@ dependencies = [
 [[package]]
 name = "pets-shell"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz/pets?rev=819640c4d36fcd4e2c7bc75c3ba01feaa0029851#819640c4d36fcd4e2c7bc75c3ba01feaa0029851"
+source = "git+https://github.com/Dicobraz/pets?rev=8c78403360e0963708821a6d5cb0219f50773108#8c78403360e0963708821a6d5cb0219f50773108"
 dependencies = [
  "thiserror 2.0.21",
  "tracing",
