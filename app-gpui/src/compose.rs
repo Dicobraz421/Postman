@@ -1965,12 +1965,7 @@ pub(crate) mod scenes {
     }
 
     /// HTML буфера обмена сцены: так его кладёт Word (таблица, список, жирный, шрифт и размер — без них).
-    const WORD_HTML: &str = r#"<html><body><!--StartFragment--><p class=MsoNormal><b>Итоги недели</b></p>
-        <ul><li>Омск — план выполнен</li><li>Томск — <i>в работе</i></li></ul>
-        <table class=MsoTableGrid border=1><tr><td><p><b>Город</b></p></td><td><p><b>План</b></p></td><td><p><b>Факт</b></p></td></tr>
-        <tr><td><p>Омск</p></td><td><p>120</p></td><td><p>131</p></td></tr>
-        <tr><td><p>Томск</p></td><td><p>80</p></td><td><p>64</p></td></tr></table>
-        <p><span style='font-size:20.0pt;font-family:"Arial"'>Без шрифтов и размеров</span></p><!--EndFragment--></body></html>"#; // i18n-ok: образец
+    const WORD_HTML: &str = include_str!("../tests/fixtures/word-paste.html");
 
     fn paste_word(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
         screens::hold_clipboard_html(Some(WORD_HTML.to_owned()));
@@ -1987,7 +1982,7 @@ pub(crate) mod scenes {
         screens::compose_tab(m).is_some_and(|c| {
             let c = c.read(cx);
             !c.pasting
-                && c.model.body.contains("| Омск  | 120  | 131  |")
+                && c.model.body.contains("| Омск  | 120  | 131  |") // i18n-ok: образец
                 && c.model.body.contains("**Итоги недели**") // i18n-ok: образец
                 && c.graphics().0 > 0
                 && c.graphics().1.is_none()
