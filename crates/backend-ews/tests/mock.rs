@@ -450,6 +450,53 @@ fn new_meeting_request_and_server_uid() {
     assert!(requests(&log, n, "GetItem").iter().any(|b| b.contains(r#"Id="AAMkADnew""#)), "UID — из GetItem новой встречи");
 }
 
+/// Серия с концом (T3-08): «N раз» — `NumberedRecurrence`, «до даты» — `EndDateRecurrence` (дата — местная, в поясе
+/// встречи), без конца — `NoEndRecurrence`; начало серии — день первой встречи.
+#[test]
+fn new_series_with_an_end() {
+    let (url, log) = server_with(new_meeting);
+    let live = ready(&url);
+    let series = |rule: &str| postman_core::schedule::Meeting {
+        private: false,
+        all_day: false,
+        recurrence: Some(rule.into()),
+        reminder_secs: None,
+        uid: "client-uid".into(),
+        title: "Планёрка".into(),
+        location: String::new(),
+        description: String::new(),
+        start: "2026-11-02T10:00:00".parse().unwrap(),
+        time_zone: "Europe/Moscow".into(),
+        duration_secs: 3600,
+        attendees: vec![("Борис".into(), "boris@example.test".into())],
+        optional: Vec::new(),
+        from: None,
+    };
+    let start = "<t:StartDate>2026-11-02</t:StartDate>";
+    for (ticket, rule, range) in [
+        (
+            11,
+            "FREQ=WEEKLY;BYDAY=MO;COUNT=1",
+            format!("<t:NumberedRecurrence>{start}<t:NumberOfOccurrences>1</t:NumberOfOccurrences></t:NumberedRecurrence>"),
+        ),
+        (
+            12,
+            "FREQ=WEEKLY;BYDAY=MO;UNTIL=20261230T235959",
+            format!("<t:EndDateRecurrence>{start}<t:EndDate>2026-12-30</t:EndDate></t:EndDateRecurrence>"),
+        ),
+        (13, "FREQ=WEEKLY;BYDAY=MO", format!("<t:NoEndRecurrence>{start}</t:NoEndRecurrence>")),
+    ] {
+        let n = log.lock().unwrap().len();
+        live.commands.send(Command::CreateMeeting { meeting: Box::new(series(rule)), ticket }).unwrap();
+        let created =
+            move |e: &Event| matches!(e, Event::MeetingCreated { ticket: t, .. } if *t == ticket) || matches!(e, Event::MeetingFailed { .. });
+        let Event::MeetingCreated { .. } = live.wait("MeetingCreated", created) else { panic!("серия не создана: {rule}") };
+        let create = requests(&log, n, "CreateItem");
+        assert_eq!(create.len(), 1, "{rule}");
+        assert!(create[0].contains("<t:WeeklyRecurrence>") && create[0].contains(&range), "нет «{range}» в {}", create[0]);
+    }
+}
+
 /// Занятость: моя — первым адресом запроса, затем участники в порядке вкладки встречи; адрес, которого сервер не нашёл,
 /// — «нет данных» (`None`), а не «свободен».
 #[test]

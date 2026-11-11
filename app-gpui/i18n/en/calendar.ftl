@@ -116,6 +116,11 @@ cal-waits-answer = awaiting reply
 # Event details.
 cal-details-empty = Pick a meeting to see its details here.
 cal-details-recurring = Recurring event
+cal-details-repeat-until = { $rule }, until { $date }
+cal-details-repeat-count = { $rule }, { $n ->
+    [one] { $n } time
+   *[other] { $n } times
+}
 cal-join = Join
 cal-join-tip = Open the video meeting link in the browser
 cal-chip-organizer = You organize
@@ -156,6 +161,11 @@ meeting-private = Private
 meeting-private-tip = Private: others see only “Busy”
 meeting-repeat = Repeat
 meeting-repeat-none = Does not repeat
+meeting-repeat-end-never = No end
+meeting-repeat-end-until = Until a date…
+meeting-repeat-end-count = N times
+meeting-repeat-until = until
+meeting-repeat-times = times
 meeting-subject = Subject
 meeting-subject-placeholder = Meeting subject
 meeting-required = Required
@@ -208,6 +218,7 @@ meeting-busy-loading = Requesting free/busy…
 meeting-busy-failed = Free/busy not received: { $error }
 meeting-sending = Sending invitations…
 meeting-bad-time = Date or time not recognized: { $text }
+meeting-bad-repeat-end = Could not read the end of the series: { $text }
 meeting-bad-addresses = Not addresses: { $list }
 meeting-no-server = A server is needed: invitations are not sent in demo mode.
 meeting-failed = Not sent: { $error }

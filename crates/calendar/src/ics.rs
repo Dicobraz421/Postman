@@ -79,7 +79,10 @@ impl NewEvent<'_> {
             let local = self.start.date();
             let start = if self.all_day { self.start.to_zoned(TimeZone::UTC).map_or(start, |z| z.timestamp().as_second()) } else { start };
             let utc = jiff::Timestamp::from_second(start).map(|t| t.to_zoned(TimeZone::UTC).date()).unwrap_or(local);
-            l.push(format!("RRULE:{}", crate::rrule::shift_days(rule, (utc - local).get_days())));
+            // Конец серии (T3-08): «до даты» — тоже в UTC, как начало; у «весь день» — датой.
+            let rule = crate::rrule::shift_days(rule, (utc - local).get_days());
+            let tz = TimeZone::get(self.time_zone).unwrap_or(TimeZone::UTC);
+            l.push(format!("RRULE:{}", crate::rrule::until_utc(&rule, &tz, self.all_day)));
         }
         if !self.description.is_empty() {
             l.push(format!("DESCRIPTION:{}", text(self.description)));
@@ -132,6 +135,11 @@ pub fn invite_copy(e: &Event, me: &str, now: i64) -> Option<String> {
         format!("SUMMARY:{}", text(&e.title)),
     ];
     if let Some(rule) = &e.recurrence {
+        // Конец серии «до даты» (T3-08) — в UTC, как начало; пояс встречи не известен — правило как есть.
+        let rule = match e.time_zone.as_deref().and_then(|z| TimeZone::get(z).ok()) {
+            Some(tz) if !e.all_day => crate::rrule::until_utc(rule, &tz, false),
+            _ => rule.clone(),
+        };
         l.push(format!("RRULE:{rule}"));
     }
     if !e.description.is_empty() {
@@ -605,6 +613,16 @@ mod tests {
         assert!(weekly.to_ics(0).unwrap().contains("RRULE:FREQ=WEEKLY;BYDAY=WE\r\n"));
         let night = NewEvent { start: "2026-10-21T01:00:00".parse().unwrap(), recurrence: Some("FREQ=WEEKLY;BYDAY=WE"), ..e };
         assert!(night.to_ics(0).unwrap().contains("RRULE:FREQ=WEEKLY;BYDAY=TU\r\n"));
+        // Конец серии (T3-08): N раз — как есть; «до даты» — конец дня по Москве в UTC; «весь день» — датой.
+        let counted = NewEvent { recurrence: Some("FREQ=WEEKLY;BYDAY=WE;COUNT=1"), ..e };
+        assert!(counted.to_ics(0).unwrap().contains("RRULE:FREQ=WEEKLY;BYDAY=WE;COUNT=1\r\n"));
+        let until = NewEvent { recurrence: Some("FREQ=WEEKLY;BYDAY=WE;UNTIL=20261230T235959"), ..e };
+        assert!(until.to_ics(0).unwrap().contains("RRULE:FREQ=WEEKLY;BYDAY=WE;UNTIL=20261230T205959Z\r\n"));
+        let night = NewEvent { start: "2026-10-21T01:00:00".parse().unwrap(), recurrence: Some("FREQ=WEEKLY;BYDAY=WE;UNTIL=20261230"), ..e };
+        assert!(night.to_ics(0).unwrap().contains("RRULE:FREQ=WEEKLY;BYDAY=TU;UNTIL=20261230T205959Z\r\n"));
+        let days = NewEvent { all_day: true, duration_secs: 86_400, recurrence: Some("FREQ=DAILY;UNTIL=20261230T235959"), ..e };
+        let ics = days.to_ics(0).unwrap();
+        assert!(ics.contains("DTSTART;VALUE=DATE:20261021\r\n") && ics.contains("RRULE:FREQ=DAILY;UNTIL=20261230\r\n"), "{ics}");
         let alone = NewEvent { attendees: &[], ..e };
         assert!(!alone.to_ics(0).unwrap().contains("ORGANIZER"));
     }

@@ -116,6 +116,12 @@ cal-waits-answer = ждёт ответа
 # Подробности события.
 cal-details-empty = Выберите встречу — подробности появятся здесь.
 cal-details-recurring = Повторяющееся событие
+cal-details-repeat-until = { $rule }, до { $date }
+cal-details-repeat-count = { $rule }, { $n ->
+    [one] { $n } раз
+    [few] { $n } раза
+   *[other] { $n } раз
+}
 cal-join = Подключиться
 cal-join-tip = Открыть ссылку видеовстречи в браузере
 cal-chip-organizer = Вы организатор
@@ -156,6 +162,11 @@ meeting-private = Частная
 meeting-private-tip = Частная: участники видят только «Занят»
 meeting-repeat = Повтор
 meeting-repeat-none = Не повторяется
+meeting-repeat-end-never = Без конца
+meeting-repeat-end-until = До даты…
+meeting-repeat-end-count = N раз
+meeting-repeat-until = до
+meeting-repeat-times = раз
 meeting-subject = Тема
 meeting-subject-placeholder = Тема встречи
 meeting-required = Обязательные
@@ -208,6 +219,7 @@ meeting-busy-loading = Запрашиваю занятость…
 meeting-busy-failed = Занятость не получена: { $error }
 meeting-sending = Отправляю приглашения…
 meeting-bad-time = Дата или время не распознаны: { $text }
+meeting-bad-repeat-end = Конец повтора не распознан: { $text }
 meeting-bad-addresses = Не адреса: { $list }
 meeting-no-server = Нужен сервер: в демо-режиме приглашения не отправляются.
 meeting-failed = Не отправлено: { $error }

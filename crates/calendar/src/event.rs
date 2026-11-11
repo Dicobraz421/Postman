@@ -552,6 +552,15 @@ mod new_event_tests {
         let series = NewEvent { recurrence: Some("FREQ=WEEKLY;BYDAY=WE"), ..ev_clone(&ev) }.to_jmap();
         assert_eq!(series["recurrenceRules"][0]["frequency"], "weekly");
         assert_eq!(Event::from_jmap(&series, &TimeZone::UTC).unwrap().recurrence.as_deref(), Some("FREQ=WEEKLY;BYDAY=WE"));
+        // Конец серии (T3-08): `count` и `until` (местное время встречи) — туда и обратно.
+        let counted = NewEvent { recurrence: Some("FREQ=WEEKLY;BYDAY=WE;COUNT=1"), ..ev_clone(&ev) }.to_jmap();
+        assert_eq!((counted["recurrenceRules"][0]["count"].as_u64(), counted["recurrenceRules"][0].get("until")), (Some(1), None));
+        assert_eq!(Event::from_jmap(&counted, &TimeZone::UTC).unwrap().recurrence.as_deref(), Some("FREQ=WEEKLY;BYDAY=WE;COUNT=1"));
+        let until = NewEvent { recurrence: Some("FREQ=WEEKLY;BYDAY=WE;UNTIL=20261230T235959"), ..ev_clone(&ev) }.to_jmap();
+        assert_eq!(until["recurrenceRules"][0]["until"], "2026-12-30T23:59:59");
+        let back = Event::from_jmap(&until, &TimeZone::UTC).unwrap();
+        assert_eq!(back.recurrence.as_deref(), Some("FREQ=WEEKLY;BYDAY=WE;UNTIL=20261230T235959"));
+        assert_eq!(crate::rrule::end_of(back.recurrence.as_deref().unwrap_or_default()), crate::rrule::End::Until("2026-12-30".parse().unwrap()));
         // Весь день и частная (T2-14): дата без пояса, сутки; `privacy`.
         let day = NewEvent { all_day: true, private: true, ..ev_clone(&ev) }.to_jmap();
         assert_eq!(
