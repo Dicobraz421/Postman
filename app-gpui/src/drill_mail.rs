@@ -1702,7 +1702,7 @@ fn has_file(dir: &Path, name: &str) -> bool {
 
 /// Каталог данных прогона (`tests/manual.rs`: временный `LOCALAPPDATA`).
 fn data_dir() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA").map_or_else(std::env::temp_dir, PathBuf::from)
+    postman_core::paths::data_root().unwrap_or_else(std::env::temp_dir)
 }
 
 fn zip_listed(_: &Scene, m: &Mailer, cx: &App) -> bool {

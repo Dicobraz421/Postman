@@ -1,6 +1,7 @@
 //! Платформенный код интерфейса — прослойка над нейтральным API pets (решение владельца 2026-10-28): окно —
 //! `gpui_windows::pets` (pets-gpui-windows), без UI — `pets_shell`. Вызовов ОС здесь нет, на других ОС — заглушки.
-//! `unsafe` — только счётчик кучи (`alloc`) и `set_var` в начале `main` (`shell::default_env`).
+//! `unsafe` — только счётчик кучи (`alloc`), `set_var` в начале `main` (`shell::default_env`) и снимок окна на macOS
+//! (`macos`, MAC-01: аналога `gpui_windows::pets` для macOS в pets ещё нет — MAC-04).
 
 use gpui_kit::Window;
 #[cfg(windows)]
@@ -146,6 +147,10 @@ pub mod shell {
     pub fn notify(_title: &str, _body: &str) -> Result<(), String> {
         Err("notifications are Windows only".into())
     }
+
+    pub fn notify_with(_title: &str, _body: &str, _sound: bool) -> Result<(), String> {
+        Err("notifications are Windows only".into())
+    }
 }
 
 /// Перетаскивание вложения в другое приложение (T1-18): OLE drag source `gpui_windows::pets::drag`. Что тащить
@@ -205,13 +210,23 @@ pub struct Image {
     pub rgba: Vec<u8>,
 }
 
+/// Снимок окна для `--screens` на macOS (MAC-01): CoreGraphics.
+#[cfg(target_os = "macos")]
+mod macos;
+
 /// Дескриптор окна числом — его можно передать в другой поток (сам `Window` туда не передаётся).
 #[cfg(windows)]
 pub fn window_id(window: &Window) -> Result<isize, String> {
     pets::window::id(window).map_err(|e| e.to_string())
 }
 
-#[cfg(not(windows))]
+/// macOS: номер окна (`CGWindowID`) — окно этого процесса впереди всех (в прогоне снимков оно одно).
+#[cfg(target_os = "macos")]
+pub fn window_id(_window: &Window) -> Result<isize, String> {
+    macos::own_window().map(|id| id as isize)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn window_id(_window: &Window) -> Result<isize, String> {
     Err("window id is Windows only".into())
 }
@@ -222,7 +237,13 @@ pub fn capture(window: isize) -> Result<Image, String> {
     pets::window::capture(window).map_err(|e| e.to_string())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn capture(window: isize) -> Result<Image, String> {
+    let id = u32::try_from(window).map_err(|_| format!("window id {window}"))?;
+    macos::capture(id)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn capture(_window: isize) -> Result<Image, String> {
     Err("window capture is Windows only".into())
 }

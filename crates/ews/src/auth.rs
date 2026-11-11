@@ -77,7 +77,9 @@ pub(crate) fn channel_binding(cert_der: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Структура `SEC_CHANNEL_BINDINGS` с данными приложения сразу за ней (8 × u32, смещение данных — 32).
+/// Структура `SEC_CHANNEL_BINDINGS` с данными приложения сразу за ней (8 × u32, смещение данных — 32). Нужна только
+/// SSPI (Windows); на macOS вход Windows — MAC-05.
+#[cfg(any(windows, test))]
 pub(crate) fn sec_channel_bindings(app: &[u8]) -> Vec<u8> {
     let mut out = vec![0u8; 32];
     out[24..28].copy_from_slice(&(app.len() as u32).to_le_bytes()); // cbApplicationDataLength

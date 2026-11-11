@@ -1,7 +1,7 @@
 //! Модули просмотра WASM (S8-26, ADR 0007, решение A): поиск, описание и выбор. Показывает модуль хост
 //! `postman-viewer` ([`crate::viewer::Viewer`]); здесь — какие модули есть и какой взять для файла.
 //!
-//! Модуль — пара `<имя>.json` (описание) + `<имя>.wasm` в каталоге модулей ([`dirs`]): сначала системный
+//! Модуль — пара `<имя>.json` (описание) + `<имя>.wasm` в каталоге модулей ([`dirs`], по ОС — `crate::paths`): сначала системный
 //! (`%ProgramFiles%\Postman\viewers`, ставит администратор), затем пользовательский (`%LOCALAPPDATA%\Postman\viewers`,
 //! в просмотре — «сторонний»). Реестр читается один раз при старте в своём потоке ([`Registry::spawn`]); плохое
 //! описание или модуль — пропуск с записью в журнал. Модуль с тем же именем у пользователя, что и у системы, —
@@ -227,8 +227,10 @@ pub struct Dir {
 
 /// Каталоги модулей: системный, затем пользовательский (переменных окружения нет — нет и каталога).
 pub fn dirs() -> Vec<Dir> {
-    let dir = |var: &str, third_party| std::env::var_os(var).map(|v| Dir { path: PathBuf::from(v).join("Postman").join("viewers"), third_party });
-    [dir("ProgramFiles", false), dir("LOCALAPPDATA", true)].into_iter().flatten().collect()
+    use crate::paths;
+    let system = paths::system_viewers().map(|path| Dir { path, third_party: false });
+    let user = paths::user_viewers().map(|path| Dir { path, third_party: true });
+    [system, user].into_iter().flatten().collect()
 }
 
 /// Найденные модули: сначала системные, по имени файла.

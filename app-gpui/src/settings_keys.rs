@@ -91,7 +91,7 @@ impl SettingsView {
     /// «Экспорт keymap.toml»: системный выбор места, файл пишется в фоне.
     fn keys_export(&mut self, cx: &mut Context<Self>) {
         let text = postman_core::keymap_file::write(&keymap_of(&crate::prefs::get(cx)));
-        let dir = std::env::var_os("USERPROFILE").map(|h| std::path::PathBuf::from(h).join("Documents")).unwrap_or_default();
+        let dir = postman_core::paths::documents();
         let path = cx.prompt_for_new_path(&dir, Some("keymap.toml"));
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(path))) = path.await else { return };

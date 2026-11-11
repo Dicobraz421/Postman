@@ -132,3 +132,16 @@ ADR 0007 (просмотрщики форматов); порядок — `docs/s
 | [S8-44](S8-44.md) | Подписка на календарь ICS | app-gpui | B | done | — |
 | [S8-34](S8-34.md) | Приёмка: руководство, размеры, замеры | docs | A | done | все |
 | [S8-G](S8-G.md) | Перегенерация `docs/PARITY.md` | docs-gen | A | done | S8-16, S8-27, S8-32 |
+
+## MAC — Postman для macOS (`docs/decisions/2026-11-11-macos.md`)
+
+Apple Silicon, macOS 13+; подпись ad-hoc до волны выпуска. Ручные проверки — MacBook Air M1 владельца.
+
+| Задача | Суть | Полоса | Класс | Статус | Зависит |
+|---|---|---|---|---|---|
+| [MAC-01](MAC-01.md) | Собирается и запускается в CI: `macos.yml`, `.app`, Seatbelt, пути, снимки | x | B | in-progress | — |
+| [MAC-02](MAC-02.md) | Базовый клиент: Связка ключей, Cmd-клавиши, светофоры, тосты, mailto, журнал, Finder | x | B | todo | MAC-01 |
+| [MAC-03](MAC-03.md) | Песочница целиком: предел памяти, тесты, диагностика, ADR | sandbox | B | todo | MAC-01 |
+| [MAC-04](MAC-04.md) | Система: HTML-буфер, перетаскивание, автозапуск, все снимки, тема, замеры | x | B | todo | MAC-02 |
+| [MAC-05](MAC-05.md) | Корпоративное: EWS NTLM/Kerberos, LDAP GSSAPI, S/MIME через Связку ключей | x | B | todo | MAC-02 |
+| [MAC-06](MAC-06.md) | Выпуск: строка в `release`, подпись и нотаризация, .dmg, обновление | ci | B | todo | MAC-02, MAC-03 |
