@@ -557,7 +557,7 @@ fn list_members_by_expand_dl() {
             ("Петрова Анна Сергеевна", Some("anna@example.test"), "individual"),
             ("Смирнов Антон", Some("anton@example.test"), "individual"),
             ("Дежурные", Some("duty@example.test"), "group"),
-            ("partner@corp.example", Some("partner@corp.example"), "individual"),
+            ("partner@example.test", Some("partner@example.test"), "individual"),
         ]
     );
     let sent = requests(&log, n, "ExpandDL");

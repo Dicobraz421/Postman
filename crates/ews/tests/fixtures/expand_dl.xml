@@ -28,7 +28,7 @@
               <t:MailboxType>PublicDL</t:MailboxType>
             </t:Mailbox>
             <t:Mailbox>
-              <t:EmailAddress>partner@corp.example</t:EmailAddress>
+              <t:EmailAddress>partner@example.test</t:EmailAddress>
               <t:RoutingType>SMTP</t:RoutingType>
               <t:MailboxType>Contact</t:MailboxType>
             </t:Mailbox>

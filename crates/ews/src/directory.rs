@@ -327,7 +327,7 @@ mod tests {
                 ("Петрова Анна Сергеевна", "anna@example.test", false),
                 ("Смирнов Антон", "anton@example.test", false),
                 ("Дежурные", "duty@example.test", true),
-                ("partner@corp.example", "partner@corp.example", false),
+                ("partner@example.test", "partner@example.test", false),
             ]
         );
         assert!(expand_request("a&b@example.test").contains("<m:Mailbox><t:EmailAddress>a&amp;b@example.test</t:EmailAddress></m:Mailbox>"));
