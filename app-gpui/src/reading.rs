@@ -1222,10 +1222,9 @@ impl Render for ReadingPane {
             .map(|b| b.to.iter().map(|a| if a.name.is_empty() { a.email.clone() } else { a.name.clone() }).collect::<Vec<_>>().join(", "))
             .unwrap_or_default();
         // Совпадения поиска — по порядку чтения: тема, затем текст; текущее (F3) — плотной подложкой (S5-14).
-        let feed = self.feed_view(cx);
+        // Лента беседы — тоже (T3-11): тема, затем показанный текст писем ленты; прокрутка — та же.
         let words: &[String] = self.marks.as_ref().map_or(&[], |(_, m)| m.as_slice());
-        let plain = feed.is_none() && r.preview.is_none();
-        let target = (reveal && plain).then(|| ir_view::Reveal { scroll: self.scroll.clone(), view: cx.entity_id() });
+        let target = (reveal && r.preview.is_none()).then(|| ir_view::Reveal { scroll: self.scroll.clone(), view: cx.entity_id() });
         let hits = ir_view::Hits::new(words, self.hit, 0).with_reveal(target);
         let subject = {
             let (styled, at) = ir_view::hit_text(r.row.subject.clone(), Vec::new(), &hits, &l);
@@ -1356,7 +1355,12 @@ impl Render for ReadingPane {
         // Лента беседы — на месте письма; вложения и карточка открытого письма (приглашение, поручение) — над ней:
         // лента включена по умолчанию (T2-14), без карточки на приглашение не ответить. Открыт просмотр вложения —
         // он на месте ленты (T2-29: раньше лента его заслоняла, и просмотр в беседе не открывался).
-        if let Some(feed) = feed.filter(|_| r.preview.is_none()) {
+        // Совпадения поиска — и в ленте (T3-11): строка «Совпадения» над ней, F3 прокручивает ленту.
+        let feed = if r.preview.is_none() { self.feed_view(&hits, cx) } else { None };
+        if let Some(feed) = feed {
+            let n = hits.seen();
+            self.hits.set(n);
+            let matches = self.match_bar(n, &l);
             let main = div()
                 .id("reading")
                 .flex()
@@ -1367,12 +1371,14 @@ impl Render for ReadingPane {
                 .gap(px(12.))
                 .overflow_y_scroll()
                 .child(self.column_probe(cx))
+                .track_scroll(&self.scroll)
                 .child(header)
                 .children(seal_card)
                 .children(scheduled)
                 .children(bar)
                 .children(strip)
                 .children(card)
+                .children(matches)
                 .child(feed)
                 .children((!draft).then(|| quick_reply(&r.row, self.me.as_deref(), &l, cx)));
             return with_side(main, side);

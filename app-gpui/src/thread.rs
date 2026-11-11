@@ -309,8 +309,9 @@ impl ReadingPane {
         Some(bar.into_any_element())
     }
 
-    /// Лента: разделители дней и письма — только новый текст (пересылка и «показать цитаты» — целиком).
-    pub(crate) fn feed_view(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// Лента: разделители дней и письма — только новый текст (пересылка и «показать цитаты» — целиком). Совпадения
+    /// поиска (S5-14) — в показанном тексте писем по порядку ленты, следующими номерами после темы (`hits`).
+    pub(crate) fn feed_view(&self, hits: &ir_view::Hits, cx: &mut Context<Self>) -> Option<AnyElement> {
         let l = crate::roles::look(cx);
         let f = self.feed.as_ref().filter(|_| self.feed_on && self.view(cx) == View::Feed)?;
         let current = self.reading.as_ref().map(|r| r.row.id.as_str());
@@ -379,7 +380,7 @@ impl ReadingPane {
                                 .flex()
                                 .flex_col()
                                 .gap_1()
-                                .children(ir_view::blocks(blocks, &format!("feed{n}"), &images, self.column.get(), cx))
+                                .children(ir_view::blocks_marked(blocks, &format!("feed{n}"), &images, hits, self.column.get(), cx))
                                 .when(hidden, |d| {
                                     d.child(
                                         div()
