@@ -95,6 +95,7 @@ cmd-calendar-view-day = Day view
 cmd-calendar-view-work-week = Work week view
 cmd-calendar-view-week = Week view
 cmd-calendar-view-month = Month view
+cmd-calendar-side-by-side = Calendars side by side or overlaid
 cmd-calendar-write-participants = Email meeting participants
 cmd-calendar-open-event = Open event
 cmd-meeting-send = Send invitations

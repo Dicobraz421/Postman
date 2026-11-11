@@ -73,6 +73,9 @@ const MONTH_ITEM_H: f32 = 20.;
 const MONTH_LANES: usize = 3;
 /// Строка события на весь день над сеткой: 22 пикселя и зазор.
 const ALL_DAY_LANE: f32 = 24.;
+/// Календари рядом (T3-05): зазор между блоками и шапка блока с именем владельца.
+const BLOCK_GAP: f32 = 8.;
+const BLOCK_HEAD: f32 = 32.;
 /// Поиск на сервере — когда запрос перестал меняться; на год назад и вперёд.
 const SEARCH_DELAY: Duration = Duration::from_millis(400);
 const SEARCH_DAYS: i64 = 365;
@@ -485,6 +488,8 @@ pub(crate) struct CalendarView {
     color_menu: Option<String>,
     /// Скрытые календари коллег и «Цвета по владельцу», «Имя владельца» — «Настройки → Календарь».
     hidden: Vec<String>,
+    /// Календари рядом (T3-05): у каждого показанного — свой блок дней; выключено — наложением (по умолчанию).
+    side_by_side: bool,
     owner_colors: bool,
     pub(crate) owner_names: bool,
     /// Ответ ушёл, итога нет: (uid, ответ).
@@ -606,6 +611,7 @@ impl CalendarView {
             parts_range: None,
             color_menu: None,
             hidden: cal.hidden_calendars.clone(),
+            side_by_side: cal.side_by_side,
             owner_colors: cal.owner_colors,
             owner_names: cal.owner_names,
             answering: None,
@@ -658,11 +664,11 @@ impl CalendarView {
         if PENDING_SHOWN.swap(cal.tentative_invites, Ordering::Relaxed) != cal.tentative_invites {
             cx.notify();
         }
-        // Календари коллег (S5-22): цвета, скрытые, «Цвета по владельцу», «Имя владельца».
+        // Календари коллег (S5-22): цвета, скрытые, «Цвета по владельцу», «Имя владельца»; рядом или наложением (T3-05).
         let colors = Self::assigned(&self.colleagues, &cal.calendar_colors);
-        let owners = (colors, cal.hidden_calendars.clone(), cal.owner_colors, cal.owner_names);
-        if owners != (self.colors.clone(), self.hidden.clone(), self.owner_colors, self.owner_names) {
-            (self.colors, self.hidden, self.owner_colors, self.owner_names) = owners;
+        let owners = (colors, cal.hidden_calendars.clone(), cal.owner_colors, cal.owner_names, cal.side_by_side);
+        if owners != (self.colors.clone(), self.hidden.clone(), self.owner_colors, self.owner_names, self.side_by_side) {
+            (self.colors, self.hidden, self.owner_colors, self.owner_names, self.side_by_side) = owners;
             cx.notify();
         }
         let tz = cal.zone();
@@ -2297,6 +2303,50 @@ impl CalendarView {
         let today_shown = days.contains(&today);
         let second = self.second.clone();
         let gutter_w = GUTTER + if second.is_some() { GUTTER2 } else { 0. };
+        // Календари рядом (T3-05): у каждого показанного календаря — свой блок дней, наложения в блоке — свои;
+        // наложением (и когда показан один мой) — один блок на все.
+        let blocks: Vec<Option<(String, String)>> = match self.side_blocks() {
+            Some(list) => list.into_iter().map(Some).collect(),
+            None => vec![None],
+        };
+        let in_block =
+            |e: &Event, b: &Option<(String, String)>| b.as_ref().is_none_or(|(k, _)| e.owner.as_ref().map(Owner::key).unwrap_or_default() == *k);
+        // Рядом столбцы уже: число и день недели — плотнее, лишнее обрезается.
+        let compact = blocks.len() > 1;
+        let day_cell = |date: Date| {
+            let is_today = date == today;
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .flex()
+                .items_center()
+                .gap(px(if compact { 4. } else { 8. }))
+                .px(px(if compact { 6. } else { 10. }))
+                .border_l_1()
+                .border_color(l.border())
+                .child(
+                    div()
+                        .min_w(px(26.))
+                        .h(px(26.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(18.))
+                        .when(is_today, |c| c.rounded(px(13.)).bg(l.accent()).text_color(l.on_accent()).font_weight(FontWeight::SEMIBOLD))
+                        .when(!is_today && date < today, |c| c.text_color(l.text2()))
+                        .child(date.day().to_string()),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(12.))
+                        .when(is_today, |c| c.text_color(l.accent_text()).font_weight(FontWeight::SEMIBOLD))
+                        .when(!is_today, |c| c.text_color(l.text2()))
+                        .child(if days.len() == 1 { tr!("cal-weekday", d = date.weekday().to_monday_zero_offset()) } else { weekday_name(date) }),
+                )
+        };
         let header = div()
             .h(px(44.))
             .flex_none()
@@ -2331,94 +2381,15 @@ impl CalendarView {
                     .text_color(l.text3())
                     .child(zone_short(tz)),
             )
-            .children(days.iter().map(|&date| {
-                let is_today = date == today;
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .px(px(10.))
-                    .border_l_1()
-                    .border_color(l.border())
-                    .child(
-                        div()
-                            .min_w(px(26.))
-                            .h(px(26.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(18.))
-                            .when(is_today, |c| c.rounded(px(13.)).bg(l.accent()).text_color(l.on_accent()).font_weight(FontWeight::SEMIBOLD))
-                            .when(!is_today && date < today, |c| c.text_color(l.text2()))
-                            .child(date.day().to_string()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .when(is_today, |c| c.text_color(l.accent_text()).font_weight(FontWeight::SEMIBOLD))
-                            .when(!is_today, |c| c.text_color(l.text2()))
-                            .child(if days.len() == 1 { tr!("cal-weekday", d = date.weekday().to_monday_zero_offset()) } else { weekday_name(date) }),
-                    )
-            }));
-        // Весь день: событие от дня начала до дня конца — по показанным столбцам; пересекающиеся — друг под другом.
-        let mut placed: Vec<(usize, &Event, usize, usize)> = self
-            .events
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| e.all_day && event_look(e, me) != Shown::Hidden && !self.hidden(e))
-            .filter_map(|(i, e)| {
-                let (a, b) = model::dates(e, tz);
-                let (c0, c1) = model::columns(days, a, b)?;
-                Some((i, e, c0, c1))
-            })
-            .collect();
-        placed.sort_by_key(|&(i, _, c0, c1)| (c0, usize::MAX - c1, i));
-        let mut lanes: Vec<usize> = Vec::new();
-        let all_day: Vec<AnyElement> = placed
-            .into_iter()
-            .map(|(i, e, c0, c1)| {
-                let lane = lanes.iter().position(|&end| end < c0).unwrap_or_else(|| {
-                    lanes.push(0);
-                    lanes.len() - 1
-                });
-                lanes[lane] = c1;
-                let (bar, bg, fg) = self.colors(e, &l);
-                let selected = self.selected == Some(i);
-                div()
-                    .id(("all-day", i))
-                    .children(crate::screens::spot(("all-day", i)))
-                    .absolute()
-                    .top(px(3. + lane as f32 * ALL_DAY_LANE))
-                    .h(px(22.))
-                    .left(relative(c0 as f32 / n as f32))
-                    .w(relative((c1 - c0 + 1) as f32 / n as f32))
-                    .px(px(2.))
-                    .child(
-                        div()
-                            .size_full()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .pl(px(3.))
-                            .pr(px(8.))
-                            .bg(bg)
-                            .text_color(fg)
-                            .text_size(px(12.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .overflow_hidden()
-                            .child(div().w(px(3.)).h_full().flex_none().bg(bar))
-                            .child(div().truncate().child(e.title.clone()))
-                            .when(selected, |d| d.shadow(glow(bar))),
-                    )
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, _, cx| this.select(i, cx)))
-                    .into_any_element()
-            })
-            .collect();
+            .children(Self::with_gaps(
+                blocks.iter().map(|_| div().flex_1().min_w_0().flex().children(days.iter().map(|&date| day_cell(date)))).collect(),
+                &l,
+            ));
+        // Весь день: у каждого блока свои дорожки, высота строки — по самому занятому.
+        let all_day: Vec<(Vec<AnyElement>, usize)> = blocks.iter().map(|b| self.all_day_items(days, |e| in_block(e, b), &l, cx)).collect();
+        let lanes = all_day.iter().map(|(_, n)| *n).max().unwrap_or(0);
         let all_day_row = div()
-            .h(px(6. + lanes.len().max(1) as f32 * ALL_DAY_LANE))
+            .h(px(6. + lanes.max(1) as f32 * ALL_DAY_LANE))
             .flex_none()
             .flex()
             .border_b_1()
@@ -2438,23 +2409,30 @@ impl CalendarView {
                     .child(tr!("cal-all-day-1"))
                     .child(tr!("cal-all-day-2")),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .relative()
-                    .h_full()
-                    .children((0..n).map(|d| {
+            .children(Self::with_gaps(
+                all_day
+                    .into_iter()
+                    .map(|(items, _)| {
                         div()
-                            .absolute()
-                            .top_0()
-                            .bottom_0()
-                            .left(relative(d as f32 / n as f32))
-                            .w(relative(1. / n as f32))
-                            .border_l_1()
-                            .border_color(l.border())
-                    }))
-                    .children(all_day),
-            );
+                            .flex_1()
+                            .min_w_0()
+                            .relative()
+                            .h_full()
+                            .children((0..n).map(|d| {
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .bottom_0()
+                                    .left(relative(d as f32 / n as f32))
+                                    .w(relative(1. / n as f32))
+                                    .border_l_1()
+                                    .border_color(l.border())
+                            }))
+                            .children(items)
+                    })
+                    .collect(),
+                &l,
+            ));
         // Время слева: часы и «сейчас»; второй пояс — своей шкалой левее (часы по началу показанного дня).
         let anchor0 = day_start(days.first().copied().unwrap_or(self.anchor), tz);
         let times2 = second.as_ref().map(|z| {
@@ -2507,68 +2485,72 @@ impl CalendarView {
         // Линии: час — сплошная, шаг сетки (S5-20: 30 или 15 мин) — бледнее.
         let per_hour = (60 / self.step.clamp(5, 60)).max(1);
         let (hour_line, step_line) = (l.border(), l.border().opacity(0.45));
-        let mut columns = Vec::new();
-        for &date in days {
-            let is_today = date == today;
-            let day0 = day_start(date, tz);
-            let (timed, _) = day_events(&self.events, date, tz);
-            let timed: Vec<usize> =
-                timed.into_iter().filter(|&i| event_look(&self.events[i], me) != Shown::Hidden && !self.hidden(&self.events[i])).collect();
-            let placed = layout_day(&timed.iter().map(|&i| self.events[i].span).collect::<Vec<_>>());
-            let (ws, we) = if self.hours.days.contains(&date.weekday()) { (work_start, work_end) } else { (height, height) };
-            let shade = [(0., ws), (we, height)].map(|(a, b)| div().absolute().left_0().right_0().top(px(a)).h(px(b - a)).bg(l.pm(Pm::CalOff)));
-            let lines = (0..GRID_HOURS).flat_map(|h| {
-                let y = minute_y(h * 60);
-                std::iter::once(div().absolute().top(px(y)).left_0().right_0().h(px(1.)).bg(hour_line)).chain(
-                    (1..per_hour)
-                        .map(move |k| div().absolute().top(px(y + HOUR_PX * k as f32 / per_hour as f32)).left_0().right_0().h(px(1.)).bg(step_line)),
-                )
-            });
-            let blocks: Vec<AnyElement> = placed
-                .into_iter()
-                .map(|p| {
-                    let i = timed[p.index];
-                    let e = &self.events[i];
-                    let top = ((e.span.start - day0) as f32 / 3600. * HOUR_PX).clamp(0., height - 18.) + 1.;
-                    let h = event_height(e.span.len() as f32 / 3600. * HOUR_PX, height - top) - 3.;
+        let mut groups = Vec::new();
+        for b in &blocks {
+            let mut columns = Vec::new();
+            for &date in days {
+                let is_today = date == today;
+                let day0 = day_start(date, tz);
+                let (timed, _) = day_events(&self.events, date, tz);
+                let timed: Vec<usize> = timed.into_iter().filter(|&i| self.on_grid(&self.events[i], me) && in_block(&self.events[i], b)).collect();
+                let placed = layout_day(&timed.iter().map(|&i| self.events[i].span).collect::<Vec<_>>());
+                let (ws, we) = if self.hours.days.contains(&date.weekday()) { (work_start, work_end) } else { (height, height) };
+                let shade = [(0., ws), (we, height)].map(|(a, b)| div().absolute().left_0().right_0().top(px(a)).h(px(b - a)).bg(l.pm(Pm::CalOff)));
+                let lines =
+                    (0..GRID_HOURS).flat_map(|h| {
+                        let y = minute_y(h * 60);
+                        std::iter::once(div().absolute().top(px(y)).left_0().right_0().h(px(1.)).bg(hour_line)).chain((1..per_hour).map(move |k| {
+                            div().absolute().top(px(y + HOUR_PX * k as f32 / per_hour as f32)).left_0().right_0().h(px(1.)).bg(step_line)
+                        }))
+                    });
+                let blocks: Vec<AnyElement> = placed
+                    .into_iter()
+                    .map(|p| {
+                        let i = timed[p.index];
+                        let e = &self.events[i];
+                        let top = ((e.span.start - day0) as f32 / 3600. * HOUR_PX).clamp(0., height - 18.) + 1.;
+                        let h = event_height(e.span.len() as f32 / 3600. * HOUR_PX, height - top) - 3.;
+                        div()
+                            .absolute()
+                            .top(px(top))
+                            .h(px(h))
+                            .left(relative(p.column as f32 / p.columns as f32))
+                            .w(relative(p.span_columns as f32 / p.columns as f32))
+                            .px(px(2.))
+                            .child(self.block(i, e, h, &l, cx))
+                            .into_any_element()
+                    })
+                    .collect();
+                let now_line = (now_visible && today_shown).then(|| {
+                    div().absolute().left_0().right_0().top(px(now_y)).h(px(if is_today { 2. } else { 1. })).bg(if is_today {
+                        l.accent()
+                    } else {
+                        l.accent().opacity(0.3)
+                    })
+                });
+                let now_dot =
+                    (now_visible && is_today).then(|| div().absolute().left(px(-5.)).top(px(now_y - 4.)).size(px(9.)).rounded_full().bg(l.accent()));
+                columns.push(
                     div()
-                        .absolute()
-                        .top(px(top))
-                        .h(px(h))
-                        .left(relative(p.column as f32 / p.columns as f32))
-                        .w(relative(p.span_columns as f32 / p.columns as f32))
-                        .px(px(2.))
-                        .child(self.block(i, e, h, &l, cx))
-                        .into_any_element()
-                })
-                .collect();
-            let now_line = (now_visible && today_shown).then(|| {
-                div().absolute().left_0().right_0().top(px(now_y)).h(px(if is_today { 2. } else { 1. })).bg(if is_today {
-                    l.accent()
-                } else {
-                    l.accent().opacity(0.3)
-                })
-            });
-            let now_dot =
-                (now_visible && is_today).then(|| div().absolute().left(px(-5.)).top(px(now_y - 4.)).size(px(9.)).rounded_full().bg(l.accent()));
-            columns.push(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .relative()
-                    .h(px(height))
-                    .border_l_1()
-                    .border_color(l.border())
-                    .children(shade)
-                    .children(lines)
-                    .children(blocks)
-                    .children(now_line)
-                    .children(now_dot),
-            );
+                        .flex_1()
+                        .min_w_0()
+                        .relative()
+                        .h(px(height))
+                        .border_l_1()
+                        .border_color(l.border())
+                        .children(shade)
+                        .children(lines)
+                        .children(blocks)
+                        .children(now_line)
+                        .children(now_dot),
+                );
+            }
+            groups.push(div().flex_1().min_w_0().flex().children(columns));
         }
         crate::mailer::card(&l)
             .flex_1()
             .mr(px(8.))
+            .children(self.block_heads(&blocks, gutter_w, &l, cx))
             .child(header)
             .child(all_day_row)
             .child(
@@ -2578,11 +2560,167 @@ impl CalendarView {
                     .min_h_0()
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
-                    .child(div().flex().children(times2).child(times).children(columns)),
+                    .child(div().flex().children(times2).child(times).children(Self::with_gaps(groups, &l))),
             )
             .when(self.pending.is_some() && self.events.is_empty(), |d| {
                 d.child(div().px(px(14.)).py(px(6.)).text_color(l.text2()).child(tr!("cal-loading")))
             })
+    }
+
+    /// Календари рядом (T3-05): ключ и имя каждого показанного календаря — мой первым, дальше — по порядку слева.
+    /// «Наложением» или показан один мой — `None`: одна сетка, как на макете S5-22.
+    fn side_blocks(&self) -> Option<Vec<(String, String)>> {
+        if !self.side_by_side {
+            return None;
+        }
+        let shown = self.colleagues.iter().filter(|o| !self.hidden.contains(&o.key())).map(|o| (o.key(), o.name.clone()));
+        let list: Vec<(String, String)> = std::iter::once((String::new(), tr!("cal-my-calendar"))).chain(shown).collect();
+        (list.len() > 1).then_some(list)
+    }
+
+    /// «Рядом» (`true`) или «Наложением»: один режим на все календари, в «Настройки → Календарь».
+    pub(crate) fn set_side_by_side(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.side_by_side == on {
+            return;
+        }
+        self.side_by_side = on;
+        crate::prefs::update(cx, move |p| p.calendar.side_by_side = on);
+        cx.notify();
+    }
+
+    pub(crate) fn side_by_side(&self) -> bool {
+        self.side_by_side
+    }
+
+    /// Сколько блоков календарей рядом в сетке (снимки T3-05): наложением — один.
+    pub(crate) fn side_count(&self) -> usize {
+        self.side_blocks().map_or(1, |b| b.len())
+    }
+
+    /// Событие видно в сетке: не скрыто ответом и календарь не снят флажком.
+    fn on_grid(&self, e: &Event, me: Option<&str>) -> bool {
+        event_look(e, me) != Shown::Hidden && !self.hidden(e)
+    }
+
+    /// Блоки дней рядом через зазор (T3-05); наложением блок один, зазоров нет.
+    fn with_gaps(parts: Vec<Div>, l: &Look) -> Vec<Div> {
+        let mut out = Vec::with_capacity(parts.len() * 2);
+        for (k, part) in parts.into_iter().enumerate() {
+            if k > 0 {
+                out.push(div().w(px(BLOCK_GAP)).flex_none().bg(l.base()).border_l_1().border_color(l.border()));
+            }
+            out.push(part);
+        }
+        out
+    }
+
+    /// Шапки блоков рядом (T3-05, как вкладки календарей в Outlook): цвет и имя владельца; у календаря коллеги — «‹»,
+    /// вернуть наложением. Наложением шапок нет.
+    fn block_heads(&self, blocks: &[Option<(String, String)>], gutter_w: f32, l: &Look, cx: &mut Context<Self>) -> Option<Div> {
+        if blocks.len() < 2 {
+            return None;
+        }
+        let heads: Vec<Div> = blocks
+            .iter()
+            .enumerate()
+            .filter_map(|(n, b)| b.as_ref().map(|b| (n, b)))
+            .map(|(n, (key, name))| {
+                let color = l.cat(self.calendar_color(key)).dot;
+                let back = (!key.is_empty()).then(|| {
+                    let tip = tr!("cal-side-overlay-tip");
+                    icon_button(("cal-block-overlay", n), g::PREV, l)
+                        .tooltip(move |window, cx| crate::screens::tip(tip.clone(), window, cx))
+                        .on_click(cx.listener(|this, _, _, cx| this.set_side_by_side(false, cx)))
+                });
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .pl(px(10.))
+                    .pr(px(2.))
+                    .border_l_1()
+                    .border_color(l.border())
+                    .bg(color.opacity(0.12))
+                    .child(div().size(px(10.)).flex_none().rounded(px(2.)).bg(color))
+                    .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child(name.clone()))
+                    .children(back)
+            })
+            .collect();
+        Some(
+            div()
+                .h(px(BLOCK_HEAD))
+                .flex_none()
+                .flex()
+                .border_b_1()
+                .border_color(l.border())
+                .child(div().w(px(gutter_w)).flex_none())
+                .children(Self::with_gaps(heads, l)),
+        )
+    }
+
+    /// События на весь день одного блока: от дня начала до дня конца по показанным столбцам, пересекающиеся — друг под
+    /// другом; и сколько дорожек заняли.
+    fn all_day_items(&self, days: &[Date], in_block: impl Fn(&Event) -> bool, l: &Look, cx: &mut Context<Self>) -> (Vec<AnyElement>, usize) {
+        let n = days.len().max(1);
+        let (tz, me) = (&self.tz, self.me.as_deref());
+        let mut placed: Vec<(usize, &Event, usize, usize)> = self
+            .events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.all_day && self.on_grid(e, me) && in_block(e))
+            .filter_map(|(i, e)| {
+                let (a, b) = model::dates(e, tz);
+                let (c0, c1) = model::columns(days, a, b)?;
+                Some((i, e, c0, c1))
+            })
+            .collect();
+        placed.sort_by_key(|&(i, _, c0, c1)| (c0, usize::MAX - c1, i));
+        let mut lanes: Vec<usize> = Vec::new();
+        let items = placed
+            .into_iter()
+            .map(|(i, e, c0, c1)| {
+                let lane = lanes.iter().position(|&end| end < c0).unwrap_or_else(|| {
+                    lanes.push(0);
+                    lanes.len() - 1
+                });
+                lanes[lane] = c1;
+                let (bar, bg, fg) = self.colors(e, l);
+                let selected = self.selected == Some(i);
+                div()
+                    .id(("all-day", i))
+                    .children(crate::screens::spot(("all-day", i)))
+                    .absolute()
+                    .top(px(3. + lane as f32 * ALL_DAY_LANE))
+                    .h(px(22.))
+                    .left(relative(c0 as f32 / n as f32))
+                    .w(relative((c1 - c0 + 1) as f32 / n as f32))
+                    .px(px(2.))
+                    .child(
+                        div()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .pl(px(3.))
+                            .pr(px(8.))
+                            .bg(bg)
+                            .text_color(fg)
+                            .text_size(px(12.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .overflow_hidden()
+                            .child(div().w(px(3.)).h_full().flex_none().bg(bar))
+                            .child(div().truncate().child(e.title.clone()))
+                            .when(selected, |d| d.shadow(glow(bar))),
+                    )
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| this.select(i, cx)))
+                    .into_any_element()
+            })
+            .collect();
+        (items, lanes.len())
     }
 
     /// Блок события в сетке дня и недели.
@@ -3448,6 +3586,31 @@ impl Render for CalendarBar {
                 .on_click(move |_, _, cx| cal.update(cx, |c, cx| c.set_view(v, cx)));
             crate::keytips::command(b, command, Some(tr!(full)), &l, cx)
         });
+        // «Рядом» (T3-05): переключатель — нажат, когда календари рядом; отжат — наложением. Месяц — всегда наложением, как
+        // в Outlook: там переключателя нет. Одна кнопка, а не пара: командная строка «Дня» с длинной датой иначе не влезает
+        // (в «Дне» и без подписи).
+        let side_on = c.side_by_side();
+        let modes = (current != View::Month).then(|| {
+            let cal = self.cal.clone();
+            let toggle = div()
+                .id("cal-mode-side")
+                .children(crate::screens::spot("cal-mode-side"))
+                .h(px(28.))
+                .px(px(10.))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .rounded(px(4.))
+                .cursor_pointer()
+                .when(side_on, |d| d.bg(l.panel()).font_weight(FontWeight::SEMIBOLD).shadow_sm())
+                .when(!side_on, |d| d.text_color(l.text2()).hover(|d| d.bg(l.hover())))
+                .child(icon(g::PEOPLE, 14.))
+                // В «Дне» дата длинная — только значок, подпись — в подсказке.
+                .when(current != View::Day, |d| d.child(tr!("cal-mode-side")))
+                .on_click(move |_, _, cx| cal.update(cx, |c, cx| c.set_side_by_side(!side_on, cx)));
+            let tip = if side_on { tr!("cal-mode-tip-on") } else { tr!("cal-mode-tip-off") };
+            div().mr(px(8.)).p(px(2.)).rounded(px(6.)).bg(l.fill()).child(crate::keytips::command(toggle, "calendar.side_by_side", Some(tip), &l, cx))
+        });
         let next_cal = self.cal.clone();
         let prev_cal = self.cal.clone();
         let search = div()
@@ -3480,6 +3643,7 @@ impl Render for CalendarBar {
             .child(div().px(px(8.)).text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(range))
             .when(loading, |d| d.child(div().text_color(l.text2()).child(tr!("cal-loading"))))
             .child(div().flex_1())
+            .children(modes)
             .child(div().flex().p(px(2.)).rounded(px(6.)).bg(l.fill()).children(views))
             .child(crate::keytips::badge(search, crate::keytips::key("search.focus", cx), &l, cx))
     }
@@ -3627,6 +3791,16 @@ impl crate::Mailer {
         });
     }
 
+    /// «Рядом / Наложением» (T3-05) — в разделе «Календарь»: переключает режим.
+    pub(crate) fn calendar_side_by_side(&mut self, cx: &mut Context<Self>) {
+        if self.section == crate::Section::Calendar {
+            self.cal.update(cx, |c, cx| {
+                let on = !c.side_by_side();
+                c.set_side_by_side(on, cx);
+            });
+        }
+    }
+
     /// 1…4: вид календаря — в разделе «Календарь».
     pub(crate) fn calendar_view(&mut self, view: View, cx: &mut Context<Self>) {
         if self.section == crate::Section::Calendar {
@@ -3738,6 +3912,7 @@ fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
     .on_action(cx.listener(|this, _: &calendar::ViewWorkWeek, _, cx| this.calendar_view(postman_core::prefs::CalendarView::WorkWeek, cx)))
     .on_action(cx.listener(|this, _: &calendar::ViewWeek, _, cx| this.calendar_view(postman_core::prefs::CalendarView::Week, cx)))
     .on_action(cx.listener(|this, _: &calendar::ViewMonth, _, cx| this.calendar_view(postman_core::prefs::CalendarView::Month, cx)))
+    .on_action(cx.listener(|this, _: &calendar::SideBySide, _, cx| this.calendar_side_by_side(cx)))
     .on_action(cx.listener(|this, _: &calendar::WriteParticipants, _, cx| this.cal.update(cx, |c, cx| c.write_participants(cx))))
     .on_action(cx.listener(|this, _: &calendar::OpenEvent, _, cx| this.cal.update(cx, |c, cx| c.open_selected(cx))))
 }
@@ -3748,7 +3923,10 @@ const TEXTS: &[pets_i18n::Resource] = &[("ru", include_str!("../i18n/ru/calendar
 // Имя — область действий (`calendar::…`), как в id команд: так обработчики читаются и их находит `docs/PARITY.md`.
 #[allow(clippy::module_inception)]
 pub(crate) mod calendar {
-    gpui_kit::actions!(calendar, [NewMeeting, PrevWeek, NextWeek, Today, ViewDay, ViewWorkWeek, ViewWeek, ViewMonth, WriteParticipants, OpenEvent]);
+    gpui_kit::actions!(
+        calendar,
+        [NewMeeting, PrevWeek, NextWeek, Today, ViewDay, ViewWorkWeek, ViewWeek, ViewMonth, SideBySide, WriteParticipants, OpenEvent]
+    );
 }
 
 /// Команды части (`commands.rs`: контексты и `cmd`).
@@ -3766,6 +3944,8 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("calendar.view_work_week", &["2"], CALENDAR),
         cmd("calendar.view_week", &["3"], CALENDAR),
         cmd("calendar.view_month", &["4"], CALENDAR),
+        // «Рядом / Наложением» (T3-05, решение владельца 2026-11-11): в Outlook — кнопка без клавиши, здесь так же.
+        cmd("calendar.side_by_side", &[], CALENDAR),
         // «Написать участникам» открытого события (T2-17, макет `Calendar`): как «Ответить всем» в Outlook.
         cmd("calendar.write_participants", &["ctrl-shift-r"], CALENDAR),
         // «Открыть» выбранного события (T2-21, макет `Calendar`): своя встреча — на правку, приглашение — письмо.

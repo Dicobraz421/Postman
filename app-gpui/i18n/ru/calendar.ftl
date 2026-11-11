@@ -13,6 +13,11 @@ cal-view-week = Неделя
 cal-view-week-full = Неделя
 cal-view-month = Месяц
 cal-view-month-full = Месяц
+# Календари рядом (T3-05): переключатель в командной строке и «‹» в шапке блока.
+cal-mode-side = Рядом
+cal-mode-tip-off = Календари рядом: у каждого — свой блок дней (сейчас — наложением на мой)
+cal-mode-tip-on = Календари наложением на мой (сейчас — рядом, у каждого свой блок)
+cal-side-overlay-tip = Наложением на мой календарь
 cal-month-more = +{ $n } ещё
 cal-short-day = { $wd }, { $day } { $month }
 cal-search-placeholder = Поиск в календаре
