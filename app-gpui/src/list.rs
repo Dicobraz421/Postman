@@ -1393,6 +1393,7 @@ impl Render for MailList {
         let empty = self.count == 0 && self.search_ids.is_none() && self.view.is_some() && !self.query.criteria.is_empty();
         let nothing = self.count == 0 && self.found.as_ref().is_some_and(|f| !f.waiting) && self.page_pending.is_none();
         let marks = self.found.as_ref().map(|f| f.marks.clone());
+        let attached = self.found.as_ref().map(|f| f.attached.clone());
         let list = v_virtual_list(cx.entity(), "messages", sizes, move |this, items: Range<usize>, _window, cx| {
             // Один элемент gpui запрашивает, чтобы измерить ширину, — это не видимая область.
             if items.len() > 1 {
@@ -1421,6 +1422,7 @@ impl Render for MailList {
                             }
                             labels.assigned = crate::shared::assigned(&r, cx);
                             labels.meeting = this.meetings.get(&r.id).map(|w| w.text(&tz));
+                            labels.attached = attached.as_ref().and_then(|a| a.get(&r.id)).cloned();
                             // Ждёт отправки — первой меткой, нейтральной (DESIGN.md: служебные — серые).
                             let now = jiff::Timestamp::now().as_second();
                             if let Some(&at) = this.scheduled.get(&r.id).filter(|&&at| at > now) {
@@ -1725,6 +1727,8 @@ pub(crate) fn list_row(
     let subject = div().flex().items_center().gap(px(8.)).min_w_0().child(subject).children(assigned);
     // Письмо-приглашение (T2-18): время встречи со значком календаря вместо превью.
     let meeting = labels.meeting;
+    // Поиск нашёл слова во вложении (T3-10): скрепка и «во вложении: имя — …отрывок…» вместо превью.
+    let attached = labels.attached.as_ref().map(|a| crate::search::attachment_line(a, marks));
     let preview = (roomy && previews).then(|| {
         let p = div().truncate().text_size(l.px(Metric::TypeCaption)).text_color(l.text2());
         match meeting {
@@ -1735,6 +1739,12 @@ pub(crate) fn list_row(
                 .child(crate::chrome::icon(crate::calendar::g::CALENDAR, 12.).flex_none())
                 .child(div().truncate().child(text)),
             None if encrypted => p.child(tr!("smime-list-preview")),
+            None if attached.is_some() => p
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(crate::chrome::icon(crate::chrome::glyph::ATTACH, 12.).flex_none())
+                .child(div().truncate().child(crate::search::marked(attached.as_deref().unwrap_or_default(), marks, l))),
             // Поиск (T2-27): отрывок вокруг совпадения.
             None => match marks {
                 Some(m) if !m.is_empty() => p.child(crate::search::marked(&crate::search::snippet(&r.preview, m), marks, l)),

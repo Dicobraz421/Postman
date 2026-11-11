@@ -1,5 +1,6 @@
 //! «Настройки → Безопасность» (S5-30, макет `SettingsSecurity`): содержимое писем, вложения, песочница, фишинг, входы
-//! и соединение. Выбор — только строже прежнего (решение владельца 2026-10-22): картинки «никогда» или «спрашивать»,
+//! и соединение. Выбор — только строже прежнего (решение владельца 2026-10-22): картинки «никогда» или «спрашивать»
+//! (с доверенными доменами, T3-04 — `remote_images.rs`),
 //! TLS 1.2 или 1.3, пароль — в Диспетчере учётных данных или не хранить; проверка отзыва — всегда (выключатель
 //! закреплён). Политика организации закрепляет значения (`security.rs`). Файлы с макросами не открываются (решение
 //! №7); «Сохранить…» — настройка.
@@ -226,6 +227,7 @@ impl SettingsView {
             .when(partial, |d| d.bg(l.error_bg()).text_color(l.error()))
             .child(sandbox);
         let directory = self.directory_rows(l, cx);
+        let domains = self.image_domains(l, cx);
         let help = self.sandbox_help;
         let stored = self.stored == Some(true);
         let wipe = if self.wipe_confirm {
@@ -273,6 +275,8 @@ impl SettingsView {
                 images,
                 l,
             ))
+            // Доверенные домены картинок (T3-04).
+            .child(domains)
             .child(row(
                 tr!("settings-link-mismatch"),
                 Some(tr!("settings-link-mismatch-hint")),

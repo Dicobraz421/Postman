@@ -110,3 +110,40 @@ contacts-book = Адресная книга
 contacts-layout-fixed = раскладка исправлена: { $text }
 contacts-layout-reset = Сбросить поиск
 contacts-directory-updated = Справочник обновлён { $time }
+# Личные группы (T2-47).
+contacts-groups = Группы
+contacts-groups-all = Все группы
+contacts-new-group = Новая группа
+contacts-kind-group = Группа
+contacts-badge-group = Моя группа
+contacts-group-count = { $n ->
+    [one] { $n } участник
+    [few] { $n } участника
+   *[many] { $n } участников
+}
+contacts-group-summary = Группа · { $n ->
+    [one] { $n } участник
+    [few] { $n } участника
+   *[many] { $n } участников
+}
+contacts-group-members = Участники
+contacts-group-empty = В группе пока никого: «Изменить» — добавить участников, или «В группу» у контакта.
+contacts-group-remove = Убрать из группы
+contacts-group-foreign = Участник из другой программы
+contacts-group-hint = Письмо группе уходит каждому участнику: получатели видят адреса участников, а не группу. Групповой адрес на сервере — это «Списки рассылки».
+contacts-write-group = Написать группе
+contacts-group-form-new = Новая группа
+contacts-group-form-edit = Изменить группу
+contacts-group-form-where = Сохранится в «Мои контакты» на сервере
+contacts-group-form-hint = Участники — через «;»: адрес, «Имя <адрес>» или имя из справочника и контактов. Enter — сохранить, Esc — отменить.
+contacts-group-name = Название
+contacts-group-name-placeholder = Например, Руководители отделов
+contacts-group-members-placeholder = адреса или имена через «;»
+contacts-group-need-name = Укажите название группы
+contacts-group-saved = Группа сохранена: { $name }
+contacts-group-delete-confirm = Удалить группу «{ $name }»? Контакты останутся.
+contacts-to-group = В группу
+contacts-to-group-new = Новая группа…
+contacts-added-to-group = { $name } — в группе «{ $group }»
+contacts-already-in-group = { $name } уже в группе «{ $group }»
+contacts-removed-from-group = { $name } — больше не в группе «{ $group }»

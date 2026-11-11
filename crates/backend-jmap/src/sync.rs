@@ -1117,6 +1117,18 @@ async fn handle(
         }
         // Должности, отдела и телефона у JMAP `Principal` нет — подробностей сверх найденного тоже.
         Command::PersonDetails { email } => notify(Event::PersonDetails { email, person: None }),
+        // Состав группы — свойство `members` у `Principal`; сервер его не отдаёт — «не поддерживается» (T3-09).
+        Command::ExpandList { ticket, address } => {
+            let (members, error) = match client.group_members(&address).await {
+                Ok(Some(found)) => (found.into_iter().map(Principal::from_jmap).collect(), None),
+                Ok(None) => (Vec::new(), Some(postman_core::sync::ListError::Unsupported)),
+                Err(e) => {
+                    tracing::debug!("jmap list members: {e}");
+                    (Vec::new(), Some(postman_core::sync::ListError::Failed(e.to_string())))
+                }
+            };
+            notify(Event::ListMembers { ticket, address, members, error });
+        }
         Command::ShareFreeBusy { email, items } => {
             notify(match schedule::share_free_busy(client, &email, items).await {
                 Ok(()) => Event::FreeBusyShared { email },

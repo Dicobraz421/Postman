@@ -13,6 +13,11 @@ cal-view-week = Week
 cal-view-week-full = Week
 cal-view-month = Month
 cal-view-month-full = Month
+# Calendars side by side (T3-05): command bar switch and the "‹" in a block header.
+cal-mode-side = Side by side
+cal-mode-tip-off = Calendars side by side, each in its own block (now overlaid on mine)
+cal-mode-tip-on = Calendars overlaid on mine (now side by side, each in its own block)
+cal-side-overlay-tip = Overlay on my calendar
 cal-month-more = +{ $n } more
 cal-short-day = { $wd }, { $month } { $day }
 cal-search-placeholder = Search the calendar

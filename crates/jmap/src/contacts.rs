@@ -1,5 +1,6 @@
 //! JMAP for Contacts (RFC 9610): карточки JSContact (RFC 9553) — имя, адреса, телефоны, организация, должность;
-//! создание, правка (патч только изменённых свойств) и удаление (`ContactCard/set`).
+//! создание, правка (патч только изменённых свойств) и удаление (`ContactCard/set`). Личная группа (T2-47) —
+//! карточка `kind: group` с участниками `members` (ссылка `mailto:<адрес>` → `true`).
 
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -9,7 +10,7 @@ use crate::{CONTACTS, CORE, Client, Error, Result, take};
 
 const USING: &[&str] = &[CORE, CONTACTS];
 /// Свойства карточки, которые показывает и правит клиент.
-const PROPERTIES: &[&str] = &["id", "name", "emails", "phones", "organizations", "titles", "calendars"];
+const PROPERTIES: &[&str] = &["id", "name", "emails", "phones", "organizations", "titles", "calendars", "kind", "members"];
 
 /// Карточка контакта. У новой (ещё не на сервере) `id` пустой.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -26,6 +27,10 @@ pub struct ContactCard {
     pub title: String,
     /// Ссылка на занятость (`calendars` вида `freeBusy`): только чтение (S8-42).
     pub free_busy: Option<String>,
+    /// Группа (`kind: group`, T2-47).
+    pub group: bool,
+    /// Участники группы: адрес (ссылка `mailto:`) или чужая ссылка (`urn:uuid:…`) как есть.
+    pub members: Vec<String>,
 }
 
 /// Адресная книга (`AddressBook/get`).
@@ -87,7 +92,19 @@ impl ContactCard {
         }
         let organizations = map("o", std::slice::from_ref(&self.organization), &|n| json!({ "name": n }));
         let titles = map("t", std::slice::from_ref(&self.title), &|n| json!({ "name": n, "kind": "title" }));
-        vec![("name", name), ("emails", emails), ("phones", phones), ("organizations", organizations), ("titles", titles)]
+        // Группа (T2-47): `kind` и `members` — только у неё; у обычной карточки их не пишем и не снимаем.
+        let (kind, members) = if self.group {
+            let members: Map<String, Value> =
+                self.members.iter().map(|m| m.trim()).filter(|m| !m.is_empty()).map(|m| (member_uri(m), Value::Bool(true))).collect();
+            (json!("group"), if members.is_empty() { Value::Null } else { Value::Object(members) })
+        } else {
+            (Value::Null, Value::Null)
+        };
+        let mut out = vec![("name", name), ("emails", emails), ("phones", phones), ("organizations", organizations), ("titles", titles)];
+        if self.group {
+            out.extend([("kind", kind), ("members", members)]);
+        }
+        out
     }
 }
 
@@ -139,6 +156,21 @@ impl Client {
         let mut r = self.call(USING, &[inv("ContactCard/set", args, "s")]).await?;
         let v: Value = take(&mut r, "s")?;
         set_error(&v, "notDestroyed", id, "ContactCard/set")
+    }
+}
+
+/// Запись участника → ссылка `members`: адрес — `mailto:`, чужая ссылка — как есть.
+fn member_uri(member: &str) -> String {
+    let is_address = member.contains('@') && !member.contains(':') && !member.contains(char::is_whitespace);
+    if is_address { format!("mailto:{member}") } else { member.to_owned() }
+}
+
+/// Ссылка `members` → запись участника: `mailto:` — адрес (без `?…`), иначе как есть.
+fn member_of_uri(uri: &str) -> String {
+    let t = uri.trim();
+    match t.get(..7) {
+        Some(p) if p.eq_ignore_ascii_case("mailto:") => t[7..].split('?').next().unwrap_or_default().trim().to_owned(),
+        _ => t.to_owned(),
     }
 }
 
@@ -194,6 +226,15 @@ fn card(v: &Value) -> ContactCard {
             .find(|c| c["kind"] == "freeBusy")
             .and_then(|c| c["uri"].as_str())
             .map(str::to_string),
+        group: v["kind"] == "group",
+        members: {
+            let mut m: Vec<String> =
+                v["members"].as_object().into_iter().flatten().filter(|(_, on)| on.as_bool() == Some(true)).map(|(k, _)| member_of_uri(k)).collect();
+            m.retain(|x| !x.is_empty());
+            m.sort_by_key(|x| x.to_lowercase());
+            m.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+            m
+        },
     }
 }
 
@@ -250,7 +291,34 @@ mod tests {
             organization: "ООО Ромашка".into(),
             title: String::new(),
             free_busy: None,
+            group: false,
+            members: Vec::new(),
         }
+    }
+
+    /// Группа (T2-47): создание — `kind: group` и `members` с `mailto:`; правка состава — патч `members` целиком,
+    /// имя — `name`; у обычной карточки `kind` и `members` не пишутся. Ответ сервера — снова группа.
+    #[test]
+    fn group_card_create_patch_and_parse() {
+        let g = ContactCard {
+            id: "g1".into(),
+            name: "Руководители отделов".into(),
+            group: true,
+            members: vec!["a@example.test".into(), "urn:uuid:f81d4fae".into()],
+            ..Default::default()
+        };
+        let v = g.to_jmap("b1");
+        assert_eq!(v["kind"], "group");
+        assert_eq!(v["members"], json!({ "mailto:a@example.test": true, "urn:uuid:f81d4fae": true }));
+        assert!(v.get("emails").is_none());
+        assert!(sample().to_jmap("b1").get("kind").is_none() && sample().patch(&sample()).is_empty());
+        let more = ContactCard { members: vec!["a@example.test".into(), "urn:uuid:f81d4fae".into(), "b@example.test".into()], ..g.clone() };
+        let p = more.patch(&g);
+        assert_eq!(p.keys().map(String::as_str).collect::<Vec<_>>(), ["members"]);
+        assert_eq!(p["members"]["mailto:b@example.test"], true);
+        let back = card(&json!({ "id": "g1", "kind": "group", "name": { "full": "Руководители отделов" },
+            "members": { "mailto:a@example.test": true, "urn:uuid:f81d4fae": true, "mailto:x@example.test": false } }));
+        assert_eq!(back, g);
     }
 
     #[test]

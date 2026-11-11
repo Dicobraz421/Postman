@@ -20,6 +20,7 @@ use pets_ui::theme::Metric;
 use postman_cache::{Cache, EmailRow, Recipients, Scan};
 use postman_core::filters::{Days, Group, Hit, Sort, arrange};
 use postman_core::fuzzy::term_spans;
+use postman_core::indexer::AttachmentHit;
 use postman_core::query::{Env, Query, Refine, suggest};
 
 use crate::Mailer;
@@ -47,6 +48,8 @@ pub(crate) struct Find {
     /// Найдено у себя (индекс или кэш) и на сервере; `None` — ответа ещё нет.
     local: Option<Vec<String>>,
     server: Option<Vec<String>>,
+    /// В каком вложении совпало (T3-10), по ключу строки: знает только свой индекс.
+    attached: Attached,
     /// Запрос к серверу этого запуска.
     ticket: Option<u64>,
     /// «Везде» (иначе — текущая папка).
@@ -60,6 +63,26 @@ impl Find {
         !self.text.is_empty()
     }
 }
+
+/// Вложения, в которых совпало, по ключу строки списка (T3-10).
+pub(crate) type Attached = Arc<HashMap<String, AttachmentHit>>;
+
+/// Подпись строки результата «во вложении: имя — …отрывок…» (T3-10); совпало только имя файла — без отрывка.
+/// Половину строки занимает имя, поэтому отрывок начинается за слово до совпадения: иначе оно уходит за край.
+pub(crate) fn attachment_line(hit: &AttachmentHit, marks: Option<&[String]>) -> String {
+    match attachment_snippet(hit, marks) {
+        None => tr!("search-in-attachment", name = hit.name.clone()),
+        Some(snippet) => tr!("search-in-attachment-text", name = hit.name.clone(), snippet = snippet),
+    }
+}
+
+/// Отрывок для [`attachment_line`]; совпало только имя — `None`.
+fn attachment_snippet(hit: &AttachmentHit, marks: Option<&[String]>) -> Option<String> {
+    (!hit.snippet.is_empty()).then(|| marks.map_or_else(|| hit.snippet.clone(), |m| cut_before(&hit.snippet, m, ATTACHMENT_LEAD)))
+}
+
+/// Знаков перед совпадением в отрывке вложения.
+const ATTACHMENT_LEAD: usize = 12;
 
 /// Что показывает список во время поиска: строка запроса, слова для подсветки, чипы «Уточнить».
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -75,6 +98,8 @@ pub(crate) struct Found {
     pub(crate) waiting: bool,
     /// Условие поиска на сервере; `None` — невыразимо.
     pub(crate) filter: Option<postman_core::model::Filter>,
+    /// В каком вложении совпало — подпись строки вместо превью.
+    pub(crate) attached: Attached,
 }
 
 /// Щелчок по чипу «Уточнить» (список → экран почты: строка поиска — у него).
@@ -95,14 +120,19 @@ impl EventEmitter<ClearRefines> for crate::list::MailList {}
 /// Отрывок текста вокруг первого совпадения (T2-27, макет `Search`): начало дальше ~40 знаков — «…» и текст от
 /// границы слова перед совпадением.
 pub(crate) fn snippet(text: &str, marks: &[String]) -> String {
+    cut_before(text, marks, 30)
+}
+
+/// Отрывок от границы слова за `lead` знаков до первого совпадения; совпадение и так близко к началу — текст как есть.
+fn cut_before(text: &str, marks: &[String], lead: usize) -> String {
     let lower = text.to_lowercase();
     let hit = marks.iter().filter(|m| !m.is_empty()).filter_map(|m| lower.find(&m.to_lowercase())).min();
     let Some(at) = hit else { return text.to_owned() };
     // Позиции — по `lower`; у кириллицы длина в байтах та же, у редких букв — нет: тогда отрывка не режем.
-    if lower.len() != text.len() || at < 40 {
+    if lower.len() != text.len() || at < lead + 10 {
         return text.to_owned();
     }
-    let from = text[..at].char_indices().rev().nth(30).map_or(0, |(i, _)| i);
+    let from = text[..at].char_indices().rev().nth(lead).map_or(0, |(i, _)| i);
     let from = text[from..at].find(' ').map_or(from, |s| from + s + 1);
     format!("…{}", &text[from..])
 }
@@ -119,7 +149,7 @@ struct Local {
 }
 
 impl Local {
-    fn run(self) -> Vec<String> {
+    fn run(self) -> (Vec<String>, HashMap<String, AttachmentHit>) {
         let text = self.query.text();
         if text.is_empty() {
             let scan = match &self.mailbox {
@@ -144,14 +174,18 @@ impl Local {
                 check(row, to);
             }
             hits.sort_by_key(|h| std::cmp::Reverse(h.0));
-            return hits.into_iter().take(LIMIT).map(|(_, id)| id).collect();
+            return (hits.into_iter().take(LIMIT).map(|(_, id)| id).collect(), HashMap::new());
         }
-        let ids = crate::live::local_search(&self.index, &self.cache, &text, self.mailbox.as_deref());
+        let hits = crate::live::local_hits(&self.index, &self.cache, &text, self.mailbox.as_deref());
+        let ids: Vec<String> = hits.iter().map(|h| h.0.clone()).collect();
+        let attached: HashMap<String, AttachmentHit> = hits.into_iter().filter_map(|(id, hit)| Some((id, hit?))).collect();
         if !self.query.has_conditions() {
-            return ids;
+            return (ids, attached);
         }
         let rows = crate::local::rows(&self.cache, &ids);
-        rows.into_iter().filter(|r| self.query.matches(&self.env, r, &crate::local::recipients(&self.cache, &r.id))).map(|r| r.id).collect()
+        let ids =
+            rows.into_iter().filter(|r| self.query.matches(&self.env, r, &crate::local::recipients(&self.cache, &r.id))).map(|r| r.id).collect();
+        (ids, attached)
     }
 }
 
@@ -256,10 +290,11 @@ impl Mailer {
         let job = Local { cache: self.cache.clone(), index: self.live.index(), query, env, mailbox, account };
         let task = cx.background_spawn(async move { job.run() });
         cx.spawn(async move |this, cx| {
-            let ids = task.await;
+            let (ids, attached) = task.await;
             let _ = this.update(cx, |m, cx| {
                 if m.find.generation == generation {
                     m.find.local = Some(ids);
+                    m.find.attached = Arc::new(attached);
                     m.arrange_found(cx);
                 }
             });
@@ -304,6 +339,7 @@ impl Mailer {
             folder,
             waiting,
             filter: self.find.filter.clone(),
+            attached: self.find.attached.clone(),
         };
         let task = cx.background_spawn(async move { job.run() });
         cx.spawn(async move |this, cx| {
@@ -753,5 +789,22 @@ mod snippet_tests {
         assert!(!s.contains("Коллеги"));
         assert_eq!(super::snippet(text, &["коллеги".into()]), text);
         assert_eq!(super::snippet(text, &["нет-такого".into()]), text);
+    }
+
+    /// Отрывок вложения (T3-10): за слово до совпадения — имя файла уже заняло полстроки; без слов — как пришёл.
+    #[test]
+    fn attachment_line_starts_near_the_match() {
+        let hit = postman_core::indexer::AttachmentHit {
+            name: "Протокол.txt".into(),
+            snippet: "Протокол совещания по складу. Решили: продлить аренду причала до 15 декабря".into(),
+        };
+        let marks = ["причала".to_string()];
+        let cut = super::attachment_snippet(&hit, Some(&marks));
+        assert_eq!(cut.as_deref(), Some("…аренду причала до 15 декабря"));
+        assert_eq!(super::attachment_snippet(&hit, None), Some(hit.snippet.clone()));
+        let near = postman_core::indexer::AttachmentHit { snippet: "Аренда причала".into(), ..hit.clone() };
+        assert_eq!(super::attachment_snippet(&near, Some(&marks)).as_deref(), Some("Аренда причала"));
+        let named = postman_core::indexer::AttachmentHit { snippet: String::new(), ..hit };
+        assert_eq!(super::attachment_snippet(&named, Some(&marks)), None);
     }
 }

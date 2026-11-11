@@ -738,6 +738,17 @@ fn cal_drills() {
     };
     pass("cal-36-hours,cal-36-zone,cal-24-reading,cal-24-look", &["--lang", "ru", "--theme", "light"]);
     pass("cal-36-kept", &[]);
+    // T3-05: календари рядом — свой каталог данных: сцены снимают флажки календарей коллег.
+    let side = tempfile::tempdir().unwrap();
+    for (names, args) in [
+        ("cal-t305-overlay,cal-t305-side,cal-t305-day,cal-t305-back,cal-t305-palette", &["--lang", "ru", "--theme", "light"][..]),
+        ("cal-t305-kept", &[][..]),
+    ] {
+        let mut c = postman(side.path(), &[&["--screens", dir.to_str().unwrap()], args].concat());
+        c.env("POSTMAN_SCREENS_ONLY", names).env("POSTMAN_SCREENS_PREFS", "1");
+        let out = run(c, Duration::from_secs(420));
+        assert!(out.status.success(), "{names}: код {:?}: {}", out.status.code(), String::from_utf8_lossy(&out.stderr));
+    }
 }
 
 /// Сценарии задач, поручений, общих ящиков, локальных папок и экспорта (`app-gpui/src/drill_tasks.rs`). Диалоги Windows обойдены:

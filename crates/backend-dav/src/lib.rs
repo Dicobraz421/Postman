@@ -591,6 +591,8 @@ impl Dav {
                 mobile: &card.mobile,
                 organization: &card.organization,
                 title: &card.title,
+                group: card.group,
+                members: &card.members,
             };
             match old.and_then(|o| self.stored(&o.id)) {
                 Some(s) => postman_compose::vcard::patch(&s.data, &c),
@@ -895,6 +897,10 @@ impl Dav {
             },
             // Справочника у CardDAV нет — подробностей человека тоже.
             Command::PersonDetails { email } => notify(SyncEvent::PersonDetails { email, person: None }),
+            // Списков рассылки справочника у CardDAV нет (T3-09).
+            Command::ExpandList { ticket, address } => {
+                notify(SyncEvent::ListMembers { ticket, address, members: Vec::new(), error: Some(postman_core::sync::ListError::Unsupported) });
+            }
             Command::CalendarAccess => notify(match self.calendar_access().await {
                 Ok(list) => SyncEvent::CalendarAccess(list),
                 Err(e) => SyncEvent::CalendarFailed(e.to_string()),

@@ -5,6 +5,7 @@
 //! Адресаты — чипами: готовые адреса — чипы (с меткой «Внешний»), в поле ввода — только набираемый адрес;
 //! «;», «,» и Enter делают его чипом, Backspace в пустом поле возвращает последний чип в поле. Подписи «Кому»,
 //! «Копия», «Скрытая» — кнопки «Кому…» (T3-03): адресная книга панелью под строками адресатов (`recipients.rs`).
+//! Личная группа (T2-47) — чип «Имя · N» с «+» (участники — чипами, как в Outlook); при отправке — адреса участников.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -30,8 +31,8 @@ use crate::Mailer;
 use crate::chrome::{glyph, icon};
 use crate::compose::compose;
 use crate::compose::{
-    Book, CloseAnswer, CloseStep, Field, Format, Model, Purpose, SentDraft, Status, accept_suggestion, apply_format, compose_field, current_token,
-    next_ticket, segments, size_text,
+    Book, CloseAnswer, CloseStep, Field, Format, Group, Model, Purpose, SentDraft, Status, accept_suggestion, apply_format, compose_field,
+    current_token, next_ticket, segments, size_text,
 };
 use crate::recipients::{Picked, Picker, PickerEvent};
 use crate::roles::{Look, Pm};
@@ -39,6 +40,8 @@ use crate::smime_seal::DirectoryStatus;
 
 /// Подсказок адреса под полем.
 const SUGGESTIONS: usize = 6;
+/// Личных групп в подсказках (T2-47) — над адресами.
+const GROUP_SUGGESTIONS: usize = 2;
 /// Подсказки — с этого числа набранных букв.
 const SUGGEST_FROM: usize = 2;
 /// Колонка подписей полей и правая колонка вкладки (макет «Новое письмо»).
@@ -402,13 +405,14 @@ impl Composer {
         true
     }
 
-    /// Backspace в пустом поле — последний чип обратно в поле.
+    /// Backspace в пустом поле — последний чип обратно в поле; чип группы (T2-47) — убрать целиком.
     fn uncommit(&mut self, f: Field, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let (mut closed, open) = segments(self.model.field(f));
         if !open.is_empty() {
             return false;
         }
         let Some(last) = closed.pop() else { return false };
+        let last = if self.model.group(&last).is_some() { String::new() } else { last };
         self.set_field(f, &closed, &last, window, cx);
         true
     }
@@ -448,6 +452,14 @@ impl Composer {
             let Some(people) = picked.as_ref().map(|picked| picked.get(f)).filter(|p| !p.is_empty()) else { continue };
             let (mut closed, open) = segments(self.model.field(f));
             for person in people {
+                // Личная группа (T2-47) — чипом группы.
+                if let Some(id) = crate::recipients::group_id(person) {
+                    let found = self.book.borrow().groups().iter().find(|g| g.id == id).map(|g| Group::of_book(g, &self.book.borrow()));
+                    if let Some(chip) = found.map(|g| self.model.add_group(g)).filter(|chip| !closed.contains(chip)) {
+                        closed.push(chip);
+                    }
+                    continue;
+                }
                 let known = closed.iter().any(|c| parse_addresses(c).0.iter().any(|a| a.email.eq_ignore_ascii_case(&person.email)));
                 if !known {
                     closed.push(person.display());
@@ -470,12 +482,84 @@ impl Composer {
         self.suggest.selected = 0;
         self.suggest.items.clear();
         let Some(f) = self.suggest.field else { return };
-        let token = current_token(self.model.field(f));
+        let token = current_token(self.model.field(f)).to_owned();
+        let token = token.as_str();
         if token.chars().count() < SUGGEST_FROM || token.contains('<') {
             return;
         }
         let now = jiff::Timestamp::now().as_second();
-        self.suggest.items = self.book.borrow().suggest(token, SUGGESTIONS, now).into_iter().map(|e| e.display()).collect();
+        let book = self.book.borrow();
+        // Личные группы (T2-47) — первыми: чип группы, участники — с именами из книги.
+        let groups: Vec<Group> = book.suggest_groups(token, GROUP_SUGGESTIONS).into_iter().map(|g| Group::of_book(g, &book)).collect();
+        let mut items: Vec<String> = groups.into_iter().map(|g| self.model.add_group(g)).collect();
+        items.extend(book.suggest(token, SUGGESTIONS, now).into_iter().map(|e| e.display()));
+        drop(book);
+        self.suggest.items = items;
+    }
+
+    /// «+» у чипа группы (T2-47): группа — участниками.
+    pub(crate) fn expand_group(&mut self, f: Field, i: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.model.expand_group(f, i) {
+            let (closed, open) = segments(self.model.field(f));
+            self.set_field(f, &closed, &open, window, cx);
+        }
+    }
+
+    /// Чип группы: значок, имя, число участников, «+» — раскрыть, «×»; подсказка — участники.
+    fn group_chip(&self, f: Field, i: usize, g: &Group, l: &Look, cx: &mut Context<Self>) -> AnyElement {
+        let id = ElementId::NamedInteger(format!("group-chip-{f:?}").into(), i as u64);
+        let expand = ElementId::NamedInteger(format!("group-chip-plus-{f:?}").into(), i as u64);
+        let remove = ElementId::NamedInteger(format!("group-chip-x-{f:?}").into(), i as u64);
+        let small = |id: ElementId, glyph: char, size: f32| {
+            div()
+                .id(id)
+                .size(px(16.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .cursor_pointer()
+                .text_color(l.text3())
+                .hover(|d| d.bg(l.pressed()).text_color(l.text()))
+                .child(icon(glyph, size))
+        };
+        let tip = g.members.iter().map(|a| a.display()).collect::<Vec<_>>().join("\n");
+        div()
+            .id(id)
+            .relative()
+            .children(crate::screens::spot(("group-chip", i)))
+            .h(px(26.))
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(6.))
+            .pl(px(3.))
+            .pr(px(4.))
+            .rounded(px(13.))
+            .bg(l.row_fill(true))
+            .text_size(px(13.))
+            .child(
+                div()
+                    .size(px(20.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .bg(l.accent())
+                    .text_color(l.on_accent())
+                    .child(icon(glyph::CONTACTS, 11.)),
+            )
+            .child(div().max_w(px(220.)).truncate().font_weight(FontWeight::SEMIBOLD).child(g.name.clone()))
+            .child(div().text_size(px(12.)).text_color(l.text2()).child(g.members.len().to_string()))
+            .child(
+                small(expand, crate::calendar::g::ADD, 9.)
+                    .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(tr!("compose-group-expand")).build(window, cx))
+                    .on_click(cx.listener(move |this, _, window, cx| this.expand_group(f, i, window, cx))),
+            )
+            .child(small(remove, glyph::CLOSE, 8.).on_click(cx.listener(move |this, _, window, cx| this.remove_chip(f, i, window, cx))))
+            .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx))
+            .into_any_element()
     }
 
     fn suggesting(&self, f: Field) -> bool {
@@ -1189,6 +1273,9 @@ impl Composer {
 
     /// Чип адресата: инициалы, имя (или адрес), «Внешний», «×»; нераспознанный — красной рамкой.
     fn chip(&self, f: Field, i: usize, text: &str, l: &Look, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(g) = self.model.group(text) {
+            return self.group_chip(f, i, g, l, cx);
+        }
         let parsed = parse_addresses(text).0.into_iter().next();
         let bad = parsed.is_none();
         let (name, email) = match &parsed {
@@ -1268,7 +1355,7 @@ impl Composer {
     fn address_row(&self, f: Field, label: &str, l: &Look, cx: &mut Context<Self>) -> AnyElement {
         let Some(state) = self.input(f) else { return div().into_any_element() };
         let (closed, _) = segments(self.model.field(f));
-        let bad = closed.iter().any(|c| parse_addresses(c).0.is_empty());
+        let bad = closed.iter().any(|c| parse_addresses(c).0.is_empty() && self.model.group(c).is_none());
         let chips: Vec<AnyElement> = closed.iter().enumerate().map(|(i, c)| self.chip(f, i, c, l, cx)).collect();
         let field = div()
             .flex_1()
@@ -1331,8 +1418,13 @@ impl Composer {
         }
         let suggestions = self.suggesting(f).then(|| {
             let items = self.suggest.items.iter().enumerate().map(|(i, s)| {
+                // Группа (T2-47): «Имя · 9 участников».
+                let text = match self.model.group(s) {
+                    Some(g) => tr!("compose-group-suggestion", name = g.name.clone(), n = g.members.len()),
+                    None => s.clone(),
+                };
                 menu_item(ElementId::NamedInteger("suggest".into(), i as u64), l, i == self.suggest.selected)
-                    .child(s.clone())
+                    .child(text)
                     .on_click(cx.listener(move |this, _, window, cx| this.accept(f, i, window, cx)))
             });
             deferred(menu_box("suggest-menu", l).top(px(ROW_H)).left(px(LABEL_W + 12.)).min_w(px(320.)).children(items)).with_priority(1)

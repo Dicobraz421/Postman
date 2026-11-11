@@ -178,7 +178,8 @@ impl Budget {
                         None => out.extend(content),
                     }
                 }
-                Inline::Image { alt, .. } => {
+                // Внешней картинки у модуля нет (сети нет и у хоста): остаётся подпись, адрес — мимо.
+                Inline::Image { alt, .. } | Inline::Remote { alt, .. } => {
                     self.chars(&alt)?;
                     if !alt.is_empty() {
                         out.push(Inline::text(alt));

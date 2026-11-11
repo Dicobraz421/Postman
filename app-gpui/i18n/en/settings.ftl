@@ -677,7 +677,7 @@ settings-cal-preview-zone = Time zone: { $zone }.
 
 # Settings: General, Security, Appearance (S5-30).
 settings-nav-security = Security
-settings-nav-security-keywords = security images links macros attachments sandbox phishing passwords tls certificate revocation sign-in
+settings-nav-security-keywords = security images domains links macros attachments sandbox phishing passwords tls certificate revocation sign-in
 settings-hint-security = Other people's mail, links and attachments, phishing reports, stored sign-ins.
 settings-nav-look = Appearance
 settings-nav-look-keywords = theme light dark contrast accent density font size avatars preview keytips key hints
@@ -832,7 +832,7 @@ settings-accent-green = Green
 settings-accent-violet = Violet
 settings-accent-graphite = Graphite
 settings-images-ask = Ask
-settings-images-ask-hint = The message asks whether to load images; without an answer they are not loaded.
+settings-images-ask-hint = The message offers to load images or to remember the sender domain; without an answer they are not loaded.
 settings-policy-pinned = Set by your organization.
 settings-tls-13 = TLS 1.3
 settings-tls-13-hint = TLS 1.3 only: servers with 1.2 stop connecting (from the next connection).

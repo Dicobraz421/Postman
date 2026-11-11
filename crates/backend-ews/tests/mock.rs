@@ -574,6 +574,48 @@ fn unchanged_meeting_is_not_fetched_again() {
     assert_eq!(details(n), 0, "те же версии — без GetItem");
 }
 
+/// Состав списка рассылки (T3-09): `ExpandList` → `ExpandDL` по адресу → `ListMembers` с участниками в порядке
+/// сервера; вложенный список — участник вида `group`, не раскрыт. Сервер отказал — `error`, участников нет.
+#[test]
+fn list_members_by_expand_dl() {
+    use postman_core::sync::ListError;
+    let (url, log) = server_with(|b| {
+        (b.contains("<m:ExpandDL") && b.contains("dev-team@example.test"))
+            .then(|| fixture("expand_dl.xml"))
+            .or_else(|| b.contains("<m:ExpandDL").then(|| fixture("expand_dl_none.xml")))
+    });
+    let live = ready(&url);
+    let n = log.lock().unwrap().len();
+    let expand = |ticket: u64, address: &str| {
+        live.commands.send(Command::ExpandList { ticket, address: address.into() }).unwrap();
+        let Event::ListMembers { ticket: t, address: a, members, error } = live.wait("ListMembers", |e| matches!(e, Event::ListMembers { .. }))
+        else {
+            unreachable!()
+        };
+        assert_eq!((t, a.as_str()), (ticket, address));
+        (members, error)
+    };
+    let (members, error) = expand(7, "dev-team@example.test");
+    assert_eq!(error, None);
+    let got: Vec<(&str, Option<&str>, &str)> = members.iter().map(|p| (p.name.as_str(), p.email.as_deref(), p.kind.as_str())).collect();
+    assert_eq!(
+        got,
+        [
+            ("Петрова Анна Сергеевна", Some("anna@example.test"), "individual"),
+            ("Смирнов Антон", Some("anton@example.test"), "individual"),
+            ("Дежурные", Some("duty@example.test"), "group"),
+            ("partner@example.test", Some("partner@example.test"), "individual"),
+        ]
+    );
+    let sent = requests(&log, n, "ExpandDL");
+    assert_eq!(sent.len(), 1, "один уровень: вложенный список не раскрываем");
+    assert!(sent[0].contains("<t:EmailAddress>dev-team@example.test</t:EmailAddress>"));
+
+    let (members, error) = expand(8, "nobody@example.test");
+    assert!(members.is_empty());
+    assert!(matches!(error, Some(ListError::Failed(e)) if e.contains("ErrorNameResolutionNoResults")), "отказ сервера — ошибкой");
+}
+
 /// Сервер без `FindPeople` (отказ схемы): справочник — `ResolveNames`, и дальше `FindPeople` не спрашивается.
 #[test]
 fn people_fall_back_to_resolve_names() {
@@ -1053,7 +1095,7 @@ fn contacts(body: &str) -> Option<String> {
         )
     } else if op("GetItem") && body.contains("AllProperties") {
         Some(fixture("get_item_contacts.xml"))
-    } else if op("CreateItem") && body.contains("<t:Contact>") {
+    } else if op("CreateItem") && (body.contains("<t:Contact>") || body.contains("<t:DistributionList>")) {
         Some(fixture("create_item.xml"))
     } else {
         None
@@ -1065,16 +1107,21 @@ fn contacts_loaded(live: &Live) -> Vec<postman_core::model::ContactCard> {
     cards
 }
 
-/// «Мои контакты»: карточки из папки (без списков рассылки); новая и правка — `CreateItem` и `UpdateItem` в
-/// «Контакты», удаление — `DeleteItem` в «Удалённые», после каждой — `ContactsLoaded`. Справочник — поиском:
-/// страницы 0 и 100 — пустые, «только поиском».
+/// «Мои контакты»: карточки из папки, личный список рассылки — группа (T2-47); новая и правка — `CreateItem` и
+/// `UpdateItem` в «Контакты», удаление — `DeleteItem` в «Удалённые», после каждой — `ContactsLoaded`. Группа: новая —
+/// `CreateItem` `DistributionList`, правка состава — добавка новых адресов и снятие убранного по ключу. Справочник —
+/// поиском: страницы 0 и 100 — пустые, «только поиском».
 #[test]
 fn exchange_contacts_and_directory() {
     let (url, log) = server_with(contacts);
     let live = ready(&url);
     live.commands.send(Command::Contacts).unwrap();
-    let cards = contacts_loaded(&live);
-    assert_eq!(cards.len(), 1, "список рассылки — не карточка");
+    let all = contacts_loaded(&live);
+    assert_eq!(all.len(), 2, "контакт и группа");
+    let group = all.iter().find(|c| c.group).cloned().expect("группа");
+    assert_eq!((group.id.as_str(), group.name.as_str()), ("AAMkADlist1", "Команда проекта"));
+    assert_eq!(group.members, ["anna@example.test", "anton@example.test"]);
+    let cards: Vec<_> = all.into_iter().filter(|c| !c.group).collect();
     assert_eq!((cards[0].id.as_str(), cards[0].name.as_str()), ("AAMkADcontact1", "Петрова Анна"));
     assert_eq!(cards[0].emails, ["anna@example.test", "a.petrova@example.test"]);
     let Event::DirectoryLoaded(dir) = live.wait("DirectoryLoaded", |e| matches!(e, Event::DirectoryLoaded(_))) else { unreachable!() };
@@ -1096,6 +1143,31 @@ fn exchange_contacts_and_directory() {
     let update = requests(&log, n, "UpdateItem").pop().expect("UpdateItem");
     assert!(update.contains(r#"<t:ItemId Id="AAMkADcontact1"/>"#) && update.contains("<t:JobTitle>Руководитель</t:JobTitle>"), "{update}");
     assert!(update.contains("<t:Department>Отдел разработки</t:Department>"), "отдел — с сервера, не стёрт: {update}");
+
+    // Группа (T2-47): новая — список рассылки с участником.
+    let n = log.lock().unwrap().len();
+    let fresh = postman_core::model::ContactCard {
+        name: "Руководители".into(),
+        group: true,
+        members: vec!["boris@example.test".into()],
+        ..Default::default()
+    };
+    live.commands.send(Command::SaveContact { card: Box::new(fresh), old: None, ticket: 4 }).unwrap();
+    live.wait("ContactSaved", |e| matches!(e, Event::ContactSaved { ticket: 4, .. }));
+    contacts_loaded(&live);
+    let create = requests(&log, n, "CreateItem").pop().expect("CreateItem");
+    assert!(create.contains("<t:DistributionList><t:DisplayName>Руководители</t:DisplayName>"), "{create}");
+    assert!(create.contains("<t:EmailAddress>boris@example.test</t:EmailAddress>"), "{create}");
+    // Правка: Антон убран, Борис добавлен; Анна — как была.
+    let n = log.lock().unwrap().len();
+    let edited = postman_core::model::ContactCard { members: vec!["anna@example.test".into(), "boris@example.test".into()], ..group.clone() };
+    live.commands.send(Command::SaveContact { card: Box::new(edited), old: Some(Box::new(group)), ticket: 5 }).unwrap();
+    live.wait("ContactSaved", |e| matches!(e, Event::ContactSaved { ticket: 5, .. }));
+    contacts_loaded(&live);
+    let update = requests(&log, n, "UpdateItem").pop().expect("UpdateItem");
+    assert!(update.contains(r#"<t:ItemId Id="AAMkADlist1"/>"#) && update.contains(r#"FieldURI="distributionlist:Members""#), "{update}");
+    assert!(update.contains("<t:EmailAddress>boris@example.test</t:EmailAddress>") && !update.contains("anna@example.test"), "{update}");
+    assert!(update.contains(r#"FieldURI="distributionlist:Members:Member" FieldIndex="AAAAAB==""#), "Антон — по ключу: {update}");
 
     let n = log.lock().unwrap().len();
     live.commands.send(Command::DeleteContact { id: "AAMkADcontact1".into(), ticket: 3 }).unwrap();

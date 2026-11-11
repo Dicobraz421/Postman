@@ -1,5 +1,6 @@
 //! Сборка vCard 4.0 (RFC 6350) для CardDAV (S7-05б): новая карточка из полей «Контактов» и правка своей карточки на
 //! своём сервере построчно — поля Postman заменяются, остальное (адреса, фото, заметки других клиентов) остаётся.
+//! Личная группа (T2-47) — `KIND:group` и участники `MEMBER:mailto:<адрес>` (RFC 6350 §6.1.4, §6.6.5).
 //! Разбор чужих .vcf — только в воркере.
 
 /// Поля карточки, которые показывает и правит Postman («Контакты», S4-02).
@@ -14,10 +15,23 @@ pub struct Card<'a> {
     pub organization: &'a str,
     /// Должность.
     pub title: &'a str,
+    /// Группа (T2-47): `KIND:group`.
+    pub group: bool,
+    /// Участники группы: адрес — `MEMBER:mailto:…`, чужая ссылка (`urn:uuid:…`) — как есть.
+    pub members: &'a [String],
 }
 
-/// Свойства, которыми владеет Postman: при правке они пишутся заново.
+/// Свойства, которыми владеет Postman: при правке они пишутся заново. У группы — ещё `KIND` и `MEMBER`
+/// ([`OWN_GROUP`]); у обычной карточки чужой `KIND` (`org`, `location`) остаётся.
 const OWN: &[&str] = &["FN", "N", "EMAIL", "TEL", "ORG", "TITLE"];
+const OWN_GROUP: &[&str] = &["KIND", "MEMBER"];
+
+/// Участник → значение `MEMBER` (URI): адрес — `mailto:`, ссылка — как есть.
+fn member_uri(member: &str) -> String {
+    let m = member.trim();
+    let is_address = m.contains('@') && !m.contains(':') && !m.contains(char::is_whitespace);
+    if is_address { format!("mailto:{m}") } else { m.to_owned() }
+}
 
 /// Экранирование TEXT (RFC 6350 §3.4); `component` — ещё и `;` (части N и ORG).
 fn text(s: &str) -> String {
@@ -43,6 +57,14 @@ fn fold(line: &str) -> String {
 fn own_lines(c: &Card<'_>) -> Vec<String> {
     let name = c.name.trim();
     let mut l = vec![format!("FN:{}", text(if name.is_empty() { c.emails.first().map_or("", |e| e.as_str()) } else { name }))];
+    if c.group {
+        // Группа: имя — только FN; участники — URI (без экранирования TEXT: значение типа URI).
+        l.push("KIND:group".into());
+        for m in c.members.iter().map(|m| m.trim()).filter(|m| !m.is_empty()) {
+            l.push(format!("MEMBER:{}", member_uri(m).replace(['\r', '\n'], "")));
+        }
+        return l;
+    }
     // N обязателен в vCard 3.0, в 4.0 — нет; имя целиком — одним полем (как JMAP `name.full`, `docs/STALWART.md` п. 8).
     l.push(format!("N:;{};;;", text(name)));
     for (i, e) in c.emails.iter().map(|e| e.trim()).filter(|e| !e.is_empty()).enumerate() {
@@ -97,7 +119,8 @@ pub fn patch(original: &str, c: &Card<'_>) -> String {
         // Группа (`item1.EMAIL`) — имя после точки.
         head.rsplit('.').next().unwrap_or(head).to_ascii_uppercase()
     };
-    let mut out: Vec<String> = lines[..end].iter().filter(|l| !OWN.contains(&name(l).as_str())).cloned().collect();
+    let own = |n: &str| OWN.contains(&n) || (c.group && OWN_GROUP.contains(&n));
+    let mut out: Vec<String> = lines[..end].iter().filter(|l| !own(name(l).as_str())).cloned().collect();
     out.extend(own_lines(c));
     out.extend(lines[end..].iter().cloned());
     join(&out)
@@ -109,7 +132,15 @@ mod tests {
 
     fn card<'a>(emails: &'a [String], phones: &'a [String]) -> Card<'a> {
         Card {
-            uid: "c1", name: "Иван Петров", emails, phones, mobile: &[], organization: "Рога и копыта", title: "Директор, отдел"
+            uid: "c1",
+            name: "Иван Петров",
+            emails,
+            phones,
+            mobile: &[],
+            organization: "Рога и копыта",
+            title: "Директор, отдел",
+            group: false,
+            members: &[],
         }
     }
 
@@ -137,5 +168,24 @@ mod tests {
         assert!(v.replace("\r\n ", "").contains("свёрнута серverом"), "{v}");
         assert!(v.contains("FN:Иван Петров\r\n") && v.contains("EMAIL;PREF=1:new@x\r\n") && v.ends_with("END:VCARD\r\n"));
         assert_eq!(patch("garbage", &card(&emails, &[])), build(&card(&emails, &[])));
+    }
+
+    /// Группа (T2-47): `KIND:group`, участники — `MEMBER:mailto:…` (чужая ссылка — как есть), без `N`, адресов и
+    /// телефонов; правка группы заменяет `KIND` и `MEMBER`, прочее (`NOTE`, `X-…`) остаётся. У обычной карточки чужой
+    /// `KIND` не трогается.
+    #[test]
+    fn group_card() {
+        let members = vec!["a@example.test".to_string(), " ".into(), "urn:uuid:f81d4fae".into()];
+        let g = Card { uid: "g1", name: "Руководители отделов", group: true, members: &members, ..Card::default() };
+        let v = build(&g);
+        let want = "UID:g1\r\nFN:Руководители отделов\r\nKIND:group\r\nMEMBER:mailto:a@example.test\r\nMEMBER:urn:uuid:f81d4fae\r\nEND:VCARD";
+        assert!(v.contains(want), "{v}");
+        assert!(!v.contains("N:;"));
+        let original = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:g1\r\nKIND:group\r\nFN:Старое\r\nMEMBER:mailto:old@example.test\r\nNOTE:x\r\nEND:VCARD\r\n";
+        let v = patch(original, &g);
+        assert!(!v.contains("old@example.test") && !v.contains("Старое") && v.matches("KIND:group").count() == 1, "{v}");
+        assert!(v.contains("NOTE:x\r\n") && v.contains("MEMBER:mailto:a@example.test\r\n"), "{v}");
+        let org = "BEGIN:VCARD\r\nVERSION:4.0\r\nKIND:org\r\nFN:ООО\r\nEND:VCARD\r\n";
+        assert!(patch(org, &card(&[], &[])).contains("KIND:org\r\n"), "чужой KIND у карточки остаётся");
     }
 }

@@ -97,6 +97,19 @@ const SCENES: &[Scene] = &[
     // T3-08: конец серии в подробностях события — «По будням, до 30.12.2027» (год не нынешний), затем «…, 5 раз».
     Scene::new("cal-t308-until", series_end, series_shown).on_request(),
     Scene::new("cal-t308-count", series_end, series_shown).continues().on_request(),
+    // T3-05 (#552, п. 2): календари рядом. Сцены снимают флажки всех календарей, кроме Ивановой, — идут своим запуском с
+    // `POSTMAN_SCREENS_PREFS=1`, по порядку. Раб. неделя наложением (как было, по умолчанию).
+    Scene::new("cal-t305-overlay", one_colleague, overlay_shown).input(SIDE_OVERLAY).on_request(),
+    // «Рядом» в командной строке: мой календарь и Ивановой — двумя блоками со своими шапками, наложения — в своём блоке.
+    Scene::new("cal-t305-side", in_cal, side_shown).input(SIDE_ON).on_request(),
+    // Тот же режим в виде «День».
+    Scene::new("cal-t305-day", in_cal, side_day).input(SIDE_DAY).on_request(),
+    // «‹» в шапке блока Ивановой — снова наложением, раб. неделя.
+    Scene::new("cal-t305-back", in_cal, overlay_back).input(SIDE_BACK).on_request(),
+    // Палитра: «рядом», Enter — снова рядом, режим записан в файл настроек.
+    Scene::new("cal-t305-palette", in_cal, side_saved).input(SIDE_PALETTE).on_request(),
+    // Второй запуск с тем же каталогом данных: календари рядом сразу, из настроек.
+    Scene::new("cal-t305-kept", start, side_kept).input(SIDE_KEPT).on_request(),
 ];
 
 /// Планёрка демо (по будням) и правило с концом серии сцены `cal-t308-…`.
@@ -608,6 +621,24 @@ const COLLEAGUES: &[Input] = &[
     Input::Until(colleague_hidden),
     Input::Press("cal-colleague-check-0"),
 ];
+
+const SIDE_OVERLAY: &[Input] = &[Input::Until(mail_ready), Input::Run(only_ivanova), Input::Until(overlay_shown)];
+
+const SIDE_ON: &[Input] = &[Input::Press("cal-mode-side"), Input::Until(side_shown)];
+
+const SIDE_DAY: &[Input] = &[Input::Keys(&["1"]), Input::Until(side_day)];
+
+const SIDE_BACK: &[Input] = &[Input::Keys(&["2"]), Input::Until(side_shown), Input::Press("cal-block-overlay-1")];
+
+const SIDE_PALETTE: &[Input] = &[
+    Input::Keys(&["ctrl-k"]),
+    Input::Until(palette_open),
+    Input::Text("рядом"), // i18n-ok: ввод сценария
+    Input::Until(palette_one),
+    Input::Keys(&["enter"]),
+];
+
+const SIDE_KEPT: &[Input] = &[Input::Until(mail_ready), Input::Keys(&["ctrl-2"]), Input::Until(in_calendar)];
 
 const OWNER: &[Input] = &[
     Input::Press("settings-cal-owner-colors"),
@@ -1637,6 +1668,92 @@ fn colleague_hidden(_: &Scene, _: &Mailer, cx: &App) -> bool {
 
 fn colleagues_shown(_: &Scene, m: &Mailer, cx: &App) -> bool {
     m.section == Section::Calendar && cal_prefs(cx).hidden_calendars.is_empty()
+}
+
+// Календари рядом (T3-05).
+
+/// Раздел «Календарь», демо-неделя видом «Раб. неделя», «сейчас» — 14:20 сегодня.
+fn one_colleague(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+    m.close_all_meetings(window, cx);
+    window.focus(&m.focus, cx);
+    m.set_section(Section::Calendar, cx);
+    let clock = jiff::Zoned::now().date().at(14, 20, 0, 0).to_zoned(jiff::tz::TimeZone::system()).ok().map(|z| z.timestamp().as_second());
+    m.cal.update(cx, |c, cx| {
+        c.clock = clock;
+        c.set_view(V::WorkWeek, cx);
+        c.go_to_demo_week(cx);
+        c.close_details(cx);
+    });
+    Ok(())
+}
+
+/// Как `start`, и снова раздел «Календарь»: прогон начинает сцену с почты. Вид и неделя — прошлой сцены.
+fn in_cal(s: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+    start(s, m, window, cx)?;
+    m.set_section(Section::Calendar, cx);
+    Ok(())
+}
+
+/// Флажок — только у календаря Ивановой; режим — наложением.
+fn only_ivanova(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+    let hidden: Vec<String> = m.cal.read(cx).colleagues.iter().map(|o| o.key()).filter(|k| k != IVANOVA).collect();
+    if hidden.is_empty() {
+        return Err("в демо нет календарей коллег".into());
+    }
+    crate::prefs::update(cx, move |p| {
+        p.calendar.hidden_calendars = hidden;
+        p.calendar.side_by_side = false;
+    });
+    Ok(())
+}
+
+fn ivanova_only(m: &Mailer, cx: &App) -> bool {
+    let c = m.cal.read(cx);
+    let hidden = cal_prefs(cx).hidden_calendars;
+    !c.colleagues.is_empty() && c.colleagues.iter().all(|o| hidden.contains(&o.key()) == (o.key() != IVANOVA))
+}
+
+fn overlay_shown(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    let c = m.cal.read(cx);
+    m.section == Section::Calendar && ivanova_only(m, cx) && c.view == V::WorkWeek && !c.side_by_side() && c.side_count() == 1
+}
+
+fn side_shown(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    let c = m.cal.read(cx);
+    m.section == Section::Calendar
+        && ivanova_only(m, cx)
+        && c.view == V::WorkWeek
+        && c.side_by_side()
+        && cal_prefs(cx).side_by_side
+        && c.side_count() == 2
+}
+
+fn side_day(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    let c = m.cal.read(cx);
+    c.view == V::Day && c.side_by_side() && c.side_count() == 2
+}
+
+fn overlay_back(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    let c = m.cal.read(cx);
+    c.view == V::WorkWeek && !c.side_by_side() && !cal_prefs(cx).side_by_side && c.side_count() == 1
+}
+
+fn palette_open(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    m.palette.as_ref().is_some_and(|p| p.view.read(cx).shown() > 0)
+}
+
+fn palette_one(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    m.palette.as_ref().is_some_and(|p| p.view.read(cx).shown() == 1)
+}
+
+/// Снова рядом — и в файле настроек.
+fn side_saved(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    m.palette.is_none() && m.cal.read(cx).side_by_side() && m.cal.read(cx).side_count() == 2 && saved().is_some_and(|p| p.calendar.side_by_side)
+}
+
+fn side_kept(_: &Scene, m: &Mailer, cx: &App) -> bool {
+    let c = m.cal.read(cx);
+    m.section == Section::Calendar && c.side_by_side() && c.side_count() == 2 && c.view == V::WorkWeek
 }
 
 fn owner_colors_off(_: &Scene, _: &Mailer, cx: &App) -> bool {

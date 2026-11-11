@@ -237,6 +237,8 @@ pub(crate) struct SettingsView {
     pub(crate) sandbox_checking: bool,
     /// «Безопасность → Каталог сертификатов» (S5-12.5б).
     pub(crate) dir: crate::settings_directory::DirState,
+    /// «Безопасность → Доверенные домены» картинок (T3-04).
+    pub(crate) domains: crate::remote_images::DomainsState,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -277,6 +279,7 @@ impl SettingsView {
             }
         }));
         let dir = crate::settings_directory::DirState::new(window, cx, &mut subscriptions);
+        let domains = crate::remote_images::DomainsState::new(window, cx, &mut subscriptions);
         let mut v = Self {
             section,
             search,
@@ -311,6 +314,7 @@ impl SettingsView {
             sandbox_help: false,
             sandbox_checking: false,
             dir,
+            domains,
             _subscriptions: subscriptions,
         };
         v.read_os(cx);
