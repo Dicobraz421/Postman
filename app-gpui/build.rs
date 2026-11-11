@@ -41,7 +41,6 @@ fn version_info(description: &str, file: &str) -> Result<String, Box<dyn Error>>
     let v = env::var("CARGO_PKG_VERSION")?;
     let n = |k: &str| env::var(k).map_err(|e| format!("{k}: {e}"));
     let comma = format!("{},{},{},0", n("CARGO_PKG_VERSION_MAJOR")?, n("CARGO_PKG_VERSION_MINOR")?, n("CARGO_PKG_VERSION_PATCH")?);
-    let license = env::var("CARGO_PKG_LICENSE").unwrap_or_default();
     Ok(format!(
         "1 VERSIONINFO\n\
          FILEVERSION {comma}\n\
@@ -59,7 +58,7 @@ fn version_info(description: &str, file: &str) -> Result<String, Box<dyn Error>>
                VALUE \"FileDescription\", \"{description}\"\n\
                VALUE \"FileVersion\", \"{v}\"\n\
                VALUE \"InternalName\", \"{file}\"\n\
-               VALUE \"LegalCopyright\", \"License: {license}\"\n\
+               VALUE \"LegalCopyright\", \"Copyright (c) 2026 Anton Antropov. All rights reserved.\"\n\
                VALUE \"OriginalFilename\", \"{file}\"\n\
                VALUE \"ProductName\", \"Postman\"\n\
                VALUE \"ProductVersion\", \"{v}\"\n\
