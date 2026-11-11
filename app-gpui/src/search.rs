@@ -20,6 +20,7 @@ use pets_ui::theme::Metric;
 use postman_cache::{Cache, EmailRow, Recipients, Scan};
 use postman_core::filters::{Days, Group, Hit, Sort, arrange};
 use postman_core::fuzzy::term_spans;
+use postman_core::indexer::AttachmentHit;
 use postman_core::query::{Env, Query, Refine, suggest};
 
 use crate::Mailer;
@@ -47,6 +48,8 @@ pub(crate) struct Find {
     /// Найдено у себя (индекс или кэш) и на сервере; `None` — ответа ещё нет.
     local: Option<Vec<String>>,
     server: Option<Vec<String>>,
+    /// В каком вложении совпало (T3-10), по ключу строки: знает только свой индекс.
+    attached: Attached,
     /// Запрос к серверу этого запуска.
     ticket: Option<u64>,
     /// «Везде» (иначе — текущая папка).
@@ -58,6 +61,18 @@ pub(crate) struct Find {
 impl Find {
     pub(crate) fn active(&self) -> bool {
         !self.text.is_empty()
+    }
+}
+
+/// Вложения, в которых совпало, по ключу строки списка (T3-10).
+pub(crate) type Attached = Arc<HashMap<String, AttachmentHit>>;
+
+/// Подпись строки результата «во вложении: имя — …отрывок…» (T3-10); совпало только имя файла — без отрывка.
+pub(crate) fn attachment_line(hit: &AttachmentHit) -> String {
+    if hit.snippet.is_empty() {
+        tr!("search-in-attachment", name = hit.name.clone())
+    } else {
+        tr!("search-in-attachment-text", name = hit.name.clone(), snippet = hit.snippet.clone())
     }
 }
 
@@ -75,6 +90,8 @@ pub(crate) struct Found {
     pub(crate) waiting: bool,
     /// Условие поиска на сервере; `None` — невыразимо.
     pub(crate) filter: Option<postman_core::model::Filter>,
+    /// В каком вложении совпало — подпись строки вместо превью.
+    pub(crate) attached: Attached,
 }
 
 /// Щелчок по чипу «Уточнить» (список → экран почты: строка поиска — у него).
@@ -119,7 +136,7 @@ struct Local {
 }
 
 impl Local {
-    fn run(self) -> Vec<String> {
+    fn run(self) -> (Vec<String>, HashMap<String, AttachmentHit>) {
         let text = self.query.text();
         if text.is_empty() {
             let scan = match &self.mailbox {
@@ -144,14 +161,18 @@ impl Local {
                 check(row, to);
             }
             hits.sort_by_key(|h| std::cmp::Reverse(h.0));
-            return hits.into_iter().take(LIMIT).map(|(_, id)| id).collect();
+            return (hits.into_iter().take(LIMIT).map(|(_, id)| id).collect(), HashMap::new());
         }
-        let ids = crate::live::local_search(&self.index, &self.cache, &text, self.mailbox.as_deref());
+        let hits = crate::live::local_hits(&self.index, &self.cache, &text, self.mailbox.as_deref());
+        let ids: Vec<String> = hits.iter().map(|h| h.0.clone()).collect();
+        let attached: HashMap<String, AttachmentHit> = hits.into_iter().filter_map(|(id, hit)| Some((id, hit?))).collect();
         if !self.query.has_conditions() {
-            return ids;
+            return (ids, attached);
         }
         let rows = crate::local::rows(&self.cache, &ids);
-        rows.into_iter().filter(|r| self.query.matches(&self.env, r, &crate::local::recipients(&self.cache, &r.id))).map(|r| r.id).collect()
+        let ids =
+            rows.into_iter().filter(|r| self.query.matches(&self.env, r, &crate::local::recipients(&self.cache, &r.id))).map(|r| r.id).collect();
+        (ids, attached)
     }
 }
 
@@ -256,10 +277,11 @@ impl Mailer {
         let job = Local { cache: self.cache.clone(), index: self.live.index(), query, env, mailbox, account };
         let task = cx.background_spawn(async move { job.run() });
         cx.spawn(async move |this, cx| {
-            let ids = task.await;
+            let (ids, attached) = task.await;
             let _ = this.update(cx, |m, cx| {
                 if m.find.generation == generation {
                     m.find.local = Some(ids);
+                    m.find.attached = Arc::new(attached);
                     m.arrange_found(cx);
                 }
             });
@@ -304,6 +326,7 @@ impl Mailer {
             folder,
             waiting,
             filter: self.find.filter.clone(),
+            attached: self.find.attached.clone(),
         };
         let task = cx.background_spawn(async move { job.run() });
         cx.spawn(async move |this, cx| {
