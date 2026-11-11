@@ -105,6 +105,8 @@ pub(crate) mod glyph {
     pub(crate) const EDIT: char = '\u{E70F}';
     pub(crate) const COPY: char = '\u{E8C8}';
     pub(crate) const TENTATIVE: char = '\u{E897}';
+    /// «Отправить и получить — все папки» (T3-02) в палитре.
+    pub(crate) const SYNC: char = '\u{E895}';
 }
 
 /// Ширина кнопки «─ □ ✕» (Windows 11).
@@ -1101,6 +1103,7 @@ fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
         .on_action(cx.listener(|this, _: &view::Notifications, _, cx| {
             this.toasts.update(cx, |t, cx| t.toggle_history(cx));
         }))
+        .on_action(cx.listener(|this, _: &sync::SendReceive, _, cx| this.send_receive(cx)))
 }
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
@@ -1125,6 +1128,11 @@ pub(crate) mod tab {
     gpui_kit::actions!(tab, [New, Next, Prev, Close]);
 }
 
+/// «Отправить и получить — все папки» (T3-02): сверка всех учётных записей сейчас.
+pub(crate) mod sync {
+    gpui_kit::actions!(sync, [SendReceive]);
+}
+
 /// Команды части (`commands.rs`: контексты и `cmd`).
 const COMMANDS: &[pets_commands::Command] = {
     use crate::commands::{MAILER, cmd};
@@ -1141,6 +1149,9 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("tab.close", &["ctrl-w"], MAILER),
         // Не Outlook: история тостов (значок 🔔 в строке состояния).
         cmd("view.notifications", &[], None),
+        // Как в Outlook: F9 — «Отправить и получить — все папки» (T3-02), во всём окне, в полях ввода тоже (там F9 —
+        // ничего).
+        cmd("sync.send_receive", &["f9"], MAILER),
     ]
 };
 

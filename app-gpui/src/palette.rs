@@ -558,6 +558,8 @@ pub(crate) fn command_icon(id: &str) -> Option<char> {
         "mail.export" | "account.export" | "export.all" => crate::export::EXPORT,
         "mail.delete" | "compose.discard" | "meeting.discard" | "contacts.delete" => DELETE,
         "mail.due" => CLOCK,
+        "sync.send_receive" => SYNC,
+        "compose.address_book" => CONTACTS,
         "mail.remind" | "view.notifications" => RINGER,
         "mail.wait" => WAIT,
         "mail.expire" => EXPIRE,
@@ -646,7 +648,7 @@ fn hidden(id: &str) -> bool {
         "meeting.longer",
         "meeting.shorter",
     ];
-    id.starts_with("palette.") || id == "mail.categorize" || STEPS.contains(&id)
+    id.starts_with("palette.") || id.starts_with("recipients.") || id == "mail.categorize" || STEPS.contains(&id)
 }
 
 impl Mailer {

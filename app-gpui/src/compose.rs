@@ -1054,6 +1054,7 @@ impl Mailer {
             max_delay,
             me: self.compose.me.clone(),
             book: self.compose.book.clone(),
+            lists: self.contacts.read(cx).list_emails(),
             mailer: cx.entity().downgrade(),
             categories,
             place,
@@ -1374,7 +1375,7 @@ const TEXTS: &[pets_i18n::Resource] = &[
 // Имя — область действий (`compose::…`), как в id команд: так обработчики читаются и их находит `docs/PARITY.md`.
 #[allow(clippy::module_inception)]
 pub(crate) mod compose {
-    gpui_kit::actions!(compose, [Send, Attach, Close, Bold, Italic, Underline, Bullets, Numbers, Link, Quote, Expand, Discard]);
+    gpui_kit::actions!(compose, [Send, Attach, Close, Bold, Italic, Underline, Bullets, Numbers, Link, Quote, Expand, Discard, AddressBook]);
 }
 
 /// Команды части (`commands.rs`: контексты и `cmd`).
@@ -1397,6 +1398,9 @@ const COMMANDS: &[pets_commands::Command] = {
         // Не Outlook (там «Открыть в новом окне»): ответ из области чтения — во вкладку.
         cmd("compose.expand", &[], COMPOSER),
         cmd("compose.discard", &[], COMPOSER),
+        // «Кому…» (T3-03): адресная книга письма панелью — щелчком по «Кому», «Копия», «Скрытая» или отсюда (в «Кому»).
+        // Без клавиши: Ctrl+Shift+B Outlook — у встречи (S5-23).
+        cmd("compose.address_book", &[], COMPOSER),
     ]
 };
 

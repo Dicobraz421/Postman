@@ -13,6 +13,8 @@ frame-category = Categorize
 frame-due = Due date
 frame-snooze = Snooze
 frame-view = View
+# Send/Receive All Folders (T3-02): the command went to every account, progress is in the status bar.
+frame-send-receive-started = Sending and receiving: all accounts and folders
 frame-more = More
 frame-vacation = Automatic replies
 frame-rules = Rules
