@@ -5964,7 +5964,7 @@ dependencies = [
 [[package]]
 name = "pets-shell"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz/pets?rev=b1e344098d9ce15bec9bfa5f273f211ca0fec81f#b1e344098d9ce15bec9bfa5f273f211ca0fec81f"
+source = "git+https://github.com/Dicobraz/pets?rev=b016cbd2232d45875ab537a96b34071c1ac7493b#b016cbd2232d45875ab537a96b34071c1ac7493b"
 dependencies = [
  "thiserror 2.0.21",
  "tracing",
