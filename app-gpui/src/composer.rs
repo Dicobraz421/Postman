@@ -452,6 +452,14 @@ impl Composer {
             let Some(people) = picked.as_ref().map(|picked| picked.get(f)).filter(|p| !p.is_empty()) else { continue };
             let (mut closed, open) = segments(self.model.field(f));
             for person in people {
+                // Личная группа (T2-47) — чипом группы.
+                if let Some(id) = crate::recipients::group_id(person) {
+                    let found = self.book.borrow().groups().iter().find(|g| g.id == id).map(|g| Group::of_book(g, &self.book.borrow()));
+                    if let Some(chip) = found.map(|g| self.model.add_group(g)).filter(|chip| !closed.contains(chip)) {
+                        closed.push(chip);
+                    }
+                    continue;
+                }
                 let known = closed.iter().any(|c| parse_addresses(c).0.iter().any(|a| a.email.eq_ignore_ascii_case(&person.email)));
                 if !known {
                     closed.push(person.display());
@@ -482,14 +490,7 @@ impl Composer {
         let now = jiff::Timestamp::now().as_second();
         let book = self.book.borrow();
         // Личные группы (T2-47) — первыми: чип группы, участники — с именами из книги.
-        let groups: Vec<Group> = book
-            .suggest_groups(token, GROUP_SUGGESTIONS)
-            .into_iter()
-            .map(|g| Group {
-                name: g.name.clone(),
-                members: g.members.iter().map(|e| Address::new(book.get(e).map(|x| x.name.clone()).unwrap_or_default(), e)).collect(),
-            })
-            .collect();
+        let groups: Vec<Group> = book.suggest_groups(token, GROUP_SUGGESTIONS).into_iter().map(|g| Group::of_book(g, &book)).collect();
         let mut items: Vec<String> = groups.into_iter().map(|g| self.model.add_group(g)).collect();
         items.extend(book.suggest(token, SUGGESTIONS, now).into_iter().map(|e| e.display()));
         drop(book);

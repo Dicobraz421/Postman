@@ -6,6 +6,12 @@ recipients-kind-contact = Контакт
 recipients-kind-directory = Справочник
 recipients-kind-recent = Переписка
 recipients-kind-list = Список рассылки
+recipients-kind-group = Группа
+recipients-group-members = { $n ->
+    [one] { $n } участник
+    [few] { $n } участника
+   *[many] { $n } участников
+}
 recipients-add-to = Кому →
 recipients-add-cc = Копия →
 recipients-add-bcc = Скрытая →
