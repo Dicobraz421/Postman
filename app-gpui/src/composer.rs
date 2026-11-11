@@ -11,10 +11,12 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use gpui_kit::component::input::{
-    Backspace, Editor, EditorState, Enter, IndentInline, Input, InputEvent, InputState, MoveDown, MoveUp, TextDecoration, TextDecorationCollection,
+    Backspace, Editor, EditorState, Enter, IndentInline, Input, InputEvent, InputState, MoveDown, MoveUp, OutdentInline, TextDecoration,
+    TextDecorationCollection,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -48,6 +50,9 @@ const SUGGEST_FROM: usize = 2;
 const LABEL_W: f32 = 64.0;
 const W_SIDE: f32 = 360.0;
 const ROW_H: f32 = 40.0;
+/// Картинки текста (подпись, T3-07): сторона кадра из воркера и высота полосы под текстом.
+const INLINE_IMAGE_SIDE: u32 = 400;
+const INLINE_STRIP_H: f32 = 48.0;
 
 /// Где письмо.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -87,6 +92,8 @@ pub(crate) struct Open {
     pub(crate) screens: bool,
     /// Подписи учётной записи (S5-09): подпись по умолчанию — вместо подписи Identity, все — в меню «Подпись».
     pub(crate) prefs: AccountPrefs,
+    /// Песочница: HTML вставки из Word и браузера (T3-06), картинки подписи (T3-07).
+    pub(crate) worker: Arc<Mutex<postman_worker::Client>>,
 }
 
 /// Подсказки адреса под активным полем.
@@ -168,6 +175,11 @@ pub(crate) struct Composer {
     pub(crate) prefs: AccountPrefs,
     /// Шаблон ждёт значений своих полей (T2-52): строка над текстом письма, не окно.
     pub(crate) tpl_ask: Option<TplAsk>,
+    worker: Arc<Mutex<postman_worker::Client>>,
+    /// Картинки текста (подпись, T3-07) — кадры из воркера по `cid`; `None` — не раскодировалась.
+    pub(crate) images: std::collections::HashMap<String, Option<Arc<RenderImage>>>,
+    /// HTML вставки разбирает воркер (T3-06).
+    pub(crate) pasting: bool,
     /// `--screens`: сколько раз письмо нарисовано.
     screens: Option<u32>,
     _subscriptions: Vec<Subscription>,
@@ -309,6 +321,9 @@ impl Composer {
             prefs: open.prefs,
             screens: open.screens.then_some(0),
             tpl_ask: None,
+            worker: open.worker,
+            images: std::collections::HashMap::new(),
+            pasting: false,
             _subscriptions: subscriptions,
         }
     }
@@ -888,6 +903,162 @@ impl Composer {
         cx.notify();
     }
 
+    /// Текст письма заменён кнопкой или вставкой: в поле, выделение, оформление, модель, автосохранение.
+    fn set_body(&mut self, next: String, sel: std::ops::Range<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        self.body.update(cx, |s, cx| {
+            s.replace_all(next.clone(), window, cx);
+            s.set_selected_range(sel, cx);
+            s.focus(window, cx);
+        });
+        self.model.set(Field::Body, next);
+        self.paint_markdown(cx);
+        self.schedule_autosave(cx);
+        cx.notify();
+    }
+
+    /// «Таблица» (T3-06): пустая таблица у курсора, курсор — в первой ячейке.
+    pub(crate) fn insert_table(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (text, at) = {
+            let s = self.body.read(cx);
+            (s.value().to_string(), s.selected_range().end)
+        };
+        let (next, sel) = crate::compose::insert_table(&text, at, crate::compose::TABLE_COLS, crate::compose::TABLE_ROWS);
+        self.set_body(next, sel, window, cx);
+    }
+
+    /// Tab и Shift+Tab в таблице — по ячейкам (T3-06); вне таблицы — как было. `true` — клавиша взята.
+    fn table_tab(&mut self, back: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let (text, at) = {
+            let s = self.body.read(cx);
+            (s.value().to_string(), s.selected_range().start)
+        };
+        let Some((next, sel)) = crate::compose::table_tab(&text, at, back) else { return false };
+        self.set_body(next, sel, window, cx);
+        true
+    }
+
+    /// Вставка из Word или браузера (T3-06): HTML буфера обмена → IR в воркере → Markdown письма у курсора. Пока
+    /// воркер разбирает — поле не трогаем; не вышло — вставляется текст буфера (`plain`), как раньше.
+    pub(crate) fn paste_html(&mut self, html: String, plain: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let (text, sel) = {
+            let s = self.body.read(cx);
+            (s.value().to_string(), s.selected_range())
+        };
+        self.pasting = true;
+        let worker = self.worker.clone();
+        let missing = crate::reading::worker_missing();
+        let task = cx.background_spawn(async move {
+            if missing {
+                return Err("worker is missing".to_owned());
+            }
+            let mut w = worker.lock().unwrap_or_else(PoisonError::into_inner);
+            w.render(&postman_worker::Request::Html(html)).map(crate::compose::paste_markdown)
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            let _ = this.update_in(cx, |c, window, cx| {
+                c.pasting = false;
+                let md = match result {
+                    Ok(md) if !md.is_empty() => md,
+                    Ok(_) => plain.unwrap_or_default(),
+                    Err(e) => {
+                        tracing::warn!("clipboard HTML is pasted as text: {e}");
+                        plain.unwrap_or_default()
+                    }
+                };
+                // Пока разбирали, текст могли изменить — вставка у нынешнего курсора.
+                let (now, sel) = {
+                    let s = c.body.read(cx);
+                    let v = s.value().to_string();
+                    let sel = if v == text { sel.clone() } else { s.selected_range() };
+                    (v, sel)
+                };
+                let (a, b) = (sel.start.min(sel.end).min(now.len()), sel.start.max(sel.end).min(now.len()));
+                if md.is_empty() || !now.is_char_boundary(a) || !now.is_char_boundary(b) {
+                    cx.notify();
+                    return;
+                }
+                let next = format!("{}{md}{}", &now[..a], &now[b..]);
+                let at = a + md.len();
+                c.set_body(next, at..at, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Картинки текста (подпись, T3-07), ещё не раскодированные, — в воркер (песочница), как картинки писем.
+    fn decode_inline_images(&mut self, cx: &mut Context<Self>) {
+        let todo: Vec<(String, Vec<u8>)> =
+            self.model.inline_images().into_iter().filter(|(cid, _)| !self.images.contains_key(cid)).map(|(cid, a)| (cid, a.data.clone())).collect();
+        for (cid, data) in todo {
+            self.images.insert(cid.clone(), None);
+            if crate::reading::worker_missing() {
+                continue;
+            }
+            let worker = self.worker.clone();
+            let task = cx.background_spawn(async move {
+                let mut w = worker.lock().unwrap_or_else(PoisonError::into_inner);
+                w.decode_image(&data, INLINE_IMAGE_SIDE).and_then(crate::reading::render_image)
+            });
+            cx.spawn(async move |this, cx| {
+                let result = task.await;
+                let _ = this.update(cx, |c, cx| match result {
+                    Ok(image) => {
+                        c.images.insert(cid, Some(image));
+                        cx.notify();
+                    }
+                    Err(e) => tracing::warn!("signature image {cid} is not shown: {e}"),
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// Полоса под текстом: картинки, на которые он ссылается (логотип подписи), — так их увидит получатель.
+    fn inline_strip(&self, l: &Look) -> Option<Stateful<Div>> {
+        let images = self.model.inline_images();
+        if images.is_empty() {
+            return None;
+        }
+        let items: Vec<AnyElement> = images
+            .into_iter()
+            .map(|(cid, a)| match self.images.get(&cid).cloned().flatten() {
+                Some(image) => {
+                    let size = image.size(0);
+                    let (w, h) = (size.width.0 as f32, size.height.0 as f32);
+                    let scale = (INLINE_STRIP_H / h.max(1.)).min(1.);
+                    div().flex_none().child(img(image).w(px(w * scale)).h(px(h * scale))).into_any_element()
+                }
+                None => div()
+                    .flex_none()
+                    .px(px(8.))
+                    .py(px(2.))
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(l.border())
+                    .text_size(px(12.))
+                    .text_color(l.text2())
+                    .child(a.name.clone())
+                    .into_any_element(),
+            })
+            .collect();
+        Some(
+            div()
+                .id("compose-inline-images")
+                .children(crate::screens::spot("compose-inline-images"))
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .px(px(20.))
+                .py(px(6.))
+                .border_t_1()
+                .border_color(l.border())
+                .child(div().flex_none().text_size(px(12.)).text_color(l.text2()).child(tr!("compose-inline-images")))
+                .children(items),
+        )
+    }
+
     fn sync_body(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let body = self.model.body.clone();
         self.body.update(cx, |s, cx| s.replace_all(body, window, cx));
@@ -1076,6 +1247,8 @@ fn default_signature(model: &mut Model, prefs: &AccountPrefs, reply: bool) -> bo
         return false;
     }
     model.set_default_signature(&text);
+    // Картинки подписи (T3-07): логотип — вложением inline, текст ссылается на него `cid:`.
+    model.attach_inline(prefs.sign_images());
     true
 }
 
@@ -1474,6 +1647,14 @@ impl Composer {
             .child(fmt("fmt-numbers", Format::Numbers, "cmd-compose-numbers", cx).text_size(px(12.)).child("1."))
             .child(fmt("fmt-link", Format::Link, "cmd-compose-link", cx).child(icon(glyph::LINK, 16.)))
             .child(fmt("fmt-quote", Format::Quote, "cmd-compose-quote", cx).child(icon(glyph::QUOTE, 16.)))
+            // «Таблица» (T3-06): таблица GFM 3×2 с заголовком у курсора, Tab — по ячейкам.
+            .child(
+                quiet("fmt-table", l)
+                    .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(tr!("compose-fmt-table-tip")).build(window, cx))
+                    .child(icon(glyph::TABLE, 16.))
+                    .when(wide, |d| d.child(tr!("compose-fmt-table")))
+                    .on_click(cx.listener(|this, _, window, cx| this.insert_table(window, cx))),
+            )
             .child(sep())
             .child(
                 quiet("tb-attach", l)
@@ -1713,6 +1894,7 @@ impl Composer {
     fn choose_signature(&mut self, s: String, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = Menu::None;
         self.model.set_signature(&s);
+        self.model.attach_inline(self.prefs.sign_images());
         self.sync_body(window, cx);
         self.schedule_autosave(cx);
         cx.notify();
@@ -1738,23 +1920,48 @@ impl Composer {
         deferred(self.close_menu_out(menu, cx)).with_priority(1).into_any_element()
     }
 
-    /// Текст письма: Markdown с живым отображением (S5-27), шрифт интерфейса, а не кода.
-    fn content(&self, window: &Window) -> AnyElement {
+    /// Текст письма: Markdown с живым отображением (S5-27), шрифт интерфейса, а не кода. Tab в таблице — по ячейкам,
+    /// вставка HTML (Word, браузер) — Markdown с таблицами (T3-06); под текстом — его картинки (подпись, T3-07).
+    fn content(&self, window: &Window, l: &Look, cx: &mut Context<Self>) -> AnyElement {
         // Шрифт и размер — как у текста окна (редактор по умолчанию — моноширинный).
         let text = window.text_style();
+        let weak = cx.entity().downgrade();
+        let editor = Editor::new(&self.body)
+            .appearance(false)
+            .font_family(text.font_family.clone())
+            .text_size(text.font_size)
+            .line_height(relative(1.5))
+            .h(relative(1.))
+            .on_paste(move |item, window, cx| {
+                // Чужой HTML — только в воркер; без HTML — обычная вставка текста.
+                let Some(html) = crate::screens::clipboard_html(crate::compose::PASTE_HTML_MAX) else { return false };
+                let plain = item.text();
+                weak.update(cx, |c, cx| c.paste_html(html, plain, window, cx)).is_ok()
+            });
         div()
             .flex_1()
             .min_h_0()
-            .px(px(16.))
-            .py(px(8.))
+            .flex()
+            .flex_col()
             .child(
-                Editor::new(&self.body)
-                    .appearance(false)
-                    .font_family(text.font_family.clone())
-                    .text_size(text.font_size)
-                    .line_height(relative(1.5))
-                    .h(relative(1.)),
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .px(px(16.))
+                    .py(px(8.))
+                    .child(editor)
+                    .capture_action(cx.listener(|this, _: &IndentInline, window, cx| {
+                        if this.table_tab(false, window, cx) {
+                            cx.stop_propagation();
+                        }
+                    }))
+                    .capture_action(cx.listener(|this, _: &OutdentInline, window, cx| {
+                        if this.table_tab(true, window, cx) {
+                            cx.stop_propagation();
+                        }
+                    })),
             )
+            .children(self.inline_strip(l))
             .into_any_element()
     }
 
@@ -2410,6 +2617,7 @@ impl Render for Composer {
             self.show_bcc |= !self.model.bcc.trim().is_empty();
         }
         self.refresh_recipient_checks();
+        self.decode_inline_images(cx);
         // Поиск сертификатов (S5-12 Ф4) — экрану почты, не посреди отрисовки.
         if let Some((addrs, from)) = self.resolve_pending.take() {
             let mailer = self.mailer.clone();
@@ -2446,7 +2654,7 @@ impl Render for Composer {
             .children(self.later_picker(&l, cx))
             .when(inline, |d| d.children(self.attachment_chips(&l, cx)))
             .children(self.template_ask_row(&l, cx))
-            .child(self.content(window))
+            .child(self.content(window, &l, cx))
             .when(inline, |d| d.children(self.inline_checks(&l, cx)))
             // Ответ на письмо общего ящика (S5-28): «От» — свой адрес или письмо у коллеги.
             .children(self.shared.as_ref().and_then(|r| r.note(&self.model.from().email)).map(|t| crate::shared::note_line(t, &l).my(px(6.))))
@@ -2465,6 +2673,7 @@ impl Render for Composer {
             .on_action(cx.listener(|this, _: &compose::Numbers, window, cx| this.format(Format::Numbers, window, cx)))
             .on_action(cx.listener(|this, _: &compose::Link, window, cx| this.format(Format::Link, window, cx)))
             .on_action(cx.listener(|this, _: &compose::Quote, window, cx| this.format(Format::Quote, window, cx)))
+            .on_action(cx.listener(|this, _: &compose::Table, window, cx| this.insert_table(window, cx)))
             .on_action(cx.listener(|this, _: &compose::Expand, _, cx| {
                 if this.place == Place::Inline {
                     cx.emit(ComposerEvent::Expand);

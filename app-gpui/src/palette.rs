@@ -571,6 +571,7 @@ pub(crate) fn command_icon(id: &str) -> Option<char> {
         "mail.report_phishing" => PHISHING,
         "thread.toggle" | "thread.fold" | "thread.expand" | "thread.collapse" => CONVERSATION,
         "thread.quotes" | "compose.quote" => QUOTE,
+        "compose.table" => crate::chrome::glyph::TABLE,
         "thread.next" | "attach.next" | "tab.next" | "calendar.next_week" | "meeting.next_day" => CHEVRON_RIGHT,
         "thread.prev" | "attach.prev" | "tab.prev" | "calendar.prev_week" | "meeting.prev_day" => CHEVRON_LEFT,
         "attach.preview" => PREVIEW,

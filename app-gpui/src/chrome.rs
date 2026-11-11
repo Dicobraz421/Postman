@@ -60,6 +60,9 @@ pub(crate) mod glyph {
     pub(crate) const BULLETS: char = '\u{E8FD}';
     pub(crate) const LINK: char = '\u{E71B}';
     pub(crate) const QUOTE: char = '\u{E9B2}';
+    /// Таблица и картинка письма (T3-06, T3-07): «ViewAll» и «Picture» Segoe Fluent Icons.
+    pub(crate) const TABLE: char = '\u{E8A9}';
+    pub(crate) const PICTURE: char = '\u{E8B9}';
     pub(crate) const LOCK: char = '\u{E72E}';
     pub(crate) const TAG: char = '\u{E8EC}';
     pub(crate) const CHECK: char = '\u{E73E}';

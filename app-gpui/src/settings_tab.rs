@@ -153,6 +153,8 @@ pub(crate) struct Info {
     pub(crate) cache: Option<std::path::PathBuf>,
     /// Песочница последнего разбора письма («Безопасность», S5-30); `None` — ещё не разбирали.
     pub(crate) sandbox: Option<postman_worker::Level>,
+    /// Песочница: картинки подписей в предпросмотре (T3-07).
+    pub(crate) worker: Option<std::sync::Arc<std::sync::Mutex<postman_worker::Client>>>,
     /// Кэш писем своей учётной записи: счёт писем категорий, проверка правил (в фоне).
     pub(crate) db: Option<postman_cache::Cache>,
     /// Правила на сервере (авто-назначение категорий, T2-53); `None` — у сервера правил нет или ещё не пришли.

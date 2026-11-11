@@ -23,6 +23,8 @@ pub struct Look {
     pub heading: u8,
     /// Маркер пункта списка (`-`, `*`, `1.`).
     pub list: bool,
+    /// Таблица GFM (T3-06): ячейки на подложке, строка заголовка — жирным; `|` и строка `---` — разметка.
+    pub table: bool,
     /// Знаки разметки — приглушить.
     pub markup: bool,
 }
@@ -48,7 +50,7 @@ pub fn display(md: &str) -> Vec<Span> {
             f(l);
         }
     };
-    let opts = Options::ENABLE_STRIKETHROUGH;
+    let opts = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES;
     let mut underline: Option<Range<usize>> = None;
     let mut code: Vec<Range<usize>> = Vec::new();
     for (ev, r) in Parser::new_ext(md, opts).into_offset_iter() {
@@ -63,6 +65,25 @@ pub fn display(md: &str) -> Vec<Span> {
                     set(r.start..r.start + marks + spaces, &|l| l.markup = true);
                 }
             }
+            Event::Start(Tag::Table(_)) => {
+                set(r.clone(), &|l| l.table = true);
+                // `|` (не экранированные) и строка выравнивания (`| --- |`, вторая строка таблицы) — разметка.
+                let mut at = r.start;
+                for (n, line) in src.split_inclusive('\n').enumerate() {
+                    if n == 1 {
+                        set(at..at + line.trim_end().len(), &|l| l.markup = true);
+                    } else {
+                        let b = line.as_bytes();
+                        for (i, &c) in b.iter().enumerate() {
+                            if c == b'|' && (i == 0 || b[i - 1] != b'\\') {
+                                set(at + i..at + i + 1, &|l| l.markup = true);
+                            }
+                        }
+                    }
+                    at += line.len();
+                }
+            }
+            Event::Start(Tag::TableHead) => set(r.clone(), &|l| l.strong = true),
             Event::Start(Tag::Strong) => {
                 set(r.clone(), &|l| l.strong = true);
                 wrap(&mut set, &r, 2);
@@ -224,6 +245,18 @@ mod tests {
     fn nested_lists() {
         let md = "- один\n  - вложенный\n    1. первый\n    2. второй\n- два\n";
         assert_eq!(of(md, |l| l.list), ["-", "-", "1.", "2.", "-"]);
+    }
+
+    /// Таблица GFM (T3-06): ячейки — таблица, заголовок — жирный, `|` и строка выравнивания — разметка, `\|` — текст.
+    #[test]
+    fn table() {
+        let md = "Итоги:\n\n| Город | План |\n| ----- | ---- |\n| Омск  | 1\\|2 |\n";
+        assert!(of(md, |l| l.table && !l.markup).iter().any(|s| s.contains("Омск")));
+        assert!(of(md, |l| l.strong && !l.markup).iter().any(|s| s.contains("Город")));
+        let marks = markup(md);
+        assert!(marks.contains(&"| ----- | ---- |"), "{marks:?}");
+        assert_eq!(marks.iter().filter(|m| **m == "|").count(), 6, "по три у строк заголовка и данных, `\\|` — текст: {marks:?}");
+        assert!(of(md, |l| l.table).iter().all(|s| !s.contains("Итоги")));
     }
 
     /// `<u>…</u>` — подчёркнутый; теги — разметка.

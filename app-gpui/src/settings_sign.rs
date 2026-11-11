@@ -7,15 +7,21 @@
 //! `{должность}`, `{телефон}` из профиля учётной записи (свои поля раздела); у шаблона — команда `/…`, файлы, поля
 //! `{…}` со «Спрашивать значения полей при вставке» (`postman_core::fill`). Справа — «Предпросмотр» нового письма и
 //! ответа с подписью, как его увидит получатель.
+//!
+//! T3-07 (решение владельца 2026-11-11): «Картинка» — логотип в подпись (PNG, JPEG, GIF до 1 МБ, выбор файла
+//! Windows): в тексте подписи — `![имя](cid:…)`, байты — файлом рядом с настройками (`SignImage`), в письме — вложение
+//! inline. Предпросмотр показывает картинку (раскодирует воркер, как картинки писем).
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, PoisonError};
 
 use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use pets_i18n::tr;
 use pets_ui::theme::Metric;
-use postman_core::prefs::{AccountPrefs, Signature, Template, Writer};
+use postman_core::prefs::{AccountPrefs, ImageError, SignImage, Signature, Template, Writer};
 
 use crate::buttons::button;
 use crate::roles::Look;
@@ -38,6 +44,10 @@ pub(crate) struct SignEdit {
     ask: bool,
     /// Открыто меню «Вставить поле».
     field_menu: bool,
+    /// Картинки подписи (T3-07): остаются те, на которые ссылается текст.
+    images: Vec<SignImage>,
+    /// Картинку не взяли (велика, не картинка, не прочиталась) — строкой под текстом.
+    image_error: Option<String>,
 }
 
 /// Поля профиля для меню «Вставить поле»: ключ и что это.
@@ -66,6 +76,8 @@ pub(crate) struct SignState {
     /// Поля профиля — заново из загруженных настроек (при отрисовке).
     profile_sync: bool,
     pub(crate) preview: PreviewMode,
+    /// Кадры картинок подписей для предпросмотра по `cid` (воркер); `None` — не раскодировалась.
+    pub(crate) images: HashMap<String, Option<Arc<RenderImage>>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -106,6 +118,7 @@ impl SignState {
             profile,
             profile_sync: true,
             preview: PreviewMode::New,
+            images: HashMap::new(),
             _subscriptions: subs,
         }
     }
@@ -168,6 +181,7 @@ impl SettingsView {
             let s = p.signatures.iter().find(|s| s.id == id);
             (s.map(|s| s.name.clone()), None, s.map(|s| s.text.clone()), s.and_then(|s| s.identity.clone()))
         };
+        let images = if template { Vec::new() } else { p.signatures.iter().find(|s| s.id == id).map(|s| s.images.clone()).unwrap_or_default() };
         let (command, attachments, ask) = tpl.map_or((String::new(), Vec::new(), true), |t| (t.command, t.attachments, t.ask));
         let command = cx.new(|cx| InputState::new(window, cx).placeholder(tr!("settings-tpl-command-placeholder")).default_value(command));
         let name =
@@ -177,7 +191,8 @@ impl SettingsView {
         let text =
             cx.new(|cx| TextareaState::new(window, cx).placeholder(tr!("settings-sign-text-placeholder")).default_value(text.unwrap_or_default()));
         name.update(cx, |s, cx| s.focus(window, cx));
-        self.sign.edit = Some(SignEdit { id, template, name, subject, text, identity, command, attachments, ask, field_menu: false });
+        self.sign.edit =
+            Some(SignEdit { id, template, name, subject, text, identity, command, attachments, ask, field_menu: false, images, image_error: None });
         cx.notify();
     }
 
@@ -201,7 +216,9 @@ impl SettingsView {
                 None => p.templates.push(t),
             }
         } else {
-            let s = Signature { id: e.id.clone(), name, identity: e.identity.clone(), text };
+            // Картинка, ссылку на которую стёрли из текста, уходит из подписи (и её файл — с диска).
+            let images = e.images.iter().filter(|i| text.contains(&format!("cid:{}", i.cid))).cloned().collect();
+            let s = Signature { id: e.id.clone(), name, identity: e.identity.clone(), text, images };
             match p.signatures.iter_mut().find(|x| x.id == e.id) {
                 Some(x) => *x = s,
                 None => p.signatures.push(s),
@@ -270,6 +287,95 @@ impl SettingsView {
             s.focus(window, cx);
         });
         cx.notify();
+    }
+
+    /// «Картинка» (T3-07): выбор файла Windows, чтение в фоне; PNG, JPEG или GIF до 1 МБ — в подпись, ссылкой
+    /// `![имя](cid:…)` с новой строки у курсора текста.
+    fn sign_pick_image(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: None });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = paths.await else { return };
+            let Some(path) = paths.into_iter().next() else { return };
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let file = postman_core::files::safe_name(&name);
+            let read = cx
+                .background_spawn(async move {
+                    // Размер — до чтения: большой файл в память не тянем.
+                    let len = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
+                    if len > postman_core::prefs::MAX_SIGN_IMAGE as u64 {
+                        return Ok(Err(ImageError::TooLarge));
+                    }
+                    std::fs::read(&path).map_err(|e| e.to_string()).map(|data| SignImage::new(&file, data, now_ms()))
+                })
+                .await;
+            let name = path_name(&name);
+            let _ = this.update_in(cx, |v, window, cx| {
+                let Some(e) = &mut v.sign.edit else { return };
+                match read {
+                    Ok(Ok(img)) => {
+                        e.image_error = None;
+                        let token = img.markdown();
+                        e.images.push(img);
+                        v.sign_insert_line(token, window, cx);
+                    }
+                    Ok(Err(ImageError::TooLarge)) => e.image_error = Some(tr!("settings-sign-image-too-large", name = name)),
+                    Ok(Err(ImageError::NotImage)) => e.image_error = Some(tr!("settings-sign-image-not-image", name = name)),
+                    Err(error) => e.image_error = Some(tr!("settings-sign-image-failed", name = name, error = error)),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Строка в текст подписи у курсора (своей строкой): ссылка на картинку.
+    fn sign_insert_line(&mut self, line: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(e) = &self.sign.edit else { return };
+        let text = e.text.clone();
+        let (value, at) = {
+            let s = text.read(cx);
+            (s.value().to_string(), s.selected_range().end)
+        };
+        let at = if value.is_char_boundary(at.min(value.len())) { at.min(value.len()) } else { value.len() };
+        let lead = if at == 0 || value[..at].ends_with('\n') { "" } else { "\n" };
+        let trail = if value[at..].is_empty() || value[at..].starts_with('\n') { "" } else { "\n" };
+        let next = format!("{}{lead}{line}{trail}{}", &value[..at], &value[at..]);
+        text.update(cx, |s, cx| {
+            s.set_value(next, window, cx);
+            s.focus(window, cx);
+        });
+    }
+
+    /// Картинки подписей для предпросмотра — в воркер (песочница), как картинки писем; раскодированные не повторяем.
+    fn sign_decode(&mut self, images: Vec<SignImage>, cx: &mut Context<Self>) {
+        let Some(worker) = self.info.worker.clone() else { return };
+        for img in images {
+            if self.sign.images.contains_key(&img.cid) {
+                continue;
+            }
+            self.sign.images.insert(img.cid.clone(), None);
+            if crate::reading::worker_missing() {
+                continue;
+            }
+            let worker = worker.clone();
+            let data = img.data.clone();
+            let task = cx.background_spawn(async move {
+                let mut w = worker.lock().unwrap_or_else(PoisonError::into_inner);
+                w.decode_image(&data, PREVIEW_IMAGE_SIDE).and_then(crate::reading::render_image)
+            });
+            let cid = img.cid;
+            cx.spawn(async move |this, cx| {
+                let result = task.await;
+                let _ = this.update(cx, |v, cx| match result {
+                    Ok(image) => {
+                        v.sign.images.insert(cid, Some(image));
+                        cx.notify();
+                    }
+                    Err(e) => tracing::warn!("signature image {cid} is not shown: {e}"),
+                });
+            })
+            .detach();
+        }
     }
 
     /// «Прикрепить файл» к шаблону: системный выбор файлов, пути — в шаблон.
@@ -380,6 +486,13 @@ impl SettingsView {
                         },
                     )))
                     .children(menu),
+            )
+            .child(div().w(px(1.)).h(px(16.)).mx_1().bg(l.border()))
+            .child(
+                tool("settings-sign-image", tr!("settings-sign-image"))
+                    .gap_1()
+                    .child(crate::chrome::icon(crate::chrome::glyph::PICTURE, 14.))
+                    .on_click(cx.listener(|this, _, window, cx| this.sign_pick_image(window, cx))),
             )
     }
 
@@ -501,6 +614,16 @@ impl SettingsView {
                 ),
             )
             .when(!e.template, |d| d.child(div().pl(px(126.)).text_size(px(12.)).text_color(l.text2()).child(tr!("settings-sign-fields"))))
+            .when(!e.template, |d| d.child(div().pl(px(126.)).text_size(px(12.)).text_color(l.text2()).child(tr!("settings-sign-image-hint"))))
+            .children(e.image_error.clone().map(|err| {
+                div()
+                    .id("settings-sign-image-error")
+                    .children(crate::screens::spot("settings-sign-image-error"))
+                    .pl(px(126.))
+                    .text_size(px(12.))
+                    .text_color(l.error())
+                    .child(err)
+            }))
             .when(e.template, |d| d.children(self.tpl_extras(e, l, cx)))
             .child(
                 div()
@@ -534,6 +657,7 @@ impl SettingsView {
         let (name, text, identity) = editing
             .or_else(|| p.signature(&me, reply).or(p.signatures.first()).map(|s| (s.name.clone(), s.text.clone(), s.identity.clone())))
             .unwrap_or_default();
+        let images = &self.sign.images;
         let mut profile = p.profile.clone();
         if profile.name.trim().is_empty() {
             profile.name = tr!("settings-sign-preview-me");
@@ -567,7 +691,16 @@ impl SettingsView {
             ))
             .child(div().h(px(1.)).bg(l.border()))
             .child(div().text_size(px(12.)).child(if reply { tr!("settings-sign-preview-body-re") } else { tr!("settings-sign-preview-body") }))
-            .child(div().flex().flex_col().text_size(px(12.)).text_color(l.text2()).children(signature.lines().map(md_line).collect::<Vec<_>>()))
+            .child(
+                div()
+                    .id("settings-sign-preview-text")
+                    .children(crate::screens::spot("settings-sign-preview-text"))
+                    .flex()
+                    .flex_col()
+                    .text_size(px(12.))
+                    .text_color(l.text2())
+                    .children(signature.lines().map(|line| preview_line(line, images)).collect::<Vec<_>>()),
+            )
             .when(reply, |d| {
                 d.child(
                     div()
@@ -627,6 +760,10 @@ impl SettingsView {
             }
             self.sign.profile_sync = false;
         }
+        // Картинки предпросмотра (T3-07): правимой подписи и сохранённых — в воркер, если ещё не раскодированы.
+        let mut shown: Vec<SignImage> = self.sign.edit.as_ref().map(|e| e.images.clone()).unwrap_or_default();
+        shown.extend(self.sign.prefs.sign_images().cloned());
+        self.sign_decode(shown, cx);
         let p = self.sign.prefs.clone();
         let editing = self.sign.edit.as_ref().map(|e| (e.id.clone(), e.template));
         // Подписи.
@@ -794,8 +931,9 @@ impl SettingsView {
 pub(crate) fn screen_sample(identities: &[String]) -> AccountPrefs {
     let mut p = AccountPrefs::default();
     let text = "С уважением,\n**{имя}**\n{должность}".to_owned(); // i18n-ok: образец подписи
-    p.signatures.push(Signature { id: "s1".into(), name: "Основная".into(), identity: None, text }); // i18n-ok: образец
-    p.signatures.push(Signature { id: "s2".into(), name: "Короткая".into(), identity: None, text: "— Иван".into() }); // i18n-ok: образец
+    p.signatures.push(Signature { id: "s1".into(), name: "Основная".into(), identity: None, text, images: Vec::new() }); // i18n-ok: образец
+    p.signatures
+        .push(Signature { id: "s2".into(), name: "Короткая".into(), identity: None, text: "— Иван".into(), images: Vec::new() }); // i18n-ok: образец
     p.templates.push(Template {
         id: "t1".into(),
         name: "Коммерческое предложение".into(),                   // i18n-ok: образец шаблона
@@ -812,6 +950,86 @@ pub(crate) fn screen_sample(identities: &[String]) -> AccountPrefs {
         p.defaults.insert(me.clone(), postman_core::prefs::Defaults { new: Some("s1".into()), reply: Some("s2".into()) });
     }
     p
+}
+
+/// Образец для снимков T3-07: основная подпись — с логотипом (`![…](cid:…)` под должностью), по умолчанию для новых
+/// писем всех адресов `identities`.
+pub(crate) fn screen_sample_logo(identities: &[String]) -> AccountPrefs {
+    let mut p = screen_sample(identities);
+    let Ok(img) = SignImage::new("logo.png", sample_logo(), 1_000) else { return p };
+    if let Some(s) = p.signatures.iter_mut().find(|s| s.id == "s1") {
+        s.text = format!("{}\n{}", s.text, img.markdown());
+        s.images.push(img);
+    }
+    for me in identities {
+        p.defaults.insert(me.clone(), postman_core::prefs::Defaults { new: Some("s1".into()), reply: Some("s2".into()) });
+    }
+    p
+}
+
+/// Логотип образца: 192×48, синяя плашка с тремя белыми полосами (PNG собирается здесь — файлов в репозитории нет).
+pub(crate) fn sample_logo() -> Vec<u8> {
+    let (w, h) = (192u32, 48u32);
+    let mut px = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let edge = x < 4 || y < 4 || x >= w - 4 || y >= h - 4;
+            let stripe = (12..36).contains(&y) && [(16, 40), (48, 72), (80, 104)].iter().any(|&(a, b)| (a..b).contains(&x));
+            let bar = (20..28).contains(&y) && (116..176).contains(&x);
+            let rgba: [u8; 4] = if edge {
+                [0, 0, 0, 0]
+            } else if stripe || bar {
+                [255, 255, 255, 255]
+            } else {
+                [0, 103, 192, 255]
+            };
+            px.extend_from_slice(&rgba);
+        }
+    }
+    let mut out = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut out, w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        let written = enc.write_header().and_then(|mut wr| wr.write_image_data(&px));
+        if let Err(e) = written {
+            tracing::warn!("sample logo: {e}");
+        }
+    }
+    out
+}
+
+/// Сторона кадра картинки подписи из воркера и высота её в предпросмотре.
+const PREVIEW_IMAGE_SIDE: u32 = 400;
+const PREVIEW_IMAGE_H: f32 = 48.0;
+
+/// Имя файла для строки ошибки.
+fn path_name(name: &str) -> String {
+    if name.is_empty() { "?".into() } else { name.to_owned() }
+}
+
+/// Строка предпросмотра подписи: картинки `![…](cid:…)` — кадром (не раскодирована — её подписью), остальное —
+/// разметкой письма.
+fn preview_line(line: &str, images: &HashMap<String, Option<Arc<RenderImage>>>) -> Div {
+    let Some(at) = line.find("![") else { return md_line(line) };
+    let rest = &line[at..];
+    let parsed = rest.find("](cid:").and_then(|m| {
+        let alt = &rest[2..m];
+        let tail = &rest[m + "](cid:".len()..];
+        let close = tail.find(')')?;
+        Some((alt, &tail[..close], &rest[m + "](cid:".len() + close + 1..]))
+    });
+    let Some((alt, cid, after)) = parsed else { return md_line(line) };
+    let picture = match images.get(cid).cloned().flatten() {
+        Some(image) => {
+            let size = image.size(0);
+            let (w, h) = (size.width.0 as f32, size.height.0 as f32);
+            let scale = (PREVIEW_IMAGE_H / h.max(1.)).min(1.);
+            div().py_1().child(img(image).w(px(w * scale)).h(px(h * scale)))
+        }
+        None => div().italic().child(format!("[{alt}]")),
+    };
+    div().flex().flex_wrap().items_center().gap_1().child(md_line(&line[..at])).child(picture).child(preview_line(after, images))
 }
 
 /// Строка подписи с разметкой письма: `**жирный**`, `*курсив*` (предпросмотр).

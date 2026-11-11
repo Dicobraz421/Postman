@@ -322,7 +322,8 @@ impl Model {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (&self.to, &self.cc, &self.bcc, &self.subject, &self.body).hash(&mut h);
         (self.confidential, self.wait, &self.category).hash(&mut h);
-        for a in &self.base.attachments {
+        // Картинки текста (подпись, T3-07) идут за текстом: их ссылки `cid:` уже в нём.
+        for a in self.base.attachments.iter().filter(|a| a.inline_cid.is_none()) {
             (&a.name, a.data.len(), &a.blob_id).hash(&mut h);
         }
         h.finish()
@@ -449,6 +450,8 @@ impl Model {
         }
         d.subject = self.subject.clone();
         d.markdown = self.body.clone();
+        // Картинка текста, на которую текст больше не ссылается (сменили подпись), — не уходит.
+        d.attachments.retain(|a| a.inline_cid.as_ref().is_none_or(|cid| self.body.contains(&format!("cid:{cid}"))));
         d.keywords = self.keywords(jiff::Zoned::now().date());
         d.sign = for_send && self.sign;
         // «Конфиденциально» = шифрование (S5-12 Ф4); черновик — только себе (решение владельца №5).
@@ -594,6 +597,36 @@ impl Model {
             self.status = Status::Large(total);
         }
         self.refresh_text_checks();
+    }
+
+    /// Картинки подписи (T3-07): те, на которые ссылается текст (`cid:…`), — вложениями inline; уже вложенные — не
+    /// повторяются. `true` — что-то добавилось.
+    pub(crate) fn attach_inline<'a>(&mut self, images: impl Iterator<Item = &'a postman_core::prefs::SignImage>) -> bool {
+        let mut added = false;
+        for img in images {
+            let used = self.body.contains(&format!("cid:{}", img.cid));
+            let have = self.base.attachments.iter().any(|a| a.inline_cid.as_deref() == Some(img.cid.as_str()));
+            if used && !have {
+                self.base.attachments.push(Attachment {
+                    name: img.name.clone(),
+                    mime: img.mime.clone(),
+                    data: img.data.as_ref().clone(),
+                    inline_cid: Some(img.cid.clone()),
+                    blob_id: None,
+                });
+                added = true;
+            }
+        }
+        added
+    }
+
+    /// Картинки текста, на которые он ссылается: `cid` и байты (полоса под текстом письма).
+    pub(crate) fn inline_images(&self) -> Vec<(String, &Attachment)> {
+        self.base
+            .attachments
+            .iter()
+            .filter_map(|a| a.inline_cid.clone().filter(|cid| self.body.contains(&format!("cid:{cid}"))).map(|cid| (cid, a)))
+            .collect()
     }
 
     pub(crate) fn remove_attachment(&mut self, i: usize) {
@@ -812,6 +845,250 @@ pub(crate) fn apply_format(text: &str, sel: Range<usize>, f: Format) -> (String,
             (out, range)
         }
     }
+}
+
+// --- вставка из Word и браузера (T3-06) ---
+
+/// Больше HTML из буфера обмена в воркер не шлём: вставится простой текст.
+pub(crate) const PASTE_HTML_MAX: usize = 8 << 20;
+
+/// HTML из буфера обмена, разобранный воркером в IR, — Markdown письма: таблицы (GFM), списки, жирный, курсив,
+/// ссылки, заголовки; остальное — текстом. Картинок у вставки нет: `cid:` чужого документа письму не принадлежит.
+pub(crate) fn paste_markdown(mut doc: postman_ir::Document) -> String {
+    use postman_ir::{Block, Inline};
+    fn inlines(v: &mut Vec<Inline>) {
+        v.retain(|i| !matches!(i, Inline::Image { .. }));
+        for i in v.iter_mut() {
+            if let Inline::Link { content, .. } = i {
+                inlines(content);
+            }
+        }
+    }
+    fn blocks(v: &mut Vec<Block>) {
+        v.retain(|b| !matches!(b, Block::Figure));
+        for b in v.iter_mut() {
+            match b {
+                Block::Paragraph { content, .. } | Block::Heading { content, .. } => inlines(content),
+                Block::Quote(inner) => blocks(inner),
+                Block::List { items, .. } => items.iter_mut().for_each(blocks),
+                Block::Table(rows) => {
+                    rows.iter_mut().flatten().for_each(inlines);
+                    // Заголовок таблицы и так жирный: `**…**` Word в нём — лишние знаки.
+                    for cell in rows.iter_mut().take(1).flatten() {
+                        for i in cell.iter_mut() {
+                            if let Inline::Text { marks, .. } = i {
+                                marks.bold = false;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    blocks(&mut doc.blocks);
+    align_tables(postman_ir::to_markdown(&doc).trim_matches('\n'))
+}
+
+/// Таблицы текста — с выровненными `|` (вставка из Word): читается в поле, отправляется так же.
+pub(crate) fn align_tables(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    while at < text.len() {
+        match table_around(text, at).filter(|r| r.start == at) {
+            Some(r) => {
+                let lines: Vec<&str> = text[r.clone()].split('\n').collect();
+                let rows: Vec<Vec<String>> = lines.iter().enumerate().filter(|(n, _)| *n != 1).map(|(_, l)| table_cells(l)).collect();
+                out.push_str(&format_table(&rows).0);
+                at = r.end;
+            }
+            None => {
+                let end = text[at..].find('\n').map_or(text.len(), |i| at + i + 1);
+                out.push_str(&text[at..end]);
+                at = end;
+                continue;
+            }
+        }
+        if at < text.len() {
+            // `\n` после таблицы.
+            out.push('\n');
+            at += 1;
+        }
+    }
+    out
+}
+
+// --- таблицы GFM (T3-06, решение владельца 2026-11-11) ---
+
+/// Таблица кнопки «Таблица»: столбцов и строк данных (под строкой заголовка).
+pub(crate) const TABLE_COLS: usize = 3;
+pub(crate) const TABLE_ROWS: usize = 2;
+/// Ширина пустой ячейки в знаках: столбцы видны и до ввода.
+const CELL_MIN: usize = 3;
+
+/// Ячейки строки таблицы: между `|`, без крайних пробелов; `\|` — знак внутри ячейки.
+fn table_cells(line: &str) -> Vec<String> {
+    let t = line.trim();
+    let t = t.strip_prefix('|').unwrap_or(t);
+    let t = if t.ends_with('|') && !t.ends_with("\\|") { &t[..t.len() - 1] } else { t };
+    let (mut out, mut cur, mut esc) = (Vec::new(), String::new(), false);
+    for c in t.chars() {
+        if c == '|' && !esc {
+            out.push(cur.trim().to_owned());
+            cur.clear();
+        } else {
+            cur.push(c);
+        }
+        esc = c == '\\' && !esc;
+    }
+    out.push(cur.trim().to_owned());
+    out
+}
+
+/// Строка выравнивания `| --- | :-: |`.
+fn is_delimiter(line: &str) -> bool {
+    let cells = table_cells(line);
+    !cells.is_empty() && cells.iter().all(|c| !c.is_empty() && c.trim_matches(':').chars().all(|ch| ch == '-') && c.contains('-'))
+}
+
+/// Строки таблицы вокруг байта `at`: подряд идущие строки, начинающиеся с `|`, вторая — строка выравнивания.
+/// Итог — байты `[начало, конец)` (без последнего `\n`).
+fn table_around(text: &str, at: usize) -> Option<std::ops::Range<usize>> {
+    let at = floor_char(text, at);
+    let is_row = |l: &str| l.trim_start().starts_with('|');
+    let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+    if !is_row(&text[line_start..line_end]) {
+        return None;
+    }
+    let mut start = line_start;
+    while start > 0 {
+        let prev = text[..start - 1].rfind('\n').map_or(0, |i| i + 1);
+        if !is_row(&text[prev..start - 1]) {
+            break;
+        }
+        start = prev;
+    }
+    let mut end = line_end;
+    while end < text.len() {
+        let next = text[end + 1..].find('\n').map_or(text.len(), |i| end + 1 + i);
+        if !is_row(&text[end + 1..next]) {
+            break;
+        }
+        end = next;
+    }
+    let lines: Vec<&str> = text[start..end].split('\n').collect();
+    (lines.len() >= 2 && is_delimiter(lines[1])).then_some(start..end)
+}
+
+/// Таблица с выровненными `|`: ширина столбца — по самой длинной ячейке (в знаках). Итог — текст и байты содержимого
+/// каждой ячейки (с дополнением пробелами) по строкам; строка выравнивания — без ячеек.
+fn format_table(rows: &[Vec<String>]) -> (String, Vec<Vec<std::ops::Range<usize>>>) {
+    let cols = rows.iter().map(Vec::len).max().unwrap_or(0).max(1);
+    let width = |c: usize| rows.iter().filter_map(|r| r.get(c)).map(|s| s.chars().count()).max().unwrap_or(0).max(CELL_MIN);
+    let widths: Vec<usize> = (0..cols).map(width).collect();
+    let (mut out, mut cells) = (String::new(), Vec::new());
+    for (n, row) in rows.iter().enumerate() {
+        if n > 0 {
+            out.push('\n');
+        }
+        let mut ranges = Vec::new();
+        out.push('|');
+        for (c, w) in widths.iter().enumerate() {
+            let cell = row.get(c).map_or("", String::as_str);
+            out.push(' ');
+            let start = out.len();
+            out.push_str(cell);
+            out.push_str(&" ".repeat(w - cell.chars().count()));
+            ranges.push(start..out.len());
+            out.push_str(" |");
+        }
+        cells.push(ranges);
+        if n == 0 {
+            out.push('\n');
+            out.push('|');
+            for w in &widths {
+                out.push(' ');
+                out.push_str(&"-".repeat(*w));
+                out.push_str(" |");
+            }
+        }
+    }
+    (out, cells)
+}
+
+/// «Таблица»: пустая таблица `cols`×`rows` (и строка заголовка) с новой строки у курсора; выделена первая ячейка
+/// заголовка — набранное встанет в неё.
+pub(crate) fn insert_table(text: &str, at: usize, cols: usize, rows: usize) -> (String, std::ops::Range<usize>) {
+    let at = floor_char(text, at);
+    let empty: Vec<Vec<String>> = vec![vec![String::new(); cols.max(1)]; rows + 1];
+    let (table, cells) = format_table(&empty);
+    let before = &text[..at];
+    let lead = if before.is_empty() || before.ends_with("\n\n") {
+        ""
+    } else if before.ends_with('\n') {
+        "\n"
+    } else {
+        "\n\n"
+    };
+    let after = &text[at..];
+    let trail = if after.is_empty() {
+        "\n"
+    } else if after.starts_with("\n\n") {
+        ""
+    } else if after.starts_with('\n') {
+        "\n"
+    } else {
+        "\n\n"
+    };
+    let start = at + lead.len();
+    let first = cells.first().and_then(|r| r.first()).cloned().unwrap_or(0..0);
+    (format!("{before}{lead}{table}{trail}{after}"), start + first.start..start + first.end)
+}
+
+/// Tab (`back` — Shift+Tab) в таблице: к следующей (предыдущей) ячейке, после последней — новая строка. Таблица
+/// выравнивается заново; выделено содержимое ячейки. Курсор не в таблице или Shift+Tab в первой ячейке — `None`.
+pub(crate) fn table_tab(text: &str, at: usize, back: bool) -> Option<(String, std::ops::Range<usize>)> {
+    let range = table_around(text, at)?;
+    let src = &text[range.clone()];
+    let lines: Vec<&str> = src.split('\n').collect();
+    let mut rows: Vec<Vec<String>> = lines.iter().enumerate().filter(|(n, _)| *n != 1).map(|(_, l)| table_cells(l)).collect();
+    let cols = rows.iter().map(Vec::len).max().unwrap_or(1);
+    for r in &mut rows {
+        r.resize(cols, String::new());
+    }
+    // Где курсор: строка (без строки выравнивания) и ячейка — по числу `|` до него.
+    let rel = at.min(range.end) - range.start;
+    let line_no = src[..rel].matches('\n').count();
+    let line_start = src[..rel].rfind('\n').map_or(0, |i| i + 1);
+    let before = &src[line_start..rel];
+    let pipes = before.match_indices('|').filter(|(i, _)| *i == 0 || before.as_bytes()[i - 1] != b'\\').count();
+    let row = if line_no == 0 { 0 } else { line_no - 1 };
+    let col = pipes.saturating_sub(1).min(cols - 1);
+    let (next_row, next_col) = if line_no == 1 {
+        // На строке выравнивания: Tab — в первую ячейку данных, Shift+Tab — в последнюю заголовка.
+        if back { (0, cols - 1) } else { (1.min(rows.len() - 1), 0) }
+    } else if back {
+        match (row, col) {
+            (0, 0) => return None,
+            (r, 0) => (r - 1, cols - 1),
+            (r, c) => (r, c - 1),
+        }
+    } else if col + 1 < cols {
+        (row, col + 1)
+    } else {
+        if row + 1 >= rows.len() {
+            rows.push(vec![String::new(); cols]);
+        }
+        (row + 1, 0)
+    };
+    let (table, cells) = format_table(&rows);
+    let cell = cells.get(next_row).and_then(|r| r.get(next_col)).cloned()?;
+    // Выделить набранное в ячейке (без дополнения пробелами).
+    let typed = rows[next_row][next_col].len();
+    let sel = if typed == 0 { cell.clone() } else { cell.start..cell.start + typed };
+    let out = format!("{}{table}{}", &text[..range.start], &text[range.end..]);
+    Some((out, range.start + sel.start..range.start + sel.end))
 }
 
 /// Поле адресов: готовые адреса (до последнего разделителя `;` или `,`, вне кавычек и `<…>`) и набираемый.
@@ -1168,6 +1445,7 @@ impl Mailer {
             place,
             screens: self.screens.is_some(),
             prefs: self.compose.prefs.clone(),
+            worker: self.reading.read(cx).worker.clone(),
         };
         let (handle, mailer) = (self.window, cx.entity());
         cx.defer(move |cx| {
@@ -1489,7 +1767,7 @@ const TEXTS: &[pets_i18n::Resource] = &[
 // Имя — область действий (`compose::…`), как в id команд: так обработчики читаются и их находит `docs/PARITY.md`.
 #[allow(clippy::module_inception)]
 pub(crate) mod compose {
-    gpui_kit::actions!(compose, [Send, Attach, Close, Bold, Italic, Underline, Bullets, Numbers, Link, Quote, Expand, Discard, AddressBook]);
+    gpui_kit::actions!(compose, [Send, Attach, Close, Bold, Italic, Underline, Bullets, Numbers, Link, Quote, Table, Expand, Discard, AddressBook]);
 }
 
 /// Команды части (`commands.rs`: контексты и `cmd`).
@@ -1509,6 +1787,8 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("compose.numbers", &[], COMPOSER),
         cmd("compose.link", &[], COMPOSER),
         cmd("compose.quote", &[], COMPOSER),
+        // Таблица GFM (T3-06): кнопкой панели, без клавиши (Outlook — меню «Вставка → Таблица»); Tab — по ячейкам.
+        cmd("compose.table", &[], COMPOSER),
         // Не Outlook (там «Открыть в новом окне»): ответ из области чтения — во вкладку.
         cmd("compose.expand", &[], COMPOSER),
         cmd("compose.discard", &[], COMPOSER),
@@ -1547,7 +1827,97 @@ pub(crate) mod scenes {
         Scene::new("reading-draft", drafts, draft_ready).input(DRAFT_OPEN),
         // «Продолжить» — черновик во вкладке письма; сохранение заменит версию на сервере.
         Scene::new("draft-edit", stay, draft_tab_ready).input(&[screens::Input::Press("draft-edit")]).continues(),
+        // T3-06: «Таблица» в конце текста, «Город», Tab, «План» — таблица GFM, столбцы выровнены по набранному.
+        Scene::new("compose-t306-table", table_letter, table_typed).input(TABLE).on_request(),
+        // T3-06: вставка HTML из Word (буфер обмена — образец сцены, Windows не трогаем): таблица, список, жирный.
+        Scene::new("compose-t306-paste", table_letter, table_pasted).input(PASTE).on_request(),
+        // T3-07: новое письмо с подписью по умолчанию с логотипом: картинка под текстом, вложение inline.
+        Scene::new("compose-t307-sign-image", sign_letter, sign_image_shown).on_request(),
     ];
+
+    /// Письмо сцен T3-06: адресат есть — курсор в тексте.
+    fn table_letter(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.cal.update(cx, |c, cx| c.close_details(cx));
+        m.set_section(Section::Mail, cx);
+        screens::remember_composer(m, cx);
+        let draft = postman_compose::Draft {
+            to: vec![postman_compose::Address::new("Мария Иванова", "m.ivanova@corp.example")], // i18n-ok: образец
+            subject: "План продаж".into(),                                                      // i18n-ok: образец
+            markdown: "Добрый день!\n\nПлан на неделю:".into(),                                 // i18n-ok: образец
+            ..Default::default()
+        };
+        m.open_compose(draft, cx);
+        Ok(())
+    }
+
+    /// Новое письмо сцены нарисовано (не прежнее), курсор — в конце текста.
+    fn letter_drawn(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        let before = screens::composer_before(m);
+        screens::compose_tab(m).is_some_and(|c| Some(c.read(cx).id) != before && c.read(cx).drawn())
+    }
+
+    const TABLE: &[screens::Input] = &[
+        screens::Input::Until(letter_drawn),
+        screens::Input::Keys(&["ctrl-end"]),
+        screens::Input::Press("fmt-table"),
+        screens::Input::Text("Город"), // i18n-ok: ввод сценария
+        screens::Input::Keys(&["tab"]),
+        screens::Input::Text("План"), // i18n-ok: ввод сценария
+    ];
+
+    fn table_typed(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        screens::compose_tab(m).is_some_and(|c| c.read(cx).model.body.contains("| Город | План |\n| ----- | ---- |")) // i18n-ok: ввод сценария
+    }
+
+    /// HTML буфера обмена сцены: так его кладёт Word (таблица, список, жирный, шрифт и размер — без них).
+    const WORD_HTML: &str = r#"<html><body><!--StartFragment--><p class=MsoNormal><b>Итоги недели</b></p>
+        <ul><li>Омск — план выполнен</li><li>Томск — <i>в работе</i></li></ul>
+        <table class=MsoTableGrid border=1><tr><td><p><b>Город</b></p></td><td><p><b>План</b></p></td><td><p><b>Факт</b></p></td></tr>
+        <tr><td><p>Омск</p></td><td><p>120</p></td><td><p>131</p></td></tr>
+        <tr><td><p>Томск</p></td><td><p>80</p></td><td><p>64</p></td></tr></table>
+        <p><span style='font-size:20.0pt;font-family:"Arial"'>Без шрифтов и размеров</span></p><!--EndFragment--></body></html>"#; // i18n-ok: образец
+
+    fn paste_word(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        screens::hold_clipboard_html(Some(WORD_HTML.to_owned()));
+        let html = screens::clipboard_html(super::PASTE_HTML_MAX).ok_or("no clipboard HTML")?;
+        let c = screens::compose_tab(m).cloned().ok_or("no compose tab")?;
+        c.update(cx, |c, cx| c.paste_html(html, None, window, cx));
+        Ok(())
+    }
+
+    const PASTE: &[screens::Input] =
+        &[screens::Input::Until(letter_drawn), screens::Input::Keys(&["ctrl-end", "enter", "enter"]), screens::Input::Run(paste_word)];
+
+    fn table_pasted(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        screens::compose_tab(m).is_some_and(|c| {
+            let c = c.read(cx);
+            !c.pasting && c.model.body.contains("| Омск  | 120  | 131  |") && c.model.body.contains("**Итоги недели**") // i18n-ok: образец
+        })
+    }
+
+    fn sign_letter(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.cal.update(cx, |c, cx| c.close_details(cx));
+        m.set_section(Section::Mail, cx);
+        screens::remember_composer(m, cx);
+        let mut ids: Vec<String> = super::demo_senders().into_iter().map(|s| s.address.email).collect();
+        ids.extend(m.compose.sender_addresses());
+        m.compose.prefs = crate::settings_sign::screen_sample_logo(&ids);
+        let draft = postman_compose::Draft {
+            to: vec![postman_compose::Address::new("Мария Иванова", "m.ivanova@corp.example")], // i18n-ok: образец
+            subject: "Коммерческое предложение".into(),                                         // i18n-ok: образец
+            ..Default::default()
+        };
+        m.open_compose(draft, cx);
+        Ok(())
+    }
+
+    fn sign_image_shown(s: &Scene, m: &Mailer, cx: &App) -> bool {
+        letter_drawn(s, m, cx)
+            && screens::compose_tab(m).is_some_and(|c| {
+                let c = c.read(cx);
+                c.model.inline_images().len() == 1 && c.images.values().all(Option::is_some) && !c.images.is_empty()
+            })
+    }
 
     fn drafts(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
         m.set_section(Section::Mail, cx);
@@ -1707,7 +2077,8 @@ mod tests {
     // Не `use super::*`: вместе с gpui пришёл бы атрибут `gpui::test`, он перекрывает `#[test]`.
     use super::{
         AUTOSAVE, Address, Attachment, Check, CloseAnswer, CloseStep, Command, Draft, Field, Format, Group, Instant, Model, Purpose, Release, Status,
-        accept_suggestion, apply_format, compose_field, current_token, group_ref, own_end, segments, send_later, swap_signature,
+        accept_suggestion, align_tables, apply_format, compose_field, current_token, group_ref, insert_table, own_end, paste_markdown, segments,
+        send_later, swap_signature, table_tab,
     };
     use postman_core::contacts::{AddressBook, Source};
 
@@ -1957,6 +2328,82 @@ mod tests {
         let mut m = Model::new(Draft::default(), None, "Старая", Instant::now());
         m.set_signature("Новая");
         assert_eq!((m.body.as_str(), m.signature.as_str()), ("\n\nНовая", "Новая"));
+    }
+
+    /// T3-07: картинка подписи, на которую ссылается текст, — вложение inline (не в списке вложений, не «изменение»
+    /// нетронутого письма); сменили подпись — картинка в письмо не уходит.
+    #[test]
+    fn signature_image_goes_inline() {
+        let png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0];
+        let img = postman_core::prefs::SignImage::new("logo.png", png.clone(), 7).unwrap();
+        let sig = format!("Иван\n{}", img.markdown());
+        let mut m = Model::new(Draft::default(), None, "", Instant::now());
+        m.set_default_signature(&sig);
+        assert!(m.attach_inline(std::iter::once(&img)));
+        assert!(!m.attach_inline(std::iter::once(&img)), "второй раз не прикладывается");
+        assert!(!m.is_dirty(), "нетронутое письмо с подписью закрывается без вопроса");
+        assert_eq!(m.attachments().count(), 0, "в списке вложений картинки нет");
+        assert_eq!(m.inline_images().len(), 1);
+        m.set(Field::To, "ivan@corp.example; ".into());
+        let d = m.draft(true).unwrap();
+        assert_eq!(d.attachments.len(), 1);
+        assert_eq!(d.attachments[0].inline_cid.as_deref(), Some("sig7@postman"));
+        assert_eq!(d.attachments[0].data, png);
+        m.set_signature("Без картинки");
+        assert!(m.draft(true).unwrap().attachments.is_empty(), "ссылки нет — картинка не уходит");
+        assert!(m.inline_images().is_empty());
+    }
+
+    /// T3-06: «Таблица» — пустая таблица GFM с новой строки, выделена первая ячейка; HTML письма — таблица.
+    #[test]
+    fn table_is_inserted_at_cursor() {
+        let (t, sel) = insert_table("Итоги", "Итоги".len(), 3, 2);
+        assert_eq!(t, "Итоги\n\n|     |     |     |\n| --- | --- | --- |\n|     |     |     |\n|     |     |     |\n");
+        assert_eq!(&t[sel.clone()], "   ");
+        assert_eq!(sel.start, "Итоги\n\n| ".len());
+        let (t, _) = insert_table("", 0, 2, 1);
+        assert_eq!(t, "|     |     |\n| --- | --- |\n|     |     |\n");
+        let (t, _) = insert_table("до\nпосле", "до\n".len(), 1, 1);
+        assert_eq!(t, "до\n\n|     |\n| --- |\n|     |\n\nпосле");
+        let html = postman_ir::markdown_to_html(&insert_table("", 0, 2, 1).0);
+        assert!(html.contains("<table>") && html.contains("<td>"), "{html}");
+    }
+
+    /// T3-06: Tab — к следующей ячейке (столбцы выравниваются по набранному), в последней — новая строка; Shift+Tab —
+    /// назад; вне таблицы — не наше.
+    #[test]
+    fn tab_moves_between_cells() {
+        let (t, sel) = insert_table("", 0, 2, 1);
+        let t = format!("{}Город{}", &t[..sel.start], &t[sel.end..]);
+        let (t, sel) = table_tab(&t, sel.start + "Город".len(), false).unwrap();
+        assert_eq!(t, "| Город |     |\n| ----- | --- |\n|       |     |\n");
+        assert_eq!(&t[sel.clone()], "   ", "вторая ячейка заголовка");
+        let (back, bsel) = table_tab(&t, sel.start, true).unwrap();
+        assert_eq!(&back[bsel], "Город", "Shift+Tab — назад, набранное выделено");
+        // Из последней ячейки — новая строка.
+        let last = t.rfind("|     |").unwrap() + 2;
+        let (t2, sel2) = table_tab(&t, last, false).unwrap();
+        assert_eq!(t2.lines().count(), 4);
+        assert_eq!(sel2.start, t2.lines().take(3).map(|l| l.len() + 1).sum::<usize>() + 2);
+        assert!(table_tab(&t, 0, true).is_none(), "Shift+Tab в первой ячейке — не наше");
+        assert!(table_tab("просто текст", 3, false).is_none());
+        assert!(table_tab("| a | b |\nне таблица", 2, false).is_none(), "без строки выравнивания — не таблица");
+    }
+
+    /// T3-06: вставка из Word — таблица (выровнена), список, жирный, ссылка, заголовок; картинки и прочее — нет.
+    #[test]
+    fn pasted_html_becomes_markdown() {
+        let html = r#"<h2>Отчёт</h2><p><b>Важно</b> и <i>срочно</i>, <a href="https://corp.example/r">ссылка</a></p>
+            <ul><li>один</li><li>два</li></ul>
+            <table><tr><th>Город</th><th>План</th></tr><tr><td>Омск</td><td>10</td></tr></table>
+            <p><img src="cid:x"><span style="font-size:20pt;font-family:Arial">шрифт</span></p>"#;
+        let md = paste_markdown(postman_ir::from_html(html));
+        assert!(md.contains("## Отчёт"), "{md}");
+        assert!(md.contains("**Важно**") && md.contains("*срочно*") && md.contains("[ссылка](https://corp.example/r)"), "{md}");
+        assert!(md.contains("- один") && md.contains("- два"), "{md}");
+        assert!(md.contains("| Город | План |\n| ----- | ---- |\n| Омск  | 10   |"), "{md}");
+        assert!(!md.contains("cid:") && md.contains("шрифт"), "{md}");
+        assert_eq!(align_tables("текст\n|a|bb|\n|-|-|\n|ccc|d|\nконец"), "текст\n| a   | bb  |\n| --- | --- |\n| ccc | d   |\nконец");
     }
 
     /// S5-06б: кнопки панели форматирования вставляют разметку вокруг выделения или в начало строк.

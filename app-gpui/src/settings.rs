@@ -143,6 +143,7 @@ impl Mailer {
             identities,
             cache: self.account_cache(),
             sandbox: self.sandbox,
+            worker: Some(self.reading.read(cx).worker.clone()),
             db: Some(self.cache.clone()),
             // Демо — правила образца (как в разделе «Правила»).
             rules: if self.backend.is_live() {
@@ -803,6 +804,8 @@ pub(crate) mod scenes {
         Scene::new("settings-sign", sign, section_ready),
         // Тот же раздел с правкой шаблона (T2-52): команда «/кп», файлы, поля и «Спрашивать значения при вставке».
         Scene::new("settings-sign-template", sign_template, section_ready),
+        // T3-07: правка подписи с логотипом — «Картинка» в панели, ссылка `![…](cid:…)` в тексте, логотип в предпросмотре.
+        Scene::new("settings-t307-sign-image", sign_logo, section_ready).on_request(),
     ];
 
     fn vacation(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
@@ -890,7 +893,7 @@ pub(crate) mod scenes {
             "settings-quick" => S::Quick,
             "settings-reading" => S::Reading,
             "settings-calendar" | "settings-calendar-free" => S::Calendar,
-            "settings-sign" | "settings-sign-template" => S::Signatures,
+            "settings-sign" | "settings-sign-template" | "settings-t307-sign-image" => S::Signatures,
             "settings-account-setup" => S::Accounts,
             _ => S::Accounts,
         }
@@ -910,6 +913,7 @@ pub(crate) mod scenes {
                     "settings-accounts" => v.add.is_some(),
                     "settings-sign" => !v.sign.prefs.signatures.is_empty(),
                     "settings-sign-template" => v.sign.edit.is_some(),
+                    "settings-t307-sign-image" => v.sign.edit.is_some() && !v.sign.images.is_empty() && v.sign.images.values().all(Option::is_some),
                     "settings-account-setup" => v.account_open.is_some() && (v.info.cache.is_none() || v.cache_size.is_some()),
                     _ => true,
                 }
@@ -1010,6 +1014,17 @@ pub(crate) mod scenes {
             v.update(cx, |v, cx| {
                 v.sign_edit("t1".into(), true, window, cx);
                 v.scroll.scroll_to_bottom();
+            });
+        }
+        Ok(())
+    }
+
+    fn sign_logo(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.open_settings(Some(S::Signatures), window, cx);
+        if let Some(v) = m.settings.view.clone() {
+            v.update(cx, |v, cx| {
+                v.sign.prefs = crate::settings_sign::screen_sample_logo(&v.info.identities);
+                v.sign_edit("s1".into(), false, window, cx);
             });
         }
         Ok(())

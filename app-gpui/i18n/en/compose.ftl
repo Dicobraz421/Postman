@@ -2,6 +2,10 @@
 compose-title-new = New message
 compose-send = Send
 compose-attach = Attach
+# Table and paste from Word (T3-06), signature images (T3-07).
+compose-fmt-table = Table
+compose-fmt-table-tip = Insert a table: 3 columns, a header and 2 rows; Tab moves to the next cell, in the last one adds a row
+compose-inline-images = Pictures in the text
 compose-to = To
 compose-cc = Cc
 compose-bcc = Bcc

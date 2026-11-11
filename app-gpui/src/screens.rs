@@ -145,6 +145,19 @@ pub(crate) fn clipboard() -> Option<String> {
     HELD_CLIPBOARD.lock().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
+/// HTML буфера обмена для вставки в письмо (T3-06); в прогоне снимков — образец сцены (`hold_clipboard_html`),
+/// буфер Windows не читается.
+pub(crate) fn clipboard_html(max: usize) -> Option<String> {
+    if screening() { HELD_HTML.lock().unwrap_or_else(PoisonError::into_inner).clone() } else { crate::sys::clipboard_html(max) }
+}
+
+/// Сцена кладёт HTML «в буфер обмена» (Word, браузер) — вставка его прочтёт.
+pub(crate) fn hold_clipboard_html(html: Option<String>) {
+    *HELD_HTML.lock().unwrap_or_else(PoisonError::into_inner) = html;
+}
+
+static HELD_HTML: Mutex<Option<String>> = Mutex::new(None);
+
 /// Уведомление Windows; в прогоне снимков — только запомнить (`notified`): AUMID в реестр не пишется.
 pub(crate) fn notify(title: &str, body: &str) -> Result<(), String> {
     if screening() {
