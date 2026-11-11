@@ -111,6 +111,11 @@ cal-waits-answer = awaiting reply
 # Event details.
 cal-details-empty = Pick a meeting to see its details here.
 cal-details-recurring = Recurring event
+cal-details-repeat-until = { $rule }, until { $date }
+cal-details-repeat-count = { $rule }, { $n ->
+    [one] { $n } time
+   *[other] { $n } times
+}
 cal-join = Join
 cal-join-tip = Open the video meeting link in the browser
 cal-chip-organizer = You organize

@@ -111,6 +111,12 @@ cal-waits-answer = ждёт ответа
 # Подробности события.
 cal-details-empty = Выберите встречу — подробности появятся здесь.
 cal-details-recurring = Повторяющееся событие
+cal-details-repeat-until = { $rule }, до { $date }
+cal-details-repeat-count = { $rule }, { $n ->
+    [one] { $n } раз
+    [few] { $n } раза
+   *[other] { $n } раз
+}
 cal-join = Подключиться
 cal-join-tip = Открыть ссылку видеовстречи в браузере
 cal-chip-organizer = Вы организатор

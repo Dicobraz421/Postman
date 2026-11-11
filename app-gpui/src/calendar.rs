@@ -3157,13 +3157,25 @@ impl CalendarView {
                 let text = if s > 0 { tr!("cal-details-reminder", time = duration_text(s)) } else { tr!("cal-details-reminder-start") };
                 d.child(row(crate::chrome::glyph::RINGER, div().child(text).into_any_element()))
             })
-            // Правило известно (T2-13) — «Каждый вторник», иначе — что повторяется.
+            // Правило известно (T2-13) — «Каждый вторник», иначе — что повторяется. Конец серии (T3-08) — после
+            // правила: «до 30.12» (год — когда не нынешний), «5 раз».
             .when(e.recurring || e.recurrence.is_some(), |d| {
-                let text = e
-                    .recurrence
-                    .as_deref()
-                    .and_then(postman_core::recur::rule_of_rrule)
-                    .map_or_else(|| tr!("cal-details-recurring"), |r| crate::tasks::repeat_text(&r));
+                use postman_core::recur::End;
+                let text = e.recurrence.as_deref().and_then(postman_core::recur::series_of_rrule).map_or_else(
+                    || tr!("cal-details-recurring"),
+                    |(r, end)| {
+                        let rule = crate::tasks::repeat_text(&r);
+                        match end {
+                            End::Never => rule,
+                            End::Until(day) => {
+                                let this_year = jiff::Zoned::now().year() == day.year();
+                                let date = day.strftime(if this_year { "%d.%m" } else { "%d.%m.%Y" }).to_string();
+                                tr!("cal-details-repeat-until", rule = rule, date = date)
+                            }
+                            End::Count(n) => tr!("cal-details-repeat-count", rule = rule, n = i64::from(n)),
+                        }
+                    },
+                );
                 d.child(row(g::REPEAT, div().child(text).into_any_element()))
             })
             // Частное событие коллеги (T2-14): подробностей нет — так решил владелец.
