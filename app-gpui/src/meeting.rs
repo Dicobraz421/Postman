@@ -3245,6 +3245,8 @@ pub(crate) mod scenes {
         Scene::new("meeting-link", link, link_ready).continues(),
         // «Повтор ▾» (T2-13, макет `Meeting`): выбран «По будням», меню открыто; конец серии — «до даты» (T3-08).
         Scene::new("meeting-repeat", repeat, repeat_ready).continues(),
+        // Та же встреча (T3-08): конец серии — «N раз», меню закрыто: «По будням ▾  [10] раз».
+        Scene::new("meeting-repeat-count", repeat_count, repeat_count_ready).continues(),
         // Пояс встречи ▾ (T2-23, макет `Meeting`): меню открыто; «Новая ссылка», «Черновик сохранён».
         Scene::new("meeting-zone", zone, zone_ready).continues(),
     ];
@@ -3285,6 +3287,23 @@ pub(crate) mod scenes {
 
     fn repeat_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
         m.meetings.last().is_some_and(|v| v.read(cx).repeat_menu && v.read(cx).ready())
+    }
+
+    fn repeat_count(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        let Some(v) = m.meetings.last() else { return Err("no meeting tab".into()) };
+        v.update(cx, |v, cx| {
+            v.pick_repeat_end(postman_core::recur::End::Count(10), window, cx);
+            v.repeat_menu = false;
+            cx.notify();
+        });
+        Ok(())
+    }
+
+    fn repeat_count_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.meetings.last().is_some_and(|v| {
+            let v = v.read(cx);
+            !v.repeat_menu && v.ready() && v.model.repeat_end == postman_core::recur::End::Count(10) && v.end_input.read(cx).value() == "10"
+        })
     }
 
     fn slot(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
