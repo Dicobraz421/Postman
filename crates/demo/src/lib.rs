@@ -865,9 +865,31 @@ fn chart_png(w: u32, h: u32) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Вложение с текстом для поиска по вложениям (T3-10): протокол `.txt`. В демо-письмах его нет — сцена
+/// `mail-t310-attachment` сама добавляет его письму Outlook вместе со своим индексом (у демо индекса нет,
+/// поиск идёт по кэшу): так остальные снимки письма не меняются.
+pub const MINUTES_BLOB: &str = "minutes";
+pub const MINUTES_NAME: &str = "Протокол совещания.txt";
+/// Слово запроса: есть только в тексте протокола — ни в темах, ни в текстах, ни в именах вложений демо.
+pub const MINUTES_WORD: &str = "причала";
+const MINUTES: &str = "Протокол совещания по складу. Решили: продлить аренду причала до 15 декабря, отгрузки — по средам.";
+
+/// Строка вложения-протокола ([`MINUTES_BLOB`]) для тела письма.
+pub fn minutes() -> AttachmentRow {
+    AttachmentRow {
+        blob_id: MINUTES_BLOB.into(),
+        name: MINUTES_NAME.into(),
+        mime: "text/plain".into(),
+        size: MINUTES.len() as u64,
+        cid: None,
+        inline: false,
+    }
+}
+
 /// Содержимое демо-вложений.
 pub fn blob(blob_id: &str) -> Option<Vec<u8>> {
     match blob_id {
+        MINUTES_BLOB => Some(MINUTES.as_bytes().to_vec()),
         "logo" => Some(LOGO.to_vec()),
         "chart" => Some(chart().to_vec()),
         "sign-logo" => Some(sign_logo().to_vec()),

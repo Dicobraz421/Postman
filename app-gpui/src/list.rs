@@ -1728,7 +1728,7 @@ pub(crate) fn list_row(
     // Письмо-приглашение (T2-18): время встречи со значком календаря вместо превью.
     let meeting = labels.meeting;
     // Поиск нашёл слова во вложении (T3-10): скрепка и «во вложении: имя — …отрывок…» вместо превью.
-    let attached = labels.attached.as_ref().map(crate::search::attachment_line);
+    let attached = labels.attached.as_ref().map(|a| crate::search::attachment_line(a, marks));
     let preview = (roomy && previews).then(|| {
         let p = div().truncate().text_size(l.px(Metric::TypeCaption)).text_color(l.text2());
         match meeting {
