@@ -890,6 +890,78 @@ pub(crate) fn paste_markdown(mut doc: postman_ir::Document) -> String {
     align_tables(postman_ir::to_markdown(&doc).trim_matches('\n'))
 }
 
+/// Таблица в тексте письма (поле рисует её сеткой, T3-06): байты, строки текста `[первая, после последней)` и ячейки
+/// по строкам (заголовок — первой, без строки выравнивания).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TableAt {
+    pub(crate) bytes: std::ops::Range<usize>,
+    pub(crate) lines: std::ops::Range<usize>,
+    pub(crate) rows: Vec<Vec<String>>,
+}
+
+/// Таблицы GFM текста по порядку.
+pub(crate) fn tables(text: &str) -> Vec<TableAt> {
+    let mut out = Vec::new();
+    let (mut at, mut line) = (0, 0);
+    while at < text.len() {
+        if let Some(r) = table_around(text, at).filter(|r| r.start == at) {
+            let src = &text[r.clone()];
+            let n = src.matches('\n').count() + 1;
+            let rows = src.split('\n').enumerate().filter(|(i, _)| *i != 1).map(|(_, l)| table_cells(l)).collect();
+            out.push(TableAt { bytes: r.clone(), lines: line..line + n, rows });
+            line += n;
+            at = r.end + 1;
+            continue;
+        }
+        match text[at..].find('\n') {
+            Some(i) => {
+                at += i + 1;
+                line += 1;
+            }
+            None => break,
+        }
+    }
+    out
+}
+
+/// Ссылка на картинку текста `![…](cid:…)` (логотип подписи, T3-07): байты, строка, `cid` и одна ли она в строке.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ImageAt {
+    pub(crate) bytes: std::ops::Range<usize>,
+    pub(crate) line: usize,
+    pub(crate) cid: String,
+    pub(crate) alone: bool,
+}
+
+/// Ссылки `![…](cid:…)` текста по порядку.
+pub(crate) fn image_refs(text: &str) -> Vec<ImageAt> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    for (line, l) in text.split('\n').enumerate() {
+        let mut from = 0;
+        let mut found: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+        while let Some(i) = l[from..].find("![") {
+            let a = from + i;
+            let Some(m) = l[a..].find("](cid:").map(|m| a + m) else { break };
+            let Some(close) = l[m..].find(')').map(|c| m + c) else { break };
+            found.push((start + a..start + close + 1, l[m + "](cid:".len()..close].to_owned()));
+            from = close + 1;
+        }
+        let rest: String = {
+            let mut s = l.to_owned();
+            for (r, _) in found.iter().rev() {
+                s.replace_range(r.start - start..r.end - start, "");
+            }
+            s
+        };
+        // Одна в строке — и в цитате ответа (`> ![…](cid:…)`): строку займёт картинка.
+        let alone = rest.trim_matches(|c: char| c == '>' || c.is_whitespace()).is_empty();
+        out.extend(found.into_iter().map(|(bytes, cid)| ImageAt { bytes, line, cid, alone }));
+        start += l.len() + 1;
+    }
+    out
+}
+
 /// Таблицы текста — с выровненными `|` (вставка из Word): читается в поле, отправляется так же.
 pub(crate) fn align_tables(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
@@ -1827,8 +1899,10 @@ pub(crate) mod scenes {
         Scene::new("reading-draft", drafts, draft_ready).input(DRAFT_OPEN),
         // «Продолжить» — черновик во вкладке письма; сохранение заменит версию на сервере.
         Scene::new("draft-edit", stay, draft_tab_ready).input(&[screens::Input::Press("draft-edit")]).continues(),
-        // T3-06: «Таблица» в конце текста, «Город», Tab, «План» — таблица GFM, столбцы выровнены по набранному.
+        // T3-06: «Таблица» в конце текста, ячейки по Tab — курсор в таблице: правится её Markdown.
         Scene::new("compose-t306-table", table_letter, table_typed).input(TABLE).on_request(),
+        // T3-06: то же письмо, курсор вне таблицы (Ctrl+Home) — таблица сеткой поверх своего Markdown.
+        Scene::new("compose-t306-grid", stay, table_grid).input(&[screens::Input::Keys(&["ctrl-home"])]).continues().on_request(),
         // T3-06: вставка HTML из Word (буфер обмена — образец сцены, Windows не трогаем): таблица, список, жирный.
         Scene::new("compose-t306-paste", table_letter, table_pasted).input(PASTE).on_request(),
         // T3-07: новое письмо с подписью по умолчанию с логотипом: картинка под текстом, вложение inline.
@@ -1878,6 +1952,15 @@ pub(crate) mod scenes {
         screens::compose_tab(m).is_some_and(|c| {
             let body = &c.read(cx).model.body;
             body.contains("| Город | План | Факт |\n| ----- | ---- | ---- |") && body.contains("| Омск  | 120  | 131") // i18n-ok: ввод сценария
+                && c.read(cx).graphics().1.is_some()
+        })
+    }
+
+    /// Курсор вне таблиц и картинок, а графика в поле есть.
+    fn table_grid(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        screens::compose_tab(m).is_some_and(|c| {
+            let (zones, inside) = c.read(cx).graphics();
+            zones > 0 && inside.is_none()
         })
     }
 
@@ -1903,7 +1986,11 @@ pub(crate) mod scenes {
     fn table_pasted(_: &Scene, m: &Mailer, cx: &App) -> bool {
         screens::compose_tab(m).is_some_and(|c| {
             let c = c.read(cx);
-            !c.pasting && c.model.body.contains("| Омск  | 120  | 131  |") && c.model.body.contains("**Итоги недели**") // i18n-ok: образец
+            !c.pasting
+                && c.model.body.contains("| Омск  | 120  | 131  |")
+                && c.model.body.contains("**Итоги недели**") // i18n-ok: образец
+                && c.graphics().0 > 0
+                && c.graphics().1.is_none()
         })
     }
 
@@ -1927,7 +2014,11 @@ pub(crate) mod scenes {
         letter_drawn(s, m, cx)
             && screens::compose_tab(m).is_some_and(|c| {
                 let c = c.read(cx);
-                c.model.inline_images().len() == 1 && c.images.values().all(Option::is_some) && !c.images.is_empty()
+                c.model.inline_images().len() == 1
+                    && c.images.values().all(Option::is_some)
+                    && !c.images.is_empty()
+                    && c.graphics().0 == 1
+                    && c.graphics().1.is_none()
             })
     }
 
@@ -2400,6 +2491,23 @@ mod tests {
         assert!(table_tab(&t, 0, true).is_none(), "Shift+Tab в первой ячейке — не наше");
         assert!(table_tab("просто текст", 3, false).is_none());
         assert!(table_tab("| a | b |\nне таблица", 2, false).is_none(), "без строки выравнивания — не таблица");
+    }
+
+    /// T3-06, T3-07: таблицы и ссылки на картинки текста — для графики поля (байты, строки, ячейки).
+    #[test]
+    fn tables_and_image_refs_for_the_field() {
+        let text = "Текст\n\n| a | b |\n| - | - |\n| c | d |\n\nИван\n![logo.png](cid:sig1@postman)\nсм. ![x](cid:y) тут";
+        let t = super::tables(text);
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].lines, 2..5);
+        assert_eq!(&text[t[0].bytes.clone()], "| a | b |\n| - | - |\n| c | d |");
+        assert_eq!(t[0].rows, vec![vec!["a".to_owned(), "b".to_owned()], vec!["c".to_owned(), "d".to_owned()]]);
+        let r = super::image_refs(text);
+        assert_eq!(r.len(), 2);
+        assert_eq!((r[0].line, r[0].cid.as_str(), r[0].alone), (7, "sig1@postman", true));
+        assert_eq!(&text[r[0].bytes.clone()], "![logo.png](cid:sig1@postman)");
+        assert_eq!((r[1].line, r[1].cid.as_str(), r[1].alone), (8, "y", false));
+        assert!(super::tables("| a |\nне таблица").is_empty());
     }
 
     /// T3-06: вставка из Word — таблица (выровнена), список, жирный, ссылка, заголовок; картинки и прочее — нет.

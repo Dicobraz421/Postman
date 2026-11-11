@@ -14,6 +14,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
+use gpui_kit::base::input::{EditorBlock, EditorBlockContext};
 use gpui_kit::component::input::{
     Backspace, Editor, EditorState, Enter, IndentInline, Input, InputEvent, InputState, MoveDown, MoveUp, OutdentInline, TextDecoration,
     TextDecorationCollection,
@@ -52,7 +53,6 @@ const W_SIDE: f32 = 360.0;
 const ROW_H: f32 = 40.0;
 /// Картинки текста (подпись, T3-07): сторона кадра из воркера и высота полосы под текстом.
 const INLINE_IMAGE_SIDE: u32 = 400;
-const INLINE_STRIP_H: f32 = 48.0;
 
 /// Где письмо.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -180,6 +180,11 @@ pub(crate) struct Composer {
     pub(crate) images: std::collections::HashMap<String, Option<Arc<RenderImage>>>,
     /// HTML вставки разбирает воркер (T3-06).
     pub(crate) pasting: bool,
+    /// Графика поля (T3-06, T3-07): где таблицы и строки с картинками (байты текста), в какой из них курсор и высота
+    /// строки поля (её сообщает отрисовка блока; до первой — по шрифту).
+    block_zones: Vec<std::ops::Range<usize>>,
+    block_zone: Option<usize>,
+    line_h: Rc<std::cell::Cell<f32>>,
     /// `--screens`: сколько раз письмо нарисовано.
     screens: Option<u32>,
     _subscriptions: Vec<Subscription>,
@@ -324,6 +329,9 @@ impl Composer {
             worker: open.worker,
             images: std::collections::HashMap::new(),
             pasting: false,
+            block_zones: Vec::new(),
+            block_zone: None,
+            line_h: Rc::new(std::cell::Cell::new(13.0 * 1.5)),
             _subscriptions: subscriptions,
         }
     }
@@ -1005,6 +1013,8 @@ impl Composer {
                 let _ = this.update(cx, |c, cx| match result {
                     Ok(image) => {
                         c.images.insert(cid, Some(image));
+                        // Картинка готова — в тексте вместо ссылки (блок поля).
+                        c.paint_markdown(cx);
                         cx.notify();
                     }
                     Err(e) => tracing::warn!("signature image {cid} is not shown: {e}"),
@@ -1012,51 +1022,6 @@ impl Composer {
             })
             .detach();
         }
-    }
-
-    /// Полоса под текстом: картинки, на которые он ссылается (логотип подписи), — так их увидит получатель.
-    fn inline_strip(&self, l: &Look) -> Option<Stateful<Div>> {
-        let images = self.model.inline_images();
-        if images.is_empty() {
-            return None;
-        }
-        let items: Vec<AnyElement> = images
-            .into_iter()
-            .map(|(cid, a)| match self.images.get(&cid).cloned().flatten() {
-                Some(image) => {
-                    let size = image.size(0);
-                    let (w, h) = (size.width.0 as f32, size.height.0 as f32);
-                    let scale = (INLINE_STRIP_H / h.max(1.)).min(1.);
-                    div().flex_none().child(img(image).w(px(w * scale)).h(px(h * scale))).into_any_element()
-                }
-                None => div()
-                    .flex_none()
-                    .px(px(8.))
-                    .py(px(2.))
-                    .rounded(px(4.))
-                    .border_1()
-                    .border_color(l.border())
-                    .text_size(px(12.))
-                    .text_color(l.text2())
-                    .child(a.name.clone())
-                    .into_any_element(),
-            })
-            .collect();
-        Some(
-            div()
-                .id("compose-inline-images")
-                .children(crate::screens::spot("compose-inline-images"))
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .px(px(20.))
-                .py(px(6.))
-                .border_t_1()
-                .border_color(l.border())
-                .child(div().flex_none().text_size(px(12.)).text_color(l.text2()).child(tr!("compose-inline-images")))
-                .children(items),
-        )
     }
 
     fn sync_body(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1067,11 +1032,73 @@ impl Composer {
 
     /// Живое отображение Markdown (S5-27): разметка текста письма — оформлением поля. Свой текст разбирается здесь же
     /// (`postman_compose::display`, без чужих данных); цвета — роли темы.
+    ///
+    /// Графика поля (T3-06, T3-07) — блоками поля (патч gpui-kit в pets, `EditorBlock`): таблица, в которой нет курсора, —
+    /// сеткой поверх своего Markdown; картинка `cid:` — своего размера (не шире поля) поверх своей строки, а курсор в
+    /// строке — под ней, ссылка тогда видна. Курсор вошёл в таблицу — правится её Markdown (Tab — по ячейкам).
     pub(crate) fn paint_markdown(&mut self, cx: &mut Context<Self>) {
         let l = crate::roles::look(cx);
-        let text = self.body.read(cx).value().to_string();
-        let marks: Vec<TextDecoration> =
-            postman_compose::display::display(&text).into_iter().map(|s| TextDecoration::new(s.range, md_style(&s.look, &l))).collect();
+        let (text, sel) = {
+            let s = self.body.read(cx);
+            (s.value().to_string(), s.selected_range())
+        };
+        let (sel_a, sel_b) = (sel.start.min(sel.end), sel.start.max(sel.end));
+        let touches = |r: &std::ops::Range<usize>| sel_a <= r.end && sel_b >= r.start;
+        let line_h = self.line_h.get().max(1.);
+        let mut zones: Vec<std::ops::Range<usize>> = Vec::new();
+        let mut blocks: Vec<EditorBlock> = Vec::new();
+        let mut views: Vec<BlockView> = Vec::new();
+        let mut hidden: Vec<std::ops::Range<usize>> = Vec::new();
+        for t in crate::compose::tables(&text) {
+            zones.push(t.bytes.clone());
+            if touches(&t.bytes) {
+                continue;
+            }
+            blocks.push(EditorBlock { id: views.len(), lines: t.lines, extra_rows: 0, cover: true });
+            views.push(BlockView::Table(t.rows));
+        }
+        // Картинки — по строкам: несколько ссылок в строке — одна полоса картинок.
+        let refs = crate::compose::image_refs(&text);
+        let mut by_line: Vec<LineImages> = Vec::new();
+        for r in &refs {
+            let Some(Some(image)) = self.images.get(&r.cid) else { continue };
+            let line_start = text[..r.bytes.start].rfind('\n').map_or(0, |i| i + 1);
+            let line_end = text[r.bytes.end..].find('\n').map_or(text.len(), |i| r.bytes.end + i);
+            match by_line.last_mut() {
+                Some((line, images, alone, _)) if *line == r.line => {
+                    images.push(image.clone());
+                    *alone &= r.alone;
+                }
+                _ => by_line.push((r.line, vec![image.clone()], r.alone, line_start..line_end)),
+            }
+            if !touches(&(line_start..line_end)) && !r.alone {
+                hidden.push(r.bytes.clone());
+            }
+        }
+        for (line, images, alone, bytes) in by_line {
+            zones.push(bytes.clone());
+            let h = images.iter().map(|i| i.size(0).height.0 as f32).fold(0., f32::max);
+            let rows = (h / line_h).ceil().max(1.) as usize;
+            let on_line = touches(&bytes);
+            let cover = alone && !on_line;
+            let extra_rows = if cover { rows.saturating_sub(1) } else { rows };
+            blocks.push(EditorBlock { id: views.len(), lines: line..line + 1, extra_rows, cover });
+            views.push(BlockView::Images(images));
+        }
+        // Отрезки разметки — без спрятанных ссылок: украшения одного набора не должны пересекаться.
+        let mut marks: Vec<TextDecoration> = Vec::new();
+        for span in postman_compose::display::display(&text) {
+            let style = md_style(&span.look, &l);
+            for part in without(span.range, &hidden) {
+                marks.push(TextDecoration::new(part, style));
+            }
+        }
+        // Ссылка на картинку посреди текста — цветом подложки: на её месте картинка не рисуется (она под строкой).
+        marks.extend(hidden.iter().map(|r| TextDecoration::new(r.clone(), HighlightStyle { color: Some(l.panel()), ..Default::default() })));
+        let renderer = block_renderer(Rc::new(views), &l, self.line_h.clone());
+        self.body.update(cx, |s, cx| s.set_blocks(blocks, renderer, cx));
+        self.block_zones = zones;
+        self.block_zone = self.block_zones.iter().position(touches);
         self.marks_look = Some(l);
         match &self.marks {
             Some(c) => c.set(marks, cx),
@@ -1079,6 +1106,21 @@ impl Composer {
                 let c = self.body.update(cx, |s, cx| s.create_decorations_collection(marks, cx));
                 self.marks = Some(c);
             }
+        }
+    }
+
+    /// Сцены: сколько в тексте таблиц и строк с картинками и в какой из них курсор.
+    pub(crate) fn graphics(&self) -> (usize, Option<usize>) {
+        (self.block_zones.len(), self.block_zone)
+    }
+
+    /// Курсор перешёл в таблицу или строку с картинкой или вышел из них — графику поля заново.
+    fn refresh_zone(&mut self, cx: &mut Context<Self>) {
+        let sel = self.body.read(cx).selected_range();
+        let (a, b) = (sel.start.min(sel.end), sel.start.max(sel.end));
+        let zone = self.block_zones.iter().position(|z| a <= z.end && b >= z.start);
+        if zone != self.block_zone {
+            self.paint_markdown(cx);
         }
     }
 
@@ -1925,7 +1967,7 @@ impl Composer {
 
     /// Текст письма: Markdown с живым отображением (S5-27), шрифт интерфейса, а не кода. Tab в таблице — по ячейкам,
     /// вставка HTML (Word, браузер) — Markdown с таблицами (T3-06); под текстом — его картинки (подпись, T3-07).
-    fn content(&self, window: &Window, l: &Look, cx: &mut Context<Self>) -> AnyElement {
+    fn content(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         // Шрифт и размер — как у текста окна (редактор по умолчанию — моноширинный).
         let text = window.text_style();
         let weak = cx.entity().downgrade();
@@ -1964,7 +2006,6 @@ impl Composer {
                         }
                     })),
             )
-            .children(self.inline_strip(l))
             .into_any_element()
     }
 
@@ -2621,6 +2662,7 @@ impl Render for Composer {
         }
         self.refresh_recipient_checks();
         self.decode_inline_images(cx);
+        self.refresh_zone(cx);
         // Поиск сертификатов (S5-12 Ф4) — экрану почты, не посреди отрисовки.
         if let Some((addrs, from)) = self.resolve_pending.take() {
             let mailer = self.mailer.clone();
@@ -2657,7 +2699,7 @@ impl Render for Composer {
             .children(self.later_picker(&l, cx))
             .when(inline, |d| d.children(self.attachment_chips(&l, cx)))
             .children(self.template_ask_row(&l, cx))
-            .child(self.content(window, &l, cx))
+            .child(self.content(window, cx))
             .when(inline, |d| d.children(self.inline_checks(&l, cx)))
             // Ответ на письмо общего ящика (S5-28): «От» — свой адрес или письмо у коллеги.
             .children(self.shared.as_ref().and_then(|r| r.note(&self.model.from().email)).map(|t| crate::shared::note_line(t, &l).my(px(6.))))
@@ -2796,6 +2838,121 @@ pub(crate) mod scenes {
             blob_id: None,
         }
     }
+}
+
+/// Отрезок без вырезанных из него отрезков `cut` (отсортированы, не пересекаются).
+fn without(range: std::ops::Range<usize>, cut: &[std::ops::Range<usize>]) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    let mut at = range.start;
+    for c in cut.iter().filter(|c| c.start < range.end && c.end > range.start) {
+        if c.start > at {
+            out.push(at..c.start);
+        }
+        at = at.max(c.end);
+    }
+    if at < range.end {
+        out.push(at..range.end);
+    }
+    out
+}
+
+/// Картинки одной строки текста: строка, кадры, одни ли они в строке, байты строки.
+type LineImages = (usize, Vec<Arc<RenderImage>>, bool, std::ops::Range<usize>);
+
+/// Что рисует блок поля письма (T3-06, T3-07).
+enum BlockView {
+    /// Ячейки таблицы по строкам, заголовок — первой.
+    Table(Vec<Vec<String>>),
+    /// Картинки строки (логотип подписи).
+    Images(Vec<Arc<RenderImage>>),
+}
+
+/// Ячейка таблицы для показа: без `\|`-экранирования и знаков жирного и курсива.
+fn cell_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if chars.peek().is_some_and(char::is_ascii_punctuation) => {
+                if let Some(n) = chars.next() {
+                    out.push(n);
+                }
+            }
+            '*' => {}
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Отрисовка блоков поля письма: данные — снимок, сделанный при разборе текста (сущности здесь не читаются).
+fn block_renderer(views: Rc<Vec<BlockView>>, l: &Look, line_h: Rc<std::cell::Cell<f32>>) -> gpui_kit::base::input::EditorBlockRenderer {
+    let (panel, border, head, text) = (l.panel(), l.c(Role::StrokeCard), l.fill_passive(), l.text());
+    Rc::new(move |ctx: &EditorBlockContext, window: &mut Window, _cx: &mut App| {
+        line_h.set(f32::from(ctx.line_height));
+        let bounds = ctx.bounds.size;
+        let root = div().size_full().bg(panel);
+        match views.get(ctx.id) {
+            Some(BlockView::Table(rows)) => {
+                let style = window.text_style();
+                let font_size = style.font_size.to_pixels(window.rem_size());
+                let cols = rows.iter().map(Vec::len).max().unwrap_or(1).max(1);
+                let cells: Vec<Vec<String>> = rows.iter().map(|r| r.iter().map(|c| cell_text(c)).collect()).collect();
+                let measure = |s: &str, bold: bool| {
+                    let mut font = style.font();
+                    if bold {
+                        font.weight = FontWeight::BOLD;
+                    }
+                    let run = TextRun { len: s.len(), font, color: text, background_color: None, underline: None, strikethrough: None };
+                    f32::from(window.text_system().shape_line(SharedString::from(s.to_owned()), font_size, &[run], None).width)
+                };
+                const PAD: f32 = 10.0;
+                let mut widths: Vec<f32> = (0..cols)
+                    .map(|c| cells.iter().enumerate().filter_map(|(r, row)| row.get(c).map(|s| measure(s, r == 0))).fold(24.0, f32::max) + 2. * PAD)
+                    .collect();
+                let total: f32 = widths.iter().sum();
+                let avail = f32::from(bounds.width) - 2.;
+                if total > avail && avail > 0. {
+                    widths.iter_mut().for_each(|w| *w *= avail / total);
+                }
+                let n = cells.len().max(1);
+                let row_h = (f32::from(bounds.height) - 2.) / n as f32;
+                let grid_w: f32 = widths.iter().sum::<f32>() + 1.;
+                let grid = div().w(px(grid_w)).flex().flex_col().border_t_1().border_l_1().border_color(border).children(
+                    cells.into_iter().enumerate().map(|(r, row)| {
+                        div().flex().h(px(row_h)).when(r == 0, |d| d.bg(head).font_weight(FontWeight::BOLD)).children((0..cols).map(|c| {
+                            div()
+                                .w(px(widths[c]))
+                                .h_full()
+                                .px(px(PAD))
+                                .flex()
+                                .items_center()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .border_r_1()
+                                .border_b_1()
+                                .border_color(border)
+                                .text_color(text)
+                                .child(row.get(c).cloned().unwrap_or_default())
+                        }))
+                    }),
+                );
+                root.child(grid).into_any_element()
+            }
+            Some(BlockView::Images(images)) => root
+                .flex()
+                .items_start()
+                .gap(px(8.))
+                .children(images.iter().map(|image| {
+                    let size = image.size(0);
+                    let (w, h) = (size.width.0 as f32, size.height.0 as f32);
+                    let scale = (f32::from(bounds.width) / w.max(1.)).min(f32::from(bounds.height) / h.max(1.)).min(1.);
+                    img(image.clone()).flex_none().w(px(w * scale)).h(px(h * scale))
+                }))
+                .into_any_element(),
+            None => root.into_any_element(),
+        }
+    })
 }
 
 /// Оформление отрезка Markdown в поле письма: знаки разметки приглушены, ссылка и маркер списка — акцентом, цитата —
