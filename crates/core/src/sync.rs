@@ -306,8 +306,9 @@ pub enum Command {
     },
     /// «Повторить сейчас» (S5-08): без связи — попытка сразу, не дожидаясь паузы; со связью — ничего.
     Reconnect,
-    /// «Синхронизировать» у учётной записи (T2-51, класс B, ОК владельца 2026-11-10): сверить с сервером сейчас, не
-    /// дожидаясь push и опроса; без связи — как [`Command::Reconnect`].
+    /// «Синхронизировать» у учётной записи (T2-51, класс B, ОК владельца 2026-11-10) и «Отправить и получить — все
+    /// папки» (T3-02): сверить с сервером сейчас, не дожидаясь push и опроса; без связи — как [`Command::Reconnect`].
+    /// Ход — [`Event::SendReceive`]: начало и конец сверки этой учётной записи.
     SyncNow,
     /// Задачи (S6-02, `tasks.rs`): загрузка, сверка, правки → `Event::Tasks`. Правка без связи — в кэше, уходит
     /// по возвращении связи (`tasks::Request::Flush`).
@@ -662,6 +663,16 @@ impl std::fmt::Display for Status {
     }
 }
 
+/// Ход «Отправить и получить» ([`Command::SyncNow`], T3-02, класс B, решение владельца 2026-11-11): сверка учётной
+/// записи началась и закончилась. Конец — всегда, в том числе когда на сервере ничего не изменилось; `error` —
+/// почему не вышло (нет связи, сервер ответил ошибкой). Без связи до входа начало — у повторного входа, конец — когда
+/// вход и первая загрузка прошли или не удались.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SendReceive {
+    Started,
+    Finished { error: Option<String> },
+}
+
 /// Отправитель для окна письма: свой адрес или общий ящик (S4-06).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sender {
@@ -875,6 +886,8 @@ pub enum Event {
     },
     /// Связь с сервером (S5-08, `link`): пропала (повтор через N с, правок в очереди) или вернулась.
     Connection(Connection),
+    /// «Отправить и получить» (`Command::SyncNow`, T3-02): сверка учётной записи началась или закончилась.
+    SendReceive(SendReceive),
     /// Сообщение о фишинге (`Command::ReportPhishing`) отправлено (`error: None`) или не отправлено. Без связи
     /// события нет — команда ждёт в очереди.
     Reported {
@@ -1124,32 +1137,67 @@ pub trait Session {
 /// синхронизацию.
 pub async fn supervise(session: &mut impl Session, mut rx: UnboundedReceiver<Command>, notify: &dyn Fn(Event)) {
     let mut link = Link::default();
+    // «Отправить и получить» без связи (T3-02): повторный вход идёт по `SyncNow` — конец хода — первая загрузка
+    // (`Status::Synced`) или новая ошибка входа.
+    let asked = std::cell::Cell::new(false);
+    let finish = |error: Option<String>| {
+        if asked.replace(false) {
+            notify(Event::SendReceive(SendReceive::Finished { error }));
+        }
+    };
+    let watch = |e: Event| {
+        let synced = matches!(e, Event::Status(Status::Synced));
+        notify(e);
+        if synced {
+            finish(None);
+        }
+    };
     loop {
-        match session.run(&mut rx, &mut link, notify).await {
-            Ok(()) => return,
+        match session.run(&mut rx, &mut link, &watch).await {
+            Ok(()) => return finish(None),
             Err(e) if e.kind == ErrorKind::Network => {
+                finish(Some(e.to_string()));
                 notify(Event::Error(e));
                 let wait = link.failed();
                 notify(Event::Connection(link.connection(wait)));
-                if !wait_offline(&mut rx, &mut link, wait, notify).await {
-                    return;
+                match wait_offline(&mut rx, &mut link, wait, notify).await {
+                    Woke::Closed => return,
+                    Woke::Timer => {}
+                    Woke::SendReceive => {
+                        notify(Event::SendReceive(SendReceive::Started));
+                        asked.set(true);
+                    }
                 }
             }
-            Err(e) => return notify(Event::Error(e)),
+            Err(e) => {
+                finish(Some(e.to_string()));
+                return notify(Event::Error(e));
+            }
         }
     }
 }
 
+/// Чем кончилось ожидание без связи.
+enum Woke {
+    /// Интерфейс закрыл канал команд: синхронизации конец.
+    Closed,
+    /// Пауза прошла или «Повторить сейчас».
+    Timer,
+    /// «Отправить и получить» (`Command::SyncNow`): повтор сейчас, с ходом [`Event::SendReceive`].
+    SendReceive,
+}
+
 /// Без связи до входа: ждать паузу `wait` (или «Повторить сейчас»); правки писем — в очередь (уйдут после входа),
-/// прочие команды без сервера выполнить нельзя. `false` — интерфейс закрыл канал команд: синхронизации конец.
-async fn wait_offline(rx: &mut UnboundedReceiver<Command>, link: &mut Link<Command>, wait: Duration, notify: &dyn Fn(Event)) -> bool {
+/// прочие команды без сервера выполнить нельзя.
+async fn wait_offline(rx: &mut UnboundedReceiver<Command>, link: &mut Link<Command>, wait: Duration, notify: &dyn Fn(Event)) -> Woke {
     let until = tokio::time::Instant::now() + wait;
     loop {
         tokio::select! {
-            () = tokio::time::sleep_until(until) => return true,
+            () = tokio::time::sleep_until(until) => return Woke::Timer,
             cmd = rx.recv() => match cmd {
-                None => return false,
-                Some(Command::Reconnect | Command::SyncNow) => return true,
+                None => return Woke::Closed,
+                Some(Command::Reconnect) => return Woke::Timer,
+                Some(Command::SyncNow) => return Woke::SendReceive,
                 Some(cmd) => {
                     if let Some(c) = cmd.replayable() {
                         link.queue(c);
@@ -1534,5 +1582,59 @@ mod tests {
             })
             .collect();
         assert_eq!(offline, [0, 1, 1]);
+    }
+
+    /// «Отправить и получить» без связи (T3-02): `SyncNow` — повторный вход сразу, ход — начало и конец; вход не
+    /// удался — конец с ошибкой, удался (первая загрузка) — без ошибки.
+    #[test]
+    fn send_receive_offline_reports_start_and_end() {
+        /// Первая попытка — сети нет, следующие — вход и первая загрузка, затем работа до конца канала.
+        struct Flaky(u32);
+        impl Session for Flaky {
+            fn run<'a>(
+                &'a mut self,
+                rx: &'a mut UnboundedReceiver<Command>,
+                _link: &'a mut Link<Command>,
+                notify: &'a dyn Fn(Event),
+            ) -> BoxFuture<'a, Result<(), SyncError>> {
+                self.0 += 1;
+                let attempt = self.0;
+                Box::pin(async move {
+                    if attempt < 3 {
+                        return Err(SyncError { kind: ErrorKind::Network, stage: Stage::Connect, detail: "down".into() });
+                    }
+                    notify(Event::Status(Status::Synced));
+                    while rx.recv().await.is_some() {}
+                    Ok(())
+                })
+            }
+        }
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(Command::SyncNow).unwrap();
+        tx.send(Command::SyncNow).unwrap();
+        drop(tx);
+        let events = std::sync::Mutex::new(Vec::new());
+        let mut flaky = Flaky(0);
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(supervise(&mut flaky, rx, &|e| events.lock().unwrap().push(e)));
+        assert_eq!(flaky.0, 3);
+        let progress: Vec<SendReceive> = events
+            .into_inner()
+            .unwrap()
+            .into_iter()
+            .filter_map(|e| match e {
+                Event::SendReceive(p) => Some(p),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            progress,
+            [
+                SendReceive::Started,
+                SendReceive::Finished { error: Some("Connect failed (Network): down".into()) },
+                SendReceive::Started,
+                SendReceive::Finished { error: None },
+            ]
+        );
     }
 }

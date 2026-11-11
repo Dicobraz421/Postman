@@ -3,6 +3,7 @@
 //! Отложить | Ответить, Всем, Переслать), справа поиск и «Вид» (автоответы, правила, настройки, быстрые фильтры). Кнопки,
 //! которым не хватило места, уходят в «…» перед поиском. Поле поиска в фокусе или с запросом — шире, с охватом
 //! «Везде | Текущая папка» внутри (S5-10, макет «Поиск»). Кнопка — та же команда реестра, что и хоткей (S3-02).
+//! Перед поиском — «Отправить и получить — все папки» значком (T3-02, F9).
 
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::prelude::*;
@@ -90,6 +91,8 @@ const SEP_W: f32 = 17.0;
 const MORE_W: f32 = 36.0;
 /// «Вид»: поля 6 + значок 16 + зазор 2 + шеврон 10 + поля 6, отступ 4.
 const VIEW_W: f32 = 44.0;
+/// «Отправить и получить» (T3-02): поля 8 + значок 20 + поля 8.
+const SYNC_W: f32 = 36.0;
 
 /// Где искать: во всех папках или в открытой. По умолчанию — везде (макет «Поиск»).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
@@ -125,6 +128,8 @@ pub(crate) struct CommandBar {
     pub(crate) focused: bool,
     /// Открыта папка общего ящика (S5-28): кнопка «Взять в работу» и что она сделает с письмом.
     pub(crate) take: Option<crate::shared::Act>,
+    /// Идёт «Отправить и получить» (T3-02): кнопка недоступна, подсказка — «Отправка и получение…».
+    pub(crate) syncing: bool,
 }
 
 impl CommandBar {
@@ -138,6 +143,7 @@ impl CommandBar {
             overflow_x: 0.,
             focused: false,
             take: None,
+            syncing: false,
         }
     }
 
@@ -259,10 +265,10 @@ impl Render for CommandBar {
         // Во время поиска — шире, охват внутри поля. Клавиша поиска — плашкой KeyTips, не в поле.
         let active = self.focused || !self.search.read(cx).value().trim().is_empty();
         let search_w = if active { SEARCH_W_ACTIVE } else { SEARCH_W };
-        // Сколько кнопок влезает: окно минус поля, «Новое письмо», «Взять в работу», поиск и «Вид».
+        // Сколько кнопок влезает: окно минус поля, «Новое письмо», «Взять в работу», «Отправить и получить», поиск и «Вид».
         let new_w = 14. + 20. + 8. + text_w(&tr!("frame-new"), window) + 14. + 12. + GAP;
         let take_w = take_label.as_deref().map_or(0., |t| 12. + 20. + 6. + text_w(t, window) + 12. + 8. + GAP);
-        let fixed = 12. + new_w + take_w + 12. + search_w + GAP + VIEW_W + 12.;
+        let fixed = 12. + new_w + take_w + SYNC_W + GAP + 12. + search_w + GAP + VIEW_W + 12.;
         let room = window.viewport_size().width / px(1.) - fixed;
         let widths: Vec<f32> = shown.iter().map(|(_, b)| BUTTON_PAD + text_w(&tr!(b.label), window)).collect();
         let fit = fitting(&widths, first, room);
@@ -285,6 +291,26 @@ impl Render for CommandBar {
                 .child(chrome::icon(glyph::MORE, 16.))
                 .on_click(cx.listener(|_, _, _, cx| cx.emit(BarEvent::More(true))))
         });
+        // «Отправить и получить — все папки» (T3-02, F9): всем учётным записям, не письму — у поиска, отдельно от действий.
+        // Пока идёт — недоступна: значок цветом третьего текста, без наведения и щелчка.
+        let syncing = self.syncing;
+        let sync = if syncing {
+            div()
+                .id("bar-sync")
+                .children(crate::screens::spot("bar-sync"))
+                .h(px(32.))
+                .flex()
+                .items_center()
+                .rounded(l.px(Metric::RadiusControl))
+                .child(icons::icon(icons::SYNC, 20., l.text3()))
+        } else {
+            chrome::quiet_button("bar-sync", &l)
+                .child(icons::icon(icons::SYNC, 20., l.text()))
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(chrome::sync::SendReceive), cx))
+        }
+        .flex_none()
+        .px(px(8.));
+        let sync = keytips::command(sync, "sync.send_receive", syncing.then(|| tr!("frame-send-receive-running")), &l, cx);
         let search = Input::new(&self.search).prefix(icons::icon(icons::SEARCH, 18., l.text3()));
         let search = if active { search.suffix(self.scope_switch(&l, cx)) } else { search };
         let search_key = keytips::key("search.focus", cx);
@@ -321,6 +347,7 @@ impl Render for CommandBar {
             .children(row)
             .children(overflow)
             .child(div().flex_1())
+            .child(sync)
             .child(keytips::badge(div().ml(px(12.)).w(px(search_w)).flex_none().child(search), search_key, &l, cx))
             .child(div().ml(px(4.)).child(view))
     }

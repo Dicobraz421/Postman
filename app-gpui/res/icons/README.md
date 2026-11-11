@@ -25,6 +25,7 @@
 | `clock.svg` | «Отложить» |
 | `search.svg` | поле поиска, 18 px |
 | `view.svg` | «Вид», 16 px; контур макета `MainIcoFluent` (не из набора Fluent), сетка 20 × 20 |
+| `arrow-sync.svg` | «Отправить и получить — все папки» (T3-02); Fluent `ArrowSync` 20 Regular из набора |
 | `inbox.svg` | папка «Входящие» |
 | `send.svg` | папка «Отправленные» |
 | `drafts.svg` | папка «Черновики» |

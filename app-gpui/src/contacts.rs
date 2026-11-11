@@ -121,6 +121,11 @@ pub(crate) struct Entry {
 }
 
 impl ContactsView {
+    /// Адреса списков рассылки справочника (T2-41), в нижнем регистре: метка в «Кому…» письма (T3-03).
+    pub(crate) fn list_emails(&self) -> std::collections::HashSet<String> {
+        self.lists.iter().flat_map(|e| e.card.emails.iter()).map(|e| e.to_lowercase()).collect()
+    }
+
     /// Ссылка на занятость адреса из личных контактов (`FBURL`, S8-42).
     pub(crate) fn free_busy_url(&self, email: &str) -> Option<String> {
         let found = self.mine.iter().find(|e| e.card.emails.iter().any(|m| m.eq_ignore_ascii_case(email)));

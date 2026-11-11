@@ -521,6 +521,7 @@ settings-keys-where-meeting = meeting tab
 settings-keys-where-contacts = contacts
 settings-keys-where-tasks = tasks
 settings-keys-where-palette = command palette
+settings-keys-where-recipients = message address book
 settings-keys-area-mail = Messages
 settings-keys-area-thread = Conversations
 settings-keys-area-attach = Attachments

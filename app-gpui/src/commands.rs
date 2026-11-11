@@ -151,7 +151,7 @@ pub(crate) mod rule {
     pub(crate) const TWO_MODIFIERS: &[&str] = &["ctrl-shift-r", "ctrl-shift-q", "ctrl-shift-c", "ctrl-shift-b", "ctrl-shift-v", "ctrl-shift-tab"];
 
     /// Клавиши без модификатора (DESIGN «Хоткеи»): навигация и действие над выделенным; 1–9 — категории (решение №6);
-    /// Space — «выполнено» в задачах (S6 решение 6);
+    /// Space — «выполнено» в задачах (S6 решение 6); F9 — «Отправить и получить — все папки», как в Outlook (T3-02);
     /// End — пара к Home в списке; «Меню» — контекстное меню, как Shift+F10. Буквы без модификатора — только в схеме
     /// «Одиночные клавиши» (S5-17).
     pub(crate) const BARE_KEYS: &[&str] = &[
@@ -165,6 +165,7 @@ pub(crate) mod rule {
         "insert",
         "f2",
         "f3",
+        "f9",
         "home",
         "end",
         "pageup",

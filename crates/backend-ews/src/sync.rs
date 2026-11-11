@@ -40,7 +40,7 @@ use postman_cache::{
 use postman_compose::{Address, Draft};
 use postman_core::backend::{AreaCtx, Spawn};
 use postman_core::model::{ImportError, JobId, Remote, Selector};
-use postman_core::sync::{Command, ErrorKind, Event, FOLDER_UNSUPPORTED, Sender, Stage, Status, SyncError};
+use postman_core::sync::{Command, ErrorKind, Event, FOLDER_UNSUPPORTED, SendReceive, Sender, Stage, Status, SyncError};
 use postman_ews::{
     Change, Client, DeleteMode, FolderId, FolderRef, ItemId, MailFolder, MailHeader, MailRole, Mode, Subscription, SyncState, Upload, UploadError,
     WellKnown,
@@ -1625,10 +1625,23 @@ impl Ews {
             cmd @ (Command::CreateFolder { .. } | Command::RenameFolder { .. } | Command::MoveFolder { .. }) => {
                 self.folder_command(cmd, notify).await
             }
-            Command::Reconnect | Command::SyncNow => {
+            Command::Reconnect => {
                 if let Err(e) = self.refresh_all(true, notify).await {
                     notify(Event::Error(e));
                 }
+            }
+            // «Отправить и получить» (T3-02): та же сверка, ход — начало и конец (и без изменений на сервере).
+            Command::SyncNow => {
+                notify(Event::SendReceive(SendReceive::Started));
+                let error = match self.refresh_all(true, notify).await {
+                    Ok(()) => None,
+                    Err(e) => {
+                        let text = e.to_string();
+                        notify(Event::Error(e));
+                        Some(text)
+                    }
+                };
+                notify(Event::SendReceive(SendReceive::Finished { error }));
             }
             Command::RespondInvite { invite, status, in_reply_to, answer } => self.respond_invite(*invite, status, in_reply_to, answer, notify).await,
             Command::Delegate { uid, ticket, .. } => {

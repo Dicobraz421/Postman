@@ -64,6 +64,7 @@ mod plugins;
 mod prefs;
 mod preview;
 mod reading;
+mod recipients;
 mod remote_images;
 mod roles;
 mod rules;

@@ -105,6 +105,8 @@ pub(crate) mod glyph {
     pub(crate) const EDIT: char = '\u{E70F}';
     pub(crate) const COPY: char = '\u{E8C8}';
     pub(crate) const TENTATIVE: char = '\u{E897}';
+    /// «Отправить и получить — все папки» (T3-02) в палитре.
+    pub(crate) const SYNC: char = '\u{E895}';
 }
 
 /// Ширина кнопки «─ □ ✕» (Windows 11).
@@ -609,8 +611,10 @@ impl Mailer {
             let t = self.toasts.read(cx);
             (t.unread(), t.is_history_open())
         };
+        // «Отправить и получить» (T3-02): пока идёт — серая точка и «Отправка и получение…» прежде всего.
         // Без связи (S5-08): серая точка и «Нет связи · повтор через N с» вместо состояния синхронизации.
-        let sync = match crate::states::status_text(&self.offline, Instant::now()) {
+        let sending = self.live.send_receive.busy().then(|| tr!("frame-send-receive-running"));
+        let sync = match sending.or_else(|| crate::states::status_text(&self.offline, Instant::now())) {
             Some(text) => div().flex().items_center().gap(px(6.)).child(div().size(px(8.)).rounded_full().bg(l.text3())).child(text),
             // Синхронизация (T2-24, макет `Main`): точка и «Синхронизировано 14:01» — во всех разделах.
             None if !self.live.status.is_empty() => div()
@@ -1101,6 +1105,7 @@ fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
         .on_action(cx.listener(|this, _: &view::Notifications, _, cx| {
             this.toasts.update(cx, |t, cx| t.toggle_history(cx));
         }))
+        .on_action(cx.listener(|this, _: &sync::SendReceive, _, cx| this.send_receive(cx)))
 }
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
@@ -1125,6 +1130,11 @@ pub(crate) mod tab {
     gpui_kit::actions!(tab, [New, Next, Prev, Close]);
 }
 
+/// «Отправить и получить — все папки» (T3-02): сверка всех учётных записей сейчас.
+pub(crate) mod sync {
+    gpui_kit::actions!(sync, [SendReceive]);
+}
+
 /// Команды части (`commands.rs`: контексты и `cmd`).
 const COMMANDS: &[pets_commands::Command] = {
     use crate::commands::{MAILER, cmd};
@@ -1141,6 +1151,9 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("tab.close", &["ctrl-w"], MAILER),
         // Не Outlook: история тостов (значок 🔔 в строке состояния).
         cmd("view.notifications", &[], None),
+        // Как в Outlook: F9 — «Отправить и получить — все папки» (T3-02), во всём окне, в полях ввода тоже (там F9 —
+        // ничего).
+        cmd("sync.send_receive", &["f9"], MAILER),
     ]
 };
 

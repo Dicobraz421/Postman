@@ -1030,6 +1030,9 @@ pub struct Calendar {
     pub calendar_colors: std::collections::BTreeMap<String, String>,
     /// Скрытые календари коллег (ключи владельцев).
     pub hidden_calendars: Vec<String>,
+    /// Календари рядом (T3-05, как в Outlook «Рядом»): у каждого показанного календаря — свой блок дней; выключено —
+    /// наложением в одной сетке (макет S5-22).
+    pub side_by_side: bool,
     /// Новые приглашения — в календарь «под вопросом».
     pub tentative_invites: bool,
     /// Письмо-приглашение — в «Удалённые» после ответа.
@@ -1080,6 +1083,7 @@ impl Default for Calendar {
             owner_names: true,
             calendar_colors: std::collections::BTreeMap::new(),
             hidden_calendars: Vec::new(),
+            side_by_side: false,
             tentative_invites: true,
             delete_answered: true,
         }
@@ -1620,6 +1624,7 @@ mod tests {
                 owner_names: false,
                 calendar_colors: std::collections::BTreeMap::from([("a@x".to_string(), "pink".to_string())]),
                 hidden_calendars: vec!["b@x".into()],
+                side_by_side: true,
                 tentative_invites: false,
                 delete_answered: false,
             },
@@ -1717,6 +1722,14 @@ mod tests {
         a.remove_signature(&short);
         assert_eq!(a.signature("me@corp.example", true), None);
         assert_eq!(a.signature("me@corp.example", false).map(|s| s.name.as_str()), Some("Main"));
+    }
+
+    /// Календари рядом (T3-05): в файле прежней версии поля нет — наложением, как на макете S5-22.
+    #[test]
+    fn side_by_side_is_off_in_old_files() {
+        let old: Calendar = serde_json::from_str(r#"{"owner_names": false}"#).unwrap();
+        assert!(!old.side_by_side);
+        assert!(!Calendar::default().side_by_side);
     }
 
     /// Поздняя запись не затирает более новую.

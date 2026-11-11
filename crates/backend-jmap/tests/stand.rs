@@ -753,6 +753,23 @@ async fn rejected_password_stops_sync_with_auth_error() {
     }
 }
 
+/// T3-02: «Отправить и получить» после первой сверки, когда на сервере ничего не изменилось: ход — начало и конец без
+/// ошибки (сверка JMAP без изменений других событий не даёт). Только чтение.
+#[tokio::test]
+#[ignore = "нужен стенд Stalwart: docs/STALWART.md"]
+async fn send_receive_without_changes_still_ends() {
+    use postman_core::sync::{Command, Event as SyncEvent, SendReceive, Status};
+    let (commands, rx) = sync_of(1, env("POSTMAN_STAND_PASSWORD1"));
+    wait_for(&rx, "первая синхронизация", |e| matches!(e, SyncEvent::Status(Status::Synced)).then_some(()));
+    assert!(commands.send(Command::SyncNow).is_ok());
+    wait_for(&rx, "начало", |e| matches!(e, SyncEvent::SendReceive(SendReceive::Started)).then_some(()));
+    let end = wait_for(&rx, "конец", |e| match e {
+        SyncEvent::SendReceive(p @ SendReceive::Finished { .. }) => Some(p.clone()),
+        _ => None,
+    });
+    assert_eq!(end, SendReceive::Finished { error: None });
+}
+
 /// S4-03: догрузка папки — `LoadMore` после первой страницы (500) отдаёт `LoadedMore` с числом пришедших писем:
 /// следующая страница, если на сервере писем больше, иначе 0.
 #[tokio::test]

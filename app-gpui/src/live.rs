@@ -17,7 +17,7 @@ use pets_ui::Level as Toast;
 use postman_cache::{Cache, MailboxRow};
 use postman_core::categories;
 use postman_core::extract::Extractor;
-use postman_core::sync::{self, Account, Command, ErrorKind, Event, Index, Status, SyncError};
+use postman_core::sync::{self, Account, Command, ErrorKind, Event, Index, SendReceive, Status, SyncError};
 
 use crate::Mailer;
 use crate::account::{self, Settings};
@@ -35,6 +35,40 @@ const SEARCH_LIMIT: usize = 1000;
 
 /// Номер запуска синхронизации: события прежней учётной записи (до повторного входа) отбрасываются.
 static SESSION: AtomicU64 = AtomicU64::new(1);
+
+/// Ход «Отправить и получить» (T3-02, `Event::SendReceive`): учётные записи профиля (`None` — основная).
+#[derive(Default)]
+pub(crate) struct SendReceiveRun {
+    pub(crate) running: Vec<Option<String>>,
+    failed: Vec<Option<String>>,
+}
+
+impl SendReceiveRun {
+    pub(crate) fn busy(&self) -> bool {
+        !self.running.is_empty()
+    }
+
+    /// Шаг хода; `Some` — ход всех учётных записей кончился: те, у которых не вышло.
+    fn step(&mut self, profile: Option<&str>, p: &SendReceive) -> Option<Vec<Option<String>>> {
+        let key = profile.map(str::to_owned);
+        match p {
+            SendReceive::Started => {
+                if !self.running.contains(&key) {
+                    self.running.push(key);
+                }
+                None
+            }
+            SendReceive::Finished { error } => {
+                let was = self.running.len();
+                self.running.retain(|k| *k != key);
+                if error.is_some() && !self.failed.contains(&key) {
+                    self.failed.push(key);
+                }
+                (was > 0 && self.running.is_empty()).then(|| std::mem::take(&mut self.failed))
+            }
+        }
+    }
+}
 
 /// Состояние живого ящика в `Mailer`. В демо — пустое.
 #[derive(Default)]
@@ -66,6 +100,8 @@ pub(crate) struct Live {
     path: Option<PathBuf>,
     /// Сервер отклонил вход: показать строку входа на следующем кадре (ей нужно окно).
     pub(crate) reauth: Option<Settings>,
+    /// «Отправить и получить» (T3-02): у каких учётных записей профиля сверка идёт и у каких этим ходом не удалась.
+    pub(crate) send_receive: SendReceiveRun,
     /// Подписка на флаги списка уже есть (повторный вход не дублирует команды `Keyword`).
     flags_watched: bool,
     /// Локальная копия таблиц категорий прочитана; до этого ответы сервера ждут в `labels_early` (иначе копия,
@@ -686,6 +722,11 @@ impl Mailer {
     /// Пачка событий учётной записи профиля (S7-03б): общий вид (`Profile::fold`) — частям экрана, ошибки
     /// дополнительной — тостом с её именем.
     pub(crate) fn on_profile_events(&mut self, profile: Option<&str>, batch: Vec<Event>, cx: &mut Context<Self>) {
+        for e in &batch {
+            if let Event::SendReceive(p) = e {
+                self.on_send_receive(profile, p, cx);
+            }
+        }
         // Ответы путей заданиям переноса — копией в поток ядра (S8-16).
         self.core_events(profile, &batch);
         let senders_before = self.live.profile.sender_routes();
@@ -723,6 +764,32 @@ impl Mailer {
             let text = tr!("sync-account-error", account = name.clone().unwrap_or_default(), error = error_text(&e));
             self.toasts.update(cx, |t, cx| t.push(Toast::Error, text, cx));
         }
+    }
+
+    /// Ход «Отправить и получить» учётной записи (T3-02): строка состояния и кнопка — пока идёт у любой; конец у всех —
+    /// тост «готово» или «не завершено» с именами учётных записей (почему — тостами ошибок синхронизации).
+    pub(crate) fn on_send_receive(&mut self, profile: Option<&str>, p: &SendReceive, cx: &mut Context<Self>) {
+        if let Some(failed) = self.live.send_receive.step(profile, p) {
+            let name = |k: &Option<String>| match k {
+                None => self.live.account.as_ref().map(|s| s.user.clone()),
+                Some(p) => self.live.profile.names.iter().find(|(q, _)| q == p).map(|(_, s)| s.user.clone()),
+            };
+            let names: Vec<String> = failed.iter().filter_map(name).collect();
+            let (level, text) = match (failed.is_empty(), names.is_empty()) {
+                (true, _) => (Toast::Info, tr!("frame-send-receive-done")),
+                (false, true) => (Toast::Error, tr!("frame-send-receive-failed-one")),
+                (false, false) => (Toast::Error, tr!("frame-send-receive-failed", accounts = names.join(", "))),
+            };
+            self.toasts.update(cx, |t, cx| t.push(level, text, cx));
+        }
+        let busy = self.live.send_receive.busy();
+        self.bar.update(cx, |b, cx| {
+            if b.syncing != busy {
+                b.syncing = busy;
+                cx.notify();
+            }
+        });
+        cx.notify();
     }
 
     /// Дополнительная учётная запись профиля (S7-03б): своя синхронизация на том же кэше, ключи — с её префиксом.
