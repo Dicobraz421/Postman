@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use postman_cache::Cache;
 use postman_core::backend::{MailPlugin, Spawn};
 use postman_core::model::{Auth, Feature, Filter, Selector, SweepId};
-use postman_core::sync::{Account, Command, Event, Status, UnboundedSender};
+use postman_core::sync::{Account, Command, Event, SendReceive, Status, UnboundedSender};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -1481,4 +1481,18 @@ fn lost_create_item_answer_leaves_one_copy() {
     let refs = live.cache.remotes(ids[0]).unwrap();
     assert_eq!(refs.len(), 1);
     assert_eq!(refs[0].id, postman_backend_ews::sync::encode_id("AAMkADcut0"));
+}
+
+/// «Отправить и получить» (T3-02): `SyncNow` — сверка сейчас, ход — начало и конец без ошибки, даже когда на сервере
+/// ничего не изменилось.
+#[test]
+fn send_receive_reports_start_and_end() {
+    let (url, log) = server();
+    let live = ready(&url);
+    let n = log.lock().unwrap().len();
+    live.commands.send(Command::SyncNow).unwrap();
+    live.wait("Started", |e| matches!(e, Event::SendReceive(SendReceive::Started)));
+    let Event::SendReceive(end) = live.wait("Finished", |e| matches!(e, Event::SendReceive(SendReceive::Finished { .. }))) else { unreachable!() };
+    assert_eq!(end, SendReceive::Finished { error: None });
+    assert!(log.lock().unwrap().len() > n, "сверка ушла на сервер");
 }

@@ -555,6 +555,8 @@ fn mail_drills() {
         "mail-23-tab",
         "mail-23-chips",
         "mail-t302-sync",
+        "mail-t302-progress",
+        "mail-t302-done",
         "mail-t303-picker",
         "mail-t303-added",
         "mail-23-format",

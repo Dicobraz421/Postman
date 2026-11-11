@@ -8,7 +8,7 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use postman_core::link::Connection;
-use postman_core::sync::{Account, Command, ErrorKind, Event};
+use postman_core::sync::{Account, Command, ErrorKind, Event, SendReceive};
 
 const WAIT: Duration = Duration::from_secs(20);
 
@@ -61,4 +61,24 @@ fn unreachable_server_goes_offline_queues_and_retries_on_demand() {
             Ok(_) => assert!(start.elapsed() < WAIT),
         }
     }
+}
+
+/// «Отправить и получить» без связи (T3-02): попытка входа сразу, ход — начало и конец с ошибкой.
+#[test]
+fn send_receive_offline_ends_with_an_error() {
+    let account = Account { url: "http://127.0.0.1:9".into(), auth: postman_core::model::Auth::Basic { user: "u".into(), password: "p".into() } };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let commands = postman_backend_jmap::spawn(account, postman_cache::Cache::open_in_memory().unwrap(), None, tx, || {});
+    next_connection(&rx);
+    assert!(commands.send(Command::SyncNow).is_ok());
+    let mut progress = Vec::new();
+    let start = Instant::now();
+    while progress.len() < 2 {
+        let left = WAIT.checked_sub(start.elapsed()).unwrap_or_else(|| panic!("нет хода: {progress:?}"));
+        if let Event::SendReceive(p) = rx.recv_timeout(left).unwrap() {
+            progress.push(p);
+        }
+    }
+    assert_eq!(progress[0], SendReceive::Started);
+    assert!(matches!(&progress[1], SendReceive::Finished { error: Some(_) }), "{progress:?}");
 }

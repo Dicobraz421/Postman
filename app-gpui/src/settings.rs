@@ -443,11 +443,13 @@ impl Mailer {
 
     /// «Отправить и получить — все папки» (T3-02, F9, кнопка командной строки): та же сверка, что «Синхронизировать» у
     /// учётной записи (`Command::SyncNow`), — всех учётных записей профиля; без связи — попытка сразу, очередь правок и
-    /// писем без связи уходит после входа. Ход — в строке состояния, как у обычной синхронизации; демо — «нужен сервер».
+    /// писем без связи уходит после входа. Ход — `Event::SendReceive` (`Mailer::on_send_receive`); пока идёт, повтор
+    /// ничего не делает. Демо — «нужен сервер».
     pub(crate) fn send_receive(&mut self, cx: &mut Context<Self>) {
-        if self.backend.send(Command::SyncNow) {
-            self.toasts.update(cx, |t, cx| t.push(Toast::Info, tr!("frame-send-receive-started"), cx));
-        } else {
+        if self.live.send_receive.busy() {
+            return;
+        }
+        if !self.backend.send(Command::SyncNow) {
             self.not_sent(cx);
         }
     }

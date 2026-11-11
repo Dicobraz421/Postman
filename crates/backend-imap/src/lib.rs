@@ -43,7 +43,7 @@ use postman_core::backend::Login;
 use postman_core::backend::{AreaCtx, AreaPlugin, Areas, BoxFuture, MailPlugin, Spawn};
 use postman_core::model::{Auth, Feature, Features, ImportError, JobId, Remote, Selector};
 use postman_core::settings;
-use postman_core::sync::{Account, Command, ErrorKind, Event, FOLDER_UNSUPPORTED, Index, Sender, Stage, Status, SyncError};
+use postman_core::sync::{Account, Command, ErrorKind, Event, FOLDER_UNSUPPORTED, Index, SendReceive, Sender, Stage, Status, SyncError};
 
 /// Писем папки при первом входе — не больше (дальше — «Загрузить ещё»).
 pub const INITIAL: usize = 500;
@@ -1398,14 +1398,24 @@ impl Imap {
                     self.session().await?;
                 }
             }
-            // «Синхронизировать» (T2-51): папки и письма заново сейчас.
+            // «Синхронизировать» (T2-51), «Отправить и получить» (T3-02): папки и письма заново сейчас; ход — начало и конец.
             Command::SyncNow => {
-                if self.session.is_none() {
-                    self.session().await?;
+                notify(Event::SendReceive(SendReceive::Started));
+                if self.session.is_none()
+                    && let Err(e) = self.session().await
+                {
+                    notify(Event::SendReceive(SendReceive::Finished { error: Some(e.to_string()) }));
+                    return Err(e);
                 }
-                if let Err(e) = self.refresh_all(notify).await {
-                    notify(Event::Error(e));
-                }
+                let error = match self.refresh_all(notify).await {
+                    Ok(()) => None,
+                    Err(e) => {
+                        let text = e.to_string();
+                        notify(Event::Error(e));
+                        Some(text)
+                    }
+                };
+                notify(Event::SendReceive(SendReceive::Finished { error }));
             }
             Command::RespondInvite { invite, status, in_reply_to, answer } => self.respond_invite(*invite, status, in_reply_to, answer, notify).await,
             Command::Delegate { uid, drafts, ticket, release } => self.delegate(uid, drafts, ticket, release, notify).await,

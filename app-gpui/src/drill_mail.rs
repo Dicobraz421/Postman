@@ -87,6 +87,11 @@ const SCENES: &[Scene] = &[
     scene("mail-23-chips", |_, m, cx| screens::compose_tab(m).is_some_and(|c| c.read(cx).copies_shown() == (true, true)), CHIPS),
     // T3-02: кнопка «Отправить и получить» и F9 — `Command::SyncNow`; в демо сервера нет — тост «нужен сервер» на каждое.
     scene("mail-t302-sync", |_, m, cx| m.toasts.read(cx).unread() == 1 && needs_server_toast(m, cx), SEND_RECEIVE),
+    // T3-02, ход (события `Event::SendReceive` — как от сервера): строка состояния «Отправка и получение…», кнопка
+    // недоступна, F9 ничего не делает. Снимок — посреди хода.
+    scene("mail-t302-progress", |_, m, cx| m.bar.read(cx).syncing && m.toasts.read(cx).unread() == 0, PROGRESS),
+    // T3-02, итог: конец у всех — тост «готово»; у одной учётной записи ошибка — «не завершены»; кнопка снова доступна.
+    scene("mail-t302-done", |_, m, cx| !m.bar.read(cx).syncing && toast_is(m, cx, "frame-send-receive-failed-one"), PROGRESS_DONE),
     // T3-03: «Кому…» — панель адресной книги: поиск, флажки (↓, Пробел), «Кому →» двоих, другой поиск, «Копия →» список
     // рассылки (метка «Список рассылки»). Снимок — панель открыта, отложенные внизу.
     scene("mail-t303-picker", |_, m, cx| picker(m, cx).is_some_and(|p| p.picked.to.len() == 2 && p.picked.cc.len() == 1), PICKER),
@@ -506,6 +511,42 @@ const SEND_RECEIVE: &[Input] = &[
     Input::Keys(&["escape"]),
     until!(|m, cx| !m.toasts.read(cx).is_history_open()),
     Input::Keys(&["f9"]),
+];
+
+fn toast_is(m: &Mailer, cx: &App, key: &str) -> bool {
+    m.toasts.read(cx).latest().is_some_and(|t| t == tr!(key))
+}
+
+/// Ход «Отправить и получить» учётной записи — как событие синхронизации.
+fn progress(m: &mut Mailer, cx: &mut Context<Mailer>, profile: Option<&str>, p: postman_core::sync::SendReceive) -> Result<(), String> {
+    m.on_profile_events(profile, vec![postman_core::sync::Event::SendReceive(p)], cx);
+    Ok(())
+}
+
+const EXTRA: &str = "p2";
+
+const PROGRESS: &[Input] = &[
+    READY,
+    // Счётчик уведомлений — с нуля: F9 посреди хода тоста не даёт.
+    Input::Click(at!("notifications"), Held::No),
+    until!(|m, cx| m.toasts.read(cx).is_history_open() && m.toasts.read(cx).unread() == 0),
+    Input::Keys(&["escape"]),
+    until!(|m, cx| !m.toasts.read(cx).is_history_open()),
+    Input::Run(|_, m, _, cx| progress(m, cx, None, postman_core::sync::SendReceive::Started)),
+    until!(|m, cx| m.bar.read(cx).syncing),
+    Input::Keys(&["f9"]),
+];
+
+const PROGRESS_DONE: &[Input] = &[
+    READY,
+    Input::Run(|_, m, _, cx| progress(m, cx, None, postman_core::sync::SendReceive::Started)),
+    Input::Run(|_, m, _, cx| progress(m, cx, None, postman_core::sync::SendReceive::Finished { error: None })),
+    until!(|m, cx| !m.bar.read(cx).syncing && toast_is(m, cx, "frame-send-receive-done")),
+    Input::Run(|_, m, _, cx| progress(m, cx, None, postman_core::sync::SendReceive::Started)),
+    Input::Run(|_, m, _, cx| progress(m, cx, Some(EXTRA), postman_core::sync::SendReceive::Started)),
+    Input::Run(|_, m, _, cx| progress(m, cx, None, postman_core::sync::SendReceive::Finished { error: None })),
+    until!(|m, cx| m.bar.read(cx).syncing),
+    Input::Run(|_, m, _, cx| progress(m, cx, Some(EXTRA), postman_core::sync::SendReceive::Finished { error: Some("no connection".into()) })),
 ];
 
 fn picker<'a>(m: &'a Mailer, cx: &'a App) -> Option<&'a crate::recipients::Picker> {
