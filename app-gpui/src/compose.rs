@@ -1863,10 +1863,22 @@ pub(crate) mod scenes {
         screens::Input::Text("Город"), // i18n-ok: ввод сценария
         screens::Input::Keys(&["tab"]),
         screens::Input::Text("План"), // i18n-ok: ввод сценария
+        screens::Input::Keys(&["tab"]),
+        screens::Input::Text("Факт"), // i18n-ok: ввод сценария
+        screens::Input::Keys(&["tab"]),
+        screens::Input::Text("Омск"), // i18n-ok: ввод сценария
+        screens::Input::Keys(&["tab"]),
+        screens::Input::Text("120"),
+        screens::Input::Keys(&["tab"]),
+        screens::Input::Text("131"),
     ];
 
     fn table_typed(_: &Scene, m: &Mailer, cx: &App) -> bool {
-        screens::compose_tab(m).is_some_and(|c| c.read(cx).model.body.contains("| Город | План |\n| ----- | ---- |")) // i18n-ok: ввод сценария
+        // Столбцы выровнены Tab: строка `---` — по ширине «Город», «План», «Факт».
+        screens::compose_tab(m).is_some_and(|c| {
+            let body = &c.read(cx).model.body;
+            body.contains("| Город | План | Факт |\n| ----- | ---- | ---- |") && body.contains("| Омск  | 120  | 131") // i18n-ok: ввод сценария
+        })
     }
 
     /// HTML буфера обмена сцены: так его кладёт Word (таблица, список, жирный, шрифт и размер — без них).

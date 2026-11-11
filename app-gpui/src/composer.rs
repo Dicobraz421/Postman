@@ -1647,12 +1647,15 @@ impl Composer {
             .child(fmt("fmt-numbers", Format::Numbers, "cmd-compose-numbers", cx).text_size(px(12.)).child("1."))
             .child(fmt("fmt-link", Format::Link, "cmd-compose-link", cx).child(icon(glyph::LINK, 16.)))
             .child(fmt("fmt-quote", Format::Quote, "cmd-compose-quote", cx).child(icon(glyph::QUOTE, 16.)))
-            // «Таблица» (T3-06): таблица GFM 3×2 с заголовком у курсора, Tab — по ячейкам.
+            // «Таблица» (T3-06): таблица GFM 3×2 с заголовком у курсора, Tab — по ячейкам. Значком, как списки и цитата:
+            // подпись перенесла бы панель на вторую строку.
             .child(
                 quiet("fmt-table", l)
+                    .w(px(30.))
+                    .px(px(0.))
+                    .justify_center()
                     .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(tr!("compose-fmt-table-tip")).build(window, cx))
                     .child(icon(glyph::TABLE, 16.))
-                    .when(wide, |d| d.child(tr!("compose-fmt-table")))
                     .on_click(cx.listener(|this, _, window, cx| this.insert_table(window, cx))),
             )
             .child(sep())
@@ -2810,6 +2813,10 @@ pub(crate) fn md_style(m: &postman_compose::display::Look, l: &Look) -> Highligh
     }
     if m.strike {
         s.strikethrough = Some(StrikethroughStyle { thickness: px(1.), color: None });
+    }
+    // Таблица (T3-06): ячейки — на светлой подложке, видно, где таблица кончается.
+    if m.table {
+        s.background_color = Some(l.fill_passive());
     }
     if m.code {
         s.background_color = Some(l.fill());

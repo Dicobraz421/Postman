@@ -84,6 +84,8 @@ pub fn display(md: &str) -> Vec<Span> {
                 }
             }
             Event::Start(Tag::TableHead) => set(r.clone(), &|l| l.strong = true),
+            // Картинка `![…](cid:…)` (логотип подписи, T3-07): ссылка целиком — разметка, сама картинка — под текстом.
+            Event::Start(Tag::Image { .. }) => set(r.clone(), &|l| l.markup = true),
             Event::Start(Tag::Strong) => {
                 set(r.clone(), &|l| l.strong = true);
                 wrap(&mut set, &r, 2);
@@ -257,6 +259,9 @@ mod tests {
         assert!(marks.contains(&"| ----- | ---- |"), "{marks:?}");
         assert_eq!(marks.iter().filter(|m| **m == "|").count(), 6, "по три у строк заголовка и данных, `\\|` — текст: {marks:?}");
         assert!(of(md, |l| l.table).iter().all(|s| !s.contains("Итоги")));
+        // Картинка подписи — разметка целиком.
+        let md = "Иван\n![logo.png](cid:sig1@postman)";
+        assert_eq!(markup(md), ["![logo.png](cid:sig1@postman)"]);
     }
 
     /// `<u>…</u>` — подчёркнутый; теги — разметка.
