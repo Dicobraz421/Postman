@@ -166,6 +166,14 @@ pub(crate) struct Group {
     pub(crate) members: Vec<Address>,
 }
 
+impl Group {
+    /// Группа книги подсказок → группа письма: имена участников — из книги (нет — пусто).
+    pub(crate) fn of_book(g: &postman_core::contacts::Group, book: &AddressBook) -> Self {
+        let members = g.members.iter().map(|e| Address::new(book.get(e).map(|x| x.name.clone()).unwrap_or_default(), e)).collect();
+        Group { name: g.name.clone(), members }
+    }
+}
+
 /// Чип группы в поле адресов: `"Имя" <group:N>`.
 const GROUP_REF: &str = "group:";
 

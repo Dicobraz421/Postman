@@ -3999,7 +3999,22 @@ pub(crate) mod scenes {
         Scene::new("compose-group", compose_group, compose_group_ready).continues().on_request(),
         // «+» у чипа — участники чипами (так же группа раскрывается при отправке).
         Scene::new("compose-group-expanded", compose_expand, compose_expand_ready).continues().on_request(),
+        // «Кому…» (T3-03): личные группы — первыми, с числом участников.
+        Scene::new("compose-group-picker", group_picker, group_picker_ready).continues().on_request(),
     ];
+
+    fn group_picker(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        let Some(c) = m.compose.last().cloned() else { return Err("no compose tab".into()) };
+        c.update(cx, |c, cx| c.open_recipients(crate::compose::Field::To, window, cx));
+        Ok(())
+    }
+
+    fn group_picker_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        screens::compose_tab(m).is_some_and(|c| {
+            let c = c.read(cx);
+            c.drawn() && c.picker.as_ref().is_some_and(|p| p.read(cx).rows().iter().any(|r| r.kind == crate::recipients::Kind::Group))
+        })
+    }
 
     fn groups(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
         m.cal.update(cx, |c, cx| c.close_details(cx));

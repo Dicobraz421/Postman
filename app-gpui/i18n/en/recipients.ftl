@@ -6,6 +6,11 @@ recipients-kind-contact = Contact
 recipients-kind-directory = Directory
 recipients-kind-recent = Correspondence
 recipients-kind-list = Distribution list
+recipients-kind-group = Group
+recipients-group-members = { $n ->
+    [one] { $n } member
+   *[other] { $n } members
+}
 recipients-add-to = To →
 recipients-add-cc = Cc →
 recipients-add-bcc = Bcc →

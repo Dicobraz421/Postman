@@ -4,7 +4,7 @@
 //! справочник только поиском — `Mailer::find_people`, найденные приходят в книгу), списки рассылки — со своей меткой.
 //! Флажками отмечают нескольких, «Кому →», «Копия →», «Скрытая →» откладывают отмеченных в поле внизу панели; «ОК»
 //! переносит отложенных в письмо чипами (отмеченные, но не отложенные, — в поле, у которого открыли панель), «Отмена» и
-//! Esc ничего не меняют. Клавиши — таблицей команд (`recipients.*`): ↑/↓ — по списку (из поля поиска ↓ уводит фокус в
+//! Esc ничего не меняют. Личные группы (T2-47) — первыми, со своей меткой и числом участников: в письмо — чипом группы. Клавиши — таблицей команд (`recipients.*`): ↑/↓ — по списку (из поля поиска ↓ уводит фокус в
 //! список, ↑ на первой строке — обратно в поле), Пробел — флажок, Enter — «ОК», Esc — закрыть.
 
 use std::collections::HashSet;
@@ -35,6 +35,16 @@ pub(crate) enum Kind {
     Recent,
     /// Список рассылки справочника (`contacts::Kind::List`).
     List,
+    /// Личная группа (T2-47): в `Person::email` — [`GROUP_KEY`] и id карточки.
+    Group,
+}
+
+/// «Адрес» строки личной группы: `group:<id карточки>` (своего адреса у группы нет).
+const GROUP_KEY: &str = "group:";
+
+/// id карточки личной группы строки; адресат — `None`.
+pub(crate) fn group_id(p: &Person) -> Option<&str> {
+    (p.kind == Kind::Group).then(|| p.email.strip_prefix(GROUP_KEY)).flatten()
 }
 
 impl Kind {
@@ -44,6 +54,7 @@ impl Kind {
             Kind::Directory => "recipients-kind-directory",
             Kind::Recent => "recipients-kind-recent",
             Kind::List => "recipients-kind-list",
+            Kind::Group => "recipients-kind-group",
         }
     }
 }
@@ -70,6 +81,10 @@ impl Person {
 /// Люди по запросу: пустой — частые и недавние первыми (затем по имени), иначе — как подсказки адреса (`suggest`:
 /// начало слов, любая раскладка, транслит). `lists` — адреса списков рассылки, в нижнем регистре.
 pub(crate) fn people(book: &AddressBook, lists: &HashSet<String>, query: &str, now: i64) -> Vec<Person> {
+    // Личные группы (T2-47): пустой запрос — все, иначе — по имени, как подсказки адреса.
+    let groups =
+        book.groups().iter().filter(|g| !g.members.is_empty() && (query.trim().is_empty() || postman_core::contacts::matches(&g.name, "", query)));
+    let groups: Vec<Person> = groups.map(|g| Person { name: g.name.clone(), email: format!("{GROUP_KEY}{}", g.id), kind: Kind::Group }).collect();
     let found: Vec<&postman_core::contacts::Entry> = if query.trim().is_empty() {
         let mut all: Vec<_> = book.entries().collect();
         all.sort_by(|a, b| b.count.cmp(&a.count).then(b.last.cmp(&a.last)).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
@@ -78,9 +93,9 @@ pub(crate) fn people(book: &AddressBook, lists: &HashSet<String>, query: &str, n
     } else {
         book.suggest(query, LIMIT, now)
     };
-    found
+    groups
         .into_iter()
-        .map(|e| Person {
+        .chain(found.into_iter().map(|e| Person {
             name: e.name.clone(),
             email: e.email.clone(),
             kind: if lists.contains(&e.email.to_lowercase()) {
@@ -92,7 +107,7 @@ pub(crate) fn people(book: &AddressBook, lists: &HashSet<String>, query: &str, n
                     Source::Recent => Kind::Recent,
                 }
             },
-        })
+        }))
         .collect()
 }
 
@@ -317,8 +332,18 @@ impl Picker {
             .child(div().absolute().left_0().top(px(7.)).bottom(px(7.)).w(px(3.)).rounded(px(2.)).when(on, |d| d.bg(l.accent())))
             .child(crate::list::checkbox(checked, l))
             .when(p.kind == Kind::List, |d| d.child(icon(glyph::MAIL, 12.).text_color(l.text2())))
+            .when(p.kind == Kind::Group, |d| d.child(icon(glyph::CONTACTS, 12.).text_color(l.text2())))
             .child(div().flex_none().max_w(px(240.)).truncate().child(if p.name.is_empty() { p.email.clone() } else { p.name.clone() }))
-            .child(div().flex_1().min_w_0().truncate().text_color(l.text2()).when(!p.name.is_empty(), |d| d.child(p.email.clone())))
+            // Группа (T2-47): вместо адреса — число участников.
+            .child(div().flex_1().min_w_0().truncate().text_color(l.text2()).when(!p.name.is_empty(), |d| {
+                d.child(match group_id(p) {
+                    Some(id) => {
+                        let n = self.book.borrow().groups().iter().find(|g| g.id == id).map_or(0, |g| g.members.len());
+                        tr!("recipients-group-members", n = n)
+                    }
+                    None => p.email.clone(),
+                })
+            }))
             .child(div().flex_none().text_size(l.px(Metric::TypeCaption)).text_color(l.text3()).child(tr!(p.kind.key())))
             .on_click(cx.listener(move |this, _, _, cx| this.toggle(i, cx)))
     }
@@ -511,6 +536,18 @@ mod tests {
         assert_eq!(ir.iter().map(|p| p.email.as_str()).collect::<Vec<_>>(), ["smirnova@corp.example"]);
         assert_eq!(people(&book(), &lists, "bh", 2_000), ir, "«ир» в английской раскладке");
         let sales = people(&book(), &lists, "отдел", 2_000); // i18n-ok: запрос теста
+        // Личная группа (T2-47) — первой, со своей меткой; пустая — нет.
+        let mut b = book();
+        let g = |id: &str, name: &str, members: &[&str]| postman_core::contacts::Group {
+            id: id.into(),
+            name: name.into(),
+            members: members.iter().map(|m| m.to_string()).collect(),
+        };
+        b.set_groups(vec![g("g1", "Отдел кадров", &["hr@corp.example"]), g("g2", "Отдел пустой", &[])]);
+        let found = people(&b, &lists, "отдел", 2_000); // i18n-ok: запрос теста
+        assert_eq!((found[0].kind, super::group_id(&found[0])), (Kind::Group, Some("g1")));
+        assert_eq!(found.iter().filter(|p| p.kind == Kind::Group).count(), 1);
+        assert_eq!(people(&b, &lists, "", 2_000)[0].kind, Kind::Group);
         assert_eq!(sales[0].kind, Kind::List);
         assert_eq!(people(&book(), &lists, "петров", 2_000)[0].kind, Kind::Contact); // i18n-ok: запрос теста
     }
