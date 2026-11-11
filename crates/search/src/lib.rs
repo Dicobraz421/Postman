@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Mutex;
 
-use tantivy::collector::TopDocs;
+use tantivy::collector::{DocSetCollector, TopDocs};
 use tantivy::query::{BooleanQuery, BoostQuery, FuzzyTermQuery, Occur, Query, TermQuery};
 use tantivy::schema::{FAST, Field, IndexRecordOption, STORED, STRING, Schema, TextFieldIndexing, TextOptions, Value};
 use tantivy::snippet::SnippetGenerator;
@@ -43,7 +43,8 @@ pub struct Attachment<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hit {
     pub id: String,
-    /// Слова запроса нашлись во вложении (в имени или тексте); совпало ли ещё и в самом письме — не сообщается.
+    /// Слова запроса нашлись во вложении (в имени или тексте), а само письмо (тема, люди, тело) запросу не отвечает:
+    /// без вложения его бы не нашли. Письмо отвечает запросу и само — `None` (решение владельца 2026-11-11).
     pub attachment: Option<AttachmentHit>,
 }
 
@@ -76,7 +77,11 @@ struct Fields {
     /// Всё вместе без стемминга — для опечаток и префиксов.
     raw: Field,
     received: Field,
-    /// Имена и тексты вложений по порядку, только хранятся: ищутся они через `body` и `raw`.
+    /// Имена и тексты вложений вместе: словоформы и (без стемминга) опечатки с префиксами — отдельно от письма,
+    /// чтобы знать, отвечает ли письмо запросу и без вложений.
+    att: Field,
+    att_raw: Field,
+    /// Имена и тексты вложений по порядку, только хранятся: из них — имя и отрывок в ответе.
     att_name: Field,
     att_text: Field,
 }
@@ -101,6 +106,8 @@ fn schema() -> (Schema, Fields) {
         body: b.add_text_field("body", text(STEM)),
         raw: b.add_text_field("raw", text(RAW)),
         received: b.add_i64_field("received", FAST),
+        att: b.add_text_field("att", text(STEM)),
+        att_raw: b.add_text_field("att_raw", text(RAW)),
         att_name: b.add_text_field("att_name", STORED),
         att_text: b.add_text_field("att_text", STORED),
     };
@@ -300,13 +307,15 @@ impl SearchIndex {
                 }
                 stored.push((a.name, text));
             }
-            let raw = normalize(&format!("{} {} {}{}", d.subject, d.people, d.body, attached));
+            let attached = normalize(&attached);
             let mut document = doc!(
                 self.f.id => d.id,
                 self.f.subject => normalize(d.subject),
                 self.f.people => normalize(d.people),
-                self.f.body => normalize(&format!("{}{}", d.body, attached)),
-                self.f.raw => raw,
+                self.f.body => normalize(d.body),
+                self.f.raw => normalize(&format!("{} {} {}", d.subject, d.people, d.body)),
+                self.f.att => attached.clone(),
+                self.f.att_raw => attached,
                 self.f.received => d.received_at,
             );
             for (name, text) in stored {
@@ -369,7 +378,9 @@ impl SearchIndex {
             return Ok(Vec::new());
         }
         let last = words.len() - 1;
-        let clauses: Vec<(Occur, Box<dyn Query>)> = words.iter().enumerate().map(|(i, w)| (Occur::Must, self.word_query(w, i == last))).collect();
+        let query = |own: bool| -> BooleanQuery {
+            BooleanQuery::new(words.iter().enumerate().map(|(i, w)| (Occur::Must, self.word_query(w, i == last, own))).collect())
+        };
         let searcher = self.reader.searcher();
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
         let collector = TopDocs::with_limit(limit).tweak_score(move |seg: &SegmentReader| {
@@ -382,17 +393,26 @@ impl SearchIndex {
                 score * (1.0 + 0.5 * (-age_days / 60.0).exp() + 0.01 / (1.0 + age_days / 365.0))
             }
         });
-        let top = searcher.search(&BooleanQuery::new(clauses), &collector)?;
+        let top = searcher.search(&query(false), &collector)?;
         let wanted: Vec<Wanted> = words.iter().enumerate().map(|(i, w)| self.wanted(w, i == last)).collect();
-        top.into_iter()
-            .map(|(_, addr)| {
-                let d: TantivyDocument = searcher.doc(addr)?;
-                let id = d.get_first(self.f.id).and_then(|v| v.as_str()).unwrap_or_default().to_string();
-                let names = d.get_all(self.f.att_name).filter_map(|v| v.as_str());
-                let texts = d.get_all(self.f.att_text).filter_map(|v| v.as_str());
-                Ok(Hit { id, attachment: self.attachment_hit(&wanted, names.zip(texts)) })
-            })
-            .collect()
+        let mut hits = Vec::with_capacity(top.len());
+        for (_, addr) in &top {
+            let d: TantivyDocument = searcher.doc(*addr)?;
+            let id = d.get_first(self.f.id).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let names = d.get_all(self.f.att_name).filter_map(|v| v.as_str());
+            let texts = d.get_all(self.f.att_text).filter_map(|v| v.as_str());
+            hits.push(Hit { id, attachment: self.attachment_hit(&wanted, names.zip(texts)) });
+        }
+        // Письмо отвечает запросу и без вложений — вложение не называем: один запрос на всех, только если есть кого проверять.
+        if hits.iter().any(|h| h.attachment.is_some()) {
+            let own = searcher.search(&query(true), &DocSetCollector)?;
+            for (hit, (_, addr)) in hits.iter_mut().zip(&top) {
+                if own.contains(addr) {
+                    hit.attachment = None;
+                }
+            }
+        }
+        Ok(hits)
     }
 
     fn wanted(&self, word: &str, is_last: bool) -> Wanted {
@@ -471,34 +491,38 @@ impl SearchIndex {
         out
     }
 
-    /// Любой вид слова: словоформа, опечатка, начало слова, другая раскладка.
-    fn word_query(&self, word: &str, is_last: bool) -> Box<dyn Query> {
+    /// Любой вид слова: словоформа, опечатка, начало слова, другая раскладка. `own` — только в самом письме, без
+    /// вложений.
+    fn word_query(&self, word: &str, is_last: bool, own: bool) -> Box<dyn Query> {
         let mut any: Vec<(Occur, Box<dyn Query>)> = Vec::new();
         for (w, penalty) in std::iter::once((word.to_string(), 1.0)).chain(switch_layout(word).map(|w| (w, 0.8))) {
-            any.extend(self.variants(&w, is_last, penalty));
+            any.extend(self.variants(&w, is_last, penalty, own));
         }
         Box::new(BooleanQuery::new(any))
     }
 
-    fn variants(&self, word: &str, is_last: bool, penalty: f32) -> Vec<(Occur, Box<dyn Query>)> {
+    fn variants(&self, word: &str, is_last: bool, penalty: f32, own: bool) -> Vec<(Occur, Box<dyn Query>)> {
         let mut out: Vec<(Occur, Box<dyn Query>)> = Vec::new();
         let boost = |q: Box<dyn Query>, b: f32| -> (Occur, Box<dyn Query>) { (Occur::Should, Box::new(BoostQuery::new(q, b * penalty))) };
-        // Точная словоформа через стеммер: сильнее всего, тема важнее тела.
-        for (field, b) in [(self.f.subject, 3.0), (self.f.people, 2.5), (self.f.body, 1.5)] {
+        // Точная словоформа через стеммер: сильнее всего, тема важнее тела; вложения — наравне с телом.
+        let stemmed = [(self.f.subject, 3.0), (self.f.people, 2.5), (self.f.body, 1.5), (self.f.att, 1.5)];
+        for (field, b) in stemmed.into_iter().take(if own { 3 } else { 4 }) {
             for t in self.stem_terms(field, word) {
                 out.push(boost(Box::new(TermQuery::new(t, IndexRecordOption::WithFreqs)), b));
             }
         }
         let chars = word.chars().count();
-        let raw = Term::from_field_text(self.f.raw, word);
         // Опечатки: короткие слова — только точно, длинные — до двух правок.
         let distance = typos(chars) as u8;
-        if distance > 0 {
-            out.push(boost(Box::new(FuzzyTermQuery::new(raw.clone(), distance, true)), 0.6));
-        }
-        // Последнее слово — ещё набирается: ищем по началу.
-        if is_last && chars >= 2 {
-            out.push(boost(Box::new(FuzzyTermQuery::new_prefix(raw, if chars >= 5 { 1 } else { 0 }, true)), 0.8));
+        for field in [self.f.raw, self.f.att_raw].into_iter().take(if own { 1 } else { 2 }) {
+            let raw = Term::from_field_text(field, word);
+            if distance > 0 {
+                out.push(boost(Box::new(FuzzyTermQuery::new(raw.clone(), distance, true)), 0.6));
+            }
+            // Последнее слово — ещё набирается: ищем по началу.
+            if is_last && chars >= 2 {
+                out.push(boost(Box::new(FuzzyTermQuery::new_prefix(raw, if chars >= 5 { 1 } else { 0 }, true)), 0.8));
+            }
         }
         out
     }
@@ -685,16 +709,17 @@ mod tests {
         }
     }
 
-    /// T3-10: совпало и в письме, и во вложении — вложение названо; ё = е, отрывок — как в файле.
+    /// T3-10: совпало и в письме, и во вложении — письмо находится, вложение не называется (решение владельца
+    /// 2026-11-11); часть слов есть только во вложении — называется; ё = е, отрывок — как в файле.
     #[test]
     fn attachment_hit_when_body_matches_too() {
         let i = attached();
-        for query in ["елка", "ёлку"] {
-            assert_eq!(
-                hit(&i, query),
-                Some(AttachmentHit { name: "Протокол.txt".into(), snippet: "Решили: ёлку ставим в холле.".into() }),
-                "{query}"
-            );
+        for query in ["елка", "ёлку", "протокол совещания"] {
+            assert_eq!(hit(&i, query), None, "{query}");
+        }
+        let file = AttachmentHit { name: "Протокол.txt".into(), snippet: "Решили: ёлку ставим в холле.".into() };
+        for query in ["елка в холле", "протокол ёлку ставим"] {
+            assert_eq!(hit(&i, query), Some(file.clone()), "{query}");
         }
     }
 
