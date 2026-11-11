@@ -139,6 +139,16 @@ struct AddressesResponse {
     list: Vec<AddressAvailability>,
 }
 
+/// Идентификаторы участников из `members` принципала: список идентификаторов или словарь `id → true` (как множества
+/// JMAP). Свойства нет или оно другого вида — `None`: сервер состав не отдаёт.
+fn member_ids(principal: &Value) -> Option<Vec<String>> {
+    match principal.get("members")? {
+        Value::Array(ids) => Some(ids.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()),
+        Value::Object(set) => Some(set.iter().filter(|(_, on)| on.as_bool() == Some(true)).map(|(id, _)| id.clone()).collect()),
+        _ => None,
+    }
+}
+
 impl Client {
     pub fn calendar_account(&self) -> Result<&str> {
         self.account_for(CALENDARS)
@@ -391,6 +401,28 @@ impl Client {
         Ok(g.list)
     }
 
+    /// Участники группы справочника по её адресу (T3-09): свойство `members` у `Principal` (RFC 9670 его не
+    /// описывает — отдают не все серверы), затем сами участники по идентификаторам; вложенная группа — участник
+    /// с `type: group`. `None` — группы по адресу нет или сервер состав не отдаёт.
+    pub async fn group_members(&self, email: &str) -> Result<Option<Vec<Principal>>> {
+        let acc = self.account_for(PRINCIPALS)?;
+        let calls = [
+            inv("Principal/query", json!({ "accountId": acc, "filter": { "email": email }, "limit": 5 }), "q"),
+            inv("Principal/get", json!({ "accountId": acc, "#ids": { "resultOf": "q", "name": "Principal/query", "path": "/ids" } }), "g"),
+        ];
+        let mut r = self.call(USING, &calls).await?;
+        let g: GetResponse<Value> = take(&mut r, "g")?;
+        let Some(ids) = g.list.iter().find(|p| p["email"].as_str().is_some_and(|e| e.eq_ignore_ascii_case(email.trim()))).and_then(member_ids) else {
+            return Ok(None);
+        };
+        if ids.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        let found = self.principals_by_id(&ids).await?;
+        // Порядок — как в `members`: `Principal/get` его не обещает.
+        Ok(Some(ids.iter().filter_map(|id| found.iter().find(|p| &p.id == id).cloned()).collect()))
+    }
+
     /// Сотрудник по адресу (фильтр `email`).
     pub async fn principal_by_email(&self, email: &str) -> Result<Option<Principal>> {
         let acc = self.account_for(PRINCIPALS)?;
@@ -419,7 +451,18 @@ impl Client {
 mod share_tests {
     #![allow(clippy::unwrap_used)]
 
-    use super::{AddressesResponse, Calendar, Publication};
+    use super::{AddressesResponse, Calendar, Publication, member_ids};
+
+    /// Состав группы (T3-09): список или множество идентификаторов; свойства нет или `null` — не поддерживается.
+    #[test]
+    fn group_member_ids() {
+        let ids = |v: serde_json::Value| member_ids(&v);
+        assert_eq!(ids(serde_json::json!({ "id": "g", "members": ["a", "b"] })), Some(vec!["a".to_owned(), "b".to_owned()]));
+        assert_eq!(ids(serde_json::json!({ "id": "g", "members": { "a": true, "b": false } })), Some(vec!["a".to_owned()]));
+        assert_eq!(ids(serde_json::json!({ "id": "g", "members": [] })), Some(Vec::new()));
+        assert_eq!(ids(serde_json::json!({ "id": "g", "type": "group" })), None);
+        assert_eq!(ids(serde_json::json!({ "id": "g", "members": null })), None);
+    }
 
     /// `Availability/get`: пустой список — свободен, `null` — нет данных (S8-46).
     #[test]

@@ -527,6 +527,48 @@ fn unchanged_meeting_is_not_fetched_again() {
     assert_eq!(details(n), 0, "те же версии — без GetItem");
 }
 
+/// Состав списка рассылки (T3-09): `ExpandList` → `ExpandDL` по адресу → `ListMembers` с участниками в порядке
+/// сервера; вложенный список — участник вида `group`, не раскрыт. Сервер отказал — `error`, участников нет.
+#[test]
+fn list_members_by_expand_dl() {
+    use postman_core::sync::ListError;
+    let (url, log) = server_with(|b| {
+        (b.contains("<m:ExpandDL") && b.contains("dev-team@example.test"))
+            .then(|| fixture("expand_dl.xml"))
+            .or_else(|| b.contains("<m:ExpandDL").then(|| fixture("expand_dl_none.xml")))
+    });
+    let live = ready(&url);
+    let n = log.lock().unwrap().len();
+    let expand = |ticket: u64, address: &str| {
+        live.commands.send(Command::ExpandList { ticket, address: address.into() }).unwrap();
+        let Event::ListMembers { ticket: t, address: a, members, error } = live.wait("ListMembers", |e| matches!(e, Event::ListMembers { .. }))
+        else {
+            unreachable!()
+        };
+        assert_eq!((t, a.as_str()), (ticket, address));
+        (members, error)
+    };
+    let (members, error) = expand(7, "dev-team@example.test");
+    assert_eq!(error, None);
+    let got: Vec<(&str, Option<&str>, &str)> = members.iter().map(|p| (p.name.as_str(), p.email.as_deref(), p.kind.as_str())).collect();
+    assert_eq!(
+        got,
+        [
+            ("Петрова Анна Сергеевна", Some("anna@example.test"), "individual"),
+            ("Смирнов Антон", Some("anton@example.test"), "individual"),
+            ("Дежурные", Some("duty@example.test"), "group"),
+            ("partner@corp.example", Some("partner@corp.example"), "individual"),
+        ]
+    );
+    let sent = requests(&log, n, "ExpandDL");
+    assert_eq!(sent.len(), 1, "один уровень: вложенный список не раскрываем");
+    assert!(sent[0].contains("<t:EmailAddress>dev-team@example.test</t:EmailAddress>"));
+
+    let (members, error) = expand(8, "nobody@example.test");
+    assert!(members.is_empty());
+    assert!(matches!(error, Some(ListError::Failed(e)) if e.contains("ErrorNameResolutionNoResults")), "отказ сервера — ошибкой");
+}
+
 /// Сервер без `FindPeople` (отказ схемы): справочник — `ResolveNames`, и дальше `FindPeople` не спрашивается.
 #[test]
 fn people_fall_back_to_resolve_names() {
