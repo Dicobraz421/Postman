@@ -24,8 +24,8 @@ use postman_core::link::{Connection, Link};
 use postman_core::model::{ContactCard, Filter, FolderId, ImportError, JobId, LetterId, Principal, Release, Remote, Selector};
 use postman_core::send_later::{self, Scheduled};
 use postman_core::sync::{
-    Account, Command, Debounce, ErrorKind, Event, Index, Sender, Session, Stage, Status, SyncError, UnboundedSender, owned_by, retry_at, supervise,
-    went_down,
+    Account, Command, Debounce, ErrorKind, Event, Index, SendReceive, Sender, Session, Stage, Status, SyncError, UnboundedSender, owned_by, retry_at,
+    supervise, went_down,
 };
 use postman_core::tasks;
 use postman_jmap::{Client, EmailAddress, EmailBody, EmailSummary, Envelope, Identity, Mailbox, utc_to_unix};
@@ -389,6 +389,9 @@ async fn run(
     let mut refill = false;
     // Без связи (S5-08): срок следующей попытки; правки писем без связи — в `link`.
     let mut retry: Option<tokio::time::Instant> = None;
+    // «Отправить и получить» (T3-02): ближайший шаг повтора — его; в конце шага — `SendReceive::Finished`, даже если
+    // на сервере ничего не изменилось.
+    let mut send_receive = false;
     // Вход удался — связь есть: правки, сделанные без связи (в том числе до входа), — на сервер.
     if let Some(queued) = link.ok() {
         notify(Event::Connection(Connection::Online));
@@ -415,6 +418,10 @@ async fn run(
                 }
                 // «Синхронизировать» (T2-51): сверка всех учётных записей сейчас — тем же шагом, что повтор.
                 if matches!(cmd, Command::SyncNow) {
+                    if !send_receive {
+                        notify(Event::SendReceive(SendReceive::Started));
+                    }
+                    send_receive = true;
                     retry = Some(tokio::time::Instant::now());
                     continue;
                 }
@@ -470,7 +477,13 @@ async fn run(
                         break;
                     }
                 }
-                match after_refresh(outcome, true, &accounts, &identities, &send_as, &mut cache, &index, link, notify).await {
+                let next = after_refresh(outcome, true, &accounts, &identities, &send_as, &mut cache, &index, link, notify).await;
+                if std::mem::take(&mut send_receive) {
+                    // Очередь без связи ушла в `after_refresh`; связь пропала посреди — ошибка (её род — `Event::Error`).
+                    let error = (outcome != Refreshed::Done || matches!(next, Next::Retry(Some(_)))).then(|| "no connection".to_owned());
+                    notify(Event::SendReceive(SendReceive::Finished { error }));
+                }
+                match next {
                     Next::Stop => return Ok(()),
                     Next::Retry(at) => retry = at,
                     Next::Keep => {}

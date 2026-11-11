@@ -128,6 +128,8 @@ pub(crate) struct CommandBar {
     pub(crate) focused: bool,
     /// Открыта папка общего ящика (S5-28): кнопка «Взять в работу» и что она сделает с письмом.
     pub(crate) take: Option<crate::shared::Act>,
+    /// Идёт «Отправить и получить» (T3-02): кнопка недоступна, подсказка — «Отправка и получение…».
+    pub(crate) syncing: bool,
 }
 
 impl CommandBar {
@@ -141,6 +143,7 @@ impl CommandBar {
             overflow_x: 0.,
             focused: false,
             take: None,
+            syncing: false,
         }
     }
 
@@ -289,12 +292,25 @@ impl Render for CommandBar {
                 .on_click(cx.listener(|_, _, _, cx| cx.emit(BarEvent::More(true))))
         });
         // «Отправить и получить — все папки» (T3-02, F9): всем учётным записям, не письму — у поиска, отдельно от действий.
-        let sync = chrome::quiet_button("bar-sync", &l)
-            .flex_none()
-            .px(px(8.))
-            .child(icons::icon(icons::SYNC, 20., l.text()))
-            .on_click(|_, window, cx| window.dispatch_action(Box::new(chrome::sync::SendReceive), cx));
-        let sync = keytips::command(sync, "sync.send_receive", None, &l, cx);
+        // Пока идёт — недоступна: значок цветом третьего текста, без наведения и щелчка.
+        let syncing = self.syncing;
+        let sync = if syncing {
+            div()
+                .id("bar-sync")
+                .children(crate::screens::spot("bar-sync"))
+                .h(px(32.))
+                .flex()
+                .items_center()
+                .rounded(l.px(Metric::RadiusControl))
+                .child(icons::icon(icons::SYNC, 20., l.text3()))
+        } else {
+            chrome::quiet_button("bar-sync", &l)
+                .child(icons::icon(icons::SYNC, 20., l.text()))
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(chrome::sync::SendReceive), cx))
+        }
+        .flex_none()
+        .px(px(8.));
+        let sync = keytips::command(sync, "sync.send_receive", syncing.then(|| tr!("frame-send-receive-running")), &l, cx);
         let search = Input::new(&self.search).prefix(icons::icon(icons::SEARCH, 18., l.text3()));
         let search = if active { search.suffix(self.scope_switch(&l, cx)) } else { search };
         let search_key = keytips::key("search.focus", cx);

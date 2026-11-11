@@ -13,8 +13,11 @@ frame-category = Категория
 frame-due = Срок
 frame-snooze = Отложить
 frame-view = Вид
-# «Отправить и получить — все папки» (T3-02): команда ушла всем учётным записям, ход — в строке состояния.
-frame-send-receive-started = Отправка и получение: все учётные записи и папки
+# «Отправить и получить — все папки» (T3-02): ход в строке состояния и итог тостом.
+frame-send-receive-running = Отправка и получение…
+frame-send-receive-done = Отправка и получение: готово
+frame-send-receive-failed = Отправка и получение не завершены: { $accounts }
+frame-send-receive-failed-one = Отправка и получение не завершены
 frame-more = Ещё
 frame-vacation = Автоответы
 frame-rules = Правила

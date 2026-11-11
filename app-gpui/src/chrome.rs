@@ -611,8 +611,10 @@ impl Mailer {
             let t = self.toasts.read(cx);
             (t.unread(), t.is_history_open())
         };
+        // «Отправить и получить» (T3-02): пока идёт — серая точка и «Отправка и получение…» прежде всего.
         // Без связи (S5-08): серая точка и «Нет связи · повтор через N с» вместо состояния синхронизации.
-        let sync = match crate::states::status_text(&self.offline, Instant::now()) {
+        let sending = self.live.send_receive.busy().then(|| tr!("frame-send-receive-running"));
+        let sync = match sending.or_else(|| crate::states::status_text(&self.offline, Instant::now())) {
             Some(text) => div().flex().items_center().gap(px(6.)).child(div().size(px(8.)).rounded_full().bg(l.text3())).child(text),
             // Синхронизация (T2-24, макет `Main`): точка и «Синхронизировано 14:01» — во всех разделах.
             None if !self.live.status.is_empty() => div()
