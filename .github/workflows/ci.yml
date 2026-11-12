@@ -112,12 +112,11 @@ jobs:
             Write-Warning "Исключения Defender не добавлены: $_"
           }
       - run: rustup toolchain install stable --profile minimal -c clippy,rustfmt --no-self-update && rustup default stable
-      # Кэш только читается: сохраняет его job `cache` на пуш в main (кэш из очереди слияния PR не видят).
-      # ВРЕМЕННО для замера в PR ci/build-speed — сохранение в PR; убрать до слияния.
+      # Кэш только читается: сохраняет его job `cache` (пуш в main и ночью) — кэш очереди слияния и PR другим PR не виден.
       - uses: Swatinem/rust-cache@v2.9.3
         with:
           shared-key: windows
-          save-if: ${{ github.head_ref == 'ci/build-speed' }}
+          save-if: false
       - uses: taiki-e/install-action@v2.90.3
         with:
           tool: cargo-nextest
