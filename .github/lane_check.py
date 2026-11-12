@@ -39,6 +39,11 @@ def main() -> int:
     if head_ref.startswith("x/"):
         print("::notice::межполосный PR (x/*) — нужен approve владельца")
         return 0
+    # Dependabot обновляет зависимости во всех крейтах сразу (решение 2026-11-12 «fresh-versions»), выпуск правит
+    # версию и документы — межполосные по природе.
+    if head_ref.startswith(("dependabot/", "release/")):
+        print(f"::notice::{head_ref.split('/')[0]} — межполосный PR по правилу")
+        return 0
     print(f"::error::PR правит {len(touched)} полосы: {', '.join(sorted(touched))}. "
           "Разбейте на волны или назовите ветку x/<суть> (класс B).")
     return 1

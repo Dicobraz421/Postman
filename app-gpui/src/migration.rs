@@ -67,7 +67,7 @@ impl Core {
         match spawned {
             Ok(_) => Some(Core { tx }),
             Err(e) => {
-                tracing::warn!("core thread: {e}");
+                tracing::error!("migration: core thread not started: {e}");
                 None
             }
         }
@@ -116,7 +116,7 @@ fn run(cache: Cache, rx: mpsc::Receiver<In>, out: impl Fn(Out)) {
     let (mut sweeper, mut engine) = match opened {
         Ok(o) => o,
         Err(e) => {
-            tracing::warn!("migration engine: {e}");
+            tracing::error!("migration: migration jobs not opened: {e}");
             return;
         }
     };
@@ -150,7 +150,7 @@ fn handle(engine: &mut Engine<CacheStore>, exporter: &mut Exporter, sweeper: &mu
         }
         In::Command(Command::MoveLetters { ids, to }) => match move_letters(engine, &ids, to) {
             Ok(t) => {
-                tracing::info!(moved = t.moved, outbound = t.outbound, "letters moved");
+                tracing::debug!(moved = t.moved, outbound = t.outbound, "migration: letters moved");
                 return true;
             }
             Err(e) => Err(e),
@@ -159,7 +159,7 @@ fn handle(engine: &mut Engine<CacheStore>, exporter: &mut Exporter, sweeper: &mu
         In::Command(Command::Sweep { selector, action }) => sweeper.start(selector, action).map(|_| ()),
         In::Command(Command::StopSweep { sweep }) => sweeper.stop(sweep, engine),
         In::Command(c) => {
-            tracing::warn!("core thread: unexpected command ({} routes)", c.routes().len());
+            tracing::error!("migration: core thread got an unexpected command ({} routes)", c.routes().len());
             Ok(())
         }
         In::Event(profile, Event::Features(f)) => {
@@ -179,7 +179,7 @@ fn handle(engine: &mut Engine<CacheStore>, exporter: &mut Exporter, sweeper: &mu
         }
     };
     if let Err(e) = r {
-        tracing::warn!("migration: {e}");
+        tracing::error!("migration: migration step failed: {e}");
     }
     false
 }
@@ -194,7 +194,7 @@ fn pump(engine: &mut Engine<CacheStore>, exporter: &mut Exporter, sweeper: &mut 
         let swept = match sweeper.poll(engine, Instant::now()) {
             Ok(o) => o,
             Err(e) => {
-                tracing::warn!("sweep poll: {e}");
+                tracing::error!("sweep: sweep step failed: {e}");
                 postman_core::migrate::Output::default()
             }
         };
@@ -202,7 +202,7 @@ fn pump(engine: &mut Engine<CacheStore>, exporter: &mut Exporter, sweeper: &mut 
         let mut o = match engine.poll(Instant::now()) {
             Ok(o) => o,
             Err(e) => {
-                tracing::warn!("migration poll: {e}");
+                tracing::error!("migration: migration step failed: {e}");
                 break;
             }
         };
@@ -219,7 +219,7 @@ fn pump(engine: &mut Engine<CacheStore>, exporter: &mut Exporter, sweeper: &mut 
                     let e = postman_core::store::local_raw(engine.store().cache(), letter);
                     exporter.event(&e);
                     if let Err(e) = engine.event(&e, Instant::now()) {
-                        tracing::warn!("migration: {e}");
+                        tracing::error!("migration: migration step failed: {e}");
                     }
                     local = true;
                 }
@@ -227,7 +227,7 @@ fn pump(engine: &mut Engine<CacheStore>, exporter: &mut Exporter, sweeper: &mut 
                     exporter.start(scope, format, dir);
                     local = true;
                 }
-                (Route::Core, _) => tracing::warn!("core thread: unexpected engine command"),
+                (Route::Core, _) => tracing::error!("migration: core thread got an unexpected command"),
                 (route, c) => commands.push((route, c)),
             }
         }
@@ -614,7 +614,7 @@ impl Mailer {
             sweep::State::Stopped if p.job.is_some() => {}
             sweep::State::Stopped => self.toast(Level::Info, tr!("sweep-stopped", done = done, total = total), cx),
             sweep::State::Failed(error) => {
-                tracing::warn!(sweep = p.sweep.0, "sweep failed: {error}");
+                tracing::error!(sweep = p.sweep.0, "sweep: sweep failed: {error}");
                 self.toast(Level::Error, tr!("sweep-failed"), cx);
             }
         }

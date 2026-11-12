@@ -226,7 +226,7 @@ fn is_gone(e: &postman_ews::Error) -> bool {
 /// Папка не сверилась — в журнал какая (роль и ключ, без имени и писем) и чем (код EWS или вид ошибки).
 fn folder_failed(f: &Folder, e: &postman_ews::Error) {
     let role = f.role.map_or("-", role_name);
-    tracing::warn!(role, folder = %f.hash, code = e.code().unwrap_or(""), "ews folder sync failed: {e}");
+    tracing::error!(role, folder = %f.hash, code = e.code().unwrap_or(""), "ews: folder sync failed: {e}");
 }
 
 fn role_name(r: MailRole) -> &'static str {
@@ -455,12 +455,12 @@ async fn run(
     let email = match own_address(&mut client, &user).await {
         Some(e) => e,
         None => {
-            tracing::info!("ews: own address not resolved, using the login");
+            tracing::warn!("ews: own address not resolved, using the login");
             user.clone()
         }
     };
     if let Some(v) = client.server_version() {
-        tracing::info!("exchange {}.{}.{}", v.major, v.minor, v.build);
+        tracing::info!("ews: Exchange server {}.{}.{}", v.major, v.minor, v.build);
     }
     let scope = in_profile(profile.as_deref(), None);
     let mut me = Ews {
@@ -488,7 +488,7 @@ async fn run(
         Ok(a) => me.areas = Some(a),
         // Почта работает и без календаря: ошибка — тостом календаря, области скрыты.
         Err(e) => {
-            tracing::warn!("ews areas: {e}");
+            tracing::warn!("ews: calendar and contacts unavailable, mail works without them: {e}");
             notify(Event::CalendarFailed(e.to_string()));
         }
     }
@@ -537,7 +537,7 @@ async fn run(
                 // Перенос папки в себя, в подпапку, в другой аккаунт — отказ ядра до сервера.
                 let Some(cmd) = postman_core::sync::admit(cmd, || me.cache.mailboxes().unwrap_or_default(), notify) else { continue };
                 if let Err(e) = me.handle(cmd, notify).await {
-                    tracing::warn!("ews command: {e}");
+                    tracing::error!("ews: command failed: {e}");
                     notify(Event::Error(sync_error(Stage::Command, &e)));
                 }
             }
@@ -586,7 +586,7 @@ async fn subscribe(client: &mut Client) -> postman_ews::Result<Subscription> {
     match client.subscribe_streaming(&[]).await {
         Ok(s) => Ok(s),
         Err(e @ postman_ews::Error::Ews { .. }) => {
-            tracing::info!(code = e.code().unwrap_or(""), "ews: streaming refused, trying pull");
+            tracing::warn!(code = e.code().unwrap_or(""), "ews: streaming refused, trying pull");
             client.subscribe_pull(&[], None).await
         }
         Err(e) => Err(e),
@@ -646,7 +646,7 @@ async fn watch(url: String, auth: postman_ews::Auth, tx: UnboundedSender<Watch>)
     let mut client = match Client::new(&url, auth) {
         Ok(c) => c,
         Err(e) => {
-            tracing::warn!("ews watch: {e}");
+            tracing::warn!("ews: server events unavailable, polling for changes: {e}");
             let _ = tx.send(Watch::Down);
             return;
         }
@@ -676,7 +676,7 @@ async fn watch(url: String, auth: postman_ews::Auth, tx: UnboundedSender<Watch>)
         match ended {
             Ended::Closed => return,
             Ended::Lost => {
-                tracing::info!("ews: subscription lost, resubscribing");
+                tracing::warn!("ews: subscription lost, resubscribing");
                 lost = true;
             }
             Ended::Failed(e) => {
@@ -756,7 +756,7 @@ impl Ews {
             other => return tracing::debug!("ews: not a folder command: {}", name(&other)),
         };
         if let Err(e) = result {
-            tracing::info!(code = e.code().unwrap_or(""), "ews folder command refused");
+            tracing::warn!(code = e.code().unwrap_or(""), "ews: folder command refused");
             return notify(Event::FolderFailed { mailbox, error: e.code().map_or_else(|| e.to_string(), str::to_owned) });
         }
         if let Err(e) = self.load_folders().await {
@@ -802,7 +802,7 @@ impl Ews {
             }
             Watch::Down => {
                 if self.subscribed {
-                    tracing::info!("ews: no server events, polling");
+                    tracing::warn!("ews: no server events, polling");
                 }
                 self.subscribed = false;
                 self.missed = true;
@@ -839,7 +839,7 @@ impl Ews {
         if tree {
             match self.load_folders().await {
                 Ok(()) => notify(Event::MailboxesChanged),
-                Err(e) => tracing::warn!("ews tree: {e}"),
+                Err(e) => tracing::error!("ews: folder tree not read: {e}"),
             }
         }
         let mut changed = false;
@@ -851,7 +851,7 @@ impl Ews {
         }
         if !mail.is_empty() {
             if let Err(e) = self.write_folders() {
-                tracing::warn!("ews folders: {e}");
+                tracing::error!("ews: folders not written to the cache: {e}");
             }
             notify(Event::MailboxesChanged);
         }
@@ -920,7 +920,7 @@ impl Ews {
             match self.sync_tree().await {
                 Ok(list) => list,
                 Err(e) if e.code() == Some("ErrorInternalServerError") => {
-                    tracing::info!("ews: SyncFolderHierarchy unavailable, using FindFolder");
+                    tracing::warn!("ews: SyncFolderHierarchy unavailable, using FindFolder");
                     self.find_folders = true;
                     self.hierarchy = None;
                     self.client.find_folders(&self.roles).await?
@@ -1182,7 +1182,7 @@ impl Ews {
 
     /// Письма, которых больше нет на сервере: из кэша, счётчики папок заново — событиями, без ошибки.
     fn vanished(&mut self, keys: &[String], notify: &impl Fn(Event)) -> postman_ews::Result<()> {
-        tracing::info!(count = keys.len(), "ews: letters gone on the server, dropped from the cache");
+        tracing::debug!(count = keys.len(), "ews: letters gone on the server, dropped from the cache");
         self.cache.delete_emails(keys).map_err(db)?;
         self.write_folders()?;
         notify(Event::MailboxesChanged);
@@ -1305,7 +1305,7 @@ impl Ews {
         for f in &list {
             match self.refresh(f).await {
                 Ok(c) => changed |= c,
-                Err(e) => tracing::warn!("ews refresh: {e}"),
+                Err(e) => tracing::error!(folder = %f.hash, "ews: folder refresh after command failed: {e}"),
             }
         }
         let _ = self.write_folders();
@@ -1425,7 +1425,7 @@ impl Ews {
         }
         for h in due {
             if let Err(e) = self.send(h.draft, h.replace).await {
-                tracing::warn!("ews held send: {e}");
+                tracing::error!("ews: held letter not sent: {e}");
                 notify(Event::Error(sync_error(Stage::Command, &e)));
             }
             HOLDING.fetch_sub(1, Ordering::Relaxed);
@@ -1609,7 +1609,7 @@ impl Ews {
                 notify(match self.import(letter, folder, &keywords, received_at, message_id.as_deref(), retry).await {
                     Ok(id) => Event::Imported { job, letter, remote: Remote { account: self.account().to_owned(), id, data: Vec::new() } },
                     Err(error) => {
-                        tracing::info!(job = job.0, letter = letter.0, "ews import refused: {error}");
+                        tracing::debug!(job = job.0, letter = letter.0, "ews: import refused: {error}");
                         Event::ImportFailed { job, letter, error }
                     }
                 });

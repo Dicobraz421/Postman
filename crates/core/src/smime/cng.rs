@@ -250,7 +250,7 @@ pub(crate) fn unwrap_cek(env: &Envelope, prompt: Prompt) -> Result<Cek, KeyError
                 // Нужен PIN или карта — это и показать (важнее «не для вас»).
                 Err(e @ (KeyError::NeedPin | KeyError::NoCard | KeyError::Cancelled)) => result = Some(Err(e)),
                 Err(e) => {
-                    tracing::warn!("S/MIME key: {e:?}");
+                    tracing::debug!("smime: certificate key not usable: {e:?}");
                     result.get_or_insert(Err(e));
                 }
             }
@@ -291,7 +291,7 @@ pub(crate) fn gost_decrypt(env: &Envelope, prompt: Prompt) -> Result<super::skzi
                 }
                 Err(e @ (KeyError::NeedPin | KeyError::NoCard | KeyError::Cancelled)) => result = Some(Err(e)),
                 Err(e) => {
-                    tracing::warn!("GOST key: {e:?}");
+                    tracing::debug!("smime: GOST key not usable: {e:?}");
                     result.get_or_insert(Err(e));
                 }
             }

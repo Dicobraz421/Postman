@@ -8,7 +8,8 @@
 //!   расписание проверок.
 //! - Новая версия — тост «Вышла версия X · Установить»; «Установить» — скачивание с полосой хода и «Отменить»
 //!   ([`Mailer::update_bar`]), проверка подписи, помощник установки и обычный выход (окно закрывается, помощник ставит
-//!   версию и запускает Postman снова). MSI «для всех» сам спросит разрешение (UAC).
+//!   версию и запускает Postman снова). MSI «для всех» сам спросит разрешение (UAC); на macOS помощник заменяет
+//!   бандл `Postman.app` целиком из `.zip` (MAC-06).
 //! - «Настройки → Общие → Обновления»: выключатель «Проверять автоматически», кнопка «Проверить обновления»
 //!   ([`CheckReason::Manual`]) и строка итога ([`View`]).
 //!
@@ -53,7 +54,8 @@ const PROGRESS_TICK: Duration = Duration::from_millis(250);
 /// Значок полосы скачивания (Segoe Fluent Icons «Download»).
 pub(crate) const DOWNLOAD: char = '\u{E896}';
 
-/// Продукт для крейта: репозиторий выпусков, имена артефактов (`postman-<версия>-windows-x64.msi|zip`), ключи.
+/// Продукт для крейта: репозиторий выпусков, имена артефактов (`postman-<версия>-windows-x64.msi|zip`,
+/// `postman-<версия>-macos-arm64.zip`), ключи.
 pub(crate) fn product() -> Option<Product> {
     product_with(UPDATE_PUBLIC_KEYS)
 }
@@ -70,9 +72,16 @@ pub(crate) fn helper() {
     }
 }
 
-/// Как установлена программа: флаг portable или `install.ps1` рядом с exe — архив, иначе MSI.
+/// Как установлена программа: macOS — бандл `Postman.app` (обновление заменяет его целиком; не в бандле — `install`
+/// вернёт ошибку до выхода); Windows — флаг portable или `install.ps1` рядом с exe — архив, иначе MSI.
 pub(crate) fn install_kind(exe_dir: &Path) -> InstallKind {
-    if [PORTABLE_FLAG, PORTABLE_SCRIPT].iter().any(|f| InstallKind::detect(exe_dir, f) == InstallKind::Portable) {
+    install_kind_on(exe_dir, cfg!(target_os = "macos"))
+}
+
+fn install_kind_on(exe_dir: &Path, mac: bool) -> InstallKind {
+    if mac {
+        InstallKind::AppBundle
+    } else if [PORTABLE_FLAG, PORTABLE_SCRIPT].iter().any(|f| InstallKind::detect(exe_dir, f) == InstallKind::Portable) {
         InstallKind::Portable
     } else {
         InstallKind::Msi
@@ -84,7 +93,7 @@ pub(crate) fn install_kind(exe_dir: &Path) -> InstallKind {
 pub(crate) fn keep(kind: InstallKind) -> Vec<String> {
     match kind {
         InstallKind::Portable => vec![PORTABLE_FLAG.to_owned()],
-        InstallKind::Msi => Vec::new(),
+        InstallKind::Msi | InstallKind::AppBundle => Vec::new(),
     }
 }
 
@@ -225,7 +234,7 @@ fn run<T: Send + 'static>(cx: &mut App, work: impl FnOnce() -> T + Send + 'stati
         let _ = tx.send(work());
     });
     if let Err(e) = spawned {
-        tracing::warn!("update: thread: {e}");
+        tracing::error!("update: update thread not started: {e}");
         return;
     }
     cx.spawn(async move |cx| {
@@ -271,7 +280,7 @@ fn installed(r: &UpdateResult, cx: &mut App) {
         toast(cx, Level::Success, tr!("update-done", version = r.version.clone()), None);
     } else {
         let error = r.error.clone().unwrap_or_default();
-        tracing::warn!(version = %r.version, %error, "update: install failed");
+        tracing::error!(version = %r.version, %error, "update: install failed");
         toast(cx, Level::Error, tr!("update-failed", version = r.version.clone(), error = error), None);
     }
 }
@@ -335,10 +344,10 @@ fn checked(reason: CheckReason, res: Result<CheckOutcome, UpdateError>, cx: &mut
         }
         Ok(CheckOutcome::Disabled(_)) if manual => toast(cx, Level::Info, tr!("update-policy"), None),
         Ok(_) => {}
-        Err(e) if !manual => tracing::warn!(error = %e, "update: scheduled check failed"),
+        Err(e) if !manual => tracing::warn!(error = %e, "update: scheduled check failed, retry later"),
         Err(e) => {
             let error = e.to_string();
-            tracing::warn!(%error, "update: check failed");
+            tracing::error!(%error, "update: check failed");
             edit(cx, |m| m.status = Status::Failed(error.clone()));
             toast(cx, Level::Warning, tr!("update-check-failed", error = error), None);
         }
@@ -412,7 +421,7 @@ fn installed_now(version: &str, res: Result<(), UpdateError>, cx: &mut App) {
         Err(UpdateError::Cancelled) => edit(cx, |m| m.status = Status::Available(version.to_owned())),
         Err(e) => {
             let error = e.to_string();
-            tracing::warn!(%version, %error, "update: install failed");
+            tracing::error!(%version, %error, "update: install failed");
             // Предложение остаётся: «Установить» можно нажать снова.
             edit(cx, |m| m.status = Status::Available(version.to_owned()));
             toast(cx, Level::Error, tr!("update-install-failed", error = error), None);
@@ -597,10 +606,10 @@ mod tests {
     use std::path::Path;
     use std::sync::Arc;
 
-    use pets_update::{ARCH, CheckOutcome, CheckReason, DisabledBy, InstallKind, Policy, Response, Settings, Transport, UpdateError, Updater};
+    use pets_update::{ARCH, CheckOutcome, CheckReason, DisabledBy, InstallKind, OS, Policy, Response, Settings, Transport, UpdateError, Updater};
     use postman_core::prefs::{Channel, General};
 
-    use super::{PORTABLE_FLAG, PORTABLE_SCRIPT, dir, install_kind, keep, policy, product_with, settings};
+    use super::{PORTABLE_FLAG, PORTABLE_SCRIPT, dir, install_kind_on, keep, policy, product_with, settings};
 
     const KEY: &[&str] = &["RWQtest"];
 
@@ -626,7 +635,7 @@ mod tests {
             self.calls.lock().unwrap().push(url.to_owned());
             let v = self.version;
             let asset = |ext: &str| {
-                let name = format!("postman-{v}-windows-{ARCH}.{ext}");
+                let name = format!("postman-{v}-{OS}-{ARCH}.{ext}");
                 format!(
                     r#"{{"name":"{name}","browser_download_url":"https://example.invalid/{name}","size":10}},
                     {{"name":"{name}.minisig","browser_download_url":"https://example.invalid/{name}.minisig","size":1}}"#
@@ -651,18 +660,19 @@ mod tests {
         settings(&General { auto_update: true, channel: Channel::Stable, ..General::default() })
     }
 
-    /// Новая версия: MSI-установка получает `.msi`, portable — `.zip`; имена — по шаблону выпуска (`package.ps1`).
+    /// Новая версия: MSI-установка получает `.msi`, portable и бандл macOS — `.zip`; имена — по шаблону выпуска
+    /// (`package.ps1`, `package.sh`) для ОС сборки.
     #[test]
     fn update_available_picks_msi_or_zip() {
-        for (kind, ext) in [(InstallKind::Msi, "msi"), (InstallKind::Portable, "zip")] {
+        for (kind, ext) in [(InstallKind::Msi, "msi"), (InstallKind::Portable, "zip"), (InstallKind::AppBundle, "zip")] {
             let dir = tempfile::tempdir().unwrap();
             let net = Net::new("99.0.0");
             let got = updater(kind, Policy::default(), &net, dir.path()).check(&on(), CheckReason::Scheduled).unwrap();
             let CheckOutcome::Available(u) = got else { panic!("{kind:?}: {got:?}") };
             assert_eq!(u.version.to_string(), "99.0.0");
             assert_eq!(u.kind, kind);
-            assert_eq!(u.asset_name, format!("postman-99.0.0-windows-{ARCH}.{ext}"));
-            assert_eq!(u.signature_url, format!("https://example.invalid/postman-99.0.0-windows-{ARCH}.{ext}.minisig"));
+            assert_eq!(u.asset_name, format!("postman-99.0.0-{OS}-{ARCH}.{ext}"));
+            assert_eq!(u.signature_url, format!("https://example.invalid/postman-99.0.0-{OS}-{ARCH}.{ext}.minisig"));
             assert_eq!(net.calls(), 1);
             assert!(net.calls.lock().unwrap()[0].starts_with("https://api.github.com/repos/Dicobraz421/Postman/releases"));
         }
@@ -715,18 +725,21 @@ mod tests {
         assert!(matches!(u.check(&preview, CheckReason::Manual).unwrap(), CheckOutcome::Available(_)));
     }
 
-    /// Вид установки: флаг или `install.ps1` рядом с exe — portable (флаг не перезаписывается), иначе MSI.
+    /// Вид установки: Windows — флаг или `install.ps1` рядом с exe — portable (флаг не перезаписывается), иначе MSI;
+    /// macOS — бандл `.app`.
     #[test]
     fn update_install_kind_and_keep() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(install_kind(dir.path()), InstallKind::Msi);
+        assert_eq!(install_kind_on(dir.path(), false), InstallKind::Msi);
         assert!(keep(InstallKind::Msi).is_empty());
         std::fs::write(dir.path().join(PORTABLE_SCRIPT), "").unwrap();
-        assert_eq!(install_kind(dir.path()), InstallKind::Portable);
+        assert_eq!(install_kind_on(dir.path(), false), InstallKind::Portable);
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(PORTABLE_FLAG), "").unwrap();
-        assert_eq!(install_kind(dir.path()), InstallKind::Portable);
+        assert_eq!(install_kind_on(dir.path(), false), InstallKind::Portable);
         assert_eq!(keep(InstallKind::Portable), [PORTABLE_FLAG]);
+        assert_eq!(install_kind_on(dir.path(), true), InstallKind::AppBundle);
+        assert!(keep(InstallKind::AppBundle).is_empty());
     }
 
     /// Своя политика Postman — строкой; пусто или «1» — как стандартная.

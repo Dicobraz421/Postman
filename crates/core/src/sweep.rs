@@ -280,10 +280,11 @@ impl Sweeper {
             }
             Event::ListFailed { sweep, error } => {
                 let Some(run) = self.runs.get_mut(sweep).filter(|r| r.wait == Wait::Asked) else { return Ok(()) };
-                tracing::warn!(sweep = sweep.0, "sweep page failed: {error}");
                 if error.contains(FOLDER_UNSUPPORTED) {
+                    tracing::debug!(sweep = sweep.0, "sweep: folder does not support sweep: {error}");
                     return self.end(*sweep, State::Failed(error.clone()));
                 }
+                tracing::warn!(sweep = sweep.0, "sweep: page failed, retrying: {error}");
                 run.wait = Wait::Until(now + RETRY);
             }
             _ => {}

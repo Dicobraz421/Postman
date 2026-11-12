@@ -1,36 +1,63 @@
-//! SSPI Windows для входа HTTP: `AcquireCredentialsHandleW` + `InitializeSecurityContextW` пакета Negotiate
-//! (Kerberos, иначе NTLM) или NTLM. Единственное место `unsafe` в крейте; у каждого блока — почему он безопасен.
+//! Вход HTTP без пароля средствами ОС: Negotiate (Kerberos, иначе NTLM) или NTLM учётной записи текущего входа.
+//! Единственное место `unsafe` в крейте; у каждого блока — почему он безопасен. Вход с паролем — NTLM на чистом Rust
+//! (`ntlm`), одинаково на всех ОС.
 //!
-//! Без пароля — учётная запись Windows текущего входа (Kerberos на машине в домене). С паролем —
-//! `SEC_WINNT_AUTH_IDENTITY_W`: SSPI копирует её при вызове, буферы с паролем обнуляются сразу после.
+//! - Windows — SSPI: `AcquireCredentialsHandleW` и `InitializeSecurityContextW`, учётная запись Windows текущего
+//!   входа (Kerberos на машине в домене).
+//! - macOS — GSS.framework (MAC-05): `gss_init_sec_context` механизма SPNEGO или NTLM, учётные данные системы по
+//!   умолчанию (билет Kerberos домена AD, Kerberos SSO, `kinit`).
 
 use crate::auth::Scheme;
+use crate::ntlm::Ntlm;
 use crate::{Auth, Result};
 
 /// Контекст безопасности одного рукопожатия.
-pub(crate) struct Context(imp::Context);
+pub(crate) struct Context(Inner);
+
+enum Inner {
+    /// Без пароля — средствами ОС.
+    Os(imp::Context),
+    /// С паролем — NTLM на чистом Rust.
+    Ntlm(Ntlm),
+}
 
 impl Context {
     /// Учётные данные и контекст для `target` (SPN `HTTP/<host>`); `binding` — данные привязки к каналу TLS.
     pub(crate) fn new(scheme: Scheme, auth: &Auth, target: &str, binding: Option<&[u8]>) -> Result<Context> {
-        imp::Context::new(scheme, auth, target, binding).map(Context)
+        match auth {
+            Auth::Windows => imp::Context::new(scheme, target, binding).map(|c| Context(Inner::Os(c))),
+            Auth::Password { user, password } => Ntlm::new(user, password, target, binding).map(|c| Context(Inner::Ntlm(c))),
+        }
     }
 
     /// Следующий шаг: токен сервера (на первом шаге — `None`) → токен для сервера (может быть пустым на
     /// последнем шаге).
     pub(crate) fn step(&mut self, input: Option<&[u8]>) -> Result<Vec<u8>> {
-        self.0.step(input)
+        match &mut self.0 {
+            Inner::Os(c) => c.step(input),
+            Inner::Ntlm(c) => c.step(input),
+        }
+    }
+
+    /// Логин на вторую попытку после отказа сервера (только вход с паролем, [`Ntlm::alternative`]).
+    pub(crate) fn alternative(&self) -> Option<String> {
+        match &self.0 {
+            Inner::Os(_) => None,
+            Inner::Ntlm(c) => c.alternative(),
+        }
     }
 
     /// Рукопожатие завершено с нашей стороны.
     pub(crate) fn done(&self) -> bool {
-        self.0.done
+        match &self.0 {
+            Inner::Os(c) => c.done,
+            Inner::Ntlm(c) => c.done,
+        }
     }
 }
 
 #[cfg(windows)]
 mod imp {
-    use std::ffi::c_void;
     use std::ptr;
 
     use windows::Win32::Foundation::{SEC_E_OK, SEC_I_COMPLETE_AND_CONTINUE, SEC_I_COMPLETE_NEEDED, SEC_I_CONTINUE_NEEDED};
@@ -40,23 +67,13 @@ mod imp {
         SecBuffer, SecBufferDesc,
     };
     use windows::Win32::Security::Credentials::SecHandle;
-    use windows::Win32::System::Rpc::{SEC_WINNT_AUTH_IDENTITY_UNICODE, SEC_WINNT_AUTH_IDENTITY_W};
     use windows::core::PCWSTR;
-    use zeroize::Zeroizing;
 
     use crate::auth::{Scheme, sec_channel_bindings};
-    use crate::{Auth, Error, Result};
+    use crate::{Error, Result};
 
     fn wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
-    }
-
-    /// `DOMAIN\user` → (user, domain); UPN `user@domain` — имя целиком, домен пустой (так его принимает SSPI).
-    fn split_user(user: &str) -> (&str, &str) {
-        match user.split_once('\\') {
-            Some((domain, name)) => (name, domain),
-            None => (user, ""),
-        }
     }
 
     pub(super) struct Context {
@@ -70,62 +87,16 @@ mod imp {
     }
 
     impl Context {
-        pub(super) fn new(scheme: Scheme, auth: &Auth, target: &str, binding: Option<&[u8]>) -> Result<Context> {
+        pub(super) fn new(scheme: Scheme, target: &str, binding: Option<&[u8]>) -> Result<Context> {
             let package = wide(match scheme {
                 Scheme::Negotiate => "Negotiate",
                 Scheme::Ntlm => "NTLM",
             });
             let mut cred = SecHandle::default();
-            let status = match auth {
-                Auth::Windows => {
-                    // SAFETY: `package` — строка UTF-16 с нулём, живёт до конца вызова; `cred` — место под
-                    // дескриптор; остальные указатели — нулевые (текущий вход Windows, без ключей и срока).
-                    unsafe {
-                        AcquireCredentialsHandleW(
-                            PCWSTR::null(),
-                            PCWSTR(package.as_ptr()),
-                            SECPKG_CRED_OUTBOUND,
-                            None,
-                            None,
-                            None,
-                            None,
-                            &mut cred,
-                            None,
-                        )
-                    }
-                }
-                Auth::Password { user, password } => {
-                    let (name, domain) = split_user(user);
-                    let mut name: Vec<u16> = name.encode_utf16().collect();
-                    let mut domain: Vec<u16> = domain.encode_utf16().collect();
-                    let mut secret: Zeroizing<Vec<u16>> = Zeroizing::new(password.encode_utf16().collect());
-                    let ptr_or_null = |v: &mut Vec<u16>| if v.is_empty() { ptr::null_mut() } else { v.as_mut_ptr() };
-                    let identity = SEC_WINNT_AUTH_IDENTITY_W {
-                        User: ptr_or_null(&mut name),
-                        UserLength: name.len() as u32,
-                        Domain: ptr_or_null(&mut domain),
-                        DomainLength: domain.len() as u32,
-                        Password: ptr_or_null(&mut secret),
-                        PasswordLength: secret.len() as u32,
-                        Flags: SEC_WINNT_AUTH_IDENTITY_UNICODE,
-                    };
-                    // SAFETY: `identity` и её буферы (`name`, `domain`, `secret`) живут до конца вызова, длины — в
-                    // символах UTF-16 без нуля, как требует `SEC_WINNT_AUTH_IDENTITY_UNICODE`; SSPI копирует их в
-                    // дескриптор. `package` — UTF-16 с нулём; `cred` — место под дескриптор.
-                    unsafe {
-                        AcquireCredentialsHandleW(
-                            PCWSTR::null(),
-                            PCWSTR(package.as_ptr()),
-                            SECPKG_CRED_OUTBOUND,
-                            None,
-                            Some(&identity as *const SEC_WINNT_AUTH_IDENTITY_W as *const c_void),
-                            None,
-                            None,
-                            &mut cred,
-                            None,
-                        )
-                    }
-                }
+            // SAFETY: `package` — строка UTF-16 с нулём, живёт до конца вызова; `cred` — место под дескриптор;
+            // остальные указатели — нулевые (текущий вход Windows, без ключей и срока).
+            let status = unsafe {
+                AcquireCredentialsHandleW(PCWSTR::null(), PCWSTR(package.as_ptr()), SECPKG_CRED_OUTBOUND, None, None, None, None, &mut cred, None)
             };
             status.map_err(|e| Error::Sspi { call: "AcquireCredentialsHandleW", code: e.code().0 as u32 })?;
             let binding = binding.map(|app| {
@@ -215,44 +186,411 @@ mod imp {
     mod tests {
         use super::*;
 
-        #[test]
-        fn users() {
-            assert_eq!(split_user(r"CORP\ivanov"), ("ivanov", "CORP"));
-            assert_eq!(split_user("ivanov@example.test"), ("ivanov@example.test", ""));
-        }
-
-        /// NTLM без сети: первый токен — NEGOTIATE_MESSAGE (`NTLMSSP\0`, тип 1), и с паролем, и от входа Windows.
+        /// NTLM без сети от входа Windows: первый токен — NEGOTIATE_MESSAGE (`NTLMSSP\0`, тип 1); мусор вместо
+        /// вызова сервера — ошибка SSPI, не паника.
         #[test]
         fn ntlm_first_token_offline() {
-            for auth in [Auth::Windows, Auth::password(r"EXAMPLE\nobody", "not-a-password")] {
-                let mut ctx = Context::new(Scheme::Ntlm, &auth, "HTTP/mail.example.test", Some(b"tls-server-end-point:x")).unwrap();
-                let token = ctx.step(None).unwrap();
-                assert!(token.starts_with(b"NTLMSSP\0\x01\0\0\0"), "{:?}", &token[..token.len().min(12)]);
-                assert!(!ctx.done);
-                // Мусор вместо вызова сервера — ошибка SSPI, не паника.
-                assert!(ctx.step(Some(b"garbage")).is_err());
-            }
+            let mut ctx = Context::new(Scheme::Ntlm, "HTTP/mail.example.test", Some(b"tls-server-end-point:x")).unwrap();
+            let token = ctx.step(None).unwrap();
+            assert!(token.starts_with(b"NTLMSSP\0\x01\0\0\0"), "{:?}", &token[..token.len().min(12)]);
+            assert!(!ctx.done);
+            assert!(ctx.step(Some(b"garbage")).is_err());
         }
     }
 }
 
-#[cfg(not(windows))]
+/// macOS (MAC-05): GSS.framework — системный GSS-API (Heimdal) с механизмами SPNEGO, Kerberos и NTLM. Учётные данные
+/// — системы по умолчанию (`GSS_C_NO_CREDENTIAL`): билет Kerberos входа в домен AD, расширения Kerberos SSO или
+/// `kinit` (хранилище GSSCred), иначе учётные данные NTLM оттуда же.
+///
+/// Привязка к каналу TLS — `gss_channel_bindings_struct` с теми же данными приложения, что у SSPI
+/// (`tls-server-end-point:` + хэш сертификата, `auth::channel_binding`): адреса пустые, тип адреса 0
+/// (`GSS_C_AF_UNSPEC`), как у `SEC_CHANNEL_BINDINGS` Windows, — хэш привязки у сервера тот же.
+#[cfg(target_os = "macos")]
+mod imp {
+    use std::ffi::c_void;
+    use std::ptr;
+
+    use crate::auth::Scheme;
+    use crate::{Error, Result};
+
+    /// `gss_OID_desc`. Заголовки GSS упаковывают структуры по 2 байта только на ppc, i386 и x86_64; на arm64 —
+    /// обычное выравнивание C.
+    #[cfg_attr(target_arch = "x86_64", repr(C, packed(2)))]
+    #[cfg_attr(not(target_arch = "x86_64"), repr(C))]
+    struct OidDesc {
+        length: u32,
+        elements: *const c_void,
+    }
+
+    #[cfg_attr(target_arch = "x86_64", repr(C, packed(2)))]
+    #[cfg_attr(not(target_arch = "x86_64"), repr(C))]
+    struct BufferDesc {
+        length: usize,
+        value: *mut c_void,
+    }
+
+    impl BufferDesc {
+        const EMPTY: BufferDesc = BufferDesc { length: 0, value: ptr::null_mut() };
+
+        /// Вход для GSS: GSS его не меняет (`const gss_buffer_t`).
+        fn of(b: &[u8]) -> BufferDesc {
+            BufferDesc { length: b.len(), value: b.as_ptr().cast_mut().cast() }
+        }
+    }
+
+    /// `gss_channel_bindings_struct`.
+    #[cfg_attr(target_arch = "x86_64", repr(C, packed(2)))]
+    #[cfg_attr(not(target_arch = "x86_64"), repr(C))]
+    struct ChannelBindings {
+        initiator_addrtype: u32,
+        initiator_address: BufferDesc,
+        acceptor_addrtype: u32,
+        acceptor_address: BufferDesc,
+        application_data: BufferDesc,
+    }
+
+    type Name = *mut c_void;
+    type Ctx = *mut c_void;
+    type Cred = *mut c_void;
+
+    const GSS_S_CONTINUE_NEEDED: u32 = 1;
+    /// Ошибка вызова или механизма (`GSS_ERROR`); младшие 16 бит — дополнительные сведения, не ошибка.
+    const GSS_ERROR_MASK: u32 = 0xFFFF_0000;
+    const GSS_C_GSS_CODE: i32 = 1;
+    const GSS_C_MECH_CODE: i32 = 2;
+
+    // OID в DER (без тега и длины).
+    /// SPNEGO, 1.3.6.1.5.5.2.
+    const SPNEGO: &[u8] = &[0x2B, 0x06, 0x01, 0x05, 0x05, 0x02];
+    /// NTLM (`GSS_NTLM_MECHANISM`), 1.3.6.1.4.1.311.2.2.10.
+    const NTLM: &[u8] = &[0x2B, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x02, 0x0A];
+    /// `GSS_C_NT_HOSTBASED_SERVICE`, 1.2.840.113554.1.2.1.4: `service@host`.
+    const NT_HOSTBASED_SERVICE: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x12, 0x01, 0x02, 0x01, 0x04];
+    /// `GSS_C_NT_USER_NAME`, 1.2.840.113554.1.2.1.1: `user@DOMAIN`.
+    #[cfg(any(test, feature = "testkit"))]
+    const NT_USER_NAME: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x12, 0x01, 0x02, 0x01, 0x01];
+
+    fn oid(der: &'static [u8]) -> OidDesc {
+        OidDesc { length: der.len() as u32, elements: der.as_ptr().cast() }
+    }
+
+    #[link(name = "GSS", kind = "framework")]
+    unsafe extern "C" {
+        fn gss_import_name(minor: *mut u32, input: *const BufferDesc, name_type: *const OidDesc, output: *mut Name) -> u32;
+        fn gss_release_name(minor: *mut u32, name: *mut Name) -> u32;
+        fn gss_init_sec_context(
+            minor: *mut u32,
+            cred: Cred,
+            ctx: *mut Ctx,
+            target: Name,
+            mech: *const OidDesc,
+            req_flags: u32,
+            time_req: u32,
+            bindings: *const ChannelBindings,
+            input: *const BufferDesc,
+            actual_mech: *mut *mut OidDesc,
+            output: *mut BufferDesc,
+            ret_flags: *mut u32,
+            time_rec: *mut u32,
+        ) -> u32;
+        fn gss_delete_sec_context(minor: *mut u32, ctx: *mut Ctx, output: *mut BufferDesc) -> u32;
+        fn gss_release_buffer(minor: *mut u32, buffer: *mut BufferDesc) -> u32;
+        fn gss_display_status(
+            minor: *mut u32,
+            status: u32,
+            status_type: i32,
+            mech: *const OidDesc,
+            message_context: *mut u32,
+            text: *mut BufferDesc,
+        ) -> u32;
+    }
+
+    /// Текст статуса GSS для журнала.
+    fn status_text(status: u32, kind: i32, mech: &'static [u8]) -> String {
+        let mech = oid(mech);
+        let mut out = String::new();
+        let mut more = 0u32;
+        for _ in 0..8 {
+            let (mut minor, mut text) = (0u32, BufferDesc::EMPTY);
+            // SAFETY: `mech` и `text` — наши, живут до конца вызова; буфер текста выделяет GSS, освобождаем ниже.
+            let major = unsafe { gss_display_status(&mut minor, status, kind, &mech, &mut more, &mut text) };
+            if major & GSS_ERROR_MASK != 0 {
+                break;
+            }
+            if !text.value.is_null() {
+                // SAFETY: GSS выделил `length` байт по `value`; читаем до освобождения.
+                let part = unsafe { std::slice::from_raw_parts(text.value as *const u8, text.length) };
+                if !out.is_empty() {
+                    out.push_str("; ");
+                }
+                out.push_str(&String::from_utf8_lossy(part));
+                // SAFETY: буфер выделил `gss_display_status`, освобождаем один раз.
+                unsafe { gss_release_buffer(&mut minor, &mut text) };
+            }
+            if more == 0 {
+                break;
+            }
+        }
+        out
+    }
+
+    /// Ошибка вызова GSS: код — major status (`GSS_S_*`). Причина механизма (minor) — только в журнал `debug`: в
+    /// сообщениях Kerberos бывают имена.
+    fn fail(call: &'static str, major: u32, minor: u32, mech: &'static [u8]) -> Error {
+        tracing::debug!(call, major, minor, gss = %status_text(major, GSS_C_GSS_CODE, mech), mech = %status_text(minor, GSS_C_MECH_CODE, mech), "ews: gss");
+        Error::Sspi { call, code: major }
+    }
+
+    /// SPN `HTTP/<host>` → имя службы GSS `HTTP@<host>`.
+    fn service_name(target: &str) -> String {
+        target.replacen('/', "@", 1)
+    }
+
+    fn import(name: &str, kind: &'static [u8], mech: &'static [u8]) -> Result<Name> {
+        let (mut minor, mut out) = (0u32, ptr::null_mut());
+        let kind = oid(kind);
+        // SAFETY: буфер имени и OID живут до конца вызова; GSS копирует имя в свой объект `out`.
+        let major = unsafe { gss_import_name(&mut minor, &BufferDesc::of(name.as_bytes()), &kind, &mut out) };
+        if major & GSS_ERROR_MASK != 0 {
+            return Err(fail("gss_import_name", major, minor, mech));
+        }
+        Ok(out)
+    }
+
+    pub(super) struct Context {
+        ctx: Ctx,
+        target: Name,
+        mech: &'static [u8],
+        /// Данные приложения привязки к каналу (`tls-server-end-point:` + хэш).
+        binding: Option<Vec<u8>>,
+        pub(super) done: bool,
+    }
+
+    // SAFETY: объекты GSS (имя, контекст) принадлежат одному `Context` и используются только через `&mut self` —
+    // одним потоком за раз; привязки объекта к потоку у GSS нет. Рукопожатие идёт в async-задаче, которую
+    // планировщик может перенести на другой поток.
+    unsafe impl Send for Context {}
+
+    impl Context {
+        pub(super) fn new(scheme: Scheme, target: &str, binding: Option<&[u8]>) -> Result<Context> {
+            let mech = match scheme {
+                Scheme::Negotiate => SPNEGO,
+                Scheme::Ntlm => NTLM,
+            };
+            let mut this = Context { ctx: ptr::null_mut(), target: ptr::null_mut(), mech, binding: binding.map(<[u8]>::to_vec), done: false };
+            this.target = import(&service_name(target), NT_HOSTBASED_SERVICE, mech)?;
+            Ok(this)
+        }
+
+        pub(super) fn step(&mut self, input: Option<&[u8]>) -> Result<Vec<u8>> {
+            let input = input.map(BufferDesc::of);
+            let bindings = self.binding.as_deref().map(|app| ChannelBindings {
+                initiator_addrtype: 0,
+                initiator_address: BufferDesc::EMPTY,
+                acceptor_addrtype: 0,
+                acceptor_address: BufferDesc::EMPTY,
+                application_data: BufferDesc::of(app),
+            });
+            let mech = oid(self.mech);
+            let (mut minor, mut out) = (0u32, BufferDesc::EMPTY);
+            // SAFETY: учётные данные — нуль (по умолчанию системы); `ctx` — нуль на первом шаге (GSS создаёт контекст)
+            // и тот же объект дальше; `target` — из `gss_import_name`. Вход, привязка и OID живут до конца вызова;
+            // выходной токен выделяет GSS, освобождаем ниже. Необязательные выходы — нули.
+            let major = unsafe {
+                gss_init_sec_context(
+                    &mut minor,
+                    ptr::null_mut(),
+                    &mut self.ctx,
+                    self.target,
+                    &mech,
+                    0,
+                    0,
+                    bindings.as_ref().map_or(ptr::null(), |b| b as *const ChannelBindings),
+                    input.as_ref().map_or(ptr::null(), |b| b as *const BufferDesc),
+                    ptr::null_mut(),
+                    &mut out,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                )
+            };
+            let token = if out.value.is_null() || out.length == 0 {
+                Vec::new()
+            } else {
+                // SAFETY: GSS выделил `length` байт по `value`; читаем их до освобождения.
+                unsafe { std::slice::from_raw_parts(out.value as *const u8, out.length) }.to_vec()
+            };
+            if !out.value.is_null() {
+                // SAFETY: буфер выделил `gss_init_sec_context`, освобождаем один раз.
+                unsafe { gss_release_buffer(&mut 0, &mut out) };
+            }
+            if major & GSS_ERROR_MASK != 0 {
+                return Err(fail("gss_init_sec_context", major, minor, self.mech));
+            }
+            if major & GSS_S_CONTINUE_NEEDED == 0 {
+                self.done = true;
+            }
+            Ok(token)
+        }
+    }
+
+    impl Drop for Context {
+        fn drop(&mut self) {
+            if !self.ctx.is_null() {
+                // SAFETY: контекст создан `gss_init_sec_context` и удаляется один раз; токен удаления не нужен.
+                unsafe { gss_delete_sec_context(&mut 0, &mut self.ctx, ptr::null_mut()) };
+            }
+            if !self.target.is_null() {
+                // SAFETY: имя получено `gss_import_name`, освобождается один раз.
+                unsafe { gss_release_name(&mut 0, &mut self.target) };
+            }
+        }
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    pub use testkit::SystemLogin;
+
+    #[cfg(any(test, feature = "testkit"))]
+    mod testkit {
+        use std::ffi::c_void;
+        use std::ptr;
+
+        use super::{Cred, GSS_ERROR_MASK, NT_USER_NAME, NTLM, Name, OidDesc, fail, gss_release_name, import, oid};
+        use crate::Result;
+
+        #[repr(C)]
+        struct Opaque {
+            _p: [u8; 0],
+        }
+
+        /// `kCFStringEncodingUTF8`.
+        const UTF8: u32 = 0x0800_0100;
+
+        #[link(name = "CoreFoundation", kind = "framework")]
+        unsafe extern "C" {
+            static kCFTypeDictionaryKeyCallBacks: Opaque;
+            static kCFTypeDictionaryValueCallBacks: Opaque;
+            fn CFStringCreateWithBytes(alloc: *const c_void, bytes: *const u8, len: isize, encoding: u32, external: u8) -> *const c_void;
+            fn CFDictionaryCreate(
+                alloc: *const c_void,
+                keys: *const *const c_void,
+                values: *const *const c_void,
+                count: isize,
+                key_callbacks: *const Opaque,
+                value_callbacks: *const Opaque,
+            ) -> *const c_void;
+            fn CFRelease(cf: *const c_void);
+        }
+
+        #[link(name = "GSS", kind = "framework")]
+        unsafe extern "C" {
+            fn gss_aapl_initial_cred(
+                name: Name,
+                mech: *const OidDesc,
+                attributes: *const c_void,
+                output: *mut Cred,
+                error: *mut *const c_void,
+            ) -> u32;
+            fn gss_destroy_cred(minor: *mut u32, cred: *mut Cred) -> u32;
+        }
+
+        /// Учётные данные NTLM в хранилище системы (GSSCred) — как после входа в домен — для тестов входа без пароля
+        /// (`testkit`): `gss_aapl_initial_cred`. Из хранилища убираются при `drop`.
+        pub struct SystemLogin(Cred);
+
+        impl SystemLogin {
+            /// `user@DOMAIN` и пароль → учётные данные NTLM системы по умолчанию.
+            pub fn ntlm(user: &str, password: &str) -> Result<SystemLogin> {
+                let mut name = import(user, NT_USER_NAME, NTLM)?;
+                let mech = oid(NTLM);
+                let mut cred: Cred = ptr::null_mut();
+                let mut error: *const c_void = ptr::null();
+                // SAFETY: строки (ключ и пароль) и словарь создаются здесь и освобождаются после вызова (ошибка CF —
+                // тоже); ключ `kGSSICPassword` в заголовке GSS — `CFSTR("kGSSICPassword")`, символа у него нет. Имя —
+                // из `gss_import_name`, освобождается один раз.
+                let major = unsafe {
+                    let cf = |s: &str| CFStringCreateWithBytes(ptr::null(), s.as_ptr(), s.len() as isize, UTF8, 0);
+                    let (key, pw) = (cf("kGSSICPassword"), cf(password));
+                    let (keys, values) = ([key], [pw]);
+                    let attrs = CFDictionaryCreate(
+                        ptr::null(),
+                        keys.as_ptr(),
+                        values.as_ptr(),
+                        1,
+                        &raw const kCFTypeDictionaryKeyCallBacks,
+                        &raw const kCFTypeDictionaryValueCallBacks,
+                    );
+                    let major = gss_aapl_initial_cred(name, &mech, attrs, &mut cred, &mut error);
+                    CFRelease(attrs);
+                    CFRelease(pw);
+                    CFRelease(key);
+                    if !error.is_null() {
+                        CFRelease(error);
+                    }
+                    gss_release_name(&mut 0, &mut name);
+                    major
+                };
+                if major & GSS_ERROR_MASK != 0 || cred.is_null() {
+                    return Err(fail("gss_aapl_initial_cred", major, 0, NTLM));
+                }
+                Ok(SystemLogin(cred))
+            }
+        }
+
+        impl Drop for SystemLogin {
+            fn drop(&mut self) {
+                // SAFETY: учётные данные получены `gss_aapl_initial_cred`; `gss_destroy_cred` убирает их из хранилища и
+                // освобождает дескриптор, один раз.
+                unsafe { gss_destroy_cred(&mut 0, &mut self.0) };
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn service_names() {
+            assert_eq!(service_name("HTTP/mail.corp.example"), "HTTP@mail.corp.example");
+        }
+
+        /// Без пароля — учётные данные NTLM системы (как после входа в домен): первый токен — NEGOTIATE (`NTLMSSP\0`,
+        /// тип 1), с привязкой к каналу; мусор вместо CHALLENGE — ошибка GSS, не паника.
+        #[test]
+        fn ntlm_from_system_login() {
+            let _login = SystemLogin::ntlm("nobody@EXAMPLE", "not-a-password").unwrap();
+            let mut ctx = Context::new(Scheme::Ntlm, "HTTP/mail.example.test", Some(b"tls-server-end-point:x")).unwrap();
+            let token = ctx.step(None).unwrap();
+            assert!(token.starts_with(b"NTLMSSP\0\x01\0\0\0"), "{:?}", &token[..token.len().min(12)]);
+            assert!(!ctx.done);
+            assert!(ctx.step(Some(b"garbage")).is_err());
+        }
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "testkit"))]
+pub use imp::SystemLogin;
+
+#[cfg(not(any(windows, target_os = "macos")))]
 mod imp {
     use crate::auth::Scheme;
-    use crate::{Auth, Error, Result};
+    use crate::{Error, Result};
 
-    /// Postman — только для Windows (S0); вне Windows входа SSPI нет.
+    /// Вход без пароля — Windows (SSPI) и macOS (GSS.framework); на других ОС его нет.
     pub(super) struct Context {
         pub(super) done: bool,
     }
 
+    const NO_OS_SIGN_IN: &str = "sign-in without a password is available on Windows and macOS only; enter the password";
+
     impl Context {
-        pub(super) fn new(_: Scheme, _: &Auth, _: &str, _: Option<&[u8]>) -> Result<Context> {
-            Err(Error::Auth("SSPI is available on Windows only".into()))
+        pub(super) fn new(_: Scheme, _: &str, _: Option<&[u8]>) -> Result<Context> {
+            Err(Error::Auth(NO_OS_SIGN_IN.into()))
         }
 
         pub(super) fn step(&mut self, _: Option<&[u8]>) -> Result<Vec<u8>> {
-            Err(Error::Auth("SSPI is available on Windows only".into()))
+            Err(Error::Auth(NO_OS_SIGN_IN.into()))
         }
     }
 }

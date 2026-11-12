@@ -9,8 +9,13 @@
 - Вопросы владельцу — пакетом «Решения для владельца» (№, вопрос, рекомендация).
 - Ручная проверка задачи — файлом `docs/manual-tests/<задача>.md` (не правкой `docs/MANUAL-TESTS.md`).
 - Локально — `cargo check`/`clippy` во время работы и один прогон тестов затронутых крейтов перед PR; весь набор
-  гоняет CI (`.github/workflows/ci.yml`, только Windows). Архив `postman-<версия>-windows-x64.zip` собирает job
-  `release` на main и тегах `v*` (`scripts/windows/package.ps1`; подпись — если задан секрет); выпуск — ниже.
+  гоняет CI (`.github/workflows/ci.yml` — Windows, `macos.yml` — macOS). Комплекты выпуска собирает job `release`
+  только на тегах `v*`, вручную и в PR, что правят сам выпуск (`scripts/windows/package.ps1`, `scripts/macos/`); выпуск
+  — ниже.
+- Экономия CI (решение `docs/decisions/2026-11-12-ci-economy.md`): PR открывать черновиком (`gh pr create --draft`) и
+  пушить в него сколько угодно — CI не идёт; когда работа готова и локальные проверки прошли — `gh pr ready`, тогда
+  один прогон. Правки после отзыва — одним пушем, а не по коммиту. Слияние — через очередь: `gh pr merge N --auto`
+  (несколько PR — одним прогоном).
 - Спека сессии — `docs/specs/Sx.md`; соответствие сессий фазам плана — в `docs/specs/S0-decisions.md`.
 
 ## Запуск
@@ -55,9 +60,11 @@ Actions — для разработки. Схема общая для Pets (ск
 | Файл выпуска | Что это |
 |---|---|
 | `postman-<версия>-windows-x64.msi` | Установщик для всех пользователей (`tools/pack`, решение 2026-11-07); его же ставит winget `Pets.Postman` |
-| `postman-<версия>-<os>-<arch>.zip` | Комплект целиком с `install.ps1` (для себя, без прав администратора): `windows-x64` сейчас; Linux — `linux-x64.tar.gz` |
-| `postman-worker.exe`, `postman-viewer.exe` | Компоненты под своими именами — скачать один файл вместо всего («Нет компонента», S8-38) |
-| `<файл .msi или .zip>.minisig` | Подпись minisign для самообновления (решение 2026-11-11 «self-update») |
+| `postman-<версия>-windows-x64.zip` | Комплект целиком с `install.ps1` (для себя, без прав администратора); Linux — `linux-x64.tar.gz` |
+| `postman-worker.exe`, `postman-viewer.exe` | Компоненты Windows под своими именами — скачать один файл вместо всего («Нет компонента», S8-38) |
+| `postman-<версия>-macos-arm64.dmg` | macOS 13+, Apple Silicon (MAC-06): образ диска — `Postman.app`, `README.txt` и ярлык `Applications`, куда перетащить приложение |
+| `postman-<версия>-macos-arm64.zip` | То же `Postman.app` и `README.txt` архивом (`ditto`); из него самообновление заменяет бандл целиком |
+| `<файл .msi, .zip или .dmg>.minisig` | Подпись minisign для самообновления (решение 2026-11-11 «self-update») |
 | `SHA256SUMS.txt` | Контрольные суммы всех файлов |
 
 - Тег `v<версия>` — ровно `version` из `Cargo.toml` (CI сверяет). `v0.2.0` — стабильный выпуск, `v0.2.0-beta.1` —
@@ -72,13 +79,22 @@ Actions — для разработки. Схема общая для Pets (ск
   `git push origin v<версия>`. CI собирает, подписывает, проверяет тесты и публикует (job `publish`); описание — что
   скачать и какие нужны права (`.github/release-notes.md`): страница для пользователей, без списка PR и
   подробностей. Изменения для разработчиков — в истории `main`.
-- Подпись обновления: job `publish` подписывает каждый `.msi` и `.zip` minisign (`.minisig`, до `SHA256SUMS.txt`) —
+- Подпись обновления: job `publish` подписывает каждый `.msi`, `.zip` и `.dmg` minisign (`.minisig`, до `SHA256SUMS.txt`) —
   секрет `UPDATE_SIGNING_KEY`, переменная `UPDATE_PUBLIC_KEY` (строка `RW…`, та же, что в `UPDATE_PUBLIC_KEYS`,
   `app-gpui/src/update.rs`); без них выпуск красный. Ключ создаёт владелец — pets `crates/pets-update/README.md`,
   «Подпись в release-workflow». Самообновление ищет файлы по именам из таблицы выше: их не переименовывать.
 - Ссылки приложения: «Проверить обновления» — проверка через `pets-update` (`app-gpui/src/update.rs`); «Все выпуски» —
   `releases/latest` (стабильный) или `releases` (предварительный); «Скачать» у «Нет компонента» —
   `releases/download/v<своя версия>/<файл>`: компонент той же версии.
+- macOS (MAC-06, решение 2026-11-11 «macos»): строка `macos-arm64` в matrix job `release` (раннер `macos-26`) —
+  `scripts/macos/package.sh` собирает `Postman.app`, `.zip` и `.dmg` с теми же выходами, что у Windows. PR, что правит
+  выпуск (`ci.yml`, `.github/release-notes.md`, `scripts/`, `tools/pack/`), тоже прогоняет `release` обеих платформ —
+  комплекты в артефактах прогона, без публикации. Подпись — ad-hoc: на странице выпуска блок `mac-unsigned`
+  («Всё равно открыть» или `xattr -dr com.apple.quarantine`). Developer ID и нотаризация включатся сами, когда в
+  репозитории появятся секреты: `MACOS_CERT_P12_BASE64` и `MACOS_CERT_PASSWORD` (сертификат «Developer ID
+  Application» в `.p12`) — подпись с hardened runtime; плюс `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` (пароль
+  приложения с appleid.apple.com) — нотаризация `notarytool` и `stapler` у `.app` и `.dmg`, блок `mac-unsigned`
+  со страницы уходит. Тесты macOS — workflow `macOS`; `publish` их не ждёт.
 - Linux: строка в matrix job `release` и `scripts/linux/package.sh` с теми же выходами; `publish` не меняется.
 - MSI: `package.ps1` вызывает `postman-pack msi` той же сборки. Версия MSI для бет — `a.b.(c·1000 + r)`
   (`0.1.0-beta.2` → `0.1.302`, `tools/pack/src/ids.rs`). `UpgradeCode` постоянный, `ProductCode` выводится из версии.

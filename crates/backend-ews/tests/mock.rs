@@ -753,9 +753,21 @@ fn ntlm_challenge() -> Vec<u8> {
     m
 }
 
+/// Пользователь и домен из AUTHENTICATE (тип 3): `DOMAIN\user` или UPN без домена.
+fn ntlm_user(t: &[u8]) -> String {
+    let field = |at: usize| {
+        let len = u16::from_le_bytes([t[at], t[at + 1]]) as usize;
+        let off = u32::from_le_bytes([t[at + 4], t[at + 5], t[at + 6], t[at + 7]]) as usize;
+        String::from_utf16_lossy(&t[off..off + len].chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect::<Vec<_>>())
+    };
+    let (domain, user) = (field(28), field(36));
+    if domain.is_empty() { user } else { format!("{domain}\\{user}") }
+}
+
 /// Соединение подменного сервера со входом NTLM: без входа — 401 `NTLM`; NEGOTIATE (тип 1) — вызов (тип 2);
-/// AUTHENTICATE (тип 3) — принят (`accept`) или отказ 401. Вошедшее соединение отвечает корпусом.
-async fn serve_ntlm(mut s: TcpStream, log: Arc<Mutex<Vec<String>>>, accept: bool) {
+/// AUTHENTICATE (тип 3) — принят (`accept` по пользователю) или отказ 401 (в журнале — `NTLM REJECTED <user>`).
+/// Вошедшее соединение отвечает корпусом.
+async fn serve_ntlm(mut s: TcpStream, log: Arc<Mutex<Vec<String>>>, accept: fn(&str) -> bool) {
     let mut signed_in = false;
     loop {
         let mut head = Vec::new();
@@ -779,10 +791,14 @@ async fn serve_ntlm(mut s: TcpStream, log: Arc<Mutex<Vec<String>>>, accept: bool
             (_, true) => None,
             (None, false) => Some(unauthorized("NTLM".into())),
             (Some(t), false) if t.get(8) == Some(&1) => Some(unauthorized(format!("NTLM {}", b64_encode(&ntlm_challenge())))),
-            (Some(t), false) if t.get(8) == Some(&3) && accept => {
+            (Some(t), false) if t.get(8) == Some(&3) && accept(&ntlm_user(t)) => {
                 log.lock().unwrap().push("NTLM AUTHENTICATE".into());
                 signed_in = true;
                 None
+            }
+            (Some(t), false) if t.get(8) == Some(&3) => {
+                log.lock().unwrap().push(format!("NTLM REJECTED {}", ntlm_user(t)));
+                Some(unauthorized("NTLM".into()))
             }
             (Some(_), false) => Some(unauthorized("NTLM".into())),
         };
@@ -795,7 +811,7 @@ async fn serve_ntlm(mut s: TcpStream, log: Arc<Mutex<Vec<String>>>, accept: bool
     }
 }
 
-fn ntlm_server(accept: bool) -> (String, Arc<Mutex<Vec<String>>>) {
+fn ntlm_server(accept: fn(&str) -> bool) -> (String, Arc<Mutex<Vec<String>>>) {
     let log = Arc::new(Mutex::new(Vec::new()));
     let (tx, rx) = std::sync::mpsc::channel();
     let l = log.clone();
@@ -814,11 +830,14 @@ fn ntlm_server(accept: bool) -> (String, Arc<Mutex<Vec<String>>>) {
 
 /// Пустой пароль — вход учётной записью Windows (SSPI, учётные данные текущего входа, NTLM без сети): почта и
 /// области работают; адрес ящика — у сервера (`ResolveNames` по имени учётной записи), а не логин `DOMAIN\user`.
-/// Только Windows: NTLM/Kerberos на macOS — MAC-05.
-#[cfg(windows)]
+/// Windows — SSPI; macOS — GSS.framework (MAC-05) с учётными данными NTLM в хранилище системы, как после входа в
+/// домен (`SystemLogin`).
+#[cfg(any(windows, target_os = "macos"))]
 #[test]
 fn windows_sign_in_without_password() {
-    let (url, log) = ntlm_server(true);
+    #[cfg(target_os = "macos")]
+    let _login = postman_ews::SystemLogin::ntlm("anna@EXAMPLE", "not-a-password").unwrap();
+    let (url, log) = ntlm_server(|_| true);
     let live = start_as(&url, r"EXAMPLE\anna", "");
     let Event::Features(f) = live.wait("Features", |e| matches!(e, Event::Features(_))) else { unreachable!() };
     assert!(f.has(Feature::Calendar) && f.has(Feature::Directory), "области подключены тем же входом");
@@ -834,7 +853,7 @@ fn windows_sign_in_without_password() {
 /// Сервер не принял текущего пользователя Windows: одна ошибка `Auth` с причиной, без повторов.
 #[test]
 fn windows_sign_in_refused() {
-    let (url, log) = ntlm_server(false);
+    let (url, log) = ntlm_server(|_| false);
     let live = start_as(&url, r"EXAMPLE\anna", "");
     let start = Instant::now();
     let err = loop {
@@ -849,6 +868,54 @@ fn windows_sign_in_refused() {
     std::thread::sleep(Duration::from_millis(500));
     assert!(live.events.try_iter().all(|e| !matches!(e, Event::Error(_))), "одна ошибка, без повторов");
     assert!(log.lock().unwrap().iter().all(|b| b != "NTLM AUTHENTICATE"), "не вошли");
+}
+
+/// Вход с паролем (NTLMv2 на Rust, все ОС): `DOMAIN\user` — почта и области работают, вход — у почты и у областей.
+#[test]
+fn password_sign_in_ntlm() {
+    let (url, log) = ntlm_server(|user| user == r"EXAMPLE\anna");
+    let live = start_as(&url, r"EXAMPLE\anna", "not-a-password");
+    let Event::Features(f) = live.wait("Features", |e| matches!(e, Event::Features(_))) else { unreachable!() };
+    assert!(f.has(Feature::Calendar) && f.has(Feature::Directory), "области подключены тем же входом");
+    live.wait("Synced", |e| matches!(e, Event::Status(Status::Synced)));
+    let log = log.lock().unwrap();
+    assert!(log.iter().filter(|b| *b == "NTLM AUTHENTICATE").count() >= 2, "вход — у почты и у областей");
+    assert!(log.iter().all(|b| !b.starts_with("NTLM REJECTED")), "без отказов");
+}
+
+/// Логин — адрес почты, а UPN в AD другой: сервер отклонил адрес — одна попытка `ДОМЕН\имя` (домен — из CHALLENGE),
+/// дальше у всех соединений учётки — сразу он, без новых отказов (счётчик неверных входов AD).
+#[test]
+fn email_login_falls_back_to_domain_user_once() {
+    let (url, log) = ntlm_server(|user| user == r"EXAMPLE\anna");
+    let live = start_as(&url, "anna@corp.example", "not-a-password");
+    let Event::Features(f) = live.wait("Features", |e| matches!(e, Event::Features(_))) else { unreachable!() };
+    assert!(f.has(Feature::Calendar), "области — тем же входом");
+    live.wait("Synced", |e| matches!(e, Event::Status(Status::Synced)));
+    let log = log.lock().unwrap();
+    let rejected: Vec<_> = log.iter().filter(|b| b.starts_with("NTLM REJECTED")).collect();
+    assert_eq!(rejected, ["NTLM REJECTED anna@corp.example"], "адрес — один отказ, не по разу на соединение");
+    assert!(log.iter().filter(|b| *b == "NTLM AUTHENTICATE").count() >= 2);
+}
+
+/// Неверный пароль: адрес и `ДОМЕН\имя` — по одной попытке, ошибка `Auth` с причиной «отклонены учётные данные».
+#[test]
+fn wrong_password_is_one_attempt_per_login() {
+    let (url, log) = ntlm_server(|_| false);
+    let live = start_as(&url, "anna@corp.example", "wrong");
+    let start = Instant::now();
+    let err = loop {
+        match live.events.recv_timeout(Duration::from_secs(20).saturating_sub(start.elapsed())) {
+            Ok(Event::Error(e)) => break e,
+            Ok(_) => {}
+            Err(e) => panic!("нет ошибки входа ({e})"),
+        }
+    };
+    assert_eq!(err.kind, postman_core::model::ErrorKind::Auth);
+    assert!(err.detail.contains(postman_ews::CREDENTIALS_REJECTED), "{}", err.detail);
+    let log = log.lock().unwrap();
+    let rejected: Vec<_> = log.iter().filter(|b| b.starts_with("NTLM REJECTED")).cloned().collect();
+    assert_eq!(rejected, ["NTLM REJECTED anna@corp.example", r"NTLM REJECTED EXAMPLE\anna"]);
 }
 
 // --- Удалено в другом клиенте (T1-20). ---

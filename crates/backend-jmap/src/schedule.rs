@@ -112,7 +112,7 @@ pub async fn availability(client: &Client, emails: &[String], from: i64, to: i64
     if client.has(AVAILABILITY) {
         match client.address_availability(emails, &utc(from), &utc(to)).await {
             Ok(list) => return Ok((mine, address_busy(list, emails))),
-            Err(e) => tracing::info!("Availability/get: {e}"),
+            Err(e) => tracing::warn!("jmap: Availability/get failed, using the fallback: {e}"),
         }
     }
     let mut people = Vec::with_capacity(emails.len());
