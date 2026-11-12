@@ -484,7 +484,6 @@ mod imp {
 
         #[link(name = "GSS", kind = "framework")]
         unsafe extern "C" {
-            static kGSSICPassword: *const c_void;
             fn gss_aapl_initial_cred(
                 name: Name,
                 mech: *const OidDesc,
@@ -506,11 +505,13 @@ mod imp {
                 let mech = oid(NTLM);
                 let mut cred: Cred = ptr::null_mut();
                 let mut error: *const c_void = ptr::null();
-                // SAFETY: строка пароля и словарь создаются здесь и освобождаются после вызова (ошибка CF — тоже); ключ
-                // `kGSSICPassword` — константа GSS; имя — из `gss_import_name`, освобождается один раз.
+                // SAFETY: строки (ключ и пароль) и словарь создаются здесь и освобождаются после вызова (ошибка CF —
+                // тоже); ключ `kGSSICPassword` в заголовке GSS — `CFSTR("kGSSICPassword")`, символа у него нет. Имя —
+                // из `gss_import_name`, освобождается один раз.
                 let major = unsafe {
-                    let pw = CFStringCreateWithBytes(ptr::null(), password.as_ptr(), password.len() as isize, UTF8, 0);
-                    let (keys, values) = ([kGSSICPassword], [pw]);
+                    let cf = |s: &str| CFStringCreateWithBytes(ptr::null(), s.as_ptr(), s.len() as isize, UTF8, 0);
+                    let (key, pw) = (cf("kGSSICPassword"), cf(password));
+                    let (keys, values) = ([key], [pw]);
                     let attrs = CFDictionaryCreate(
                         ptr::null(),
                         keys.as_ptr(),
@@ -522,6 +523,7 @@ mod imp {
                     let major = gss_aapl_initial_cred(name, &mech, attrs, &mut cred, &mut error);
                     CFRelease(attrs);
                     CFRelease(pw);
+                    CFRelease(key);
                     if !error.is_null() {
                         CFRelease(error);
                     }
