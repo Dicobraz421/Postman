@@ -265,6 +265,8 @@ pub enum Probe {
     Sysctl(String),
     /// Переменная окружения задана (пути профиля воркеру не передаются, SBX-02).
     Env(String),
+    /// Дескриптор с этим номером открыт (унаследован от клиента; SBX-05). Только Unix.
+    Fd(i32),
 }
 
 #[cfg(debug_assertions)]
@@ -298,6 +300,7 @@ fn attempt(p: Probe) -> Result<(), String> {
         Probe::ReadFile(path) => std::fs::read(path).map(|_| ()).map_err(|e| e.to_string()),
         Probe::Connect(addr) => std::net::TcpStream::connect(addr).map(drop).map_err(|e| e.to_string()),
         Probe::Spawn(cmd) => std::process::Command::new(cmd).status().map(drop).map_err(|e| e.to_string()),
+        Probe::Fd(fd) => sandbox::probe_fd(fd),
         Probe::Env(name) => std::env::var_os(&name).map(drop).ok_or_else(|| format!("{name} не задана")),
         Probe::Hang => loop {
             std::hint::spin_loop();

@@ -2,6 +2,8 @@
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(all(target_os = "linux", debug_assertions))]
+pub(crate) use linux::probe_fd;
 #[cfg(target_os = "linux")]
 pub(crate) use linux::{MEMORY_LIMIT, isolate, lockdown, parent, spawn};
 
@@ -16,6 +18,8 @@ mod macos;
 pub use macos::Limited;
 #[cfg(all(target_os = "macos", debug_assertions))]
 pub(crate) use macos::probe;
+#[cfg(all(target_os = "macos", debug_assertions))]
+pub(crate) use macos::probe_fd;
 #[cfg(target_os = "macos")]
 pub(crate) use macos::{MEMORY_LIMIT, lockdown, parent, spawn};
 
@@ -81,4 +85,10 @@ impl Namespaces {
             _ => None,
         }
     }
+}
+
+/// Дескрипторы по номерам — только Unix; на Windows наследование задаёт `HANDLE_LIST` (stdin, stdout, stderr).
+#[cfg(all(debug_assertions, not(unix)))]
+pub(crate) fn probe_fd(_fd: i32) -> Result<(), String> {
+    Err("только Unix".into())
 }
