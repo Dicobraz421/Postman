@@ -6529,6 +6529,8 @@ dependencies = [
  "postman-search",
  "postman-smime",
  "postman-worker",
+ "rustls",
+ "rustls-platform-verifier",
  "security-framework",
  "security-framework-sys",
  "serde",
