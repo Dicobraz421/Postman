@@ -52,6 +52,8 @@ mod local;
 /// Меню приложения и системные клавиши macOS (MAC-02).
 #[cfg(target_os = "macos")]
 mod mac_app;
+/// Состав строки меню macOS (MAC-07): таблица на всех ОС.
+mod mac_menu;
 mod mailer;
 mod meeting;
 mod meeting_row;

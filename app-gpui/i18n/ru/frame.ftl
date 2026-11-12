@@ -39,7 +39,7 @@ frame-list-sort = По дате
 frame-reading-to = Кому: { $to } · { $date }
 frame-tab-settings = Настройки
 frame-settings = Все настройки
-# Меню приложения macOS (MAC-02).
+# Меню приложения macOS (MAC-02, MAC-07: строка меню — `mac_menu.rs`).
 mac-menu-services = Службы
 mac-menu-hide = Скрыть Postman
 mac-menu-hide-others = Скрыть остальные
@@ -49,3 +49,14 @@ mac-menu-window = Окно
 mac-menu-minimize = Свернуть
 mac-menu-zoom = Изменить масштаб
 mac-menu-fullscreen = Войти в полноэкранный режим
+mac-menu-settings = Настройки…
+mac-menu-file = Файл
+mac-menu-new-meeting = Новая встреча
+mac-menu-edit = Правка
+mac-menu-undo = Отменить
+mac-menu-redo = Повторить
+mac-menu-cut = Вырезать
+mac-menu-copy = Копировать
+mac-menu-paste = Вставить
+mac-menu-select-all = Выбрать все
+mac-menu-view = Вид
