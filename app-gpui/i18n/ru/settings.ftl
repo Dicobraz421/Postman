@@ -862,6 +862,17 @@ settings-passwords-none = Не хранить
 settings-passwords-none-hint = Пароль спрашивается при каждом запуске; между запусками ничего не хранится.
 settings-sign-all = Подписывать все письма
 settings-sign-all-hint = Новое письмо подписывается S/MIME сертификатом адреса «От» (снять — в письме). ГОСТ — только с СКЗИ.
+settings-certs-group = Свои сертификаты
+settings-certs-loading = Читаем хранилище сертификатов…
+settings-certs-none = Своих сертификатов нет
+settings-certs-none-hint = Подписывать и расшифровывать письма можно, когда сертификат S/MIME с закрытым ключом установлен в системное хранилище сертификатов.
+settings-cert-hint = { $emails } · выдан: { $issuer } · действует до { $until }
+settings-cert-no-address = без адреса
+settings-cert-sign = Подпись
+settings-cert-no-sign = Не для подписи
+settings-cert-expiring = Истекает { $date }
+settings-cert-expired = Истёк { $date }
+settings-cert-unsupported = Ключ не поддерживается
 # «Просмотр вложений» (S8-27, макет S8-D «Настройки»).
 settings-nav-viewers = Просмотр вложений
 settings-nav-viewers-keywords = просмотр вложения модули форматы wasm fb2 таблицы презентации песочница

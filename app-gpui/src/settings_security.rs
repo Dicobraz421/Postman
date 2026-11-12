@@ -64,6 +64,61 @@ impl SettingsView {
         .detach();
     }
 
+    /// Свои сертификаты S/MIME (S5-12.7): хранилище ОС — в фоне (UI-поток не ждёт); демо — сертификат демо-ящика.
+    fn check_certs(&mut self, cx: &mut Context<Self>) {
+        if self.certs_asked {
+            return;
+        }
+        self.certs_asked = true;
+        if !self.info.live {
+            self.certs = Some(demo_certs());
+            return;
+        }
+        let task = cx.background_spawn(async move { postman_core::smime::personal_certificates() });
+        cx.spawn(async move |this, cx| {
+            let certs = task.await;
+            let _ = this.update(cx, |v, cx| {
+                v.certs = Some(certs);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Группа «Свои сертификаты»: по строке на сертификат — кому выдан; адреса, издатель, срок; годен ли для подписи.
+    /// Истекает через ≤ 30 дней — срок цветом сроков; истёк — серым.
+    fn cert_rows(&self, l: &Look) -> Div {
+        let mut d = div().flex().flex_col().child(group(tr!("settings-certs-group"), l));
+        let Some(certs) = &self.certs else {
+            return d.child(row(tr!("settings-certs-loading"), None, div(), l));
+        };
+        if certs.is_empty() {
+            return d.child(row(tr!("settings-certs-none"), Some(tr!("settings-certs-none-hint")), div(), l));
+        }
+        let now = jiff::Timestamp::now().as_second();
+        for c in certs {
+            let (state, tone) = cert_state(c, now);
+            let control = div()
+                .flex()
+                .flex_col()
+                .items_end()
+                .gap_0p5()
+                .child(div().text_color(l.text2()).child(tr!(if c.can_sign { "settings-cert-sign" } else { "settings-cert-no-sign" })))
+                .when_some(state, |d, s| {
+                    d.child(
+                        div()
+                            .text_color(match tone {
+                                CertTone::Soon => l.warning(),
+                                CertTone::Plain => l.text2(),
+                            })
+                            .child(s),
+                    )
+                });
+            d = d.child(row(c.info.subject.clone(), Some(cert_hint(c)), control, l));
+        }
+        d
+    }
+
     /// Первая строка «Безопасности» (S8-35, макет S8-D): шифрование диска с базой — одно из трёх состояний,
     /// нейтрально, без баннеров и тостов.
     fn disk_row(&self, l: &Look, cx: &mut Context<Self>) -> Option<Div> {
@@ -162,7 +217,9 @@ impl SettingsView {
 
     pub(crate) fn security(&mut self, l: &Look, cx: &mut Context<Self>) -> Div {
         self.check_disk(cx);
+        self.check_certs(cx);
         let disk = self.disk_row(l, cx);
+        let certs = self.cert_rows(l);
         let p = crate::prefs::get(cx);
         let fixed = |id: &'static str, key: &str| seg_group([seg(id, tr!(key), true, false, l)], l);
         let policy = crate::security::policy();
@@ -313,6 +370,7 @@ impl SettingsView {
                 })),
                 l,
             ))
+            .child(certs)
             .child(group(tr!("settings-sandbox-group"), l))
             .child(row(
                 tr!("settings-sandbox"),
@@ -390,6 +448,47 @@ impl SettingsView {
     }
 }
 
+/// За сколько до конца срока предупреждать (`docs/SMIME.md` §7).
+const CERT_SOON: i64 = 30 * 24 * 3600;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CertTone {
+    Plain,
+    Soon,
+}
+
+/// Строка состояния сертификата: истёк, истекает скоро, ключ не поддерживается; иначе — ничего.
+fn cert_state(c: &postman_core::smime::Personal, now: i64) -> (Option<String>, CertTone) {
+    let until = date(c.info.not_after);
+    if c.info.not_after < now {
+        (Some(tr!("settings-cert-expired", date = until)), CertTone::Plain)
+    } else if c.info.not_after - now <= CERT_SOON {
+        (Some(tr!("settings-cert-expiring", date = until)), CertTone::Soon)
+    } else if c.scheme.is_none() {
+        (Some(tr!("settings-cert-unsupported")), CertTone::Plain)
+    } else {
+        (None, CertTone::Plain)
+    }
+}
+
+/// Пояснение: адреса, издатель, срок.
+fn cert_hint(c: &postman_core::smime::Personal) -> String {
+    let emails = if c.info.emails.is_empty() { tr!("settings-cert-no-address") } else { c.info.emails.join(", ") };
+    tr!("settings-cert-hint", emails = emails, issuer = c.info.issuer.as_str(), until = date(c.info.not_after))
+}
+
+fn date(ts: i64) -> String {
+    jiff::Timestamp::from_second(ts).map(|t| t.to_zoned(jiff::tz::TimeZone::system()).strftime("%d.%m.%Y").to_string()).unwrap_or_default()
+}
+
+/// Демо-ящик: свой сертификат демо (Смирнова Анна, `me@corp.example`) — для снимка.
+fn demo_certs() -> Vec<postman_core::smime::Personal> {
+    let der = postman_demo::smime::my_key().0.to_vec();
+    postman_smime::sign::own_certificate(&der)
+        .map(|(info, can_sign, scheme)| vec![postman_core::smime::Personal { der, info, can_sign, scheme }])
+        .unwrap_or_default()
+}
+
 /// Значок, заголовок и пояснение строки диска: не зашифрован — предупреждение и «Параметры BitLocker»; зашифрован —
 /// галочка; неизвестно — сведения.
 pub(crate) fn disk_texts(drive: &str, state: Option<bool>) -> (char, String, Option<String>) {
@@ -416,5 +515,24 @@ mod tests {
         assert_eq!(super::disk_texts("D:", None).0, glyph::INFO);
         let _ = pets_i18n::init(&crate::parts::texts(), "en");
         assert_eq!(super::disk_texts("C:", Some(true)).1, "Drive C: with Postman data is encrypted");
+    }
+
+    /// S5-12.7: свой сертификат демо — годен для подписи, без строки состояния; истекает через 10 дней — «Истекает»
+    /// цветом сроков; истёк — «Истёк»; в пояснении — адрес, издатель, срок.
+    #[test]
+    fn cert_states() {
+        let _ = pets_i18n::init(&crate::parts::texts(), "ru");
+        let certs = super::demo_certs();
+        assert_eq!(certs.len(), 1);
+        let c = &certs[0];
+        assert!(c.can_sign);
+        let until = c.info.not_after;
+        assert_eq!(super::cert_state(c, until - 365 * 24 * 3600), (None, super::CertTone::Plain));
+        let (soon, tone) = super::cert_state(c, until - 10 * 24 * 3600);
+        assert!(soon.is_some_and(|s| s.starts_with("Истекает")) && tone == super::CertTone::Soon);
+        let (gone, tone) = super::cert_state(c, until + 1);
+        assert!(gone.is_some_and(|s| s.starts_with("Истёк ")) && tone == super::CertTone::Plain);
+        let hint = super::cert_hint(c);
+        assert!(hint.contains("me@corp.example") && hint.contains("действует до"), "{hint}");
     }
 }
