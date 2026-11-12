@@ -146,6 +146,10 @@ pub struct General {
     pub quiet_to: u8,
     /// Звук «Новое письмо».
     pub sound: bool,
+    /// Закрытие окна (решение 2026-11-12 «tray-and-notifications»): спрятать в трей или выйти.
+    pub on_close: OnClose,
+    /// Уведомление «Postman работает в фоне» при первом сворачивании в трей уже показано.
+    pub tray_hint_shown: bool,
     /// Канал обновлений.
     pub channel: Channel,
     /// Проверять обновления раз в сутки в фоне (решение 2026-11-11 «self-update»). Выключено — сетевых запросов по
@@ -169,6 +173,8 @@ impl Default for General {
             quiet_from: 22,
             quiet_to: 8,
             sound: false,
+            on_close: OnClose::Tray,
+            tray_hint_shown: false,
             channel: Channel::for_build(env!("CARGO_PKG_VERSION")),
             auto_update: true,
             log: LogLevel::Info,
@@ -195,6 +201,17 @@ pub enum Notify {
     /// Упоминания, ответы в моих беседах, письма со сроком.
     Important,
     Off,
+}
+
+/// Что делает закрытие окна (крестик, Alt+F4).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnClose {
+    /// Спрятать окно в трей: синхронизация и уведомления продолжаются.
+    #[default]
+    Tray,
+    /// Завершить Postman.
+    Quit,
 }
 
 /// Канал обновлений.
@@ -1564,6 +1581,16 @@ mod tests {
     }
 
     /// Самообновление: проверка включена и в старом файле, канал по умолчанию — по сборке.
+    /// Закрытие окна: по умолчанию и в старом файле без поля — в трей; «выйти» сохраняется.
+    #[test]
+    fn on_close_defaults_to_tray_and_round_trips() {
+        let old: General = serde_json::from_str(r#"{"sound":true}"#).unwrap();
+        assert_eq!((old.on_close, old.tray_hint_shown), (OnClose::Tray, false));
+        let g = General { on_close: OnClose::Quit, tray_hint_shown: true, ..General::default() };
+        let back: General = serde_json::from_str(&serde_json::to_string(&g).unwrap()).unwrap();
+        assert_eq!((back.on_close, back.tray_hint_shown), (OnClose::Quit, true));
+    }
+
     #[test]
     fn update_prefs_default_on_and_channel_by_build() {
         // Файл до самообновления (без `auto_update`): проверка включена (решение 2026-11-11 «self-update»).
