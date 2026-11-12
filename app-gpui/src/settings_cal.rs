@@ -63,7 +63,7 @@ pub(crate) fn zone_name(name: &str) -> String {
 fn zone_choice(zone: Option<&str>) -> String {
     match zone {
         Some(z) => zone_name(z),
-        None => tr!("settings-cal-zone-system", zone = offset(&jiff::tz::TimeZone::system())),
+        None => tr!(crate::sys::os_key("settings-cal-zone-system"), zone = offset(&jiff::tz::TimeZone::system())),
     }
 }
 

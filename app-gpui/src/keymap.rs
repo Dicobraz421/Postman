@@ -19,6 +19,11 @@ pub(crate) fn human(keys: &str) -> String {
 /// Эта сборка — для macOS: таблица команд в записи Windows, клавиши ОС — [`for_platform`].
 pub(crate) const MAC: bool = cfg!(target_os = "macos");
 
+/// Щелчок «добавить к выделению»: Ctrl+щелчок, на macOS — ⌘-щелчок (⌃-щелчок там — контекстное меню, MAC-04).
+pub(crate) fn pick_click(m: &gpui_kit::Modifiers) -> bool {
+    if MAC { m.platform } else { m.control }
+}
+
 /// Запись сочетания для `mac` (macOS) или Windows.
 pub(crate) fn human_on(keys: &str, mac: bool) -> String {
     if mac {
@@ -502,8 +507,9 @@ const MAC_SYSTEM: &[&str] = &["cmd-q", "cmd-h", "alt-cmd-h", "cmd-m", "cmd-tab",
 const MAC_MOVED: &[(&str, &str)] = &[("cmd-q", "cmd-shift-u")];
 
 /// Сочетание таблицы (запись Windows, `ctrl` — главный модификатор) для ОС. macOS: `ctrl` → `cmd` (⌘), кроме
-/// Ctrl+Tab и Ctrl+Shift+Tab (⌘Tab — переключатель приложений); Alt (Option) команды не берут — он печатает символы
-/// (`None`: на macOS такой клавиши нет); занятое системой — [`MAC_MOVED`] или `None`. Windows — как есть.
+/// Ctrl+Tab и Ctrl+Shift+Tab (⌘Tab — переключатель приложений); `cmd` таблицы (клавиша Windows, команды её не берут)
+/// → физический Control (⌃, MAC-04: так записывается ⌃ в «Клавиатуре»); Alt (Option) команды не берут — он печатает
+/// символы (`None`: на macOS такой клавиши нет); занятое системой — [`MAC_MOVED`] или `None`. Windows — как есть.
 pub(crate) fn for_platform(keys: &str, mac: bool) -> Option<String> {
     if !mac {
         return Some(keys.to_owned());
@@ -514,7 +520,7 @@ pub(crate) fn for_platform(keys: &str, mac: bool) -> Option<String> {
         if mods.contains(&"alt") {
             return None;
         }
-        let mods: Vec<&str> = mods.into_iter().map(|m| if m == "ctrl" && key != "tab" { "cmd" } else { m }).collect();
+        let mods: Vec<&str> = mods.into_iter().map(|m| swap_main(m, key)).collect();
         let stroke = parse_keys(&join_stroke(&mods, key)).unwrap_or_else(|_| join_stroke(&mods, key));
         let stroke = match MAC_MOVED.iter().find(|(from, _)| *from == stroke) {
             Some((_, to)) => (*to).to_owned(),
@@ -531,14 +537,26 @@ pub(crate) fn for_os(keys: &str) -> Option<String> {
     for_platform(keys, MAC)
 }
 
-/// Нажатие на macOS — в запись таблицы: `cmd` → `ctrl` (⌘ — главный модификатор), ⇧⌘U → Ctrl+Q ([`MAC_MOVED`]).
+/// Главный модификатор таблицы ↔ macOS: `ctrl` ↔ `cmd` (⌘ — то, что Ctrl на Windows; физический ⌃ — `cmd` таблицы).
+/// С Tab — как есть: ⌃Tab переключает вкладки, ⌘Tab — приложения.
+fn swap_main<'a>(m: &'a str, key: &str) -> &'a str {
+    match m {
+        _ if key == "tab" => m,
+        "ctrl" => "cmd",
+        "cmd" => "ctrl",
+        _ => m,
+    }
+}
+
+/// Нажатие на macOS — в запись таблицы: `cmd` → `ctrl` (⌘ — главный модификатор), физический ⌃ → `cmd` (MAC-04),
+/// ⇧⌘U → Ctrl+Q ([`MAC_MOVED`]).
 fn from_platform(keys: &str) -> String {
     keys.split(' ')
         .filter(|s| !s.is_empty())
         .map(|stroke| {
             let stroke = MAC_MOVED.iter().find(|(_, to)| *to == stroke).map_or(stroke, |(from, _)| *from);
             let (mods, key) = split_stroke(stroke);
-            let mods: Vec<&str> = mods.into_iter().map(|m| if m == "cmd" { "ctrl" } else { m }).collect();
+            let mods: Vec<&str> = mods.into_iter().map(|m| swap_main(m, key)).collect();
             join_stroke(&mods, key)
         })
         .collect::<Vec<_>>()
@@ -851,6 +869,19 @@ mod tests {
         assert_eq!(human_on("ctrl-enter", true), "⌘↩");
         assert_eq!(human_on("ctrl-tab", true), "⌃⇥");
         assert_eq!(human_on("ctrl-q", true), "⇧⌘U");
+    }
+
+    /// MAC-04: физический Control в «Клавиатуре» записывается не как ⌘, а своим модификатором таблицы (`cmd` — Win,
+    /// команды его не берут) и привязывается обратно к ⌃; ⌃Tab — как есть.
+    #[test]
+    fn physical_control_is_kept_on_macos() {
+        assert_eq!(from_platform("ctrl-r"), "cmd-r");
+        assert_eq!(from_platform("ctrl-cmd-r"), "cmd-ctrl-r");
+        assert_eq!(from_platform("ctrl-tab"), "ctrl-tab");
+        assert_eq!(for_platform("cmd-r", true).as_deref(), Some("ctrl-r"));
+        assert_eq!(for_platform(&from_platform("ctrl-shift-k"), true).as_deref(), Some("ctrl-shift-k"));
+        assert_eq!(for_platform(&from_platform("cmd-shift-k"), true).as_deref(), Some("cmd-shift-k"));
+        assert_eq!(human_on("cmd-r", true), "⌃R");
     }
 
     /// Клавиши по умолчанию на macOS не попадают на системные сочетания и не сталкиваются между собой там, где

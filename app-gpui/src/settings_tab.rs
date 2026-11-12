@@ -95,7 +95,7 @@ impl Section {
     }
 
     fn hint(self) -> String {
-        tr!(&format!("settings-hint-{}", self.key()))
+        tr!(crate::sys::os_key(&format!("settings-hint-{}", self.key())))
     }
 
     fn glyph(self) -> char {
@@ -1011,7 +1011,11 @@ impl SettingsView {
                 let note = tr!("settings-reading-preview-note", view = conversation_hint(p.conversation), pane = pane_name(p.pane).to_lowercase()); // i18n-ok: строчные
                 let aside = vec![
                     preview_card(pane_scheme(p.pane, l), conversation_name(p.conversation), note, l),
-                    aside_card(tr!("settings-reading-aside"), vec![tr!("settings-reading-aside-1"), tr!("settings-reading-aside-2")], l),
+                    aside_card(
+                        tr!("settings-reading-aside"),
+                        vec![tr!(crate::sys::os_key("settings-reading-aside-1")), tr!("settings-reading-aside-2")],
+                        l,
+                    ),
                 ];
                 // «По умолчанию» (T2-58): все настройки чтения, и свои виды папок.
                 let reset = reset_button("settings-reading-reset", l, cx, |p| p.reading = Default::default());

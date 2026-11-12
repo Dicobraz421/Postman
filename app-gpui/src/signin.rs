@@ -525,7 +525,7 @@ impl SignIn {
                                 .flex_col()
                                 .gap_2()
                                 .child(div().text_color(l.text2()).child(tr!("signin-store")))
-                                .child(self.radio_row(l, "signin-store-windows", self.store, tr!("signin-store-windows"), cx))
+                                .child(self.radio_row(l, "signin-store-windows", self.store, tr!(crate::sys::os_key("signin-store-windows")), cx))
                                 .child(self.radio_row(l, "signin-store-never", !self.store, tr!("signin-store-never"), cx))
                                 .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("signin-store-note"))),
                         )
@@ -738,7 +738,7 @@ impl Render for SignIn {
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(Done))),
                     )
                     .child("·")
-                    .child(tr!("signin-demo")),
+                    .child(tr!(crate::sys::os_key("signin-demo"))),
             )
             .into_any_element()
     }

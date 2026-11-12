@@ -39,11 +39,12 @@ postman-search.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 postman-compose.workspace = true
-pets-commands = { git = "https://github.com/Dicobraz/pets", rev = "b1e344098d9ce15bec9bfa5f273f211ca0fec81f" }
-pets-i18n = { git = "https://github.com/Dicobraz/pets", rev = "b1e344098d9ce15bec9bfa5f273f211ca0fec81f" }
-# T3-06: `clipboard` (HTML буфера обмена, pets#44); MAC-02: Связка ключей, экземпляр и `mailto` на macOS (pets#48).
-pets-shell = { git = "https://github.com/Dicobraz/pets", rev = "4bde6054717a0a6e614b6929292d619d920d939c" }
-pets-ui = { git = "https://github.com/Dicobraz/pets", rev = "b1e344098d9ce15bec9bfa5f273f211ca0fec81f" }
+pets-commands = { git = "https://github.com/Dicobraz/pets", rev = "05b73784b28e54dfb3a4e83acb998eb3b7772d87" }
+pets-i18n = { git = "https://github.com/Dicobraz/pets", rev = "05b73784b28e54dfb3a4e83acb998eb3b7772d87" }
+# T3-06: `clipboard` (HTML буфера обмена, pets#44); MAC-02: Связка ключей, экземпляр и `mailto` на macOS (pets#48);
+# MAC-04: буфер HTML, объект входа, политики профиля, память процесса на macOS (pets#55).
+pets-shell = { git = "https://github.com/Dicobraz/pets", rev = "05b73784b28e54dfb3a4e83acb998eb3b7772d87" }
+pets-ui = { git = "https://github.com/Dicobraz/pets", rev = "05b73784b28e54dfb3a4e83acb998eb3b7772d87" }
 # Обновление программы (решение 2026-11-11 «self-update», Postman#503): проверка GitHub Releases, подпись minisign,
 # установка MSI и portable. Единственная сеть интерфейса по своей инициативе — только модуль `update`.
 pets-update = { git = "https://github.com/Dicobraz421/pets", rev = "c767dfd4489033e2c359e159481f23bd7119646a" }
@@ -60,9 +61,10 @@ image = { version = "0.25", default-features = false }
 [target.'cfg(windows)'.dependencies]
 gpui-pre-windows = "=0.3.9"
 
-# macOS (MAC-02): окно, снимок, перетаскивание, уведомления — `pets_gpui_macos` (аналог `gpui_windows::pets`, pets#48).
+# macOS (MAC-02): окно, снимок, перетаскивание, уведомления — `pets_gpui_macos` (аналог `gpui_windows::pets`, pets#48);
+# MAC-04: снимок ScreenCaptureKit, щелчок по уведомлению (pets#55).
 [target.'cfg(target_os = "macos")'.dependencies]
-pets-gpui-macos = { git = "https://github.com/Dicobraz/pets", rev = "4bde6054717a0a6e614b6929292d619d920d939c" }
+pets-gpui-macos = { git = "https://github.com/Dicobraz/pets", rev = "05b73784b28e54dfb3a4e83acb998eb3b7772d87" }
 
 # Значок, версия и манифест exe (build.rs, rc.exe из Windows SDK).
 [build-dependencies]

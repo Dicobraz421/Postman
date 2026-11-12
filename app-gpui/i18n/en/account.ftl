@@ -22,6 +22,7 @@ signin-user-hint = Usually your email address.
 signin-password = Password
 signin-store = Password storage
 signin-store-windows = Keep in Windows Credential Manager
+signin-store-windows-mac = Keep in the macOS Keychain
 signin-store-never = Do not keep — ask at startup
 signin-store-note = Postman itself never stores secrets — neither on disk nor in settings.
 signin-tls = Connection: TLS 1.2 or 1.3, older versions are not supported. Windows checks the server certificate and its revocation.
@@ -35,6 +36,7 @@ signin-fill-url = Enter the server address.
 signin-fill-user = Enter the login.
 signin-bad-url = This does not look like a server address: mail.example.com or https://mail.example.com.
 signin-demo = No server? Run with --demo · Ctrl+, — settings
+signin-demo-mac = No server? Run with --demo · ⌘, — settings
 # Windows account sign-in (T1-02b).
 signin-windows = Sign in as the Windows user (no password)
 signin-with-password = Sign in with a password

@@ -153,7 +153,7 @@ pub(crate) fn child_row(
             let m = ev.modifiers();
             if m.shift {
                 this.extend_to(i, cx);
-            } else if m.control {
+            } else if crate::keymap::pick_click(&m) {
                 this.pick(i, true, cx);
             } else {
                 this.select(i, cx);

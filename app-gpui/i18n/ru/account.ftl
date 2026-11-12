@@ -22,6 +22,7 @@ signin-user-hint = Обычно — адрес почты.
 signin-password = Пароль
 signin-store = Хранение пароля
 signin-store-windows = Хранить: Диспетчер учётных данных Windows
+signin-store-windows-mac = Хранить: Связка ключей macOS
 signin-store-never = Не хранить — спрашивать при запуске
 signin-store-note = Postman сам секреты не сохраняет — ни на диск, ни в настройки.
 signin-tls = Соединение: TLS 1.2 или 1.3, более старые версии не поддерживаются. Сертификат сервера и его отзыв проверяет Windows.
@@ -35,6 +36,7 @@ signin-fill-url = Укажите адрес сервера.
 signin-fill-user = Укажите логин.
 signin-bad-url = Адрес сервера не похож на адрес: mail.example.com или https://mail.example.com.
 signin-demo = Без сервера — запуск с --demo · Ctrl+, — настройки
+signin-demo-mac = Без сервера — запуск с --demo · ⌘, — настройки
 # Вход учётной записью Windows (T1-02б).
 signin-windows = Войти как пользователь Windows (без пароля)
 signin-with-password = Войти с паролем

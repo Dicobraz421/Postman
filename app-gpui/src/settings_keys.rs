@@ -296,7 +296,7 @@ impl SettingsView {
             .when(conflicts.is_empty(), |d| d.bg(l.fill_passive()))
             .when(!conflicts.is_empty(), |d| d.bg(l.warning_bg()))
             .child(div().font_weight(FontWeight::SEMIBOLD).child(tr!("settings-keys-conflicts", n = conflicts.len())))
-            .when(conflicts.is_empty(), |d| d.child(div().text_color(l.text2()).child(tr!("settings-keys-no-conflicts"))))
+            .when(conflicts.is_empty(), |d| d.child(div().text_color(l.text2()).child(tr!(crate::sys::os_key("settings-keys-no-conflicts")))))
             .child(conflict_list);
         let scheme = |id: &'static str, label: String, s: KeyScheme| {
             seg(id, label, set.scheme == s, true, l).on_click(cx.listener(move |this, _, _, cx| {
@@ -312,7 +312,7 @@ impl SettingsView {
             ],
             l,
         );
-        let note = if single { tr!("settings-keys-note-single") } else { tr!("settings-keys-note-outlook") };
+        let note = if single { tr!("settings-keys-note-single") } else { tr!(crate::sys::os_key("settings-keys-note-outlook")) };
         let body = div()
             .flex()
             .flex_col()
@@ -338,7 +338,7 @@ impl SettingsView {
                     .gap_3()
                     .child(div().flex_1().child(aside_card(
                         tr!("settings-keys-layout"),
-                        vec![tr!("settings-keys-layout-1"), tr!("settings-keys-layout-2")],
+                        vec![tr!(crate::sys::os_key("settings-keys-layout-1")), tr!(crate::sys::os_key("settings-keys-layout-2"))],
                         l,
                     )))
                     .child(
