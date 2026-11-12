@@ -86,8 +86,8 @@ pub(crate) fn icon(ico: Ico, size: f32, color: Hsla) -> Svg {
     svg().path(ico.0).flex_none().size(px(size)).text_color(color)
 }
 
-/// macOS: значки шрифта Segoe Fluent Icons (`chrome::icon`) — встроенными SVG Lucide (gpui-kit-assets, ISC): шрифта
-/// на Mac нет. Вшиты только эти; путь `icons/…` — тот же, что у компонентов gpui-kit (значки те же).
+// macOS: значки шрифта Segoe Fluent Icons (`chrome::icon`) — встроенными SVG Lucide (gpui-kit-assets, ISC): шрифта
+// на Mac нет. Вшиты только эти; путь `icons/…` — тот же, что у компонентов gpui-kit (значки те же).
 #[cfg(target_os = "macos")]
 gpui_kit::assets::icon_assets!(pub(crate) MacGlyphs, [
     Archive, ArrowDown, ArrowDownUp, ArrowLeft, ArrowUp, BadgeCheck, Ban, BellRing, Bold, BookOpen, Calendar,
