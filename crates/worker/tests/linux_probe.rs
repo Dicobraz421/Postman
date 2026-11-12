@@ -56,6 +56,11 @@ fn namespaces_modes() {
     assert!(e.contains("seccomp"), "{e}");
     let e = ok(client("userns-deny").namespaces(Namespaces::Required)).unwrap_err();
     assert!(e.contains("user namespaces недоступны") && e.contains("required"), "{e}");
+    // Отказ в запирании — уровень «нет изоляции» с причиной, а не «полная» (SBX-03, аудит №16).
+    let mut c = client("userns-deny").namespaces(Namespaces::Required);
+    assert!(c.render(&Request::Text("проверка".into())).is_err());
+    assert_eq!(c.level(), postman_worker::Level::None);
+    assert!(c.fallback().is_some_and(|f| f.contains("user namespaces")), "{:?}", c.fallback());
 }
 
 /// Неизвестный режим — отказ до первого запроса (код 3), а не молчаливый `optional`.

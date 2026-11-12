@@ -3,12 +3,12 @@
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-pub(crate) use linux::{MEMORY_LIMIT, isolate, lockdown, spawn};
+pub(crate) use linux::{MEMORY_LIMIT, isolate, lockdown, parent, spawn};
 
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub(crate) use windows::{MEMORY_LIMIT, lockdown, spawn};
+pub(crate) use windows::{MEMORY_LIMIT, lockdown, parent, spawn};
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -17,7 +17,7 @@ pub use macos::Limited;
 #[cfg(all(target_os = "macos", debug_assertions))]
 pub(crate) use macos::probe;
 #[cfg(target_os = "macos")]
-pub(crate) use macos::{MEMORY_LIMIT, lockdown, spawn};
+pub(crate) use macos::{MEMORY_LIMIT, lockdown, parent, spawn};
 
 /// Шаг изоляции, которому нужен однопоточный процесс (Linux: namespaces); на остальных платформах его нет.
 #[cfg(not(target_os = "linux"))]
@@ -28,6 +28,11 @@ pub(crate) fn isolate() -> Result<(), String> {
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub(crate) fn lockdown() -> Result<(), String> {
     Err("платформа не поддерживается".into())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+pub(crate) fn parent() -> u32 {
+    0
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]

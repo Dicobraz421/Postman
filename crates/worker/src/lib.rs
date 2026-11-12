@@ -21,7 +21,7 @@ pub mod wasm;
 
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
@@ -748,7 +748,7 @@ pub(crate) fn run(limit: Duration, handle: impl Fn(Result<Request, serde_json::E
     let watchdog = watchdog(limit);
     if let Err(e) = isolated.and_then(|()| sandbox::lockdown()) {
         // Без песочницы не работаем: лучше показать письмо текстом, чем разбирать HTML без защиты.
-        let json = serde_json::to_vec(&Response::Err(format!("песочница: {e}"))).unwrap_or_default();
+        let json = serde_json::to_vec(&Response::Err(format!("{SANDBOX_REFUSAL}{e}"))).unwrap_or_default();
         let _ = write_msg(&mut stdout, &json, &[], MAX_FRAME);
         std::process::exit(3);
     }
@@ -894,22 +894,36 @@ fn handle(req: Result<Request, serde_json::Error>, bin: &[u8]) -> (Response, Vec
 /// Поток-сторож: `true` — запрос начат, `false` — закончен. Не закончен за `limit` — выход с [`EXIT_TIME`].
 /// В простое поток спит в `recv` и процессор не тратит. Поток не запустился — работаем без сторожа (клиент всё
 /// равно убьёт воркер по своему таймауту).
+/// Тот же поток следит за клиентом (SBX-03, аудит №44): клиент умер (сменился родитель) — выход не позже
+/// [`PARENT_POLL`], на всех ОС одинаково (на Windows процесс к тому же в Job Object с `KILL_ON_JOB_CLOSE`).
 fn watchdog(limit: Duration) -> Option<mpsc::Sender<bool>> {
     let (tx, rx) = mpsc::channel::<bool>();
+    let parent = sandbox::parent();
     let spawned = std::thread::Builder::new().name("watchdog".into()).spawn(move || {
-        while let Ok(started) = rx.recv() {
-            if !started {
-                continue;
-            }
-            match rx.recv_timeout(limit) {
-                Ok(_) => {}
-                Err(mpsc::RecvTimeoutError::Timeout) => std::process::exit(EXIT_TIME),
+        let mut started: Option<Instant> = None;
+        loop {
+            match rx.recv_timeout(PARENT_POLL) {
+                Ok(true) => started = Some(Instant::now()),
+                Ok(false) => started = None,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+            if sandbox::parent() != parent {
+                std::process::exit(0);
+            }
+            if started.is_some_and(|t| t.elapsed() >= limit) {
+                std::process::exit(EXIT_TIME);
             }
         }
     });
     spawned.ok().map(|_| tx)
 }
+
+/// Как часто процесс песочницы проверяет, жив ли клиент.
+const PARENT_POLL: Duration = Duration::from_millis(250);
+
+/// Начало ответа процесса, отказавшего в запирании (до первого запроса, выход 3).
+const SANDBOX_REFUSAL: &str = "песочница: ";
 
 /// Приёмник строк журнала процесса песочницы ([`Client::journal`]).
 pub type Journal = Arc<dyn Fn(&str) + Send + Sync>;
@@ -952,7 +966,11 @@ impl StderrLog {
 
 /// Фоновое чтение stderr процесса песочницы до его закрытия: канал не переполняется (процесс не встанет на записи),
 /// UI не ждёт. Строки — в `journal` с ограничением [`StderrLog`].
-fn drain_stderr(mut stderr: Box<dyn Read + Send>, journal: Journal) -> io::Result<()> {
+/// Строка, которую std пишет в stderr перед аварийным завершением при отказе в памяти (все ОС): по ней клиент называет
+/// исход «превышен предел памяти» одинаково везде (SBX-03, аудит №45).
+const OOM_LINE: &[u8] = b"memory allocation of ";
+
+fn drain_stderr(mut stderr: Box<dyn Read + Send>, journal: Journal, oom: Arc<AtomicBool>) -> io::Result<()> {
     std::thread::Builder::new()
         .name("worker-stderr".into())
         .spawn(move || {
@@ -976,6 +994,9 @@ fn drain_stderr(mut stderr: Box<dyn Read + Send>, journal: Journal) -> io::Resul
                     line.extend_from_slice(&body[..body.len().min(room)]);
                     cut |= body.len() > room;
                     if end {
+                        if line.starts_with(OOM_LINE) && line.ends_with(b" failed") {
+                            oom.store(true, Ordering::SeqCst);
+                        }
                         log.line(&line, cut);
                         line.clear();
                         cut = false;
@@ -1012,6 +1033,8 @@ struct Running {
     exit_code: Box<dyn FnMut() -> Option<u32> + Send>,
     /// Воркер ответил хотя бы раз — значит, в этой песочнице он работоспособен.
     answered: bool,
+    /// В stderr была строка std об отказе в памяти ([`OOM_LINE`]).
+    oom: Arc<AtomicBool>,
 }
 
 impl Drop for Running {
@@ -1462,7 +1485,17 @@ impl Client {
             self.running = None;
         }
         let (json, bin) = result?;
-        Ok((serde_json::from_slice(&json).map_err(|e| e.to_string())?, bin))
+        let resp: Response = serde_json::from_slice(&json).map_err(|e| e.to_string())?;
+        // Уровень — по первому ответу (SBX-03, аудит №16): процесс отказал в запирании («песочница: …», выход 3) — изоляции
+        // нет, а не «полная».
+        if let Response::Err(e) = &resp
+            && e.starts_with(SANDBOX_REFUSAL)
+        {
+            self.running = None;
+            self.level = Level::None;
+            self.fallback = Some(e.clone());
+        }
+        Ok((resp, bin))
     }
 
     fn exchange(&mut self, json: &[u8], bin: &[u8], max_bin: usize, timeout: Duration) -> Result<(Vec<u8>, Vec<u8>), String> {
@@ -1477,10 +1510,17 @@ impl Client {
                 r.answered = true;
                 Ok(msg)
             }
-            Ok(Err(_)) | Err(mpsc::RecvTimeoutError::Disconnected) => Err(match (r.exit_code)() {
-                Some(code) => format!("воркер завершился, код {}", exit_name(code)),
-                None => "воркер завершился".into(),
-            }),
+            Ok(Err(_)) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let code = (r.exit_code)();
+                // Отказ в памяти — одно имя исхода на всех ОС (Windows — fail-fast, Linux — SIGABRT, macOS — код 6).
+                if r.oom.load(Ordering::SeqCst) || code == Some(EXIT_MEMORY as u32) {
+                    return Err(format!("воркер завершился: превышен предел памяти{}", code.map(|c| format!(" (код {c})")).unwrap_or_default()));
+                }
+                Err(match code {
+                    Some(code) => format!("воркер завершился, код {}", exit_name(code)),
+                    None => "воркер завершился".into(),
+                })
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => Err(format!("воркер не ответил за {timeout:?}")),
         }
     }
@@ -1497,7 +1537,8 @@ impl Client {
             (_, Some(reason)) => self.fallback = Some(reason),
             _ => {}
         }
-        drain_stderr(p.stderr, Arc::clone(&self.journal)).map_err(|e| e.to_string())?;
+        let oom = Arc::new(AtomicBool::new(false));
+        drain_stderr(p.stderr, Arc::clone(&self.journal), Arc::clone(&oom)).map_err(|e| e.to_string())?;
         let (tx, rx) = mpsc::channel();
         let mut stdout = p.stdout;
         let max_bin = Arc::new(AtomicUsize::new(MAX_FRAME));
@@ -1514,7 +1555,7 @@ impl Client {
                 }
             })
             .map_err(|e| e.to_string())?;
-        Ok(Running { stdin: p.stdin, responses: rx, max_bin, kill: p.kill, exit_code: p.exit_code, answered: false })
+        Ok(Running { stdin: p.stdin, responses: rx, max_bin, kill: p.kill, exit_code: p.exit_code, answered: false, oom })
     }
 }
 
