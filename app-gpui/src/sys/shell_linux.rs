@@ -1,5 +1,5 @@
 //! Связь с Linux для «Настройки → Общие» и окна (LIN-03, стандарты freedesktop): клиент `mailto:` по умолчанию и
-//! автозапуск (`postman.desktop`, `xdg-settings`/`xdg-mime`, `~/.config/autostart` — `pets_shell`), журнал в файл
+//! автозапуск (`postman.desktop` пакета LIN-06, `xdg-settings`/`xdg-mime`, `~/.config/autostart` — `pets_shell`), журнал в файл
 //! (`$XDG_STATE_HOME/Postman` — путь даёт `postman_core::paths::log_dir`), «Открыть» (`xdg-open`), «Показать в папке»
 //! (`org.freedesktop.FileManager1`, иначе `xdg-open` каталога), уведомления (`org.freedesktop.Notifications`),
 //! политики администратора (`/etc/postman/policies.json`), шифрование диска (LUKS, `findmnt` и `lsblk`), вход без
@@ -10,7 +10,7 @@ use std::path::Path;
 
 use zbus::zvariant::Value;
 
-/// Схема ссылок почты (`MimeType=x-scheme-handler/mailto` в `postman.desktop`, `scripts/linux/`).
+/// Схема ссылок почты (`MimeType=x-scheme-handler/mailto` в `scripts/linux/data/postman.desktop`, LIN-06).
 const MAILTO: &str = "mailto";
 
 /// Политики администратора (ADR 0011 п. 5): те же имена и типы, что `Software\Policies\Pets\Postman` на Windows и

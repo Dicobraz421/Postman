@@ -58,6 +58,6 @@ LIN-02.
 - Всё из «Что входит», кроме перетаскивания вложения из окна наружу (нет в gpui на Linux; в окно — штатный drop gpui).
 - Буквы на любой раскладке и Ctrl — как на Windows (`keymap` без изменений: на Linux действует ветка не-macOS);
   проверка — ручная, шаг 8.
-- `postman.desktop` — `scripts/linux/`, входит в архив `package.sh`; установка в `share/applications` — LIN-06.
+- `postman.desktop` — один источник, `scripts/linux/data/postman.desktop` (LIN-06, #627); окно — `app_id` `postman`.
 - Журнал воркера — каналом (SBX-01, уже в main); здесь — журнал приложения.
 
