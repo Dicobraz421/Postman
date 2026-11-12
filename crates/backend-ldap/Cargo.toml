@@ -17,9 +17,20 @@ thiserror.workspace = true
 tracing = "0.1"
 
 # Вход учётной записью — SASL GSSAPI (cross-krb5: на Windows — SSPI Kerberos, на Linux — libgssapi). На macOS
-# libgssapi не собирается (в GSS.framework нет `gss_wrap_iov*`): вход Kerberos там — MAC-05.
+# libgssapi не собирается (в GSS.framework нет `gss_wrap_iov*`, а `iov` у cross-krb5 включён по умолчанию): там
+# SASL GSSAPI свой — `kerberos.rs` поверх GSS.framework (`sys/macos.rs`), MAC-05.
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 ldap3 = { version = "0.12", default-features = false, features = ["gssapi"] }
+
+# macOS: своё соединение до входа Kerberos (TLS, StartTLS), мост к `ldap3`; хеш сертификата — привязка к каналу TLS.
+[target.'cfg(target_os = "macos")'.dependencies]
+tokio = { version = "1", features = ["net", "io-util"] }
+tokio-rustls = { version = "0.26", default-features = false }
+sha2 = "0.11"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["io-util", "macros"] }
+sha2 = "0.11"
 
 # Контроллер домена — службой Windows (`DsGetDcNameW`, решение №12): `sys.rs`, единственное место `unsafe`.
 [target.'cfg(windows)'.dependencies.windows-sys]

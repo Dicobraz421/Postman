@@ -32,6 +32,14 @@ manual: docs/manual-tests/MAC-05.md
   `DirectoryError::Unavailable` («Kerberos (GSSAPI) login … is not supported on macOS yet»). Простой вход по TLS и
   анонимный — работают. Здесь: GSSAPI через GSS.framework (свой SASL GSSAPI поверх `sasl_*`-вызовов `ldap3` или
   `cross-krb5`/`libgssapi` с поддержкой macOS), снять `cfg`.
+  ✅ Сделано (ветка `x/mac-05-ldap`): свой SASL GSSAPI (RFC 4752, `crates/backend-ldap/src/kerberos.rs`) поверх
+  публичного GSS-API GSS.framework (`src/sys/macos.rs`) — у `ldap3` нет общего SASL-вызова, а `iov` у `cross-krb5`
+  включён по умолчанию (в 0.5 и `libgssapi` 0.11 — тоже). Соединение, StartTLS/TLS с привязкой к каналу и обмен —
+  свои, `ldap3` получает готовое соединение через `ldapi:///` (мост: как есть по TLS, со слоем шифрования по
+  `ldap://`). `cfg` у фичи `gssapi` остался (на macOS она не собирается), отказ `Unavailable` снят. Контроллер домена
+  — SRV `_ldap._tcp.dc._msdcs.<домен>` через mDNSResponder, домен — область билета Kerberos; без билета — нет.
+  Тесты без сервера — обмен на подменном GSS, мост, привязка к каналу, разбор SRV. Ручная проверка —
+  `docs/manual-tests/MAC-05.md`, «Каталог LDAP».
 - S/MIME: доверенные корни — `SecTrust`, подпись и расшифровка — `SecIdentity`/`SecKey` из Связки ключей (сейчас
   `smime/other.rs`); CRL — уже чистый Rust. Проверка подписи в воркере от платформы не зависит.
 - Вход без пароля в Exchange: `sys::shell::upn` и `in_domain` на macOS (`app-gpui/src/sys/shell_macos.rs`) — сейчас
