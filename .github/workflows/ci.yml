@@ -121,15 +121,21 @@ jobs:
       - name: Формат
         run: cargo fmt --all --check
 
+      # Линкер rust-lld (идёт с rustc) вместо link.exe — быстрее компонует ~100 тестовых exe. Только на шагах cargo,
+      # не на уровне job: переменные CARGO_* job входят в ключ rust-cache. Флаги (+crt-static) — из .cargo/config.toml.
       - name: Clippy
         # Не через RUSTFLAGS: он перекрыл бы +crt-static из .cargo/config.toml.
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld
 
       # Модули просмотра WASM (ADR 0007, S8-02): крейты viewers/<имя>, вне рабочей области. Собираются до тестов:
       # хост модулей берёт образец из $CARGO_TARGET_DIR/wasm32-unknown-unknown/release/ (fb2.wasm — только
       # для тестов, в архив выпуска не входит). Нет viewers/ — шаг пропускается.
       - name: Модули просмотра (wasm32)
         shell: bash
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld
         run: |
           shopt -s nullglob
           manifests=(viewers/*/Cargo.toml)
@@ -141,6 +147,8 @@ jobs:
 
       - name: Сборка тестов
         run: cargo nextest run --workspace --locked --profile ci --no-run
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld
 
       # AppContainer читает exe воркера только при праве для ALL APPLICATION PACKAGES (S-1-15-2-1),
       # как в Program Files. Выдаём его каталогу сборки и требуем полной изоляции в тестах.
@@ -153,6 +161,7 @@ jobs:
         run: cargo nextest run --workspace --locked --profile ci
         env:
           POSTMAN_REQUIRE_FULL_SANDBOX: '1'
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld
 
       # Диагностика: какое ограничение песочницы мешает воркеру стартовать (по одному снимаем). Только вручную.
       - name: Диагностика песочницы
@@ -199,6 +208,8 @@ jobs:
       - name: Сборка для кэша
         if: steps.look.outputs.cache-hit != 'true'
         shell: bash
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld
         run: |
           cargo clippy --workspace --all-targets --locked -- -D warnings
           cargo nextest run --workspace --locked --profile ci --no-run
