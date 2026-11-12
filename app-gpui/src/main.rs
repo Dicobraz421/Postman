@@ -49,6 +49,9 @@ mod lifecycle;
 mod list;
 mod live;
 mod local;
+/// Меню приложения и системные клавиши macOS (MAC-02).
+#[cfg(target_os = "macos")]
+mod mac_app;
 mod mailer;
 mod meeting;
 mod meeting_row;
@@ -135,11 +138,16 @@ pub(crate) fn fatal(what: &str, e: impl std::fmt::Display) -> ! {
 }
 
 /// Второй запуск: показать окно первого и сказать об этом тостом.
-fn listen_second_instance(listener: pets_shell::Listener, (window, mailer): (AnyWindowHandle, Entity<Mailer>), cx: &mut App) {
-    let (tx, mut rx) = futures::channel::mpsc::unbounded::<Vec<String>>();
+fn listen_second_instance(listener: pets_shell::Listener, handle: (AnyWindowHandle, Entity<Mailer>), cx: &mut App) {
+    let (tx, rx) = futures::channel::mpsc::unbounded::<Vec<String>>();
     listener.listen(move |args| {
         let _ = tx.unbounded_send(args);
     });
+    forward_args(rx, handle, cx);
+}
+
+/// Аргументы второго экземпляра или ссылки события Apple (macOS, MAC-02) — первому окну: `mailto:` — новое письмо.
+fn forward_args(mut rx: futures::channel::mpsc::UnboundedReceiver<Vec<String>>, (window, mailer): (AnyWindowHandle, Entity<Mailer>), cx: &mut App) {
     cx.spawn(async move |cx| {
         use futures::StreamExt as _;
         while let Some(args) = rx.next().await {
@@ -258,7 +266,7 @@ fn main() {
     };
     std::fs::create_dir_all(&dir).unwrap_or_else(|e| fatal("fatal-data-dir", e));
     // Копии перетащенных вложений (T1-18) прошлого запуска — в фоне; замеры и снимки не трогают копии работающего окна.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     if persist {
         std::thread::spawn(|| sys::drag::clean(&sys::drag::copies()));
     }
@@ -294,8 +302,20 @@ fn main() {
         account::Start::SignIn(_) => (Cache::open_in_memory().unwrap_or_else(|e| fatal("fatal-store", e)), None),
     };
 
-    gpui_kit::application().with_assets(icons::Assets).run(move |cx: &mut App| {
+    let app = gpui_kit::application().with_assets(icons::Assets);
+    // macOS (MAC-02): `mailto:` из Safari и других программ приходит работающему Postman событием Apple, а не вторым
+    // процессом; щелчок по Dock — вернуть окно.
+    #[cfg_attr(not(target_os = "macos"), expect(unused_variables))]
+    let (url_tx, url_rx) = futures::channel::mpsc::unbounded::<Vec<String>>();
+    #[cfg(target_os = "macos")]
+    app.on_open_urls(move |urls| {
+        let _ = url_tx.unbounded_send(urls);
+    })
+    .on_reopen(mac_app::reopen);
+    app.run(move |cx: &mut App| {
         gpui_kit::init(cx);
+        #[cfg(target_os = "macos")]
+        mac_app::init(cx);
         // Тема (S5-01): «как в ОС» или `--theme`, на лету; до первого окна — чтение реестра, микросекунды.
         roles::init(&theme, density, user_prefs.look.accent, cx);
         security::apply(&user_prefs);
@@ -308,9 +328,14 @@ fn main() {
         let mailto = args.iter().find(|a| a.get(..7).is_some_and(|p| p.eq_ignore_ascii_case("mailto:"))).cloned();
         let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
         // Свой заголовок окна (S5-01): вкладки, перетаскивание, «─ □ ✕» — `chrome.rs`.
+        // macOS (MAC-02): «светофоры» системы — посередине своего заголовка.
+        #[cfg(target_os = "macos")]
+        let traffic_light_position = Some(chrome::traffic_lights());
+        #[cfg(not(target_os = "macos"))]
+        let traffic_light_position = None;
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(TitlebarOptions { title: Some("Postman".into()), appears_transparent: true, ..Default::default() }),
+            titlebar: Some(TitlebarOptions { title: Some("Postman".into()), appears_transparent: true, traffic_light_position }),
             ..Default::default()
         };
         let opened = gpui_kit::open_window(options, cx, |window, cx| {
@@ -338,6 +363,10 @@ fn main() {
                     if let Err(e) = sys::set_icons(window) {
                         tracing::warn!("window icons: {e}");
                     }
+                    #[cfg(target_os = "macos")]
+                    if listener.is_some() {
+                        mac_app::keep_main_window(window, cx);
+                    }
                     if minimized {
                         window.minimize_window();
                     }
@@ -355,7 +384,8 @@ fn main() {
                     }
                 });
                 if let Some(l) = listener {
-                    listen_second_instance(l, handle, cx);
+                    listen_second_instance(l, handle.clone(), cx);
+                    forward_args(url_rx, handle, cx);
                 }
                 // Итог прошлой установки и проверки по расписанию — когда тостам уже есть где появиться.
                 if persist {
@@ -369,7 +399,7 @@ fn main() {
     // Выход: письма в окне «Отменить» не должны пропасть вместе с потоком синхронизации (S7-04, шаг 9).
     plugins::finish_sends();
     // Выход: копии перетащенных вложений (T1-18) больше не нужны.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     if persist {
         sys::drag::clean(&sys::drag::copies());
     }

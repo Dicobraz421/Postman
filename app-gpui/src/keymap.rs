@@ -11,8 +11,29 @@ use postman_core::prefs::{KeyScheme, Prefs};
 /// Свои клавиши: id команды → сочетания (пустой список — без клавиши).
 pub(crate) type Overrides = BTreeMap<String, Vec<String>>;
 
-/// `ctrl-shift-r` → `Ctrl+Shift+R`, `pagedown` → `PgDn`.
+/// Клавиши по ОС (MAC-02): на macOS — значками Mac (`ctrl-shift-r` → `⇧⌘R`), иначе — как в Windows.
 pub(crate) fn human(keys: &str) -> String {
+    human_on(keys, MAC)
+}
+
+/// Эта сборка — для macOS: таблица команд в записи Windows, клавиши ОС — [`for_platform`].
+pub(crate) const MAC: bool = cfg!(target_os = "macos");
+
+/// Запись сочетания для `mac` (macOS) или Windows.
+pub(crate) fn human_on(keys: &str, mac: bool) -> String {
+    if mac {
+        return keys
+            .split(' ')
+            .filter(|s| !s.is_empty())
+            .map(|s| mac_stroke(&for_platform(s, true).unwrap_or_else(|| s.to_owned())))
+            .collect::<Vec<_>>()
+            .join(" ");
+    }
+    windows_human(keys)
+}
+
+/// `ctrl-shift-r` → `Ctrl+Shift+R`, `pagedown` → `PgDn`.
+fn windows_human(keys: &str) -> String {
     let stroke = |s: &str| {
         let mut parts: Vec<&str> = s.split('-').collect();
         // `ctrl--` — клавиша «минус».
@@ -438,7 +459,8 @@ fn set_outlook(overrides: &mut Overrides, c: &Command, keys: Vec<String>) {
     }
 }
 
-/// Сочетание нажатия для таблицы: `None` — одни модификаторы (ждём клавишу).
+/// Сочетание нажатия для таблицы: `None` — одни модификаторы (ждём клавишу). На macOS нажатие ⌘ записывается
+/// в таблицу как `ctrl` (запись Windows, [`from_platform`]).
 pub(crate) fn recorded(unparsed: &str) -> Option<String> {
     let unparsed = unparsed.to_lowercase();
     let unparsed = unparsed.as_str();
@@ -447,7 +469,109 @@ pub(crate) fn recorded(unparsed: &str) -> Option<String> {
     if !minus && ["shift", "control", "alt", "platform", "function", "ctrl", "win", "cmd", "super", "fn", ""].contains(&last) {
         return None;
     }
-    parse_keys(unparsed).ok()
+    let keys = parse_keys(unparsed).ok()?;
+    if MAC { parse_keys(&from_platform(&keys)).ok() } else { Some(keys) }
+}
+
+// --- клавиши macOS (MAC-02) ---
+
+/// Модификаторы и клавиша одного нажатия: `ctrl-shift-r` → (["ctrl", "shift"], "r"); `ctrl--` — клавиша «минус».
+fn split_stroke(stroke: &str) -> (Vec<&str>, &str) {
+    const MODS: [&str; 7] = ["ctrl", "alt", "shift", "cmd", "super", "win", "fn"];
+    let mut mods = Vec::new();
+    let mut rest = stroke;
+    while let Some((head, tail)) = rest.split_once('-') {
+        if tail.is_empty() || !MODS.contains(&head) {
+            break;
+        }
+        mods.push(head);
+        rest = tail;
+    }
+    (mods, rest)
+}
+
+fn join_stroke(mods: &[&str], key: &str) -> String {
+    mods.iter().copied().chain(std::iter::once(key)).collect::<Vec<_>>().join("-")
+}
+
+/// Сочетания, которые на macOS держит система или меню приложения (MAC-02): ⌘Q выход, ⌘H скрыть, ⌥⌘H скрыть
+/// остальные, ⌘M свернуть, ⌘Tab и ⌘` — переключение, ⌘Space — Spotlight.
+const MAC_SYSTEM: &[&str] = &["cmd-q", "cmd-h", "alt-cmd-h", "cmd-m", "cmd-tab", "cmd-shift-tab", "cmd-`", "cmd-space"];
+
+/// Замена клавиши, которую на macOS заняла система: Ctrl+Q («Прочитано») — ⇧⌘U, как в «Почте» Apple.
+const MAC_MOVED: &[(&str, &str)] = &[("cmd-q", "cmd-shift-u")];
+
+/// Сочетание таблицы (запись Windows, `ctrl` — главный модификатор) для ОС. macOS: `ctrl` → `cmd` (⌘), кроме
+/// Ctrl+Tab и Ctrl+Shift+Tab (⌘Tab — переключатель приложений); Alt (Option) команды не берут — он печатает символы
+/// (`None`: на macOS такой клавиши нет); занятое системой — [`MAC_MOVED`] или `None`. Windows — как есть.
+pub(crate) fn for_platform(keys: &str, mac: bool) -> Option<String> {
+    if !mac {
+        return Some(keys.to_owned());
+    }
+    let mut out = Vec::new();
+    for stroke in keys.split(' ').filter(|s| !s.is_empty()) {
+        let (mods, key) = split_stroke(stroke);
+        if mods.contains(&"alt") {
+            return None;
+        }
+        let mods: Vec<&str> = mods.into_iter().map(|m| if m == "ctrl" && key != "tab" { "cmd" } else { m }).collect();
+        let stroke = parse_keys(&join_stroke(&mods, key)).unwrap_or_else(|_| join_stroke(&mods, key));
+        let stroke = match MAC_MOVED.iter().find(|(from, _)| *from == stroke) {
+            Some((_, to)) => (*to).to_owned(),
+            None if MAC_SYSTEM.contains(&stroke.as_str()) => return None,
+            None => stroke,
+        };
+        out.push(stroke);
+    }
+    Some(out.join(" "))
+}
+
+/// Клавиши этой ОС — для привязки gpui; `None` — на этой ОС у сочетания нет клавиши.
+pub(crate) fn for_os(keys: &str) -> Option<String> {
+    for_platform(keys, MAC)
+}
+
+/// Нажатие на macOS — в запись таблицы: `cmd` → `ctrl` (⌘ — главный модификатор), ⇧⌘U → Ctrl+Q ([`MAC_MOVED`]).
+fn from_platform(keys: &str) -> String {
+    keys.split(' ')
+        .filter(|s| !s.is_empty())
+        .map(|stroke| {
+            let stroke = MAC_MOVED.iter().find(|(_, to)| *to == stroke).map_or(stroke, |(from, _)| *from);
+            let (mods, key) = split_stroke(stroke);
+            let mods: Vec<&str> = mods.into_iter().map(|m| if m == "cmd" { "ctrl" } else { m }).collect();
+            join_stroke(&mods, key)
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Нажатие значками Mac: модификаторы в порядке ⌃⌥⇧⌘, затем клавиша (`cmd-shift-r` → `⇧⌘R`).
+fn mac_stroke(stroke: &str) -> String {
+    let (mods, key) = split_stroke(stroke);
+    let mut s = String::new();
+    for (m, sign) in [("ctrl", "⌃"), ("alt", "⌥"), ("shift", "⇧"), ("cmd", "⌘")] {
+        if mods.contains(&m) {
+            s.push_str(sign);
+        }
+    }
+    s.push_str(&match key {
+        "enter" => "↩".to_owned(),
+        "escape" => "⎋".to_owned(),
+        "tab" => "⇥".to_owned(),
+        "space" => "Space".to_owned(),
+        "backspace" => "⌫".to_owned(),
+        "delete" => "⌦".to_owned(),
+        "home" => "↖".to_owned(),
+        "end" => "↘".to_owned(),
+        "pageup" => "⇞".to_owned(),
+        "pagedown" => "⇟".to_owned(),
+        "up" => "↑".to_owned(),
+        "down" => "↓".to_owned(),
+        "left" => "←".to_owned(),
+        "right" => "→".to_owned(),
+        k => k.to_uppercase(),
+    });
+    s
 }
 
 /// Команды для таблицы «Клавиатура» по поиску: название, id или клавиша (`ctrl+r`, `Ctrl+R`).
@@ -697,10 +821,52 @@ mod tests {
 
     #[test]
     fn keys_read_like_windows() {
+        let human = |k| human_on(k, false);
         assert_eq!(human("ctrl-shift-r"), "Ctrl+Shift+R");
         assert_eq!(human("alt-down"), "Alt+↓");
         assert_eq!(human("j"), "J");
         assert_eq!(human("ctrl--"), "Ctrl+-");
         assert_eq!(human("ctrl-,"), "Ctrl+,");
+    }
+
+    /// MAC-02: на macOS Ctrl — это ⌘, Ctrl+Tab остаётся Control, Alt-сочетаний нет, ⌘Q — выход (Ctrl+Q → ⇧⌘U).
+    #[test]
+    fn keys_follow_macos() {
+        let mac = |k| for_platform(k, true);
+        assert_eq!(mac("ctrl-n").as_deref(), Some("cmd-n"));
+        assert_eq!(mac("ctrl-shift-r").as_deref(), Some("cmd-shift-r"));
+        assert_eq!(mac("ctrl-tab").as_deref(), Some("ctrl-tab"));
+        assert_eq!(mac("ctrl-shift-tab").as_deref(), Some("ctrl-shift-tab"));
+        assert_eq!(mac("ctrl--").as_deref(), Some("cmd--"));
+        assert_eq!(mac("ctrl-q").as_deref(), Some("cmd-shift-u"));
+        assert_eq!(mac("ctrl-h"), None);
+        assert_eq!(mac("alt-s"), None);
+        assert_eq!(mac("pagedown").as_deref(), Some("pagedown"));
+        assert_eq!(mac("j").as_deref(), Some("j"));
+        assert_eq!(for_platform("ctrl-q", false).as_deref(), Some("ctrl-q"));
+        assert_eq!(from_platform("cmd-r"), "ctrl-r");
+        assert_eq!(from_platform("cmd-shift-u"), "ctrl-q");
+        assert_eq!(human_on("ctrl-shift-r", true), "⇧⌘R");
+        assert_eq!(human_on("ctrl-,", true), "⌘,");
+        assert_eq!(human_on("ctrl-enter", true), "⌘↩");
+        assert_eq!(human_on("ctrl-tab", true), "⌃⇥");
+        assert_eq!(human_on("ctrl-q", true), "⇧⌘U");
+    }
+
+    /// Клавиши по умолчанию на macOS не попадают на системные сочетания и не сталкиваются между собой там, где
+    /// сталкивались бы и на Windows (перевод взаимно однозначен).
+    #[test]
+    fn default_keys_fit_macos() {
+        let set = KeySet::default();
+        let all = bound(crate::commands::all(), &SINGLE, &set);
+        for b in &all {
+            if let Some(k) = for_platform(&b.keys, true) {
+                assert!(!MAC_SYSTEM.contains(&k.as_str()), "{}: {k}", b.id);
+                for o in all.iter().filter(|o| o.id != b.id && canon(&o.keys) != canon(&b.keys)) {
+                    let same = for_platform(&o.keys, true).is_some_and(|ok| canon(&ok) == canon(&k));
+                    assert!(!(same && same_place(b.context.as_deref(), o.context.as_deref())), "{} и {}: {k}", b.id, o.id);
+                }
+            }
+        }
     }
 }

@@ -23,8 +23,23 @@ use crate::settings::settings;
 use crate::tabs::{MailState, Tab, TabKind};
 use crate::{Mailer, Section};
 
-/// Шрифт значков ОС (базис Pets): Segoe Fluent Icons, Windows 11.
+/// Шрифт значков ОС (базис Pets): Segoe Fluent Icons, Windows 11. На macOS его нет — значки SVG (`icons::mac_glyph`).
 pub(crate) const ICON_FONT: &str = "Segoe Fluent Icons";
+
+/// Моноширинный шрифт ОС: отпечатки, команды, исходный текст письма (MAC-02: на macOS — Menlo).
+pub(crate) const MONO_FONT: &str = if cfg!(target_os = "macos") { "Menlo" } else { "Consolas" };
+
+/// Моноширинный шрифт блоков кода в письме: Cascadia Mono (Windows 11), Menlo (macOS).
+pub(crate) const CODE_FONT: &str = if cfg!(target_os = "macos") { "Menlo" } else { "Cascadia Mono" };
+
+/// macOS: «светофоры» окна (MAC-02) рисует система; место под них слева в заголовке и их положение.
+#[cfg(target_os = "macos")]
+const W_TRAFFIC_LIGHTS: f32 = 78.0;
+/// Положение «светофоров» (левый верхний угол первой кнопки) — по середине заголовка высотой [`TITLEBAR_H`].
+#[cfg(target_os = "macos")]
+pub(crate) fn traffic_lights() -> Point<Pixels> {
+    point(px(14.), px((TITLEBAR_H - 14.) / 2.))
+}
 
 /// Значки Segoe Fluent Icons.
 pub(crate) mod glyph {
@@ -117,6 +132,7 @@ const W_CAPTION: f32 = 46.0;
 /// Заголовок окна (макет `MainNav_title`): высота; метрика pets-ui `HTitlebar` на 4 px ниже макета.
 pub(crate) const TITLEBAR_H: f32 = 44.0;
 /// Значок приложения: 12 px слева, 20 px значок, 14 px до разделов.
+#[cfg(not(target_os = "macos"))]
 const W_APP_ICON: f32 = 46.0;
 /// Кнопка раздела, зазор между кнопками; от последней до разделителя и от него до вкладок.
 const W_SECTION: f32 = 34.0;
@@ -136,8 +152,12 @@ pub(crate) const STATUS_HEIGHT: f32 = 28.0;
 /// Меню «…» не открывается снова тем же щелчком, которым его закрыли (нажатие вне меню — по кнопке «…»).
 const REOPEN_GUARD: Duration = Duration::from_millis(400);
 
-/// Значок шрифтом ОС.
+/// Значок шрифтом ОС; на macOS — SVG того же значка цветом текста (шрифта Segoe Fluent Icons там нет).
 pub(crate) fn icon(g: char, size: f32) -> Div {
+    #[cfg(target_os = "macos")]
+    if let Some(path) = icons::mac_glyph(g) {
+        return div().flex_none().size(px(size)).child(icons::Tinted { path, size });
+    }
     div().flex_none().font_family(ICON_FONT).text_size(px(size)).line_height(px(size)).child(String::from(g))
 }
 
@@ -247,7 +267,23 @@ pub(crate) const SECTIONS: [SectionButton; 4] = [
 /// Свободное место заголовка рядом с кнопками: перетаскивание, двойной щелчок — развернуть.
 fn drag_gap(id: impl Into<ElementId>, w: f32) -> Stateful<Div> {
     let id = id.into();
-    div().id(id.clone()).children(crate::screens::spot(id)).w(px(w)).h_full().flex_none().window_control_area(WindowControlArea::Drag)
+    drag_area(div().id(id.clone()).children(crate::screens::spot(id)).w(px(w)).h_full().flex_none())
+}
+
+/// Зона перетаскивания окна. Windows — `WindowControlArea::Drag` (нажатие обрабатывает система, Snap и двойной щелчок
+/// — её). macOS (MAC-02) — зону заголовка AppKit не знает: нажатие двигает окно (`start_window_move`), двойной
+/// щелчок — как в настройках системы («Увеличить» или «Свернуть»).
+fn drag_area(d: Stateful<Div>) -> Stateful<Div> {
+    let d = d.window_control_area(WindowControlArea::Drag);
+    #[cfg(target_os = "macos")]
+    let d = d.on_mouse_down(MouseButton::Left, |e, window, _| {
+        if e.click_count == 2 {
+            window.titlebar_double_click();
+        } else {
+            window.start_window_move();
+        }
+    });
+    d
 }
 
 impl Mailer {
@@ -370,6 +406,24 @@ impl Mailer {
                 .child(icon(g, 10.))
         };
         let max = if window.is_maximized() { glyph::RESTORE } else { glyph::MAX };
+        // macOS (MAC-02): слева — место «светофоров» системы вместо значка приложения, справа своих «─ □ ✕» нет.
+        let mac = cfg!(target_os = "macos");
+        #[cfg(target_os = "macos")]
+        let leading =
+            drag_area(div().id("traffic-lights").children(crate::screens::spot("traffic-lights")).w(px(W_TRAFFIC_LIGHTS)).h_full().flex_none());
+        #[cfg(not(target_os = "macos"))]
+        let leading = drag_area(
+            div()
+                .id("app-icon")
+                .children(crate::screens::spot("app-icon"))
+                .w(px(W_APP_ICON))
+                .h_full()
+                .pl(px(12.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .child(img(icons::APP).size(px(20.)).flex_none()),
+        );
         div()
             .h(px(TITLEBAR_H))
             .w_full()
@@ -377,19 +431,7 @@ impl Mailer {
             .flex()
             .items_center()
             .text_size(px(13.))
-            .child(
-                div()
-                    .id("app-icon")
-                    .children(crate::screens::spot("app-icon"))
-                    .w(px(W_APP_ICON))
-                    .h_full()
-                    .pl(px(12.))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .window_control_area(WindowControlArea::Drag)
-                    .child(img(icons::APP).size(px(20.)).flex_none()),
-            )
+            .child(leading)
             .children(self.sections(l, cx))
             // Обрезка только по ширине: плашка KeyTips «×» активной вкладки выходит за низ строки.
             .child(div().h_full().flex().items_end().gap(px(2.)).min_w_0().overflow_x_hidden().children(tabs))
@@ -413,13 +455,14 @@ impl Mailer {
                     .on_click(cx.listener(|this, _, window, cx| this.new_mail_tab(window, cx)))
             })
             // Пустое место — заголовок окна: перетаскивание, двойной щелчок — развернуть.
-            .child(
-                div().id("drag").children(crate::screens::spot("drag")).flex_1().min_w(px(48.)).h_full().window_control_area(WindowControlArea::Drag),
-            )
+            .child(drag_area(div().id("drag").children(crate::screens::spot("drag")).flex_1().min_w(px(48.)).h_full()))
             .children(self.settings_button(l, cx))
-            .child(caption("caption-min", glyph::MIN, WindowControlArea::Min, false))
-            .child(caption("caption-max", max, WindowControlArea::Max, false))
-            .child(caption("caption-close", glyph::CAPTION_CLOSE, WindowControlArea::Close, true))
+            .when(!mac, |d| {
+                d.child(caption("caption-min", glyph::MIN, WindowControlArea::Min, false))
+                    .child(caption("caption-max", max, WindowControlArea::Max, false))
+                    .child(caption("caption-close", glyph::CAPTION_CLOSE, WindowControlArea::Close, true))
+            })
+            .when(mac, |d| d.child(drag_gap("caption-end", 8.)))
     }
 
     /// Первый запуск: на месте почты — добавление учётной записи.

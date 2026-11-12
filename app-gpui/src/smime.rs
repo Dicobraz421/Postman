@@ -471,7 +471,11 @@ impl ReadingPane {
                 rows.push(row(tr!("smime-row-valid"), text(tr!("smime-valid-range", from = date(c.not_before), to = date(c.not_after)))));
                 rows.push(row(
                     tr!("smime-row-fingerprint"),
-                    div().text_size(l.px(Metric::TypeCaption)).font_family("Consolas").child(fingerprint(&c.fingerprint)).into_any_element(),
+                    div()
+                        .text_size(l.px(Metric::TypeCaption))
+                        .font_family(crate::chrome::MONO_FONT)
+                        .child(fingerprint(&c.fingerprint))
+                        .into_any_element(),
                 ));
             }
             rows.push(row(tr!("smime-row-algorithm"), text(algorithm(r.certs.first().map(|c| &c.key), r.scheme))));

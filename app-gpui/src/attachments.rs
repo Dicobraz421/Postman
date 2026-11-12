@@ -135,6 +135,10 @@ pub(crate) struct Drag {
     pub(crate) waiting: bool,
     /// Идёт перетаскивание (модальный цикл OLE).
     running: bool,
+    /// macOS (MAC-02): копия файла на диске — готовится в фоне, как только есть байты: сеанс перетаскивания
+    /// начинается только в событии мыши, ждать записи там нельзя.
+    #[cfg(target_os = "macos")]
+    copy: Option<std::path::PathBuf>,
 }
 
 impl Drag {
@@ -481,8 +485,17 @@ impl ReadingPane {
         }
         let blob = row.blob_id.clone();
         let demo = (!self.live).then(|| postman_demo::blob(&blob)).flatten().map(Arc::new);
-        self.drag = Some(Drag { row, start: at, data: demo, waiting: false, running: false });
+        self.drag = Some(Drag {
+            row,
+            start: at,
+            data: demo,
+            waiting: false,
+            running: false,
+            #[cfg(target_os = "macos")]
+            copy: None,
+        });
         if !self.live {
+            self.drag_copy(cx);
             return;
         }
         let cache = self.cache.clone();
@@ -490,10 +503,11 @@ impl ReadingPane {
         let task = cx.background_spawn(async move { cache.blob(&key).ok().flatten() });
         cx.spawn(async move |this, cx| {
             let data = task.await;
-            this.update(cx, |this, _| {
+            this.update(cx, |this, cx| {
                 if let Some(d) = this.drag.as_mut().filter(|d| d.row.blob_id == blob && d.data.is_none()) {
                     d.data = data.map(Arc::new);
                 }
+                this.drag_copy(cx);
             })
             .ok();
         })
@@ -555,7 +569,66 @@ impl ReadingPane {
         .detach();
     }
 
-    #[cfg(not(windows))]
+    /// macOS (MAC-02): сеанс `NSDraggingSession` с копией, готовой заранее ([`Self::drag_copy`]): он начинается только
+    /// в этом событии мыши и дальше идёт без приложения. Копии ещё нет — ждём её, по готовности — тост.
+    #[cfg(target_os = "macos")]
+    fn start_drag(&mut self, name: String, _: Arc<Vec<u8>>, cx: &mut Context<Self>) {
+        let Some(d) = &mut self.drag else { return };
+        let Some(copy) = d.copy.clone() else {
+            d.running = false;
+            d.waiting = true;
+            cx.notify();
+            return;
+        };
+        self.drag = None;
+        if let Err(e) = crate::sys::drag::drag(&copy) {
+            cx.emit(crate::reading::ReadingEvent::Toast(pets_ui::Level::Error, tr!("att-drag-failed", name = name, error = e)));
+        }
+        cx.notify();
+    }
+
+    /// macOS: байты есть — копия для перетаскивания в фоне (`$TMPDIR/Postman/drag`, метка карантина). Ждали её после
+    /// порога — тост «можно перетаскивать».
+    #[cfg(target_os = "macos")]
+    fn drag_copy(&mut self, cx: &mut Context<Self>) {
+        use crate::sys::drag;
+        let Some(d) = self.drag.as_ref().filter(|d| d.copy.is_none()) else { return };
+        let Some(data) = d.data.clone() else { return };
+        let blob = d.row.blob_id.clone();
+        let name = files::safe_name(&d.row.name);
+        let task = cx.background_spawn({
+            let name = name.clone();
+            async move { drag::prepare(&drag::copies(), &name, &data).map_err(|e| e.to_string()) }
+        });
+        cx.spawn(async move |this, cx| {
+            let copy = task.await;
+            this.update(cx, |this, cx| {
+                let Some(d) = this.drag.as_mut().filter(|d| d.row.blob_id == blob) else { return };
+                match copy {
+                    Ok(path) => {
+                        d.copy = Some(path);
+                        if d.waiting {
+                            this.drag = None;
+                            cx.emit(crate::reading::ReadingEvent::Toast(pets_ui::Level::Info, tr!("att-drag-ready", name = name)));
+                        }
+                    }
+                    Err(e) => {
+                        this.drag = None;
+                        cx.emit(crate::reading::ReadingEvent::Toast(pets_ui::Level::Error, tr!("att-drag-failed", name = name, error = e)));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Копия заранее нужна только на macOS (на Windows её пишут перед `DoDragDrop`).
+    #[cfg(not(target_os = "macos"))]
+    fn drag_copy(&mut self, _cx: &mut Context<Self>) {}
+
+    #[cfg(not(any(windows, target_os = "macos")))]
     fn start_drag(&mut self, _: String, _: Arc<Vec<u8>>, _: &mut Context<Self>) {
         self.drag = None;
     }
@@ -577,15 +650,16 @@ impl ReadingPane {
             cx.emit(crate::reading::ReadingEvent::Toast(pets_ui::Level::Info, tr!("att-drag-ready", name = name)));
         } else {
             d.data = Some(data.clone());
+            self.drag_copy(cx);
         }
     }
 }
 
 /// Порог начала перетаскивания (точки окна): системный на Windows, иначе 4.
 fn drag_threshold(scale: f32) -> (f32, f32) {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     return crate::sys::drag::threshold(scale);
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = scale;
         (4., 4.)

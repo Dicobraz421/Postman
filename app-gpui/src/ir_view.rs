@@ -229,7 +229,7 @@ fn block(b: &Block, key: &str, images: &Images, hits: &Hits, col: Pixels, cx: &m
                 )))
             }))
             .into_any_element(),
-        Block::Code(code) => div().p_2().rounded_md().bg(l.fill()).font_family("Cascadia Mono").child(code.clone()).into_any_element(),
+        Block::Code(code) => div().p_2().rounded_md().bg(l.fill()).font_family(crate::chrome::CODE_FONT).child(code.clone()).into_any_element(),
         Block::Rule => div().h(px(1.)).bg(l.border()).into_any_element(),
         // Картинка документа (S8-23): пометкой — воркер отдаёт место, не пиксели.
         Block::Figure => div()

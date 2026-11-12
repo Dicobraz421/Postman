@@ -39,3 +39,13 @@ frame-list-sort = По дате
 frame-reading-to = Кому: { $to } · { $date }
 frame-tab-settings = Настройки
 frame-settings = Все настройки
+# Меню приложения macOS (MAC-02).
+mac-menu-services = Службы
+mac-menu-hide = Скрыть Postman
+mac-menu-hide-others = Скрыть остальные
+mac-menu-show-all = Показать все
+mac-menu-quit = Завершить Postman
+mac-menu-window = Окно
+mac-menu-minimize = Свернуть
+mac-menu-zoom = Изменить масштаб
+mac-menu-fullscreen = Войти в полноэкранный режим

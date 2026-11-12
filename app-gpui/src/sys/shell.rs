@@ -93,6 +93,11 @@ pub fn register_mailto() -> Result<(), String> {
     set_string(r"Software\RegisteredApplications", Some(APP), CAPABILITIES)
 }
 
+/// Выбор клиента по умолчанию — за пользователем: «Приложения по умолчанию» Windows.
+pub fn show_default_apps() -> Result<(), String> {
+    open("ms-settings:defaultapps")
+}
+
 /// Ссылки `mailto:` открывает Postman (выбор пользователя в Windows).
 pub fn mailto_is_default() -> bool {
     get_string(USER_CHOICE, Some("ProgId")).is_some_and(|p| p == MAILTO_PROGID)
