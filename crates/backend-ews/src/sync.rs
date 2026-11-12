@@ -427,7 +427,7 @@ async fn sign_in(url: &str, user: &str, password: &str) -> Result<(Client, Strin
     }
     let mut last = None;
     for u in urls {
-        let mut client = Client::new(&u, a.clone())?;
+        let mut client = crate::client(&u, a.clone())?;
         match client.mail_roles().await {
             Ok(roles) => return Ok((client, u, roles)),
             Err(e @ (postman_ews::Error::Auth(_) | postman_ews::Error::AuthScheme)) => return Err(e),
@@ -643,7 +643,7 @@ async fn pull_events(client: &mut Client, mut sub: Subscription, tx: &UnboundedS
 /// Подписка на события сервера (T1-21б): свой клиент, вести — в канал синхронизации. Не открылась или оборвалась —
 /// `Down` и повтор с паузой; потеряна — переподписка и `Change::Resync`.
 async fn watch(url: String, auth: postman_ews::Auth, tx: UnboundedSender<Watch>) {
-    let mut client = match Client::new(&url, auth) {
+    let mut client = match crate::client(&url, auth) {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!("ews: server events unavailable, polling for changes: {e}");
