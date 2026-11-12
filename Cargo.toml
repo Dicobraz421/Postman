@@ -110,10 +110,10 @@ panic = "deny"
 [patch.crates-io]
 # Патч Windows-платформы gpui (шейдеры в exe, кадры по запросу, живой ресайз) — общий для приложений Pets:
 # github.com/Dicobraz421/pets, crates/pets-gpui-windows.
-gpui-pre-windows = { git = "https://github.com/Dicobraz421/pets", rev = "2d0f8405f28ceae8eed70f013adf4824321ee3fd" }
+gpui-pre-windows = { git = "https://github.com/Dicobraz421/pets", rev = "2b387b40d19358d54496515ed69ac3ae95d1a21c" }
 # Патч gpui-kit (gpui-base 0.9.1): блоки в тексте поля, как в Zed, — таблица сеткой и картинки в письме (T3-06, T3-07):
 # github.com/Dicobraz421/pets, crates/pets-gpui-base.
-gpui-base = { git = "https://github.com/Dicobraz421/pets", rev = "2d0f8405f28ceae8eed70f013adf4824321ee3fd" }
+gpui-base = { git = "https://github.com/Dicobraz421/pets", rev = "2b387b40d19358d54496515ed69ac3ae95d1a21c" }
 
 # Отладочная информация только для своего кода: target/debug не раздувается до десятков ГБ.
 [profile.dev]
