@@ -105,7 +105,7 @@ impl GostProvider for SystemGost {
         FOUND
             .get_or_init(|| {
                 let p = sys::gost_provider();
-                tracing::info!(provider = ?p, "GOST CSP detection");
+                tracing::info!(provider = ?p, "smime: GOST CSP detection");
                 p
             })
             .clone()
@@ -211,7 +211,7 @@ impl Anchors {
                     roots = t.roots.len(),
                     intermediates = t.intermediates.len(),
                     disallowed = t.disallowed.len(),
-                    "S/MIME trust anchors loaded"
+                    "smime: trust anchors loaded"
                 );
                 *cached = Some(t.clone());
                 t
@@ -272,7 +272,7 @@ pub fn cached(cache: &Cache, id: &str, ctx: &Context, now: i64) -> Option<Verdic
 
 fn store(cache: &Cache, id: &str, v: &Verdict) {
     if let Err(e) = cache.set_smime(id, v) {
-        tracing::warn!("S/MIME verdict is not cached: {e}");
+        tracing::warn!("smime: verdict not cached: {e}");
     }
 }
 
@@ -318,7 +318,7 @@ fn remember(cache: &Cache, v: &Verdict, now: i64) {
         source: "signed".into(),
     });
     if let Err(e) = cache.set_certs(address, &list) {
-        tracing::warn!("recipient certificate is not cached: {e}");
+        tracing::warn!("smime: recipient certificate not cached: {e}");
     }
 }
 

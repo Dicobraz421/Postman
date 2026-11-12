@@ -6031,7 +6031,7 @@ dependencies = [
 [[package]]
 name = "pets-shell"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz/pets?rev=04174d541c8c455c5826f30c75b0396067e0ed7d#04174d541c8c455c5826f30c75b0396067e0ed7d"
+source = "git+https://github.com/Dicobraz421/pets?rev=44937ec07da8f11f382d4ef7785b57062a9d4e4d#44937ec07da8f11f382d4ef7785b57062a9d4e4d"
 dependencies = [
  "core-foundation 0.10.1",
  "libc",

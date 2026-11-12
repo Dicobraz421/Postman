@@ -100,7 +100,7 @@ impl Mailer {
         let cache = self.cache.clone();
         cx.background_spawn(async move {
             if let Err(e) = cache.set_state(LOG, &text) {
-                tracing::warn!("rules: log: {e}");
+                tracing::error!("rules: rules log not written: {e}");
             }
         })
         .detach();
@@ -162,7 +162,7 @@ impl Mailer {
                         }
                         m.log_hits(entries, cx);
                     }
-                    Err(e) => tracing::warn!("rules: {e}"),
+                    Err(e) => tracing::error!("rules: rules not applied: {e}"),
                 }
                 if std::mem::take(&mut m.rules_run.again) {
                     m.rules_pass(cx);
@@ -207,7 +207,7 @@ impl Mailer {
                     m.log_hits(entries, cx);
                     m.toast(Toast::Success, tr!("rules-applied", rule = name, n = crate::bulk::plural_n(n)), cx);
                 }
-                Err(e) => tracing::warn!("rules: apply: {e}"),
+                Err(e) => tracing::error!("rules: rule not applied: {e}"),
             });
         })
         .detach();

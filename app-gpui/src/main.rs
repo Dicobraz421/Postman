@@ -186,7 +186,7 @@ Usage: postman [options]
   --help, --version     this text, the version
 
 Live mailbox: POSTMAN_URL and POSTMAN_USER/POSTMAN_PASSWORD (or POSTMAN_TOKEN); otherwise the saved sign-in.
-Log: POSTMAN_LOG (e.g. debug); errors also go to the Windows Application log.
+Log: POSTMAN_LOG (e.g. debug); errors, warnings and info also go to the Windows Application log.
 cmd waits for postman.exe only with 'start /wait'; PowerShell - with '| Out-Default'; Git Bash and .cmd files wait.
 ";
 
@@ -261,7 +261,7 @@ fn main() {
             Ok(pets_shell::Instance::First(l)) => Some(l),
             Ok(pets_shell::Instance::Second) => return,
             Err(e) => {
-                tracing::warn!("single instance: {e}");
+                tracing::warn!("shell: single instance check failed, the window may open twice: {e}");
                 None
             }
         }
@@ -363,7 +363,7 @@ fn main() {
                 let (window, mailer) = handle.clone();
                 let _ = window.update(cx, |_, window, cx| {
                     if let Err(e) = sys::set_icons(window) {
-                        tracing::warn!("window icons: {e}");
+                        tracing::warn!("shell: window icons not set: {e}");
                     }
                     #[cfg(target_os = "macos")]
                     if listener.is_some() {

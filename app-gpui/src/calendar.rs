@@ -913,7 +913,7 @@ impl CalendarView {
             }
             SyncEvent::Availability { ticket, people, notes, error, .. } if self.opened_ticket == Some(*ticket) => match error {
                 Some(e) => {
-                    tracing::info!("opened calendars: availability failed: {e}");
+                    tracing::error!("calendar: opened calendars availability failed: {e}");
                     self.opened_failed(cx);
                 }
                 None => self.opened_answer(people, notes, cx),
@@ -3785,7 +3785,7 @@ impl crate::Mailer {
             let (head, body) = (tr!("cal-remind-title"), text);
             cx.background_spawn(async move {
                 if let Err(e) = crate::screens::notify(&head, &body) {
-                    tracing::warn!("meeting reminder notification: {e}");
+                    tracing::error!("calendar: meeting reminder notification not shown: {e}");
                 }
             })
             .detach();

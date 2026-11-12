@@ -279,7 +279,9 @@ impl ReadingPane {
                         Ok(image) => shown.push((url, image)),
                         Err(e) => {
                             failed += 1;
-                            tracing::warn!("remote image is not shown: {e}");
+                            // Адрес картинки — только в отладку: в нём бывает адрес получателя.
+                            tracing::warn!("remote_images: remote image not shown");
+                            tracing::debug!("remote_images: {e}");
                         }
                     }
                 }

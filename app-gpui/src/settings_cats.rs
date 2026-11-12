@@ -236,7 +236,7 @@ impl SettingsView {
     fn delete_category(&mut self, keyword: String, cx: &mut Context<Self>) {
         let mut t = self.cats.clone();
         if let Err(p) = t.delete(&keyword, now_ms()) {
-            tracing::warn!("categories: delete {keyword}: {p}");
+            tracing::warn!("categories: category not deleted: {p}");
             return;
         }
         self.cats = t.clone();
@@ -259,7 +259,7 @@ impl SettingsView {
                 let text = problem_text(&self.cats, &p);
                 let mut t = self.cats.clone();
                 if let Err(e) = t.adopt(&c.keyword, &c.name, free_color(&self.cats), None, now_ms()) {
-                    tracing::warn!("categories: restore {}: {e}", c.keyword);
+                    tracing::error!("categories: category not restored: {e}");
                     return;
                 }
                 self.cats = t.clone();
@@ -290,7 +290,7 @@ impl SettingsView {
             let _ = this.update(cx, |v, cx| {
                 match counts {
                     Ok(c) => v.cat_counts = Some(c),
-                    Err(e) => tracing::warn!("categories: count: {e}"),
+                    Err(e) => tracing::error!("categories: category letter count failed: {e}"),
                 }
                 cx.notify();
             });

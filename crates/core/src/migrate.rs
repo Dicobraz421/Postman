@@ -608,12 +608,13 @@ impl<S: Store> Engine<S> {
                     ImportError::Rejected(_) => l.attempts >= ATTEMPTS,
                     ImportError::Quota | ImportError::Throttled { .. } => false,
                 };
-                tracing::warn!(job = job.0, letter = letter.0, "migration: import failed: {error}");
                 if refused {
+                    tracing::error!(job = job.0, letter = letter.0, "migration: import refused by the target, letter not moved: {error}");
                     self.store.refused(*job, *letter, error)?;
                     j.remove(*letter);
                     return Ok(());
                 }
+                tracing::warn!(job = job.0, letter = letter.0, "migration: import failed, retrying: {error}");
                 // Повтор — с проверкой у цели: при обрыве связи выгрузка могла дойти без ответа.
                 l.step = Step::Confirm;
                 self.store.set_step(*job, *letter, Step::Confirm)?;
@@ -641,7 +642,7 @@ impl<S: Store> Engine<S> {
                 let Some(j) = self.jobs.get_mut(job) else { return Ok(()) };
                 let Some(l) = j.letters.get_mut(letter).filter(|l| l.busy && l.step == Step::DeleteSource) else { return Ok(()) };
                 if let Event::DestroyFailed { error, .. } = e {
-                    tracing::warn!(job = job.0, letter = letter.0, "migration: source delete failed: {error}");
+                    tracing::warn!(job = job.0, letter = letter.0, "migration: source delete failed, retrying: {error}");
                     l.failed = true;
                 }
                 l.pending = l.pending.saturating_sub(1);
@@ -654,7 +655,7 @@ impl<S: Store> Engine<S> {
                     if l.destroy_failures < DESTROY_ATTEMPTS {
                         j.later(*letter, now);
                     } else {
-                        tracing::warn!(job = job.0, letter = letter.0, "migration: source delete gave up, letter kept at source");
+                        tracing::error!(job = job.0, letter = letter.0, "migration: source delete gave up, letter kept at source");
                         self.store.kept(*job, *letter)?;
                         j.remove(*letter);
                         j.kept += 1;
