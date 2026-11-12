@@ -41,7 +41,7 @@ pub use sandbox::Limited;
 /// Код выхода воркера, которого остановил сторож времени: разбор одного запроса дольше [`TIME_LIMIT`].
 pub const EXIT_TIME: i32 = 5;
 /// Код выхода процесса песочницы сверх предела памяти (macOS: распределитель `Limited`; на Windows предел ставит Job
-/// Object, на Linux — `RLIMIT_AS`, коды там свои).
+/// Object, на Linux — `RLIMIT_AS`: отказ в памяти там — аварийное завершение, `SIGABRT`).
 pub const EXIT_MEMORY: i32 = 6;
 /// Предел времени на один запрос внутри воркера (сторож в [`serve`]); клиент ждёт чуть дольше.
 pub const TIME_LIMIT: Duration = Duration::from_secs(8);
@@ -738,10 +738,12 @@ pub fn serve() -> ! {
 pub(crate) fn run(limit: Duration, handle: impl Fn(Result<Request, serde_json::Error>, &[u8]) -> (Response, Vec<u8>)) -> ! {
     let mut stdin = io::stdin().lock();
     let mut stdout = io::stdout().lock();
+    // Шаг, которому нужен однопоточный процесс (Linux: namespaces), — до сторожа.
+    let isolated = sandbox::isolate();
     // Сторож времени — до запирания (потом новые потоки могут быть запрещены): запрос дольше `limit`
     // завершает процесс; клиент видит код `EXIT_TIME` и поднимает новый процесс.
     let watchdog = watchdog(limit);
-    if let Err(e) = sandbox::lockdown() {
+    if let Err(e) = isolated.and_then(|()| sandbox::lockdown()) {
         // Без песочницы не работаем: лучше показать письмо текстом, чем разбирать HTML без защиты.
         let json = serde_json::to_vec(&Response::Err(format!("песочница: {e}"))).unwrap_or_default();
         let _ = write_msg(&mut stdout, &json, &[], MAX_FRAME);
@@ -1428,7 +1430,7 @@ fn open_request(raw: &[u8], cek: &[u8], trust: &postman_smime::Trust) -> Result<
     Ok(bin)
 }
 
-/// Код завершения с расшифровкой своих кодов, частых NTSTATUS и сигналов (macOS: 128 + номер).
+/// Код завершения с расшифровкой своих кодов, частых NTSTATUS и сигналов (Unix: 128 + номер).
 fn exit_name(code: u32) -> String {
     let name = match code {
         // `EXIT_TIME`, `EXIT_MEMORY`.
@@ -1437,6 +1439,8 @@ fn exit_name(code: u32) -> String {
         134 if cfg!(unix) => " (аварийное завершение, SIGABRT)",
         137 if cfg!(unix) => " (убит, SIGKILL)",
         138 | 139 if cfg!(unix) => " (нарушение доступа к памяти)",
+        153 if cfg!(target_os = "linux") => " (запись в файл запрещена, SIGXFSZ)",
+        159 if cfg!(target_os = "linux") => " (запрещённый системный вызов, seccomp)",
         0xC000_0005 => " (нарушение доступа к памяти)",
         0xC000_0022 => " (нет доступа — вероятно, AppContainer не может прочитать файлы воркера)",
         0xC000_0135 => " (не найдена DLL)",

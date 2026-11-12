@@ -854,6 +854,17 @@ settings-passwords-none = Do not store
 settings-passwords-none-hint = The password is asked at every start; nothing is kept between starts.
 settings-sign-all = Sign all messages
 settings-sign-all-hint = New messages are S/MIME signed with the From address certificate (turn off in a message). GOST — only with a certified crypto provider.
+settings-certs-group = Your certificates
+settings-certs-loading = Reading the certificate store…
+settings-certs-none = No certificates of your own
+settings-certs-none-hint = You can sign and decrypt mail once an S/MIME certificate with its private key is installed in the system certificate store.
+settings-cert-hint = { $emails } · issued by { $issuer } · valid until { $until }
+settings-cert-no-address = no address
+settings-cert-sign = Signing
+settings-cert-no-sign = Not for signing
+settings-cert-expiring = Expires { $date }
+settings-cert-expired = Expired { $date }
+settings-cert-unsupported = Key not supported
 # "Attachment viewers" (S8-27, mockup S8-D "Settings").
 settings-nav-viewers = Attachment viewers
 settings-nav-viewers-keywords = viewer attachments modules formats wasm fb2 spreadsheets presentations sandbox

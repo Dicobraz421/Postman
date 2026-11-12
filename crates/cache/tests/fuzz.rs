@@ -165,9 +165,18 @@ fn run(seed: u64) {
     }
 }
 
+// Каждое зерно — свой тест: последовательности идут параллельно (подряд в CI — 11 с).
 #[test]
 fn random_command_sequences_keep_the_cache_consistent() {
-    for seed in [0x9E37_79B9_7F4A_7C15, 0xD1B5_4A32_D192_ED03, 0x2545_F491_4F6C_DD1D] {
-        run(seed);
-    }
+    run(0x9E37_79B9_7F4A_7C15);
+}
+
+#[test]
+fn random_command_sequences_keep_the_cache_consistent_2() {
+    run(0xD1B5_4A32_D192_ED03);
+}
+
+#[test]
+fn random_command_sequences_keep_the_cache_consistent_3() {
+    run(0x2545_F491_4F6C_DD1D);
 }

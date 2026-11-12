@@ -3,7 +3,7 @@
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-pub(crate) use linux::{MEMORY_LIMIT, lockdown, spawn};
+pub(crate) use linux::{MEMORY_LIMIT, isolate, lockdown, spawn};
 
 #[cfg(windows)]
 mod windows;
@@ -18,6 +18,12 @@ pub use macos::Limited;
 pub(crate) use macos::probe;
 #[cfg(target_os = "macos")]
 pub(crate) use macos::{MEMORY_LIMIT, lockdown, spawn};
+
+/// Шаг изоляции, которому нужен однопоточный процесс (Linux: namespaces); на остальных платформах его нет.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn isolate() -> Result<(), String> {
+    Ok(())
+}
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub(crate) fn lockdown() -> Result<(), String> {

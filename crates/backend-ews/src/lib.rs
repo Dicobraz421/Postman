@@ -16,11 +16,35 @@
 pub mod areas;
 pub mod sync;
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
 use postman_core::backend::{AreaPlugin, Areas, BoxFuture, Login, MailPlugin, Spawn};
 use postman_core::model::{Auth, ErrorKind};
 use postman_core::sync::{Account, Command, Event, Stage, SyncError, UnboundedSender};
 
 pub use areas::EwsAreas;
+
+/// Интервал между запросами у клиентов, которые путь создаёт дальше (наносекунды); `u64::MAX` — по умолчанию,
+/// [`postman_ews::MIN_INTERVAL`] (предел боевого Exchange).
+static REQUEST_INTERVAL: AtomicU64 = AtomicU64::new(u64::MAX);
+
+/// Тесты с подменным сервером: паузы между запросами (200 мс) — без них. На боевом сервере не вызывается: предел
+/// частоты запросов — [`postman_ews::MIN_INTERVAL`].
+#[doc(hidden)]
+pub fn set_request_interval(d: Duration) {
+    REQUEST_INTERVAL.store(u64::try_from(d.as_nanos()).unwrap_or(u64::MAX - 1), Ordering::Relaxed);
+}
+
+/// Клиент EWS пути: [`postman_ews::Client::new`] с интервалом запросов из [`set_request_interval`].
+pub(crate) fn client(url: &str, auth: postman_ews::Auth) -> Result<postman_ews::Client, postman_ews::Error> {
+    let mut client = postman_ews::Client::new(url, auth)?;
+    let ns = REQUEST_INTERVAL.load(Ordering::Relaxed);
+    if ns != u64::MAX {
+        client.set_min_interval(Duration::from_nanos(ns));
+    }
+    Ok(client)
+}
 
 /// Путь EWS в адресе: `…/EWS/Exchange.asmx`.
 const EWS_PATH: &str = "/ews/exchange.asmx";

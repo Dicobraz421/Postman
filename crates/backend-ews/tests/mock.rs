@@ -163,6 +163,8 @@ fn start(url: &str) -> Live {
 
 /// Учётка с этим логином и паролем (пустой пароль — вход учётной записью Windows).
 fn start_as(url: &str, user: &str, password: &str) -> Live {
+    // Подменный сервер — без паузы между запросами (200 мс на запрос — секунды на тест).
+    postman_backend_ews::set_request_interval(std::time::Duration::ZERO);
     let (tx, events) = std::sync::mpsc::channel();
     let cache = Cache::open_in_memory().unwrap();
     let account = Account { url: url.to_owned(), auth: Auth::Basic { user: user.into(), password: password.into() } };

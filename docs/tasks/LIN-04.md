@@ -1,7 +1,7 @@
 # LIN-04: песочница воркера на Linux целиком
 
 lane: sandbox
-status: todo
+status: done
 deps: [LIN-01]
 class: B
 files: [crates/worker/src/sandbox/linux.rs, crates/worker/src/lib.rs, crates/worker/tests/, docs/adr/]
@@ -27,3 +27,12 @@ macOS (Seatbelt).
 
 ## Зависимости
 LIN-01.
+
+## Итог (2026-11-12)
+- `sandbox/linux.rs`: namespaces обязательны (`isolate` до сторожа, причина — sysctl дистрибутива), Landlock до ABI 6
+  с отказом без Landlock, seccomp сужен (`read` 0, `write` 1/2, `tgkill` себе), `RLIMIT_AS` от клиента, добавлены
+  `NPROC`/`MEMLOCK`/`MSGQUEUE` = 0; код завершения (159 — seccomp, 153 — `SIGXFSZ`).
+- Тесты `tests/linux.rs`, `tests/linux_probe.rs`; диагностика `POSTMAN_SANDBOX_DROP`; ADR 0010.
+- Облако (ядро 6.18, Landlock ABI 7): `nextest -p postman-worker` с `POSTMAN_REQUIRE_FULL_SANDBOX=1` — 139/139.
+  Путь отказа без user namespaces вживую не проверен (sysctl в контейнере не меняется). `linux.yml` — с LIN-01.
+

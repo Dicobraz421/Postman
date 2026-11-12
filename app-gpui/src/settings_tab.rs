@@ -217,6 +217,9 @@ pub(crate) struct SettingsView {
     /// «Безопасности»).
     pub(crate) disk: Option<(String, Option<bool>)>,
     pub(crate) disk_asked: bool,
+    /// Свои сертификаты S/MIME (S5-12.7): `None` — ещё читаются (в фоне при открытии «Безопасности»).
+    pub(crate) certs: Option<Vec<postman_core::smime::Personal>>,
+    pub(crate) certs_asked: bool,
     pub(crate) rules: Option<AnyView>,
     pub(crate) vacation: Option<AnyView>,
     pub(crate) theme_error: Option<String>,
@@ -304,6 +307,8 @@ impl SettingsView {
             stored: None,
             disk: None,
             disk_asked: false,
+            certs: None,
+            certs_asked: false,
             rules: None,
             vacation: None,
             theme_error: None,
