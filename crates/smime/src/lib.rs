@@ -22,6 +22,7 @@ mod ec;
 pub mod envelope;
 pub mod gost;
 mod mime;
+pub mod ocsp;
 pub mod oid;
 #[cfg(feature = "soft")]
 pub mod p12;

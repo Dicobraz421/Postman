@@ -139,6 +139,11 @@ pub enum Request {
     SmimeCrl {
         now: u64,
     },
+    /// Отзыв по OCSP (Linux, LIN-05d): в бинарной части — сертификат, издатель, nonce запроса и ответ ответчика,
+    /// полученный ядром (`postman_smime::wire::encode_ocsp`). Ответ — «не отозван / отозван» или почему не годен.
+    SmimeOcsp {
+        now: u64,
+    },
     /// Письмо целиком (S8-29) в бинарной части → свойства MAPI для MSG и PST ([`mapi::mapi`]); `seen` — прочитано.
     /// Ответ — письмо MAPI байтами в бинарной части.
     Mapi {
@@ -345,6 +350,8 @@ enum Response {
     Prepared(Vec<Result<postman_smime::prepare::Prepared, String>>),
     /// Итог проверки по CRL (12.1д).
     Crl(Result<postman_smime::crl::Checked, postman_smime::crl::CrlError>),
+    /// Итог проверки ответа OCSP (LIN-05d).
+    Ocsp(Result<postman_smime::crl::Checked, postman_smime::ocsp::OcspError>),
     /// Письмо MAPI — в бинарной части.
     Mapi,
     /// Ответ модуля просмотра; пиксели картинки — в бинарной части.
@@ -883,6 +890,10 @@ fn handle(req: Result<Request, serde_json::Error>, bin: &[u8]) -> (Response, Vec
             Some((cert, issuer, crl)) => Response::Crl(postman_smime::crl::check(cert, issuer, crl, now)),
             None => Response::Err("запрос проверки CRL повреждён".into()),
         },
+        Ok(Request::SmimeOcsp { now }) => match postman_smime::wire::decode_ocsp(bin) {
+            Some((cert, issuer, nonce, response)) => Response::Ocsp(postman_smime::ocsp::check(cert, issuer, nonce, response, now)),
+            None => Response::Err("OCSP request is damaged".into()),
+        },
         Ok(Request::ViewModule { .. }) => Response::Err("модули просмотра — только в postman-viewer".into()),
         #[cfg(debug_assertions)]
         Ok(Request::Probe(p)) => probe(p),
@@ -1123,6 +1134,7 @@ impl Client {
             | Response::Threads(_)
             | Response::Prepared(_)
             | Response::Crl(_)
+            | Response::Ocsp(_)
             | Response::Mapi
             | Response::View(_) => Err("неожиданный ответ".into()),
             Response::Err(e) => Err(e),
@@ -1295,6 +1307,32 @@ impl Client {
             (Response::Crl(r), _) => Ok(r),
             (Response::Err(e), _) => Err(SmimeFailure::Worker(e)),
             _ => Err(SmimeFailure::Worker("неожиданный ответ".into())),
+        }
+    }
+
+    /// Отзыв по OCSP (LIN-05d): проверить ответ `response` ответчика (получен ядром) о сертификате `cert`, выпущенном
+    /// `issuer` (оба — из доверенной цепочки), на запрос с `nonce`. Подпись ответчика, `CertID`, nonce и срок — в
+    /// песочнице; `Ok(Err(_))` — ответ не годится (ядро переходит к CRL).
+    pub fn smime_ocsp(
+        &mut self,
+        cert: &[u8],
+        issuer: &[u8],
+        nonce: &[u8],
+        response: &[u8],
+        now: u64,
+    ) -> Result<Result<postman_smime::crl::Checked, postman_smime::ocsp::OcspError>, SmimeFailure> {
+        if response.len() > postman_smime::ocsp::MAX_RESPONSE {
+            return Err(SmimeFailure::TooLarge);
+        }
+        let bin = postman_smime::wire::encode_ocsp(cert, issuer, nonce, response);
+        if bin.len() > MAX_FRAME {
+            return Err(SmimeFailure::TooLarge);
+        }
+        let timeout = self.timeout.max(SMIME_TIMEOUT);
+        match self.call_for(&Request::SmimeOcsp { now }, &bin, timeout).map_err(SmimeFailure::Worker)? {
+            (Response::Ocsp(r), _) => Ok(r),
+            (Response::Err(e), _) => Err(SmimeFailure::Worker(e)),
+            _ => Err(SmimeFailure::Worker("unexpected response".into())),
         }
     }
 
