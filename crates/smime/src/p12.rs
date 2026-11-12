@@ -5,7 +5,7 @@
 //! Поддержано: MAC HMAC-SHA-1/SHA-2 (ключ по PKCS#12 KDF), шифрование PBES2 (PBKDF2 с HMAC-SHA-1/SHA-2, AES-CBC и
 //! 3DES-CBC — так экспортируют OpenSSL 3 и Windows «AES256-SHA256»), старое `pbeWithSHAAnd3-KeyTripleDES-CBC` и
 //! `pbeWithSHAAnd40BitRC2-CBC`/`128BitRC2` (OpenSSL 1.x, Windows «TripleDES-SHA1»); RC2 — крейт `rc2`, только
-//! расшифровка. Ключи — RSA и EC P-256/P-384 (PKCS#8), как у Windows (CNG; P-521 — нет); ГОСТ — отказ
+//! расшифровка. Ключи — RSA, EC P-256/P-384 и P-521 (только расшифровка, как CNG на Windows), PKCS#8; ГОСТ — отказ
 //! [`P12Error::Unsupported`] (LIN-07). Закрытые операции — `rsa` 0.10 (постоянное время на `crypto-bigint`,
 //! RUSTSEC-2023-0071 закрыт в 0.10), `p256`/`p384`.
 
@@ -103,6 +103,7 @@ mod oids {
     pub const EC_PUBLIC_KEY: &[u8] = &[0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01];
     pub const P256: &[u8] = &[0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07];
     pub const P384: &[u8] = &[0x2B, 0x81, 0x04, 0x00, 0x22];
+    pub const P521: &[u8] = &[0x2B, 0x81, 0x04, 0x00, 0x23];
 }
 
 const SEQUENCE: u8 = 0x30;
@@ -372,6 +373,7 @@ fn ec_key(pkcs8: &[u8]) -> Result<Private, P12Error> {
     match curve {
         oids::P256 => p256::SecretKey::from_slice(&d).map(Private::P256).map_err(|_| P12Error::Malformed("EC key")),
         oids::P384 => p384::SecretKey::from_slice(&d).map(Private::P384).map_err(|_| P12Error::Malformed("EC key")),
+        oids::P521 => p521::SecretKey::from_slice(&d).map(Private::P521).map_err(|_| P12Error::Malformed("EC key")),
         other => Err(unsupported(other)),
     }
 }
@@ -408,6 +410,9 @@ fn same_key(cert: &Certificate, key: &Private) -> bool {
         }
         Private::P384(k) => {
             spki.subject_public_key.as_bytes().and_then(|b| p384::PublicKey::from_sec1_bytes(b).ok()).is_some_and(|p| p == k.public_key())
+        }
+        Private::P521(k) => {
+            spki.subject_public_key.as_bytes().and_then(|b| p521::PublicKey::from_sec1_bytes(b).ok()).is_some_and(|p| p == k.public_key())
         }
     }
 }
