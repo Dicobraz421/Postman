@@ -60,11 +60,13 @@ Actions — для разработки. Схема общая для Pets (ск
 | Файл выпуска | Что это |
 |---|---|
 | `postman-<версия>-windows-x64.msi` | Установщик для всех пользователей (`tools/pack`, решение 2026-11-07); его же ставит winget `Pets.Postman` |
-| `postman-<версия>-windows-x64.zip` | Комплект целиком с `install.ps1` (для себя, без прав администратора); Linux — `linux-x64.tar.gz` |
+| `postman-<версия>-windows-x64.zip` | Комплект целиком с `install.ps1` (для себя, без прав администратора) |
 | `postman-worker.exe`, `postman-viewer.exe` | Компоненты Windows под своими именами — скачать один файл вместо всего («Нет компонента», S8-38) |
 | `postman-<версия>-macos-arm64.dmg` | macOS 13+, Apple Silicon (MAC-06): образ диска — `Postman.app`, `README.txt` и ярлык `Applications`, куда перетащить приложение |
 | `postman-<версия>-macos-arm64.zip` | То же `Postman.app` и `README.txt` архивом (`ditto`); из него самообновление заменяет бандл целиком |
-| `<файл .msi, .zip или .dmg>.minisig` | Подпись minisign для самообновления (решение 2026-11-11 «self-update») |
+| `postman-<версия>-linux-x64.AppImage` | Linux x86_64 (LIN-06): один файл для любого дистрибутива (`chmod +x` и запуск) |
+| `postman-<версия>-linux-x64.deb`, `.rpm` | Linux x86_64: пакеты для Debian/Ubuntu и Fedora/openSUSE; с профилем AppArmor воркера |
+| `<файл .msi, .zip, .dmg, .AppImage, .deb или .rpm>.minisig` | Подпись minisign для самообновления (решение 2026-11-11 «self-update») |
 | `SHA256SUMS.txt` | Контрольные суммы всех файлов |
 
 - Тег `v<версия>` — ровно `version` из `Cargo.toml` (CI сверяет). `v0.2.0` — стабильный выпуск, `v0.2.0-beta.1` —
@@ -79,7 +81,7 @@ Actions — для разработки. Схема общая для Pets (ск
   `git push origin v<версия>`. CI собирает, подписывает, проверяет тесты и публикует (job `publish`); описание — что
   скачать и какие нужны права (`.github/release-notes.md`): страница для пользователей, без списка PR и
   подробностей. Изменения для разработчиков — в истории `main`.
-- Подпись обновления: job `publish` подписывает каждый `.msi`, `.zip` и `.dmg` minisign (`.minisig`, до `SHA256SUMS.txt`) —
+- Подпись обновления: job `publish` подписывает каждый `.msi`, `.zip`, `.dmg`, `.AppImage`, `.deb` и `.rpm` minisign (`.minisig`, до `SHA256SUMS.txt`) —
   секрет `UPDATE_SIGNING_KEY`, переменная `UPDATE_PUBLIC_KEY` (строка `RW…`, та же, что в `UPDATE_PUBLIC_KEYS`,
   `app-gpui/src/update.rs`); без них выпуск красный. Ключ создаёт владелец — pets `crates/pets-update/README.md`,
   «Подпись в release-workflow». Самообновление ищет файлы по именам из таблицы выше: их не переименовывать.
@@ -95,7 +97,17 @@ Actions — для разработки. Схема общая для Pets (ск
   Application» в `.p12`) — подпись с hardened runtime; плюс `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` (пароль
   приложения с appleid.apple.com) — нотаризация `notarytool` и `stapler` у `.app` и `.dmg`, блок `mac-unsigned`
   со страницы уходит. Тесты macOS — workflow `macOS`; `publish` их не ждёт.
-- Linux: строка в matrix job `release` и `scripts/linux/package.sh` с теми же выходами; `publish` не меняется.
+- Linux (LIN-06, решение 2026-11-12 «linux»; Flatpak не делаем): строка `linux-x64` в matrix job `release` — сборка
+  в контейнере `ubuntu:22.04` (glibc 2.35: Ubuntu 22.04+, Debian 12+, Fedora 36+; окружение — `scripts/linux/build-env.sh`),
+  `scripts/linux/package.sh` собирает `.AppImage`, `.deb` и `.rpm` с теми же выходами. В пакетах — три бинаря в
+  `/usr/bin`, `postman.desktop` (`x-scheme-handler/mailto`), значки hicolor; зависимости — по связанным библиотекам
+  (неизвестная — ошибка сборки), минимальный glibc — по символам бинарей. deb и rpm ставят профиль AppArmor
+  `/etc/apparmor.d/postman` (`userns` для `postman-worker` и `postman-viewer`, только где AppArmor 4): без него
+  Ubuntu 23.10+ запрещает воркеру user namespaces и песочница идёт без них (ADR 0010, режим `optional`); у AppImage
+  профиля нет — это видно в диагностике песочницы. Job `linux-install` ставит deb (Ubuntu 24.04, Debian 12), rpm
+  (Fedora) и AppImage (Ubuntu 22.04) в чистых контейнерах, запускает `postman --version` и удаляет; `publish` ждёт и
+  его. Самообновления на Linux пока нет: в `pets-update` нет вида установки AppImage и пакетов (проверка находит только
+  чужие файлы и молчит) — отдельная задача pets, затем подъём ревизии полосой deps. Локально: `bash scripts/linux/package.sh --profile debug` (нужны `dpkg-deb`, `rpmbuild`, `mksquashfs`).
 - MSI: `package.ps1` вызывает `postman-pack msi` той же сборки. Версия MSI для бет — `a.b.(c·1000 + r)`
   (`0.1.0-beta.2` → `0.1.302`, `tools/pack/src/ids.rs`). `UpgradeCode` постоянный, `ProductCode` выводится из версии.
   Коды компонентов меняются, только если меняется ключевой файл компонента. Новый файл комплекта — строка в `ITEMS`
