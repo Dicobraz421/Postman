@@ -226,8 +226,19 @@ jobs:
   # Выпуск на GitHub по тегу `v*`, если тесты и сборки всех платформ зелёные. Файлы — плоско:
   # postman-<версия>-<os>-<arch>.zip и .msi с подписями .minisig, компоненты под своими именами, SHA256SUMS.txt.
   # Версия с дефисом (0.2.0-beta.1) — предварительный выпуск: его видит канал «Предварительный» в настройках.
+  # Гейт выпуска (решение 2026-11-12 «release-docs-gate»): тег публикуется, только если в его коммите есть
+  # docs/releases/<версия>.md — сверка всей документации (каждый документ отмечен и с итогом). Быстро, до сборки.
+  docs-gate:
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Сверка документации к выпуску
+        shell: bash
+        run: python3 .github/release_docs_check.py "${GITHUB_REF_NAME#v}" "*.md" "docs/*.md" "scripts/*/README.txt" .github/release-notes.md
+
   publish:
-    needs: [test, release]
+    needs: [test, release, docs-gate]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
