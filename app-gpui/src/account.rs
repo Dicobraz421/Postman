@@ -94,7 +94,7 @@ pub(crate) fn load_stored(dir: &Path) -> Stored {
         Ok(Some(password)) => Stored::Account(Account { url: s.url, auth: Auth::Basic { user: s.user, password } }),
         Ok(None) => Stored::Settings(s),
         Err(e) => {
-            tracing::error!("account: пароль не прочитан из хранилища: {e}");
+            tracing::error!("account: password not read from the credential store: {e}");
             Stored::Settings(s)
         }
     }
@@ -127,7 +127,7 @@ pub(crate) fn forget(dir: &Path) {
     if let Some(s) = Settings::load(dir)
         && let Err(e) = sys::credentials::delete(&s.credential_target())
     {
-        tracing::error!("account: пароль не удалён из хранилища: {e}");
+        tracing::error!("account: password not removed from the credential store: {e}");
     }
     Settings::remove(dir);
 }
@@ -171,7 +171,7 @@ pub(crate) fn extra_account(e: &Extra) -> Option<Account> {
         Ok(Some(password)) => Some(Account { url: e.settings.url.clone(), auth: Auth::Basic { user: e.settings.user.clone(), password } }),
         Ok(None) => None,
         Err(err) => {
-            tracing::error!("account: пароль не прочитан из хранилища: {err}");
+            tracing::error!("account: password not read from the credential store: {err}");
             None
         }
     }
@@ -206,7 +206,7 @@ pub(crate) fn remove_extra(dir: &Path, profile: &str) -> Result<(), String> {
     if let Some(e) = list.iter().find(|e| e.profile == profile)
         && let Err(err) = sys::credentials::delete(&e.settings.credential_target())
     {
-        tracing::error!("account: пароль не удалён из хранилища: {err}");
+        tracing::error!("account: password not removed from the credential store: {err}");
     }
     list.retain(|e| e.profile != profile);
     save_extras(dir, &list)

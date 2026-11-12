@@ -143,7 +143,7 @@ impl GostCrl {
                     };
                 }
                 Err(e) => {
-                    tracing::warn!(%url, error = %e, "smime: СОС ГОСТ непригоден, отзыв не проверен");
+                    tracing::warn!(%url, error = %e, "smime: GOST CRL not usable, revocation not checked");
                     let mut s = self.state();
                     s.lists.remove(&url);
                     s.failed.insert(url, now);
@@ -175,7 +175,7 @@ impl GostCrl {
                 None
             }
             Err(e) => {
-                tracing::warn!(%url, error = %e, "smime: СОС ГОСТ недоступен, отзыв не проверен");
+                tracing::warn!(%url, error = %e, "smime: GOST CRL unreachable, revocation not checked");
                 self.state().failed.insert(url.to_owned(), now);
                 None
             }

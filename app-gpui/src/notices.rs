@@ -708,7 +708,7 @@ impl Notices {
                             .on_click(|_, _, _| {
                                 let dir = crate::diagnostics::log_dir(&crate::data_dir());
                                 if let Err(e) = crate::sys::shell::open(&dir.display().to_string()) {
-                                    tracing::error!("notices: папка журнала не открыта: {e}");
+                                    tracing::error!("notices: log folder not opened: {e}");
                                 }
                             }),
                     ),

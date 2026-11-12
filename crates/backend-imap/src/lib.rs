@@ -479,14 +479,14 @@ async fn run(
     let login = Login { user: me.account.imap.user.clone(), password: me.account.imap.password.clone(), email: me.account.email.clone() };
     for (key, url) in me.account.areas.clone() {
         let Some(plugin) = plugins.iter().find(|p| p.key() == key) else {
-            tracing::warn!(area = %key, "imap: область не подключена — нет модуля для неё");
+            tracing::warn!(area = %key, "imap: no area backend");
             continue;
         };
         match plugin.connect(&url, &login).await {
             Ok(a) => me.areas.push((plugin.key(), a)),
             // Без календаря почта всё равно работает: ошибка — тостом календаря, области скрыты.
             Err(e) => {
-                tracing::warn!(area = %key, "imap: область недоступна, почта работает без неё: {e}");
+                tracing::warn!(area = %key, "imap: area unavailable, mail works without it: {e}");
                 notify(Event::CalendarFailed(e.to_string()));
             }
         }
@@ -548,7 +548,7 @@ async fn run(
                 // Перенос папки в себя, в подпапку, в другой аккаунт — отказ ядра до сервера.
                 let Some(cmd) = postman_core::sync::admit(cmd, || me.cache.mailboxes().unwrap_or_default(), notify) else { continue };
                 if let Err(e) = me.handle(cmd, notify).await {
-                    tracing::error!("imap: команда не выполнена: {e}");
+                    tracing::error!("imap: command failed: {e}");
                     if matches!(e, postman_imap::Error::Io(_) | postman_imap::Error::Timeout | postman_imap::Error::Tls(_)) {
                         me.session = None;
                     }
@@ -679,7 +679,7 @@ impl Imap {
                         self.session = None;
                         return Err(e);
                     }
-                    tracing::error!(folder = %f.name, "imap: сверка папки не удалась: {e}");
+                    tracing::error!(folder = %f.name, "imap: folder sync failed: {e}");
                 }
             }
         }
@@ -819,7 +819,7 @@ impl Imap {
                 Err(e) if retry_smaller(&e) => e,
                 Err(e) => return Err(e),
             };
-            tracing::warn!(folder = %f.name, letters = set.len(), ?fields, "imap: сервер отказал в порции заголовков, порция меньше: {e}");
+            tracing::warn!(folder = %f.name, letters = set.len(), ?fields, "imap: header FETCH refused, retrying a smaller batch: {e}");
             if !plan.failed(set, fields) {
                 return Err(e);
             }
@@ -832,7 +832,7 @@ impl Imap {
             }
         }
         if !plan.skipped().is_empty() {
-            tracing::error!(folder = %f.name, letters = plan.skipped().len(), "imap: сервер не отдал заголовки писем, письма не показаны");
+            tracing::error!(folder = %f.name, letters = plan.skipped().len(), "imap: server gave no headers, letters not shown");
         }
         Ok((out, plan.skipped().to_vec()))
     }
@@ -907,7 +907,7 @@ impl Imap {
                     h.references = t.references;
                 }
             }
-            Err(e) => tracing::warn!("imap: беседы не собраны, письма показаны без них: {e}"),
+            Err(e) => tracing::warn!("imap: threads not built, letters shown without them: {e}"),
         }
         headers
     }
@@ -1016,7 +1016,7 @@ impl Imap {
         for f in &list {
             match self.refresh(f).await {
                 Ok(c) => changed |= c,
-                Err(e) => tracing::error!(folder = %f.name, "imap: сверка папки после команды не удалась: {e}"),
+                Err(e) => tracing::error!(folder = %f.name, "imap: folder refresh after command failed: {e}"),
             }
         }
         let _ = self.write_folders();
@@ -1187,7 +1187,7 @@ impl Imap {
         }
         for h in due {
             if let Err(e) = self.send(h.draft, h.replace).await {
-                tracing::error!("imap: отложенное письмо не отправлено: {e}");
+                tracing::error!("imap: held letter not sent: {e}");
                 notify(Event::Error(error(Stage::Command, &e)));
             }
             HOLDING.fetch_sub(1, Ordering::Relaxed);
@@ -1242,7 +1242,7 @@ impl Imap {
             _ => return,
         };
         if let Err(e) = result {
-            tracing::warn!("imap: сервер отказал в действии с папкой: {e}");
+            tracing::warn!("imap: folder command refused: {e}");
             return notify(Event::FolderFailed { mailbox, error: e.to_string() });
         }
         if let Err(e) = self.load_folders().await {
@@ -1481,7 +1481,7 @@ impl Imap {
                 notify(match self.import(letter, folder, &keywords, received_at, message_id.as_deref(), retry).await {
                     Ok(id) => Event::Imported { job, letter, remote: Remote { account: self.account().to_owned(), id, data: Vec::new() } },
                     Err(error) => {
-                        tracing::debug!(job = job.0, letter = letter.0, "imap: письмо не принято: {error}");
+                        tracing::debug!(job = job.0, letter = letter.0, "imap: import refused: {error}");
                         Event::ImportFailed { job, letter, error }
                     }
                 });

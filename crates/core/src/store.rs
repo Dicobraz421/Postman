@@ -115,7 +115,7 @@ pub fn worker_splitter(mut client: Client) -> Splitter {
 /// воркер не ответил) — хранится одним скелетом: байты те же, только без дедупликации частей; `Message-ID` — `None`.
 pub fn put_raw(cache: &Cache, split: &mut Splitter, id: LetterId, raw: &[u8]) -> postman_cache::Result<Option<String>> {
     let p = split(raw).unwrap_or_else(|_| {
-        tracing::warn!(letter = id.0, "store: письмо не разобрано на части, сохранено целиком");
+        tracing::warn!(letter = id.0, "store: content split failed, letter stored whole");
         Parts::default()
     });
     cache.put_content(cache_id(id), raw, &p.parts)?;
@@ -136,8 +136,8 @@ pub fn open(path: &Path, split: Option<Splitter>, notify: &dyn Fn(Event)) -> pos
     let (cache, migrated) = Cache::open_with(path, &mut how)?;
     match &migrated {
         Migrated::Current => {}
-        Migrated::Done => tracing::info!("store: кэш переведён с формата 5"),
-        Migrated::Fresh(reason) => tracing::error!("store: кэш не прочитан, начат пустой: {reason}"),
+        Migrated::Done => tracing::info!("store: migrated from format 5"),
+        Migrated::Fresh(reason) => tracing::error!("store: cache not read, starting empty: {reason}"),
     }
     Ok((cache, migrated))
 }
@@ -209,7 +209,7 @@ fn letter_home(cache: &Cache, id: LetterId) -> Home {
     match cache.remotes(cache_id(id)) {
         Ok(refs) => refs.into_iter().find(|r| !r.detached).map_or(Home::Local, |r| Home::Account(r.account)),
         Err(e) => {
-            tracing::warn!(letter = id.0, "store: владелец письма не прочитан, считаем локальным: {e}");
+            tracing::warn!(letter = id.0, "store: letter owner not read, treated as local: {e}");
             Home::Local
         }
     }
@@ -223,7 +223,7 @@ fn folder_home(cache: &Cache, id: FolderId) -> Home {
         },
         Ok(None) => Home::Local,
         Err(e) => {
-            tracing::warn!(folder = id.0, "store: владелец папки не прочитан, считаем локальной: {e}");
+            tracing::warn!(folder = id.0, "store: folder owner not read, treated as local: {e}");
             Home::Local
         }
     }
@@ -396,7 +396,7 @@ impl migrate::Store for CacheStore {
             }
             // Воркер не ответил: без `Message-ID` сейчас, в следующий раз — спросить снова.
             Err(e) => {
-                tracing::warn!(letter = letter.0, "store: Message-ID не получен, спросим позже: {e}");
+                tracing::warn!(letter = letter.0, "store: Message-ID not read, asking later: {e}");
                 Ok(None)
             }
         }

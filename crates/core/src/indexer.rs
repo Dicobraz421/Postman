@@ -165,7 +165,7 @@ pub fn search_hits(
     let in_folder = |row: &LetterRow| folder.is_none_or(|f| row.folders.contains(&postman_cache::FolderId(f.0)));
     if let Some(index) = index.filter(|_| ready(cache)) {
         if let Err(e) = catch_up(index, cache) {
-            tracing::warn!("search: индекс не дополнен, поиск по тому, что есть: {e}");
+            tracing::warn!("search: index not updated, searching what is indexed: {e}");
         }
         if let Ok(hits) = index.hits(query, limit.saturating_mul(4).max(limit)) {
             let (mut out, mut gone) = (Vec::with_capacity(limit.min(hits.len())), Vec::new());

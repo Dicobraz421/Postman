@@ -522,7 +522,7 @@ impl Mailer {
             Reply::Rules(s) => self.set_rules_state(s.clone(), false, cx),
             Reply::RulesSaved(s) => self.set_rules_state(s.clone(), true, cx),
             Reply::RulesInvalid(e) => {
-                tracing::error!("rules: сервер отклонил правила, они не сохранены: {e}");
+                tracing::error!("rules: server rejected the script, rules not saved: {e}");
                 let text = tr!("rules-invalid", error = e.clone());
                 self.rules_problem(text, cx);
             }
@@ -548,7 +548,7 @@ impl Mailer {
             Reply::Unsupported(Area::Quota) => {}
             // Записано, но не всё: строка в панели, а не «не сохранён».
             Reply::Failed { area: Area::Vacation, error } if crate::plugins::autoreply_limited(error) => {
-                tracing::warn!("vacation: автоответ записан не полностью: {error}");
+                tracing::warn!("vacation: auto-reply saved partially: {error}");
                 let text = tr!("vacation-one-text");
                 match &vacation {
                     Some(p) => p.update(cx, |p, cx| p.limited(text, cx)),
@@ -556,7 +556,7 @@ impl Mailer {
                 }
             }
             Reply::Failed { area: Area::Vacation, error } => {
-                tracing::error!("vacation: автоответ не сохранён: {error}");
+                tracing::error!("vacation: auto-reply not saved: {error}");
                 let text = tr!("vacation-failed", error = error.clone());
                 match &vacation {
                     Some(p) => p.update(cx, |p, cx| p.failed(text, cx)),
@@ -564,12 +564,12 @@ impl Mailer {
                 }
             }
             Reply::Failed { area: Area::Rules, error } => {
-                tracing::error!("rules: правила не сохранены: {error}");
+                tracing::error!("rules: rules not saved: {error}");
                 let text = tr!("rules-failed", error = error.clone());
                 self.rules_problem(text, cx);
             }
             // Квота не прочиталась — строка состояния без неё; в журнал.
-            Reply::Failed { area: Area::Quota, error } => tracing::warn!("quota: квота ящика не получена: {error}"),
+            Reply::Failed { area: Area::Quota, error } => tracing::warn!("quota: mailbox quota not read: {error}"),
         }
     }
 

@@ -1270,7 +1270,7 @@ pub(crate) fn worker_notice(t: &mut crate::notices::Notices, cx: &mut Context<cr
     let url = crate::diagnostics::component_download(&file);
     let download = pets_ui::ToastAction::new(tr!("worker-download"), move |_, _| {
         if let Err(e) = crate::sys::shell::open(&url) {
-            tracing::error!("chrome: страница загрузки воркера не открыта: {e}");
+            tracing::error!("chrome: worker download page not opened: {e}");
         }
     });
     t.push_action(pets_ui::Level::Error, tr!("worker-missing", file = file, dir = dir), download, cx);

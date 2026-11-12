@@ -234,7 +234,7 @@ fn run<T: Send + 'static>(cx: &mut App, work: impl FnOnce() -> T + Send + 'stati
         let _ = tx.send(work());
     });
     if let Err(e) = spawned {
-        tracing::error!("update: поток обновления не запущен: {e}");
+        tracing::error!("update: update thread not started: {e}");
         return;
     }
     cx.spawn(async move |cx| {
@@ -260,7 +260,7 @@ pub(crate) fn start(cx: &mut App) {
         },
     );
     if !keyed {
-        tracing::info!("update: в сборке нет ключа подписи, проверка обновлений выключена");
+        tracing::info!("update: no signing key in this build, update checks are off");
         return;
     }
     cx.spawn(async move |cx| {
@@ -276,11 +276,11 @@ pub(crate) fn start(cx: &mut App) {
 /// Тост по итогу прошлой установки.
 fn installed(r: &UpdateResult, cx: &mut App) {
     if r.ok {
-        tracing::info!(version = %r.version, "update: обновление поставлено");
+        tracing::info!(version = %r.version, "update: installed");
         toast(cx, Level::Success, tr!("update-done", version = r.version.clone()), None);
     } else {
         let error = r.error.clone().unwrap_or_default();
-        tracing::error!(version = %r.version, %error, "update: обновление не поставлено");
+        tracing::error!(version = %r.version, %error, "update: install failed");
         toast(cx, Level::Error, tr!("update-failed", version = r.version.clone(), error = error), None);
     }
 }
@@ -344,10 +344,10 @@ fn checked(reason: CheckReason, res: Result<CheckOutcome, UpdateError>, cx: &mut
         }
         Ok(CheckOutcome::Disabled(_)) if manual => toast(cx, Level::Info, tr!("update-policy"), None),
         Ok(_) => {}
-        Err(e) if !manual => tracing::warn!(error = %e, "update: плановая проверка не удалась, повтор позже"),
+        Err(e) if !manual => tracing::warn!(error = %e, "update: scheduled check failed, retry later"),
         Err(e) => {
             let error = e.to_string();
-            tracing::error!(%error, "update: проверка обновлений не удалась");
+            tracing::error!(%error, "update: check failed");
             edit(cx, |m| m.status = Status::Failed(error.clone()));
             toast(cx, Level::Warning, tr!("update-check-failed", error = error), None);
         }
@@ -414,14 +414,14 @@ fn installed_now(version: &str, res: Result<(), UpdateError>, cx: &mut App) {
     edit(cx, |m| m.download = None);
     match res {
         Ok(()) => {
-            tracing::info!(%version, "update: установщик запущен, выход");
+            tracing::info!(%version, "update: helper started, quitting");
             edit(cx, |m| m.status = Status::Installing(version.to_owned()));
             cx.quit();
         }
         Err(UpdateError::Cancelled) => edit(cx, |m| m.status = Status::Available(version.to_owned())),
         Err(e) => {
             let error = e.to_string();
-            tracing::error!(%version, %error, "update: обновление не поставлено");
+            tracing::error!(%version, %error, "update: install failed");
             // Предложение остаётся: «Установить» можно нажать снова.
             edit(cx, |m| m.status = Status::Available(version.to_owned()));
             toast(cx, Level::Error, tr!("update-install-failed", error = error), None);

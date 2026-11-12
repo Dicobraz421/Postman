@@ -272,7 +272,7 @@ pub fn from_row(row: &TaskRow) -> Option<Task> {
             Some(t)
         }
         Err(e) => {
-            tracing::error!(uid = %row.uid, "tasks: запись не разобрана как задача, не показана: {e}");
+            tracing::error!(uid = %row.uid, "tasks: task row is not a task, not shown: {e}");
             None
         }
     }
@@ -461,7 +461,7 @@ async fn flush(store: &impl TaskStore, cache: &Cache, notify: &impl Fn(Reply)) -
             }
             Err(e) if is_network(&e) => return Err(e),
             Err(e) => {
-                tracing::error!(uid = %row.uid, "tasks: сервер отклонил правку задачи, возвращена серверная версия: {e}");
+                tracing::error!(uid = %row.uid, "tasks: task change rejected by the server, server version restored: {e}");
                 // Правка отклонена — вернуть серверную версию, иначе она повторялась бы вечно.
                 let back = match &row.server_id {
                     Some(id) => store.get(std::slice::from_ref(id)).await?.first().and_then(server_row),

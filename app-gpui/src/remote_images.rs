@@ -280,7 +280,7 @@ impl ReadingPane {
                         Err(e) => {
                             failed += 1;
                             // Адрес картинки — только в отладку: в нём бывает адрес получателя.
-                            tracing::warn!("remote_images: внешняя картинка не показана");
+                            tracing::warn!("remote_images: remote image not shown");
                             tracing::debug!("remote_images: {e}");
                         }
                     }

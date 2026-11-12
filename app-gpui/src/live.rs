@@ -203,7 +203,7 @@ impl Profile {
                     if profile.is_some() =>
                 {
                     if let Event::CalendarFailed(e) = &ev {
-                        tracing::warn!(profile = profile.unwrap_or_default(), "sync: календарь учётной записи недоступен: {e}");
+                        tracing::warn!(profile = profile.unwrap_or_default(), "sync: account calendar unavailable: {e}");
                     }
                 }
                 ev => out.push(ev),
@@ -364,9 +364,9 @@ fn server_of(url: &str) -> &str {
 fn log_sync_error(profile: Option<&str>, e: &SyncError, signing_in: bool) {
     let profile = profile.unwrap_or_default();
     match e.kind {
-        ErrorKind::Network => tracing::warn!(profile, "sync: нет связи с сервером, повтор: {e}"),
-        ErrorKind::Auth if signing_in => tracing::warn!(profile, "sync: сервер отказал во входе: {e}"),
-        _ => tracing::error!(profile, "sync: синхронизация не удалась: {e}"),
+        ErrorKind::Network => tracing::warn!(profile, "sync: server unreachable, retrying: {e}"),
+        ErrorKind::Auth if signing_in => tracing::warn!(profile, "sync: sign-in rejected by the server: {e}"),
+        _ => tracing::error!(profile, "sync: sync failed: {e}"),
     }
 }
 
@@ -429,7 +429,7 @@ fn open_store_with(path: &Path, notify: &dyn Fn(Event)) -> Result<(Cache, Index)
     let index = match postman_search::SearchIndex::open(&path.with_extension("search")) {
         Ok(i) => Some(Arc::new(i)),
         Err(e) => {
-            tracing::warn!("search: индекс не открыт, поиск — перебором: {e}");
+            tracing::warn!("search: index not opened, falling back to scan: {e}");
             None
         }
     };
@@ -518,7 +518,7 @@ pub(crate) fn local_hits(index: &Index, cache: &Cache, query: &str, mailbox: Opt
         None => None,
     };
     let hits = postman_core::indexer::search_hits(index.as_deref(), cache, query, folder, SEARCH_LIMIT).unwrap_or_else(|e| {
-        tracing::error!("search: поиск не выполнен: {e}");
+        tracing::error!("search: search failed: {e}");
         Vec::new()
     });
     hits.into_iter().map(|h| (crate::local::letter_key(cache, h.id), h.matched_in)).collect()
@@ -531,7 +531,7 @@ fn build_index(index: Arc<postman_search::SearchIndex>, cache: Cache, extractor:
             return;
         }
         if let Err(e) = postman_core::indexer::rebuild(&index, &cache, &|| false) {
-            tracing::warn!("search: индекс не построен, поиск — перебором: {e}");
+            tracing::warn!("search: index not built, falling back to scan: {e}");
         }
         let mut offset = 0;
         while let Ok(ids) = cache.body_ids(offset, 5000) {
@@ -543,7 +543,7 @@ fn build_index(index: Arc<postman_search::SearchIndex>, cache: Cache, extractor:
         }
     });
     if let Err(e) = started {
-        tracing::warn!("search: поток построения индекса не запущен: {e}");
+        tracing::warn!("search: index build thread not started: {e}");
     }
 }
 
@@ -558,7 +558,7 @@ impl Mailer {
         let repaint = move || {
             let _ = wake.unbounded_send(());
         };
-        tracing::info!("sync: старт, сервер {}", server_of(&account.url));
+        tracing::info!("sync: start, server {}", server_of(&account.url));
         self.live.status = status_text(&Status::Connecting { url: account.url.clone() });
         self.live.account = Some(Settings::of(&account));
         // Свой аккаунт — подписью над папками (метка «нет связи» — у неё, S5-08).
@@ -835,7 +835,7 @@ impl Mailer {
         let repaint = move || {
             let _ = wake.unbounded_send(());
         };
-        tracing::info!(%profile, "sync: старт, сервер {}", server_of(&account.url));
+        tracing::info!(%profile, "sync: start, server {}", server_of(&account.url));
         self.live.profile.names.retain(|(p, _)| *p != profile);
         self.live.profile.names.push((profile.clone(), extra.settings.clone()));
         let commands = crate::plugins::registry().spawn(account, Some(profile.clone()), self.cache.clone(), self.live.index.clone(), events, repaint);
@@ -905,7 +905,7 @@ impl Mailer {
                     m.start_extra(extra, account, cx);
                 }
                 Err(e) => {
-                    tracing::error!("account: учётная запись не добавлена: {e}");
+                    tracing::error!("account: account not added: {e}");
                     if let Some(panel) = &m.settings.add {
                         panel.update(cx, |p, cx| p.failed(&e, cx));
                     }
@@ -918,7 +918,7 @@ impl Mailer {
     /// «Настройки → Аккаунты → Удалить» у дополнительной учётной записи: синхронизация останавливается, её
     /// письма и папки уходят из кэша, адрес и пароль — из профиля.
     pub(crate) fn remove_extra(&mut self, profile: String, cx: &mut Context<Self>) {
-        tracing::info!(%profile, "account: учётная запись удалена пользователем");
+        tracing::info!(%profile, "account: account removed by the user");
         self.backend.remove_extra(&profile);
         self.live.profile.forget(&profile);
         self.backend.set_senders(self.live.profile.sender_routes());
@@ -928,10 +928,10 @@ impl Mailer {
         let task = cx.background_spawn(async move {
             // Демо не трогает профиль на диске: там — настоящие учётные записи.
             if live && let Err(e) = account::remove_extra(&dir, &profile) {
-                tracing::error!(%profile, "account: учётная запись не удалена из профиля: {e}");
+                tracing::error!(%profile, "account: account not removed from the profile: {e}");
             }
             if let Err(e) = cache.forget_profile(&profile) {
-                tracing::error!(%profile, "account: письма учётной записи не удалены из кэша: {e}");
+                tracing::error!(%profile, "account: account letters not removed from the cache: {e}");
             }
         });
         cx.spawn(async move |this, cx| {
@@ -982,7 +982,7 @@ impl Mailer {
 
     /// Строка входа после отказа сервера: поля — прежней учётной записи, причина — сразу под ними.
     pub(crate) fn show_reauth(&mut self, prefill: Settings, window: &mut Window, cx: &mut Context<Self>) {
-        tracing::info!("account: сервер отказал во входе, пароль — заново");
+        tracing::info!("account: sign-in rejected by the server, asking for the password again");
         self.set_section(crate::Section::Mail, cx);
         self.show_signin(Some(prefill), window, cx);
         if let Some(panel) = &self.live.signin {
@@ -1052,7 +1052,7 @@ impl Mailer {
             let book = match task.await {
                 Ok(book) => book,
                 Err(e) => {
-                    tracing::error!("categories: таблица категорий не прочитана: {e}");
+                    tracing::error!("categories: category table not read: {e}");
                     None
                 }
             };
@@ -1077,7 +1077,7 @@ impl Mailer {
             let prefs = match task.await {
                 Ok(p) => p,
                 Err(e) => {
-                    tracing::error!("account: настройки учётной записи не прочитаны: {e}");
+                    tracing::error!("account: account settings not read: {e}");
                     return;
                 }
             };
@@ -1107,20 +1107,20 @@ impl Mailer {
             }
             Reply::Saved { account, table } => book.saved(account.as_deref(), table),
             Reply::Unsupported { account } => {
-                tracing::warn!(account = account.as_deref().unwrap_or_default(), "categories: сервер не хранит таблицу категорий, она только здесь");
+                tracing::warn!(account = account.as_deref().unwrap_or_default(), "categories: no FileNode on the server, local table only");
                 return;
             }
             Reply::Failed { account, error } => {
-                tracing::warn!(account = account.as_deref().unwrap_or_default(), "categories: таблица категорий не сверена, правка ждёт: {error}");
+                tracing::warn!(account = account.as_deref().unwrap_or_default(), "categories: category table not synced, change pending: {error}");
                 return;
             }
             Reply::Purged { count, .. } => {
-                tracing::info!(count, "categories: категория снята с писем");
+                tracing::info!(count, "categories: category removed from letters");
                 self.list.update(cx, |l, cx| l.refresh(cx));
                 return;
             }
             Reply::PurgeFailed { error, .. } => {
-                tracing::error!("categories: категория не снята с писем: {error}");
+                tracing::error!("categories: category not removed from letters: {error}");
                 return;
             }
         }
@@ -1140,7 +1140,7 @@ impl Mailer {
         let book = book.clone();
         cx.background_spawn(async move {
             if let Err(e) = LocalFile::beside(&path).save(&book) {
-                tracing::error!("categories: таблица категорий не записана: {e}");
+                tracing::error!("categories: category table not written: {e}");
             }
         })
         .detach();
@@ -1159,7 +1159,7 @@ impl Mailer {
         let task = cx.background_spawn(async move { account::remember(&crate::data_dir(), &account, store) });
         cx.spawn(async move |this, cx| {
             if let Err(e) = task.await {
-                tracing::error!("account: учётная запись не записана в профиль: {e}");
+                tracing::error!("account: account not saved to the profile: {e}");
                 let _ = this.update(cx, |m, cx| {
                     let text = tr!("account-remember-failed", error = e);
                     m.toasts.update(cx, |t, cx| t.push(Toast::Warning, text, cx));
@@ -1236,11 +1236,11 @@ impl Mailer {
                 Source::Raw(raw) => {
                     let mime = worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).mime(&raw);
                     let body = postman_core::render::body_of(
-                        mime.map_err(|e| tracing::error!("reading: письмо не разобрано, текст не показан: {e}")).ok()?,
+                        mime.map_err(|e| tracing::error!("reading: letter not parsed, body not shown: {e}")).ok()?,
                         &key,
                     );
                     if let Err(e) = cache.put_body(&key, &body) {
-                        tracing::warn!("reading: текст письма не записан в кэш: {e}");
+                        tracing::warn!("reading: letter body not written to the cache: {e}");
                     }
                     Some((body, true))
                 }
@@ -1341,12 +1341,12 @@ impl Mailer {
     /// Удалить аккаунт («Настройки → Аккаунты»): синхронизация останавливается, адрес и логин — из файла, пароль — из
     /// диспетчера учётных данных (в фоне); кэш на диске остаётся. Экран — первый запуск.
     pub(crate) fn remove_account(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        tracing::info!("account: учётная запись удалена пользователем");
+        tracing::info!("account: account removed by the user");
         cx.background_spawn(async move { account::forget(&crate::data_dir()) }).detach();
         let cache = match Cache::open_in_memory() {
             Ok(c) => c,
             Err(e) => {
-                tracing::error!("account: временный кэш не открыт: {e}");
+                tracing::error!("account: in-memory store not opened: {e}");
                 return;
             }
         };
@@ -1376,7 +1376,7 @@ impl Mailer {
             let _ = this.update_in(cx, |m, window, cx| match opened {
                 Ok((cache, index)) => m.switch_account(cache, index, account, window, cx),
                 Err(e) => {
-                    tracing::error!("account: кэш учётной записи не открыт: {e}");
+                    tracing::error!("account: account store not opened: {e}");
                     if let Some(panel) = &m.live.signin {
                         panel.update(cx, |p, cx| p.failed(&e.to_string(), cx));
                     }

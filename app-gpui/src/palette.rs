@@ -759,7 +759,7 @@ impl Mailer {
                 let Some(c) = pets_commands::find(crate::commands::all(), id) else { return };
                 match cx.build_action(&c.action_name(), None) {
                     Ok(action) => window.dispatch_action(action, cx),
-                    Err(e) => tracing::error!(command = %id, "palette: команда не выполнена: {e}"),
+                    Err(e) => tracing::error!(command = %id, "palette: command failed: {e}"),
                 }
             }
             Act::Folder(id) => {

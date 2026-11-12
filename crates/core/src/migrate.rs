@@ -574,7 +574,7 @@ impl<S: Store> Engine<S> {
                 match stored {
                     Ok(()) => j.after_content(*letter, &mut self.store)?,
                     Err(e) => {
-                        tracing::warn!(job = j.row.id.0, letter = letter.0, "migration: содержимое письма ещё не получено: {e}");
+                        tracing::warn!(job = j.row.id.0, letter = letter.0, "migration: no content yet: {e}");
                         if j.cancel.is_some() {
                             j.settle_cancelled(&[*letter], &mut self.store)?;
                         } else {
@@ -609,12 +609,12 @@ impl<S: Store> Engine<S> {
                     ImportError::Quota | ImportError::Throttled { .. } => false,
                 };
                 if refused {
-                    tracing::error!(job = job.0, letter = letter.0, "migration: письмо не перенесено — цель отказала: {error}");
+                    tracing::error!(job = job.0, letter = letter.0, "migration: import refused by the target, letter not moved: {error}");
                     self.store.refused(*job, *letter, error)?;
                     j.remove(*letter);
                     return Ok(());
                 }
-                tracing::warn!(job = job.0, letter = letter.0, "migration: письмо не принято, повтор: {error}");
+                tracing::warn!(job = job.0, letter = letter.0, "migration: import failed, retrying: {error}");
                 // Повтор — с проверкой у цели: при обрыве связи выгрузка могла дойти без ответа.
                 l.step = Step::Confirm;
                 self.store.set_step(*job, *letter, Step::Confirm)?;
@@ -642,7 +642,7 @@ impl<S: Store> Engine<S> {
                 let Some(j) = self.jobs.get_mut(job) else { return Ok(()) };
                 let Some(l) = j.letters.get_mut(letter).filter(|l| l.busy && l.step == Step::DeleteSource) else { return Ok(()) };
                 if let Event::DestroyFailed { error, .. } = e {
-                    tracing::warn!(job = job.0, letter = letter.0, "migration: письмо в источнике не удалено, повтор: {error}");
+                    tracing::warn!(job = job.0, letter = letter.0, "migration: source delete failed, retrying: {error}");
                     l.failed = true;
                 }
                 l.pending = l.pending.saturating_sub(1);
@@ -655,7 +655,7 @@ impl<S: Store> Engine<S> {
                     if l.destroy_failures < DESTROY_ATTEMPTS {
                         j.later(*letter, now);
                     } else {
-                        tracing::error!(job = job.0, letter = letter.0, "migration: письмо в источнике не удалено, оставлено там");
+                        tracing::error!(job = job.0, letter = letter.0, "migration: source delete gave up, letter kept at source");
                         self.store.kept(*job, *letter)?;
                         j.remove(*letter);
                         j.kept += 1;

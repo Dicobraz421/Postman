@@ -294,7 +294,7 @@ impl Mailer {
             let stored = task.await;
             let _ = this.update(cx, |m, cx| {
                 if let Err(e) = stored {
-                    tracing::error!("actions: письмо не удалено из кэша: {e}");
+                    tracing::error!("actions: letter not deleted from the cache: {e}");
                     return m.toast(Toast::Error, tr!("actions-delete-failed", error = e.to_string()), cx);
                 }
                 let text = match how {

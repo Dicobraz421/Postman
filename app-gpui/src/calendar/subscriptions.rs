@@ -169,7 +169,7 @@ impl CalendarView {
                 let mut w = worker.lock().unwrap_or_else(PoisonError::into_inner);
                 let parsed = w.ics(&bytes, from, to, &tz);
                 if let Some(cut) = w.take_cut() {
-                    tracing::warn!("calendar: подписка урезана: {cut}");
+                    tracing::warn!("calendar: subscription cut: {cut}");
                 }
                 Some(parsed)
             });
@@ -204,7 +204,7 @@ impl CalendarView {
                 sub.events = list;
             }
             Some(Err(e)) => {
-                tracing::error!(%id, "calendar: подписка не разобрана, события не показаны: {e}");
+                tracing::error!(%id, "calendar: subscription not parsed, events not shown: {e}");
                 sub.failed = true;
             }
             None => {}
@@ -257,7 +257,7 @@ impl CalendarView {
             sub.checked = Some(Instant::now());
             sub.failed = result.is_err();
             if let Err(e) = result {
-                tracing::warn!(%id, "calendar: подписка не обновлена, повтор позже: {e}");
+                tracing::warn!(%id, "calendar: subscription not refreshed, retry later: {e}");
             }
         }
         self.load_subs(cx);

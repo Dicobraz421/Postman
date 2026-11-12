@@ -211,7 +211,7 @@ async fn set_autoreply(client: &Client, save: AutoReplySave) -> postman_jmap::Re
         Ok(_) => {}
         // Включение и текст уже записаны через `VacationResponse/set`: один текст всем, без условий.
         Err(SaveError::Forbidden(e)) => {
-            tracing::warn!("jmap: сервер отказал в скрипте автоответа, один текст всем: {e}");
+            tracing::warn!("jmap: autoreply script refused, one text for everyone: {e}");
             // Uid события хранится в скрипте: без него «Вне офиса» потом не снять.
             if let Some(uid) = stored.ooo.as_deref() {
                 remove_event(client, uid).await;
@@ -233,11 +233,11 @@ async fn remove_event(client: &Client, uid: &str) {
             if let Some(id) = e["id"].as_str()
                 && let Err(e) = client.destroy_event(id, false).await
             {
-                tracing::error!("jmap: старое событие «Вне офиса» не удалено: {e}");
+                tracing::error!("jmap: old out-of-office event not removed: {e}");
             }
         }
         Ok(None) => {}
-        Err(e) => tracing::error!("jmap: событие «Вне офиса» не найдено для удаления: {e}"),
+        Err(e) => tracing::error!("jmap: out-of-office event lookup for removal failed: {e}"),
     }
 }
 
@@ -262,7 +262,7 @@ async fn out_of_office(client: &Client, save: &AutoReplySave, v: &VacationRespon
             cals.into_iter().next()?
         }
         Err(e) => {
-            tracing::error!("jmap: событие «Вне офиса» не создано — календари не получены: {e}");
+            tracing::error!("jmap: out-of-office event not created, calendars not read: {e}");
             return None;
         }
     };
@@ -270,7 +270,7 @@ async fn out_of_office(client: &Client, save: &AutoReplySave, v: &VacationRespon
     match client.create_event(event, false).await {
         Ok(_) => Some(uid),
         Err(e) => {
-            tracing::error!("jmap: событие «Вне офиса» не создано: {e}");
+            tracing::error!("jmap: out-of-office event not created: {e}");
             None
         }
     }

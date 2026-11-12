@@ -31,7 +31,7 @@ impl SettingsView {
                         v.wiped = true;
                     }
                     Err(e) => {
-                        tracing::error!("security: пароли не удалены из хранилища: {e}");
+                        tracing::error!("security: passwords not removed from the credential store: {e}");
                         v.os.error = Some(tr!("settings-os-failed"));
                     }
                 }
@@ -72,7 +72,7 @@ impl SettingsView {
         let button = (state == Some(false)).then(|| {
             button("settings-bitlocker-open", tr!("settings-bitlocker-open"), false, l).on_click(cx.listener(|_, _, _, cx| {
                 if let Err(e) = crate::sys::shell::open_bitlocker() {
-                    tracing::error!("security: настройки шифрования диска не открыты: {e}");
+                    tracing::error!("security: disk encryption settings not opened: {e}");
                 }
                 cx.notify();
             }))

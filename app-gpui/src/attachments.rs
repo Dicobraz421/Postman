@@ -552,9 +552,7 @@ impl ReadingPane {
         let bytes = data.clone();
         let copy_name = name.clone();
         let copy = cx.background_spawn(async move {
-            drag::prepare(&drag::copies(), &copy_name, &bytes)
-                .map_err(|e| tracing::error!("attachments: копия для перетаскивания не создана: {e}"))
-                .ok()
+            drag::prepare(&drag::copies(), &copy_name, &bytes).map_err(|e| tracing::error!("attachments: drag copy not created: {e}")).ok()
         });
         cx.spawn(async move |this, cx| {
             let copy = copy.await;

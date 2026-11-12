@@ -39,7 +39,7 @@ impl Viewer {
             while let Ok(job) = jobs.recv() {
                 let result = client.view_module(&job.module, &job.input);
                 if let Err(e) = &result {
-                    tracing::error!("viewer: модуль просмотра не показал файл: {e}");
+                    tracing::error!("viewer: viewer host failed: {e}");
                 }
                 if done.send(Viewed { key: job.key, result }).is_err() {
                     return;
@@ -49,7 +49,7 @@ impl Viewer {
         });
         // Поток не запустился — модули не показывают (запросы без ответа), встроенный просмотр работает.
         if let Err(e) = started {
-            tracing::error!("viewer: поток модулей просмотра не запущен: {e}");
+            tracing::error!("viewer: viewer thread not started: {e}");
         }
         Self { tx, rx }
     }

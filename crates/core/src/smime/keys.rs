@@ -71,7 +71,7 @@ impl KeyStore for WindowsKeys {
 /// ГОСТ: СКЗИ есть (`provider`) — расшифровка его средствами; нет — «нужно СКЗИ» (без попытки своими силами).
 pub fn gost_with(provider: Option<String>, env: &Envelope, prompt: Prompt) -> Result<super::skzi::Plain, KeyError> {
     let Some(name) = provider else { return Err(KeyError::NeedSkzi) };
-    tracing::debug!(provider = %name, "smime: расшифровка ГОСТ средствами СКЗИ");
+    tracing::debug!(provider = %name, "smime: GOST decryption through the SKZI");
     super::sys::gost_decrypt(env, prompt)
 }
 

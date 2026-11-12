@@ -261,7 +261,7 @@ fn main() {
             Ok(pets_shell::Instance::First(l)) => Some(l),
             Ok(pets_shell::Instance::Second) => return,
             Err(e) => {
-                tracing::warn!("shell: проверка второго запуска не работает, окно может открыться дважды: {e}");
+                tracing::warn!("shell: single instance check failed, the window may open twice: {e}");
                 None
             }
         }
@@ -363,7 +363,7 @@ fn main() {
                 let (window, mailer) = handle.clone();
                 let _ = window.update(cx, |_, window, cx| {
                     if let Err(e) = sys::set_icons(window) {
-                        tracing::warn!("shell: значки окна не заданы: {e}");
+                        tracing::warn!("shell: window icons not set: {e}");
                     }
                     #[cfg(target_os = "macos")]
                     if listener.is_some() {

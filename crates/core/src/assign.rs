@@ -274,7 +274,7 @@ pub fn receive(own: &Task, inc: &Incoming, now: i64) -> Received {
     }
     // Ответ исполнителя несёт SEQUENCE запроса, на который отвечает: старее своей — устарел.
     if inc.task.sequence < own.sequence {
-        tracing::debug!(uid = %own.uid, got = inc.task.sequence, have = own.sequence, "tasks: устаревший ответ iTIP пропущен");
+        tracing::debug!(uid = %own.uid, got = inc.task.sequence, have = own.sequence, "tasks: stale iTIP message skipped");
         return Received::Stale;
     }
     let Some(sender) = inc.sender() else { return Received::Same };

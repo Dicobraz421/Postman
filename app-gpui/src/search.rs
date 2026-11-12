@@ -167,7 +167,7 @@ impl Local {
                 true
             });
             if let Err(e) = scanned {
-                tracing::error!("search: перебор писем не выполнен: {e}");
+                tracing::error!("search: letter scan failed: {e}");
             }
             for row in crate::local::unlinked(&self.cache, self.mailbox.as_deref()) {
                 let to = crate::local::recipients(&self.cache, &row.id);

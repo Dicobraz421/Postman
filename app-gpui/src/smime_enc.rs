@@ -86,15 +86,15 @@ impl Problem {
     fn log(&self) {
         match self {
             Problem::NeedPin | Problem::NoCard | Problem::Cancelled => {
-                tracing::info!("smime: письмо не расшифровано — нужен PIN или карта, или отмена")
+                tracing::info!("smime: letter not decrypted: PIN or card needed, or cancelled")
             }
-            Problem::NotForYou(_) => tracing::warn!("smime: письмо зашифровано не для ваших сертификатов"),
-            Problem::NeedSkzi => tracing::error!("smime: письмо ГОСТ не расшифровано — нет СКЗИ"),
-            Problem::Damaged => tracing::error!("smime: письмо не расшифровано — повреждено"),
-            Problem::Unsupported(a) => tracing::error!("smime: письмо не расшифровано — алгоритм {a} не поддержан"),
-            Problem::Nested => tracing::error!("smime: письмо не расшифровано — вложенное шифрование"),
-            Problem::TooLarge => tracing::error!("smime: письмо не расшифровано — слишком большое"),
-            Problem::Failed(e) => tracing::error!("smime: письмо не расшифровано: {e}"),
+            Problem::NotForYou(_) => tracing::warn!("smime: letter not encrypted for own certificates"),
+            Problem::NeedSkzi => tracing::error!("smime: GOST letter not decrypted: no SKZI"),
+            Problem::Damaged => tracing::error!("smime: letter not decrypted: damaged"),
+            Problem::Unsupported(a) => tracing::error!("smime: letter not decrypted: algorithm {a} not supported"),
+            Problem::Nested => tracing::error!("smime: letter not decrypted: nested encryption"),
+            Problem::TooLarge => tracing::error!("smime: letter not decrypted: too large"),
+            Problem::Failed(e) => tracing::error!("smime: letter not decrypted: {e}"),
         }
     }
 

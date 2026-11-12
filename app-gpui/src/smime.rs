@@ -344,7 +344,7 @@ impl ReadingPane {
                     }
                     Err(SmimeFailure::TooLarge) => s.seal = Seal::TooLarge,
                     Err(SmimeFailure::Worker(e)) => {
-                        tracing::error!("smime: подпись не проверена: {e}");
+                        tracing::error!("smime: signature check failed: {e}");
                         s.seal = Seal::Failed(e);
                     }
                 }

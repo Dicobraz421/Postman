@@ -143,7 +143,7 @@ impl SettingsView {
             let prefs = match task.await {
                 Ok(p) => p,
                 Err(e) => {
-                    tracing::error!("signature: подписи не прочитаны: {e}");
+                    tracing::error!("signature: signatures not read: {e}");
                     AccountPrefs::default()
                 }
             };
@@ -165,7 +165,7 @@ impl SettingsView {
         let seq = writer.next();
         cx.background_spawn(async move {
             if let Err(e) = writer.write(seq, || prefs.save(&file)) {
-                tracing::error!("signature: подписи не записаны: {e}");
+                tracing::error!("signature: signatures not written: {e}");
             }
         })
         .detach();
@@ -371,7 +371,7 @@ impl SettingsView {
                         v.sign.images.insert(cid, Some(image));
                         cx.notify();
                     }
-                    Err(e) => tracing::error!("signature: картинка подписи не показана: {e}"),
+                    Err(e) => tracing::error!("signature: signature image not shown: {e}"),
                 });
             })
             .detach();
@@ -993,7 +993,7 @@ pub(crate) fn sample_logo() -> Vec<u8> {
         enc.set_depth(png::BitDepth::Eight);
         let written = enc.write_header().and_then(|mut wr| wr.write_image_data(&px));
         if let Err(e) = written {
-            tracing::warn!("signature: образец логотипа не создан: {e}");
+            tracing::warn!("signature: sample logo not created: {e}");
         }
     }
     out

@@ -199,7 +199,7 @@ impl Client {
             .redirect(reqwest::redirect::Policy::none())
             .tls_version_min(if TLS13_ONLY.load(Ordering::Relaxed) { reqwest::tls::Version::TLS_1_3 } else { reqwest::tls::Version::TLS_1_2 });
         if insecure_tls() {
-            tracing::warn!("tls: POSTMAN_INSECURE_TLS — сертификат сервера НЕ проверяется (только для стенда)");
+            tracing::warn!("tls: POSTMAN_INSECURE_TLS: server certificate is NOT verified (test stand only)");
             builder = builder.danger_accept_invalid_certs(true);
         }
         let base = Url::parse(&config.url)?;

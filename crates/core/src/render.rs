@@ -101,7 +101,7 @@ impl Renderer {
                     out.push(Rendered::Body { id, doc, level: client.level() });
                     if client.level() == postman_worker::Level::Partial && !warned {
                         warned = true;
-                        tracing::warn!(reason = client.fallback().unwrap_or("-"), "render: песочница воркера неполная");
+                        tracing::warn!(reason = client.fallback().unwrap_or("-"), "render: worker sandbox is partial");
                     }
                 }
                 for (key, bytes) in images {

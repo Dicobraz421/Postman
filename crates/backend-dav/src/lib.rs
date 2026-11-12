@@ -279,7 +279,7 @@ impl Dav {
                 }
                 Err(e) => {
                     // Только имя ресурса: путь коллекции содержит адрес пользователя; текст разбора — в отладку.
-                    tracing::error!(resource = resource_name(&href), "caldav: событие не разобрано и не показано");
+                    tracing::error!(resource = resource_name(&href), "caldav: event not parsed, not shown");
                     tracing::debug!("caldav: {e}");
                 }
             }
@@ -577,7 +577,7 @@ impl Dav {
                     card.id = href.clone();
                     state.cards.insert(href, Stored { etag, data, card });
                 }
-                Ok(None) | Err(_) => tracing::error!(resource = resource_name(&href), "carddav: контакт не разобран и не показан"),
+                Ok(None) | Err(_) => tracing::error!(resource = resource_name(&href), "carddav: card not parsed, not shown"),
             }
         }
         state.token = Some(ch.token);
@@ -925,7 +925,7 @@ impl Dav {
             }),
             Command::Tasks(request) => {
                 if let Err(e) = postman_core::tasks::handle(&self.tasks(), ctx.cache, request, &|r| notify(SyncEvent::Tasks(r))).await {
-                    tracing::error!("caldav: действие с задачами не выполнено: {e}");
+                    tracing::error!("caldav: tasks action failed: {e}");
                     notify(SyncEvent::Tasks(postman_core::tasks::Reply::Failed { uid: None, error: e.to_string() }));
                 }
             }
@@ -957,7 +957,7 @@ impl Dav {
             Command::ImportInvite { invite } => match self.import_invite(&invite.event).await {
                 Ok(true) => notify(SyncEvent::CalendarChanged),
                 Ok(false) => {}
-                Err(e) => tracing::error!("caldav: приглашение не добавлено в календарь: {e}"),
+                Err(e) => tracing::error!("caldav: invitation not imported: {e}"),
             },
             Command::DeleteContact { id, ticket } => {
                 notify(match self.delete_contact(&id).await {
