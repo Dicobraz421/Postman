@@ -1,7 +1,7 @@
 # Документация к выпуску <версия>
 
 <!-- Копия этого файла — docs/releases/<версия>.md, в PR с новой `version` (docs/DEV.md «Выпуск»). Гейт выпуска
-(`.github/release_docs_check.py`, job `docs-gate`) не опубликует тег, пока каждый документ не отмечен [x] и у него
+(`.github/release_docs_check.py` — копия pets `skills/pets-dev/templates/`, job `docs-gate`) не опубликует тег, пока каждый документ не отмечен [x] и у него
 нет итога. Список — все *.md в корне и в docs/, scripts/*/README.txt, .github/release-notes.md; новый документ гейт
 потребует сам. Итог — «обновлено: что (PR)» или «без изменений: сверено с изменениями после <прошлый выпуск>». -->
 
