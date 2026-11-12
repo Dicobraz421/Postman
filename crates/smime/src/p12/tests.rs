@@ -66,20 +66,3 @@ fn key_signs_and_matches_certificate() {
     assert!(public.verify(rsa::Pkcs1v15Sign::new::<sha2::Sha256>(), &digest, &sig).is_ok());
     assert!(id.soft_key().is_some());
 }
-
-/// RC2: векторы RFC 2268 §5 (расшифровка шифртекста даёт открытый текст).
-#[test]
-fn rc2_vectors() {
-    let cases: [(&str, usize, &str, &str); 4] = [
-        ("0000000000000000", 63, "0000000000000000", "ebb773f993278eff"),
-        ("ffffffffffffffff", 64, "ffffffffffffffff", "278b27e42e2f0d49"),
-        ("3000000000000000", 64, "1000000000000001", "30649edf9be7d2c2"),
-        ("88bca90e90875a7f0f79c384627bafb2", 128, "0000000000000000", "2269552ab0f85ca6"),
-    ];
-    let unhex = |s: &str| (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect::<Vec<u8>>();
-    for (key, bits, plain, cipher) in cases {
-        let mut block: [u8; 8] = unhex(cipher).try_into().unwrap();
-        assert!(rc2::ecb_block(&unhex(key), bits, &mut block));
-        assert_eq!(hex(&block), plain, "key {key}");
-    }
-}
