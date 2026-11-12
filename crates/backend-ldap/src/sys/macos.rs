@@ -51,15 +51,16 @@ struct ChannelBindings {
     application_data: Buffer,
 }
 
-/// OID в `static`: GSS-API может хранить указатель на него, пока жив контекст.
-struct StaticOid(Oid);
-// SAFETY: указатель — на неизменяемые байты в `static`; GSS-API OID только читает.
-unsafe impl Sync for StaticOid {}
-
-/// Механизм Kerberos 5 (1.2.840.113554.1.2.2).
-static MECH_KRB5: StaticOid = StaticOid(Oid { length: 9, elements: b"\x2a\x86\x48\x86\xf7\x12\x01\x02\x02".as_ptr().cast() });
+/// Механизм Kerberos 5 (1.2.840.113554.1.2.2), DER без тега и длины.
+static MECH_KRB5: [u8; 9] = *b"\x2a\x86\x48\x86\xf7\x12\x01\x02\x02";
 /// Имя службы `служба@узел` (1.2.840.113554.1.2.1.4, `GSS_C_NT_HOSTBASED_SERVICE`).
-static NT_HOSTBASED_SERVICE: StaticOid = StaticOid(Oid { length: 10, elements: b"\x2a\x86\x48\x86\xf7\x12\x01\x02\x01\x04".as_ptr().cast() });
+static NT_HOSTBASED_SERVICE: [u8; 10] = *b"\x2a\x86\x48\x86\xf7\x12\x01\x02\x01\x04";
+
+/// Описатель OID — в куче, не в `static`: упакованный по 2 байта указатель в данных компоновщик macOS не принимает
+/// («pointer not aligned»). Живёт не меньше, чем то, чему его отдали (контекст хранит свой).
+fn oid(bytes: &'static [u8]) -> Box<Oid> {
+    Box::new(Oid { length: bytes.len() as OmUint32, elements: bytes.as_ptr().cast() })
+}
 
 const GSS_C_MUTUAL_FLAG: OmUint32 = 2;
 const GSS_C_CONF_FLAG: OmUint32 = 16;
@@ -162,7 +163,8 @@ fn take(buf: &mut Buffer) -> Vec<u8> {
 /// Текст ошибки GSS-API (английский, для журнала и `DirectoryError`).
 fn status(major: OmUint32, minor: OmUint32) -> String {
     let mut parts = Vec::new();
-    for (code, kind, mech) in [(major, GSS_C_GSS_CODE, null()), (minor, GSS_C_MECH_CODE, &raw const MECH_KRB5.0)] {
+    let krb5 = oid(&MECH_KRB5);
+    for (code, kind, mech) in [(major, GSS_C_GSS_CODE, null()), (minor, GSS_C_MECH_CODE, std::ptr::from_ref(&*krb5))] {
         if code == 0 {
             continue;
         }
@@ -190,6 +192,9 @@ pub(crate) struct Kerberos {
     target: Name,
     /// Привязка к каналу TLS (`tls-server-end-point:…`).
     binding: Option<Vec<u8>>,
+    /// OID механизма и типа имени: GSS-API может хранить указатели на них, пока живы контекст и имя.
+    mech: Box<Oid>,
+    _name_type: Box<Oid>,
 }
 
 // SAFETY: контекст и имя — объекты GSS.framework без привязки к потоку; одновременных вызовов нет: методы берут
@@ -201,12 +206,13 @@ impl Kerberos {
         let service = format!("ldap@{host}");
         let mut minor = 0;
         let mut target = null_mut();
-        // SAFETY: буфер имени указывает на живую строку; тип — OID в `static`; `target` — выходной указатель.
-        let major = unsafe { gss_import_name(&mut minor, &Buffer::of(service.as_bytes()), &raw const NT_HOSTBASED_SERVICE.0, &mut target) };
+        let name_type = oid(&NT_HOSTBASED_SERVICE);
+        // SAFETY: буфер имени указывает на живую строку; тип — OID, живущий вместе с `Kerberos`; `target` — выход.
+        let major = unsafe { gss_import_name(&mut minor, &Buffer::of(service.as_bytes()), &*name_type, &mut target) };
         if gss_error(major) {
             return Err(status(major, minor));
         }
-        Ok(Kerberos { ctx: null_mut(), target, binding: binding.map(<[u8]>::to_vec) })
+        Ok(Kerberos { ctx: null_mut(), target, binding: binding.map(<[u8]>::to_vec), mech: oid(&MECH_KRB5), _name_type: name_type })
     }
 }
 
@@ -244,7 +250,7 @@ impl Gss for Kerberos {
                 null_mut(),
                 &mut self.ctx,
                 self.target,
-                &raw const MECH_KRB5.0,
+                &*self.mech,
                 GSS_C_MUTUAL_FLAG | GSS_C_INTEG_FLAG | GSS_C_CONF_FLAG,
                 0,
                 bindings.as_ref().map_or(null(), std::ptr::from_ref),
@@ -301,7 +307,8 @@ impl Gss for Kerberos {
 /// Имя пользователя из билета Kerberos по умолчанию (`user@CORP.EXAMPLE`); нет билета — `None`. Без запросов пароля:
 /// только чтение кэша билетов.
 fn kerberos_principal() -> Option<String> {
-    let mechs = OidSet { count: 1, elements: &raw const MECH_KRB5.0 };
+    let krb5 = oid(&MECH_KRB5);
+    let mechs = OidSet { count: 1, elements: &*krb5 };
     let (mut minor, mut cred) = (0, null_mut());
     // SAFETY: имя — по умолчанию (null); набор механизмов жив на время вызова; `cred` освобождается ниже.
     let major = unsafe { gss_acquire_cred(&mut minor, null_mut(), 0, &mechs, GSS_C_INITIATE, &mut cred, null_mut(), null_mut()) };
