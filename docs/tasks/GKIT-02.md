@@ -17,6 +17,8 @@ manual: yes                 # docs/manual-tests/GKIT-02.md
 - Поломки API upstream: `PlatformInput::ScrollWheel(ScrollWheelEvent)` → `Scroll(ScrollEvent { source, .. })`;
   `KeyBinding::load(.., cx)` вместо `&DummyKeyboardMapper`; `Keystroke::unparse(os)`; `Keystroke::parse` только
   `'static` → `parse_with_os(.., os)` в сценах.
+- jiff — в `[workspace.dependencies]`, только встроенная база IANA (`tzdb-bundle-always`, без `tzdb-zoneinfo`):
+  офлайн и как на Windows; на Ubuntu 24.04 без `tzdata-legacy` `jiff_knows_the_main_zones` проходит.
 - `cfb` 0.15 → 0.16 в `postman-export` и `postman-worker` (одна версия с `msi`).
 
 ## Не сделано

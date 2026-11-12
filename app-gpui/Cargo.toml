@@ -26,7 +26,7 @@ postman-demo.workspace = true
 zeroize = "1"
 postman-calendar.workspace = true
 gpui-kit = "0.9.1"
-jiff = "0.2"
+jiff.workspace = true
 postman-core.workspace = true
 # Пути к серверам — плагины (ADR 0004): регистрирует `src/plugins.rs`; протокольных крейтов интерфейс не знает.
 postman-backend-jmap.workspace = true

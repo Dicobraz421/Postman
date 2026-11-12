@@ -12,7 +12,7 @@ postman-cache.workspace = true
 postman-calendar.workspace = true
 postman-compose.workspace = true
 postman-worker.workspace = true
-jiff = "0.2"
+jiff.workspace = true
 tokio = { version = "1", features = ["rt", "time", "sync", "macros", "net"] }
 tracing = "0.1"
 
