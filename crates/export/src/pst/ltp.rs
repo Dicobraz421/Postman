@@ -361,7 +361,12 @@ fn hnid(heap: &mut Heap, ndb: Option<&mut Ndb>, subs: &mut Subs, bytes: Vec<u8>)
 }
 
 pub(super) fn utf16(s: &str) -> Vec<u8> {
-    s.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    // Не `flat_map(..).collect()`: тот растит вектор без оценки размера (строк — десятки на письмо).
+    let mut out = Vec::with_capacity(2 * s.len());
+    for u in s.encode_utf16() {
+        out.extend_from_slice(&u.to_le_bytes());
+    }
+    out
 }
 
 /// Байты значения переменной длины (строка — UTF-16LE).
