@@ -32,6 +32,12 @@ status-unread = непрочитанных: { $n }
 status-cached = (кэш)
 status-notifications-hint = Уведомления
 second-instance = Postman уже запущен — показано это окно.
+# Значок в трее (T3-13).
+tray-open = Открыть Postman
+tray-quit = Выход
+tray-tip-unread = Postman — непрочитанных: { $n }
+tray-hint-title = Postman работает в фоне
+tray-hint-body = Окно закрыто, почта синхронизируется. Значок — в области уведомлений; выход — в его меню.
 
 # Сбой запуска (журнал Windows и stderr).
 fatal-data-dir = каталог данных

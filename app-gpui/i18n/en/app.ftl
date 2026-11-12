@@ -30,6 +30,12 @@ status-unread = unread: { $n }
 status-cached = (cached)
 status-notifications-hint = Notifications
 second-instance = Postman is already running — this window is shown.
+# Tray icon (T3-13).
+tray-open = Open Postman
+tray-quit = Quit
+tray-tip-unread = Postman — unread: { $n }
+tray-hint-title = Postman is running in the background
+tray-hint-body = The window is closed, mail keeps syncing. The icon is in the notification area; use its menu to quit.
 
 # Startup failure (Windows event log and stderr).
 fatal-data-dir = data directory

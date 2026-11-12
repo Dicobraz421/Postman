@@ -10,6 +10,7 @@ use std::{env, fs};
 
 fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo:rerun-if-changed=res/postman.ico");
+    println!("cargo:rerun-if-changed=res/postman-unread.ico");
     println!("cargo:rerun-if-changed=res/postman.manifest");
     if env::var("CARGO_CFG_TARGET_OS")? != "windows" {
         return Ok(());
@@ -20,9 +21,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         "#pragma code_page(65001)\n\
          LANGUAGE 0, 0\n\
          1 ICON \"{icon}\"\n\
+         2 ICON \"{unread}\"\n\
          1 24 \"{manifest}\"\n\
          {version}",
         icon = rc_path(&dir.join("postman.ico")),
+        unread = rc_path(&dir.join("postman-unread.ico")),
         manifest = rc_path(&dir.join("postman.manifest")),
         version = version_info("Postman", "postman.exe")?,
     );

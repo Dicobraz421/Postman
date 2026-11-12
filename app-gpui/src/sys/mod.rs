@@ -262,6 +262,18 @@ pub mod drag {
     }
 }
 
+/// Спрятать окно в трей (T3-13): с экрана и с панели задач.
+#[cfg(windows)]
+pub fn hide_window(window: &Window) -> Result<(), String> {
+    pets::window::hide(window).map_err(|e| e.to_string())
+}
+
+/// Показать спрятанное или свёрнутое окно.
+#[cfg(windows)]
+pub fn show_window(window: &Window) -> Result<(), String> {
+    pets::window::show(window).map_err(|e| e.to_string())
+}
+
 /// Снимок окна: RGBA, 8 бит на канал, строки сверху вниз.
 #[cfg(windows)]
 pub use gpui_windows::pets::window::Image;

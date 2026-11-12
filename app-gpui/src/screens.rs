@@ -164,6 +164,10 @@ pub(crate) fn notify(title: &str, body: &str) -> Result<(), String> {
         HELD_NOTICES.lock().unwrap_or_else(PoisonError::into_inner).push((title.to_owned(), body.to_owned()));
         return Ok(());
     }
+    // Щелчок по уведомлению возвращает окно из трея (T3-13).
+    #[cfg(windows)]
+    return sys::shell::notify_click(title, body, None, || crate::tray::send(crate::tray::Signal::Open));
+    #[cfg(not(windows))]
     sys::shell::notify(title, body)
 }
 
@@ -174,6 +178,16 @@ pub(crate) fn notify_with(title: &str, body: &str, sound: bool) -> Result<(), St
         return Ok(());
     }
     sys::shell::notify_with(title, body, sound)
+}
+
+/// Уведомление о новых письмах (T3-13): щелчок открывает окно и письмо `letter` (`None` — «Входящие»).
+pub(crate) fn notify_new_mail(title: &str, body: &str, sound: bool, letter: Option<String>) -> Result<(), String> {
+    #[cfg(windows)]
+    if !screening() {
+        return sys::shell::notify_click(title, body, Some(sound), move || crate::tray::send(crate::tray::Signal::Letter(letter.clone())));
+    }
+    let _ = letter;
+    notify_with(title, body, sound)
 }
 
 /// Какие уведомления показал бы Windows.

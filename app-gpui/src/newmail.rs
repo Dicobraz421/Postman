@@ -14,6 +14,8 @@ use crate::Mailer;
 const SINCE: &str = "newmail-since";
 /// Писем в тексте уведомления — не больше.
 const LINES: usize = 3;
+/// Письмо из уведомления ищется среди стольких верхних писем «Входящих».
+const LOOK: usize = 200;
 
 /// Состояние проверки: отметка и идёт ли проверка.
 #[derive(Default)]
@@ -88,6 +90,45 @@ impl Mailer {
         .detach();
     }
 
+    /// Щелчок по уведомлению Windows (T3-13): «Почта», «Входящие» и письмо `id`, если оно ещё там.
+    pub(crate) fn open_new_mail(&mut self, id: Option<String>, cx: &mut Context<Self>) {
+        let cache = self.cache.clone();
+        let task = cx.background_spawn(async move {
+            let inboxes: Vec<String> = cache.mailboxes()?.into_iter().filter(|m| m.role.as_deref() == Some("inbox")).map(|m| m.id).collect();
+            let mut found = None;
+            if let Some(id) = &id {
+                for inbox in &inboxes {
+                    if let Some(row) = cache.page(inbox, 0, LOOK)?.into_iter().find(|r| r.id == *id) {
+                        found = Some((inbox.clone(), row));
+                        break;
+                    }
+                }
+            }
+            Ok::<_, postman_cache::Error>((inboxes.into_iter().next(), found))
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |m, cx| match result {
+                Ok((first, found)) => {
+                    m.set_section(crate::Section::Mail, cx);
+                    match found {
+                        Some((inbox, row)) => {
+                            m.open_mailbox(inbox, cx);
+                            m.open_letter(row, cx);
+                        }
+                        None => {
+                            if let Some(inbox) = first {
+                                m.open_mailbox(inbox, cx);
+                            }
+                        }
+                    }
+                }
+                Err(e) => tracing::warn!("open new mail: {e}"),
+            });
+        })
+        .detach();
+    }
+
     fn show_new_mail(&mut self, found: Vec<Fresh>, cx: &mut Context<Self>) {
         let g = crate::prefs::get(cx).general;
         let list = newmail::shown(found, g.notify);
@@ -103,8 +144,9 @@ impl Mailer {
             return;
         }
         let sound = g.sound;
+        let letter = crate::tray::target(&list);
         cx.background_spawn(async move {
-            if let Err(e) = crate::screens::notify_with(&title, &body, sound) {
+            if let Err(e) = crate::screens::notify_new_mail(&title, &body, sound, letter) {
                 tracing::warn!("new mail notification: {e}");
             }
         })

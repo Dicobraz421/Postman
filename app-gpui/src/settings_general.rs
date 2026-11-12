@@ -10,7 +10,7 @@
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use pets_i18n::tr;
-use postman_core::prefs::{Channel, LANGUAGES, LogLevel, Notify, QUIET_FROM, QUIET_TO, StartView};
+use postman_core::prefs::{Channel, LANGUAGES, LogLevel, Notify, OnClose, QUIET_FROM, QUIET_TO, StartView};
 
 use crate::buttons::button;
 use crate::roles::Look;
@@ -169,6 +169,14 @@ impl SettingsView {
                 .on_click(cx.listener(|this, _, _, cx| this.make_default(cx)))
                 .into_any_element()
         };
+        // Закрытие окна (T3-13): в трей или выход; значок в трее — только Windows.
+        let closes = [(OnClose::Tray, "settings-on-close-tray"), (OnClose::Quit, "settings-on-close-quit")].map(|(v, key)| {
+            seg(("settings-on-close", v as usize), tr!(key), g.on_close == v, true, l).on_click(cx.listener(move |_, _, _, cx| {
+                crate::prefs::update(cx, |p| p.general.on_close = v);
+                cx.notify();
+            }))
+        });
+        let close_hint = tr!(if g.on_close == OnClose::Tray { "settings-on-close-tray-hint" } else { "settings-on-close-quit-hint" });
         // Уведомления.
         let notifies = [(Notify::All, "settings-notify-all"), (Notify::Important, "settings-notify-important"), (Notify::Off, "settings-notify-off")]
             .map(|(v, key)| {
@@ -294,6 +302,7 @@ impl SettingsView {
                 toggle("settings-autostart", auto, l).on_click(cx.listener(move |this, _, _, cx| this.set_autostart(!auto, cx))),
                 l,
             ))
+            .when(cfg!(windows), |d| d.child(row(tr!("settings-on-close"), Some(close_hint), seg_group(closes, l), l)))
             .child(start_row)
             .child(group(tr!("settings-mailto-group"), l))
             .child(row(
