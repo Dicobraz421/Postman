@@ -137,7 +137,7 @@ pub fn clipboard_html(max: usize) -> Option<String> {
 /// Значение политики организации с типом, как его задал администратор (POL-01): реестр (`REG_SZ`, `REG_DWORD`,
 /// `REG_QWORD`) или профиль конфигурации macOS (строка, логическое, целое, дробное). Разбор — `security::policy_*`.
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code, reason = "политик вне Windows и macOS нет"))]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code, reason = "дробное и логическое бывают только в профиле macOS"))]
 pub enum PolicyValue {
     Text(String),
     Int(i64),
