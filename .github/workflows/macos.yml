@@ -1,11 +1,13 @@
 # CI Postman для macOS (MAC-01, docs/decisions/2026-11-11-macos.md): Apple Silicon (arm64), macOS 13+.
 # Отдельно от ci.yml: required check `gate` его не ждёт, пока macOS не догонит Windows (MAC-02…MAC-06).
 # `test` — clippy и тесты крейтов, что проходят на macOS; `bundle` — release, Postman.app с подписью ad-hoc, zip и
-# снимки всех сцен демо-ящика из собранного приложения (MAC-04). Выпуск для macOS — строка macos-arm64 job `release` в ci.yml (MAC-06).
+# снимки всех сцен демо-ящика из собранного приложения (MAC-04) — только на PR (не черновик) и вручную; на пуш в
+# main — один `test` (решение 2026-11-12 «ci-economy»). Выпуск для macOS — строка macos-arm64 job `release` в ci.yml (MAC-06).
 name: macOS
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore: ['docs/**', '**/*.md']
   push:
     branches: [main]
@@ -29,6 +31,7 @@ env:
 
 jobs:
   test:
+    if: github.event.pull_request.draft != true
     runs-on: macos-26
     timeout-minutes: 40
     steps:
@@ -65,6 +68,7 @@ jobs:
           POSTMAN_REQUIRE_FULL_SANDBOX: '1'
 
   bundle:
+    if: github.event_name != 'push' && github.event.pull_request.draft != true
     runs-on: macos-26
     timeout-minutes: 60
     steps:
