@@ -21,6 +21,8 @@ manual: docs/manual-tests/LIN-03.md
 - Тёмная/светлая тема и акцент — portal `org.freedesktop.appearance`.
 - HTML из буфера обмена (`text/html`), перетаскивание вложений из окна и в окно.
 - Один экземпляр, клавиши как на Windows (Ctrl), буквы — на любой раскладке (xkb).
+- Политика `SandboxNamespaces` на Linux (общий механизм `security.rs`/`sys::shell::policy`, файл в /etc):
+  `required` → `Client::namespaces(Namespaces::Required)` для воркера и хоста модулей (ADR 0010, LIN-04b).
 - Память в `--bench` (`idle_private_ws_mb` из `/proc/self/smaps_rollup`), все сцены `--screens`.
 
 ## Приёмка

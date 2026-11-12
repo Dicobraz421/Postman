@@ -31,12 +31,12 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 pub use preview::{Entry, Listing, OfficeFormat, OfficeScan, Preview, PreviewKind, Section, SectionTitle};
-pub use sandbox::Level;
 /// Распределитель с пределом кучи для `#[global_allocator]` процессов песочницы на macOS (MAC-03): `RLIMIT_AS` там не
 /// действует. Приложению и тестам не нужен.
 #[cfg(target_os = "macos")]
 #[doc(hidden)]
 pub use sandbox::Limited;
+pub use sandbox::{Level, Namespaces};
 
 /// Код выхода воркера, которого остановил сторож времени: разбор одного запроса дольше [`TIME_LIMIT`].
 pub const EXIT_TIME: i32 = 5;
@@ -951,17 +951,37 @@ pub struct Client {
     memory: usize,
     /// Что отсекли пределы в последнем календаре ([`Client::take_cut`]).
     cut: Option<Cut>,
+    /// Режим namespaces процесса песочницы (Linux).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    namespaces: Namespaces,
 }
 
 impl Client {
     pub fn new(exe: PathBuf, timeout: Duration) -> Self {
-        Self { exe, timeout, running: None, level: Level::None, relaxed: false, fallback: None, memory: sandbox::MEMORY_LIMIT, cut: None }
+        Self {
+            exe,
+            timeout,
+            running: None,
+            level: Level::None,
+            relaxed: false,
+            fallback: None,
+            memory: sandbox::MEMORY_LIMIT,
+            cut: None,
+            namespaces: Namespaces::Optional,
+        }
     }
 
     /// Клиент хоста модулей просмотра `postman-viewer` (S8-24): та же песочница, память — [`wasm::JOB_MEMORY`];
     /// процесс — по первому запросу, после выхода (сторож, падение) — новый на следующем.
     pub fn viewer(exe: PathBuf) -> Self {
         Self { memory: wasm::JOB_MEMORY, ..Self::new(exe, wasm::VIEW_TIMEOUT) }
+    }
+
+    /// Режим namespaces (Linux, ADR 0010): `Required` — политика администратора `SandboxNamespaces`. Применяется к
+    /// следующему запуску процесса.
+    pub fn namespaces(mut self, mode: Namespaces) -> Self {
+        self.namespaces = mode;
+        self
     }
 
     /// `postman-viewer` рядом с основным исполняемым файлом.
@@ -1388,7 +1408,11 @@ impl Client {
     }
 
     fn start(&mut self) -> Result<Running, String> {
-        let p = sandbox::spawn(&self.exe, self.relaxed, self.memory).map_err(|e| format!("запуск {}: {e}", self.exe.display()))?;
+        #[cfg(target_os = "linux")]
+        let p = sandbox::spawn(&self.exe, self.relaxed, self.memory, self.namespaces);
+        #[cfg(not(target_os = "linux"))]
+        let p = sandbox::spawn(&self.exe, self.relaxed, self.memory);
+        let p = p.map_err(|e| format!("запуск {}: {e}", self.exe.display()))?;
         self.level = p.level;
         match (p.level, p.fallback) {
             (Level::Full, _) => self.fallback = None,

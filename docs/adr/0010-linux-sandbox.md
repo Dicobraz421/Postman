@@ -1,15 +1,19 @@
 # ADR 0010. Песочница на Linux — namespaces + Landlock + seccomp-bpf в самом воркере, без ослабленного режима
 
-Статус: **предложено** (LIN-04, класс B; принимает владелец). Основание — решение `docs/decisions/2026-11-12-linux.md`:
+Статус: **принято** (владелец, 2026-11-12, вариант «Б» — namespaces по режиму; LIN-04, LIN-04b). Основание — решение `docs/decisions/2026-11-12-linux.md`:
 песочница воркера на Linux — seccomp + Landlock, не слабее Windows (AppContainer + Job Object) и macOS (ADR 0009).
 
 ## Решение
 Воркер и хост модулей (`postman-worker`, `postman-viewer`) запирают себя сами (`sandbox/linux.rs`), до первого запроса.
-Механизмы — все обязательны; без любого процесс отвечает «песочница: <причина>» и выходит с кодом 3, письмо
-показывается текстом. Ослабленного режима (как `relaxed` на Windows) нет.
+Rlimits, Landlock, `no_new_privs` и seccomp обязательны: без любого процесс отвечает «песочница: <причина>» и выходит
+с кодом 3, письмо показывается текстом. Namespaces — по режиму (аргумент `--namespaces=…` от клиента, `Namespaces`):
+`optional` (по умолчанию) — дистрибутив запретил, процесс работает без них, в журнале WARN с причиной (какой sysctl);
+`required` — отказ, как без остальных механизмов. `required` включает администратор политикой `SandboxNamespaces`
+(читает приложение, LIN-03); неизвестное значение аргумента — отказ. Ослабленного режима (как `relaxed` на Windows)
+для остальных механизмов нет.
 
 1. **Namespaces** — `unshare(CLONE_NEWUSER | CLONE_NEWNET | CLONE_NEWIPC)` первым делом, пока процесс однопоточный (до
-   сторожа времени): своя пустая сеть (только `lo` без адресов) и свой System V IPC. Отказ называет запрет
+   сторожа времени): своя пустая сеть (только `lo` без адресов) и свой System V IPC. WARN и отказ называют запрет
    дистрибутива: `kernel.apparmor_restrict_unprivileged_userns = 1` (Ubuntu 23.10+), `kernel.unprivileged_userns_clone
    = 0` (старые Debian), `user.max_user_namespaces = 0`.
 2. **Пределы**: `RLIMIT_AS` — от клиента (`--memory=…`: воркер 1 ГиБ, хост модулей 512 МиБ; отказ в памяти — аварийное
@@ -45,10 +49,18 @@ namespaces. Сеть Landlock — с 6.7, scopes — с 6.12; на младши�
   без seccomp (Landlock, namespaces, rlimits).
 - Диагностика: `cargo test -p postman-worker --test linux_probe -- --ignored --nocapture` — ядро, ABI Landlock,
   sysctl user namespaces и запуск со снятым по одному механизмом (`POSTMAN_SANDBOX_DROP`, только отладочная сборка).
-- CI: на раннерах Ubuntu 24.04 `kernel.apparmor_restrict_unprivileged_userns = 1` — `linux.yml` (LIN-01) снимает его
-  `sysctl` перед тестами, иначе воркер справедливо не стартует.
+- `tests/linux_probe.rs`: оба режима namespaces (`POSTMAN_SANDBOX_DROP=userns-deny` имитирует запрет дистрибутива) и
+  отказ на неизвестном режиме.
+- CI: на раннерах Ubuntu 24.04 `kernel.apparmor_restrict_unprivileged_userns = 1` — в режиме `optional` воркер работает
+  без namespaces (WARN); чтобы проверять их, `linux.yml` (LIN-01) может снять запрет `sysctl`.
+
+## Почему namespaces не обязательны по умолчанию (вариант «Б»)
+Ubuntu 23.10+ запрещает их непривилегированным процессам из коробки: с обязательными namespaces Postman не открывал бы
+письма на самом частом дистрибутиве. Сеть и IPC без namespaces закрывают seccomp (нет `socket`, `connect`, `shm*`,
+`msg*`) и Landlock (TCP, абстрактные сокеты); namespaces — третий слой. Молча слой не пропадает: WARN в журнале,
+диагностика `linux_probe`, а администратор может потребовать его политикой.
 
 ## Отвергнуто
-- Namespaces «по возможности» (как было): на Ubuntu 24.04 по умолчанию запрещены — воркер молча работал бы с общей
-  сетью. Seccomp сокеты и так закрывает, но слой должен держать сам.
+- Namespaces обязательны всегда (вариант «А», LIN-04): воркер не стартовал бы на Ubuntu по умолчанию.
+- Namespaces «по возможности» без следа (как было до LIN-04): слой пропадал незаметно.
 - bubblewrap/внешний помощник: лишний бинарник и setuid на старых системах; Landlock и seccomp ставит сам процесс.
