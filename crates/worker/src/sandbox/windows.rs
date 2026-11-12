@@ -484,3 +484,8 @@ fn policy_flags<T>(policy: i32) -> Result<u32, String> {
     }
     Ok(flags)
 }
+
+/// Смерть клиента на Windows ловит Job Object (`KILL_ON_JOB_CLOSE`): сторожу проверять нечего.
+pub(crate) fn parent() -> u32 {
+    0
+}

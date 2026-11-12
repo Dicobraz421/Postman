@@ -16,8 +16,9 @@ Rlimits, Landlock, `no_new_privs` и seccomp обязательны: без лю
    сторожа времени): своя пустая сеть (только `lo` без адресов) и свой System V IPC. WARN и отказ называют запрет
    дистрибутива: `kernel.apparmor_restrict_unprivileged_userns = 1` (Ubuntu 23.10+), `kernel.unprivileged_userns_clone
    = 0` (старые Debian), `user.max_user_namespaces = 0`.
-2. **Пределы**: `RLIMIT_AS` — от клиента (`--memory=…`: воркер 1 ГиБ, хост модулей 512 МиБ; отказ в памяти — аварийное
-   завершение, `SIGABRT`), `RLIMIT_CORE = 0`, `RLIMIT_FSIZE = 0`, `RLIMIT_NOFILE = 16`, `RLIMIT_NPROC = 0`,
+2. **Пределы**: `RLIMIT_DATA` — от клиента (`--memory=…`: воркер 1 ГиБ, хост модулей 512 МиБ — частная выделенная
+   память, как commit на Windows; исход — «превышен предел памяти», SBX-03), `RLIMIT_AS` — запасной потолок ×2, не
+   меньше 4 ГиБ, `RLIMIT_CORE = 0`, `RLIMIT_FSIZE = 0`, `RLIMIT_NOFILE = 16`, `RLIMIT_NPROC = 0`,
    `RLIMIT_MEMLOCK = 0`, `RLIMIT_MSGQUEUE = 0`. Время — сторож, код 5.
 3. **Landlock** — запрещено всё, что знает ядро до ABI 6, правил-исключений нет: ФС целиком (V1–V5), TCP bind/connect
    (V4), абстрактные unix-сокеты и сигналы вне процесса (V6). Ядро без Landlock или с выключенным (`lsm=` без
