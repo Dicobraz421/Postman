@@ -7,7 +7,7 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
 apt-get install -y -q --no-install-recommends \
-  ca-certificates curl git build-essential pkg-config python3 binutils \
+  ca-certificates curl git build-essential pkg-config python3 binutils clang libclang-dev cmake \
   libssl-dev libkrb5-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libxcb1-dev libfontconfig1-dev \
   rpm squashfs-tools desktop-file-utils
 if ! command -v rustup > /dev/null; then
