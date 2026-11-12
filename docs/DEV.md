@@ -9,7 +9,7 @@
 - Вопросы владельцу — пакетом «Решения для владельца» (№, вопрос, рекомендация).
 - Ручная проверка задачи — файлом `docs/manual-tests/<задача>.md` (не правкой `docs/MANUAL-TESTS.md`).
 - Локально — `cargo check`/`clippy` во время работы и один прогон тестов затронутых крейтов перед PR; весь набор
-  гоняет CI (`.github/workflows/ci.yml`, только Windows). Архив `postman-<версия>-windows-x64.zip` собирает job
+  гоняет CI (`.github/workflows/ci.yml` — Windows, `macos.yml` — macOS). Архив `postman-<версия>-windows-x64.zip` собирает job
   `release` на main и тегах `v*` (`scripts/windows/package.ps1`; подпись — если задан секрет); выпуск — ниже.
 - Спека сессии — `docs/specs/Sx.md`; соответствие сессий фазам плана — в `docs/specs/S0-decisions.md`.
 

@@ -3,8 +3,9 @@
 Стартовая страница репозитория ([README.md](../README.md)) — для пользователей. Здесь — всё техническое: устройство,
 сборка, выпуск, замеры. Правила для Claude Code — [CLAUDE.md](../CLAUDE.md).
 
-Клиент почты, календаря и контактов: чистый Rust, интерфейс на gpui (DirectX 11), раскладка и клавиши classic
-Outlook. Только Windows 10/11 x64. Основной сервер — The Post (JMAP); с Stalwart, IMAP + SMTP + CalDAV/CardDAV и
+Клиент почты, календаря и контактов: чистый Rust, интерфейс на gpui (DirectX 11 на Windows, Metal на macOS),
+раскладка и клавиши classic Outlook. Windows 10/11 x64 — основа, macOS 13+ arm64 — вторая платформа, Linux — в
+работе (tier 2). Основной сервер — The Post (JMAP); с Stalwart, IMAP + SMTP + CalDAV/CardDAV и
 Exchange (EWS) — совместимость по стандартам, через плагины.
 
 ## Куда смотреть
@@ -39,7 +40,7 @@ Exchange (EWS) — совместимость по стандартам, чер�
 | `crates/calendar` | Календарь без UI: JSCalendar → UTC, сборка события с участниками, раскладка пересечений, занятость и общее свободное время, приглашения iMIP. |
 | `crates/export` | Выгрузка писем в файлы: EML, mbox, Maildir, MSG, PST. Без I/O. |
 | `crates/smime` | S/MIME: разбор CMS и проверка подписи (RSA, ECDSA, ГОСТ Р 34.10-2012), цепочка к якорям. Без I/O, только в воркере. |
-| `crates/worker` | Процесс `postman-worker`: чужие данные (HTML, вложения, приглашения) → IR в песочнице. Windows: AppContainer, Job Object, mitigation policies (win32k off, только Microsoft-DLL, без динамического кода и дочерних процессов). `postman-viewer` — модули просмотра на WASM. |
+| `crates/worker` | Процесс `postman-worker`: чужие данные (HTML, вложения, приглашения) → IR в песочнице. Windows: AppContainer, Job Object, mitigation policies (win32k off, только Microsoft-DLL, без динамического кода и дочерних процессов); macOS: Seatbelt `deny default` (ADR 0009). `postman-viewer` — модули просмотра на WASM. |
 | `crates/core` | Слой без UI: модель, договор плагинов, синхронизация (push, предзагрузка, отправка), поисковая индексация, файлы вложений, адресная книга для автодополнения. |
 | `crates/demo` | Синтетический демо-ящик (`--demo`, снимки экранов, бенч). |
 | `app-gpui` | Интерфейс на gpui (`postman.exe`). |
@@ -69,7 +70,9 @@ cargo test --workspace
 Выпуски — [Releases](https://github.com/Dicobraz421/Postman/releases): установщик `postman-<версия>-windows-x64.msi`
 (все пользователи, `Program Files`, нужны права администратора; он же — пакет winget `Pets.Postman`), архив
 `postman-<версия>-windows-x64.zip` (`postman.exe`, `postman-worker.exe`, `postman-viewer.exe`, `README.txt`,
-`install.ps1` — установка для себя без прав администратора), отдельные компоненты и `SHA256SUMS.txt`. Решение —
+`install.ps1` — установка для себя без прав администратора), отдельные компоненты; для macOS — образ
+`postman-<версия>-macos-arm64.dmg` и архив `.zip` с `Postman.app` (`scripts/macos/package.sh`, MAC-06); подписи
+minisign `.minisig` для самообновления (T3-12) и `SHA256SUMS.txt`. Решение —
 [decisions/2026-11-07-installer-msi-winget.md](decisions/2026-11-07-installer-msi-winget.md); как выпустить —
 [DEV.md](DEV.md) «Выпуск». Текст страницы выпуска — `.github/release-notes.md`. Сборка каждого `main` — артефакт CI
 (Actions → запуск → Artifacts). Локально — `scripts/windows/package.ps1` после `cargo build --release --workspace`

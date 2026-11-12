@@ -5,6 +5,10 @@
 `pets/crates/pets-gpui-windows/README.md`.
 Каждый патч в коде помечен «Postman patch». При обновлении gpui-kit переносим непринятые патчи.
 
+С T3-06 и T3-07 (2026-11-11) — второй патч там же: `crates/pets-gpui-base` (пакет `gpui-base` 0.7.3 gpui-kit,
+`[patch.crates-io]` в `Cargo.toml`) — блоки в тексте поля, как в Zed: таблица сеткой и картинка в письме; выделение,
+отмена, IME и вставка — прежние. Состав и upstream — `pets/crates/pets-gpui-base/README.md`.
+
 | Патч | Файлы | Зачем | Upstream |
 |---|---|---|---|
 | Шейдеры в exe | `build.rs`, `directx_renderer.rs` | кросс-сборка из Linux без fxc.exe, в бинаре нет путей машины сборки | не предлагаем; уйдёт, когда сборка будет только на Windows |

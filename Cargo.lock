@@ -6369,7 +6369,7 @@ dependencies = [
 
 [[package]]
 name = "postman-backend-dav"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "jiff",
  "percent-encoding",
@@ -6386,7 +6386,7 @@ dependencies = [
 
 [[package]]
 name = "postman-backend-ews"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "jiff",
  "postman-cache",
@@ -6402,7 +6402,7 @@ dependencies = [
 
 [[package]]
 name = "postman-backend-imap"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "jiff",
  "postman-backend-dav",
@@ -6421,7 +6421,7 @@ dependencies = [
 
 [[package]]
 name = "postman-backend-jmap"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "jiff",
  "postman-cache",
@@ -6444,7 +6444,7 @@ dependencies = [
 
 [[package]]
 name = "postman-backend-ldap"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "ldap3",
  "postman-core",
@@ -6459,7 +6459,7 @@ dependencies = [
 
 [[package]]
 name = "postman-cache"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "postcard",
  "redb",
@@ -6470,7 +6470,7 @@ dependencies = [
 
 [[package]]
 name = "postman-calendar"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "jiff",
  "postman-worker",
@@ -6480,7 +6480,7 @@ dependencies = [
 
 [[package]]
 name = "postman-compose"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "mail-builder",
  "mail-parser",
@@ -6491,7 +6491,7 @@ dependencies = [
 
 [[package]]
 name = "postman-core"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "cpu-time",
  "jiff",
@@ -6518,7 +6518,7 @@ dependencies = [
 
 [[package]]
 name = "postman-dav"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "jiff",
  "percent-encoding",
@@ -6534,7 +6534,7 @@ dependencies = [
 
 [[package]]
 name = "postman-demo"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "jiff",
  "png 0.17.16",
@@ -6546,7 +6546,7 @@ dependencies = [
 
 [[package]]
 name = "postman-ews"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -6576,7 +6576,7 @@ dependencies = [
 
 [[package]]
 name = "postman-export"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "cfb 0.15.0",
  "msg_parser",
@@ -6585,7 +6585,7 @@ dependencies = [
 
 [[package]]
 name = "postman-gpui"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "embed-resource",
  "futures",
@@ -6625,7 +6625,7 @@ dependencies = [
 
 [[package]]
 name = "postman-imap"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "async-imap",
  "encoding_rs",
@@ -6640,7 +6640,7 @@ dependencies = [
 
 [[package]]
 name = "postman-ir"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "html5ever 0.39.0",
  "markup5ever_rcdom 0.39.0+unofficial",
@@ -6652,7 +6652,7 @@ dependencies = [
 
 [[package]]
 name = "postman-jmap"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "reqwest",
  "serde",
@@ -6665,7 +6665,7 @@ dependencies = [
 
 [[package]]
 name = "postman-pack"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "anyhow",
  "cab",
@@ -6677,7 +6677,7 @@ dependencies = [
 
 [[package]]
 name = "postman-search"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "tantivy",
  "tempfile",
@@ -6685,7 +6685,7 @@ dependencies = [
 
 [[package]]
 name = "postman-smime"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -6716,7 +6716,7 @@ dependencies = [
 
 [[package]]
 name = "postman-worker"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "calcard",
  "cfb 0.15.0",
