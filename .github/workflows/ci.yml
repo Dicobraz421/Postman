@@ -16,6 +16,9 @@ on:
     branches: [main]
     tags: ['v*']
   workflow_dispatch:
+  # Ночной прогон — только job `cache`: новая версия stable (ключ кэша включает rustc) прогревается до утренних PR.
+  schedule:
+    - cron: '17 1 * * *'
 
 concurrency:
   # Новый пуш в PR отменяет устаревший прогон.
@@ -79,7 +82,9 @@ jobs:
   test:
     needs: changes
     # Пуш в main не тестируется: тот же код уже проверила очередь слияния (merge_group). Тег — тестируется.
-    if: needs.changes.outputs.rust == 'true' && !(github.event_name == 'push' && github.ref_type == 'branch')
+    if: >-
+      needs.changes.outputs.rust == 'true' && github.event_name != 'schedule' &&
+      !(github.event_name == 'push' && github.ref_type == 'branch')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7.0.1
@@ -155,15 +160,18 @@ jobs:
         continue-on-error: true
         run: cargo test -p postman-worker --test windows_probe --locked -- --ignored --nocapture
 
-  # Тёплый кэш для `test` (решение 2026-11-12 «очень много времени теряется»). `test` на пуш в main не идёт (его код
-  # проверила очередь), а кэш, сохранённый в очереди слияния или в PR, другим PR не виден — только кэш ветки main.
+  # Тёплый кэш для `test` (решение 2026-11-12 «очень много времени теряется»): пуш в main и ночью. `test` на пуш в main
+  # не идёт (код проверила очередь), а кэш из очереди слияния или PR другим PR не виден — только кэш ветки main.
+  # Смена stable (раз в 6 недель) меняет ключ целиком: без ночного прогона первый PR после выпуска собирался с нуля.
   # Ключ rust-cache — хэш Cargo.lock, всех Cargo.toml, версии rustc и переменных CARGO_*/RUST*: есть такой —
   # job кончается за секунды (lookup-only, без скачивания). Нет — сборка тех же целей, что в `test` (clippy и тесты
   # без запуска), и сохранение: новый кэш (~1,3 ГБ) появляется только при смене зависимостей, старые вытесняет
   # GitHub по лимиту 10 ГБ. Окружение, шаги установки и команды сборки — те же, что в `test`, иначе ключ не совпадёт.
   cache:
     needs: changes
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true'
+    if: >-
+      github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true' &&
+      (github.event_name == 'push' || github.event_name == 'schedule')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7.0.1
