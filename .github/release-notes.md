@@ -70,7 +70,19 @@
 Или одной командой в Терминале: `xattr -dr com.apple.quarantine /Applications/Postman.app`
 <!-- /mac-unsigned -->
 
-*English:* Postman now updates itself (Settings → General → Updates; beta testers: install this version manually once, then pick the "Preview" channel). Windows — the **.msi** installs Postman for all users (administrator rights required); the **.zip** installs it for you only, no administrator rights needed. macOS (Apple Silicon, 13+) — open the **.dmg** and drag Postman onto Applications.
+## Скачать — Linux (x86_64)
+
+Предварительно: Linux пока проверяется только автоматически. Нужен 64-битный дистрибутив не старше Ubuntu 22.04, Debian 12 или Fedora 36.
+
+| | Что это |
+|---|---|
+| [**Пакет для Ubuntu и Debian** (.deb)](https://github.com/Dicobraz421/Postman/releases/download/v{version}/postman-{version}-linux-x64.deb) | `sudo apt install ./postman-{version}-linux-x64.deb` — Postman появится в меню приложений. |
+| [**Пакет для Fedora и openSUSE** (.rpm)](https://github.com/Dicobraz421/Postman/releases/download/v{version}/postman-{version}-linux-x64.rpm) | `sudo dnf install ./postman-{version}-linux-x64.rpm` (openSUSE — `sudo zypper install …`). |
+| [**AppImage**](https://github.com/Dicobraz421/Postman/releases/download/v{version}/postman-{version}-linux-x64.AppImage) | Один файл для любого дистрибутива, без установки: сделайте его исполняемым (`chmod +x`) и запустите. |
+
+Пакеты .deb и .rpm лучше AppImage на Ubuntu 23.10 и новее: с ними вложения открываются в более строгой изоляции. Новую версию на Linux пока нужно скачать и поставить вручную — письма и вход сохранятся.
+
+*English:* Postman now updates itself (Settings → General → Updates; beta testers: install this version manually once, then pick the "Preview" channel). Windows — the **.msi** installs Postman for all users (administrator rights required); the **.zip** installs it for you only, no administrator rights needed. macOS (Apple Silicon, 13+) — open the **.dmg** and drag Postman onto Applications. Linux (x86_64, preview) — the **.deb** (Ubuntu, Debian) or **.rpm** (Fedora, openSUSE) package, or the **.AppImage** for any distribution; updates are manual on Linux for now.
 <!-- mac-unsigned -->
 The app is not signed by Apple yet: on first launch go to System Settings → Privacy & Security → "Open Anyway", or run `xattr -dr com.apple.quarantine /Applications/Postman.app`.
 <!-- /mac-unsigned -->
