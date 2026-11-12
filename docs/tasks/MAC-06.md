@@ -1,7 +1,7 @@
 # MAC-06: выпуск для macOS
 
 lane: ci
-status: todo
+status: in-progress
 deps: [MAC-02, MAC-03]
 class: B
 files: [.github/workflows/ci.yml, .github/workflows/macos.yml, .github/release-notes.md, scripts/macos/, docs/DEV.md]
@@ -21,6 +21,8 @@ Postman для Mac на странице Releases рядом с Windows: под�
 - `.dmg` с ярлыком «Программы».
 - `pets-update`: режим «zip с .app» — замена бандла целиком.
 - Homebrew cask — по желанию владельца.
+- Mac-job в CI pets (`macos-26`: clippy `--target aarch64-apple-darwin` и тесты `pets-shell`, `pets-gpui-macos`,
+  `pets-ui`) — сейчас mac-код pets проверяет только CI `macOS` Postman, тесты pets для macOS не запускаются (MAC-04).
 - `macos.yml` — в обязательную проверку (`gate`), когда MAC-02…MAC-04 закроют расхождения с Windows.
 
 ## Приёмка

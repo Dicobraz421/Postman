@@ -768,7 +768,7 @@ impl Render for SignIn {
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(Done))),
                     )
                     .child("·")
-                    .child(tr!("signin-demo")),
+                    .child(tr!(crate::sys::os_key("signin-demo"))),
             )
             .into_any_element()
     }

@@ -101,8 +101,9 @@ gpui_kit::assets::icon_assets!(pub(crate) MacGlyphs, [
     UserPlus, Users, Video, WifiOff, X, ZoomIn, ZoomOut,
 ]);
 
-/// SVG для значка шрифта Segoe Fluent Icons; нет пары — `None` (значок рисуется шрифтом).
-#[cfg(target_os = "macos")]
+/// SVG для значка шрифта Segoe Fluent Icons; нет пары — `None` (значок рисуется шрифтом). Таблица собирается на всех
+/// ОС (MAC-04): тест полноты идёт и в обязательном CI Windows, а не только в `macos.yml`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn mac_glyph(g: char) -> Option<&'static str> {
     Some(match g {
         '\u{E121}' => "icons/clock.svg",
@@ -266,8 +267,8 @@ mod tests {
         assert_eq!(Assets.list("fluent/").unwrap().len(), SET.len());
     }
 
-    /// macOS: у каждого значка шрифта в коде интерфейса — SVG во вшитом наборе (иначе на Mac был бы «тофу»).
-    #[cfg(target_os = "macos")]
+    /// macOS: у каждого значка шрифта в коде интерфейса — SVG во вшитом наборе (иначе на Mac был бы «тофу» — квадрат
+    /// с «?»). Пара проверяется на всех ОС (MAC-04), загрузка SVG — на macOS (набор `MacGlyphs` вшит только там).
     #[test]
     fn every_font_glyph_has_an_svg_on_macos() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -287,7 +288,11 @@ mod tests {
                     // Частная область Unicode (значки шрифта); границы — числами, чтобы тест не нашёл сам себя.
                     if (0xE000..=0xF8FF).contains(&u32::from(g)) {
                         match super::mac_glyph(g) {
-                            Some(p) => assert!(Assets.load(p).unwrap().is_some(), "{p}"),
+                            Some(p) => {
+                                assert!(p.starts_with("icons/") && p.ends_with(".svg"), "{p}");
+                                #[cfg(target_os = "macos")]
+                                assert!(Assets.load(p).unwrap().is_some(), "{p}");
+                            }
                             None => missing.push(format!("{}: U+{hex}", path.display())),
                         }
                     }

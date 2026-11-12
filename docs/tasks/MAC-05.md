@@ -19,8 +19,8 @@ manual: docs/manual-tests/MAC-05.md
   адреса)» в мастере; вторая попытка `ДОМЕН\имя` из CHALLENGE и попытка без привязки; Basic — запасной по TLS;
   подробности отказа в тексте ошибки. Крейт `sspi` не подошёл: закреплённый `rsa =0.10.0-rc.18` против
   `=0.10.0-rc.19` у `postman-smime`.
-- [ ] EWS без пароля на macOS: Kerberos через GSS.framework (`sys.rs`), `upn`/`in_domain` в `shell_macos.rs`, тексты
-  `-mac`.
+- [ ] EWS без пароля на macOS: Kerberos через GSS.framework (`sys.rs`), `upn`/`in_domain` в `shell_macos.rs`
+  (тексты входа без названий ОС — уже MAC-04).
 - EWS: NTLM / Kerberos вместо SSPI (`crates/ews/src/sys.rs`): крейт `sspi` (Devolutions) или GSS.framework; привязка
   к каналу TLS (`sec_channel_bindings` — сейчас только Windows и тесты).
 - LDAP: GSSAPI-привязка `ldap3`, контроллер домена — DNS SRV вместо `DsGetDcNameW` (без домена — нет).
@@ -32,6 +32,11 @@ manual: docs/manual-tests/MAC-05.md
   `cross-krb5`/`libgssapi` с поддержкой macOS), снять `cfg`.
 - S/MIME: доверенные корни — `SecTrust`, подпись и расшифровка — `SecIdentity`/`SecKey` из Связки ключей (сейчас
   `smime/other.rs`); CRL — уже чистый Rust. Проверка подписи в воркере от платформы не зависит.
+- Вход без пароля в Exchange: `sys::shell::upn` и `in_domain` на macOS (`app-gpui/src/sys/shell_macos.rs`) — сейчас
+  «нет» (MAC-04), чтобы не предлагать вход, который не работает; здесь — домен AD (`dsconfigad -show` или Kerberos
+  `klist`) и UPN.
+- Тексты корпоративного уже без названий ОС (MAC-04, решение 2026-11-12 «no-os-names»: «проверяет система»,
+  «учётная запись домена»); если на macOS проверка устроена иначе — поправить смысл, не добавляя названий ОС.
 - ГОСТ при СКЗИ не делается (отложено, `docs/decisions/2026-10-27-smime-gost-skzi-deferred.md`).
 
 ## Приёмка

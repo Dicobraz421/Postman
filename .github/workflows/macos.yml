@@ -1,7 +1,7 @@
 # CI Postman для macOS (MAC-01, docs/decisions/2026-11-11-macos.md): Apple Silicon (arm64), macOS 13+.
 # Отдельно от ci.yml: required check `gate` его не ждёт, пока macOS не догонит Windows (MAC-02…MAC-06).
 # `test` — clippy и тесты крейтов, что проходят на macOS; `bundle` — release, Postman.app с подписью ad-hoc, zip и
-# снимки демо-ящика из собранного приложения. Строка macos-arm64 в выпуске (job `release` в ci.yml) — MAC-06.
+# снимки всех сцен демо-ящика из собранного приложения (MAC-04). Выпуск для macOS — строка macos-arm64 job `release` в ci.yml (MAC-06).
 name: macOS
 
 on:
@@ -66,7 +66,7 @@ jobs:
 
   bundle:
     runs-on: macos-26
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7.0.1
       - run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
@@ -82,12 +82,10 @@ jobs:
         id: package
         run: bash scripts/macos/package.sh --target-dir "$CARGO_TARGET_DIR" --out dist
 
-      # Снимки из собранного .app (воркер — в Contents/MacOS): список, письмо (HTML в песочнице), письмо с вложениями
-      # (сцена PDF его продолжает), PDF (рендер в песочнице), календарь. Все сцены — MAC-04.
+      # Снимки всех сцен из собранного .app (MAC-04; воркер — в Contents/MacOS, HTML и PDF — в песочнице): снимок окна
+      # — ScreenCaptureKit (macOS 14.4+), без разрешения «Запись экрана».
       - name: Снимки демо-ящика
-        timeout-minutes: 10
-        env:
-          POSTMAN_SCREENS_ONLY: list,letter,attachments,preview-pdf,calendar
+        timeout-minutes: 30
         run: |
           mkdir -p shots
           "${{ steps.package.outputs.app }}/Contents/MacOS/postman" --screens shots --lang ru

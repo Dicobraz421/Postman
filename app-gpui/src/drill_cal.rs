@@ -40,7 +40,7 @@ const SCENES: &[Scene] = &[
     Scene::new("cal-42-old-colors", old_colors, old_color_renamed).input(OLD_COLORS).on_request(),
     // Раздел 36, шаг 2: рабочие дни и часы. Затенение недели — на снимке.
     Scene::new("cal-36-hours", calendar_settings, week_shown).input(HOURS).on_request(),
-    // Раздел 36, шаг 4 и S5-21, шаг 4: пояс, «Как в Windows», первый день, вид, шаг, второй пояс.
+    // Раздел 36, шаг 4 и S5-21, шаг 4: пояс, «Как в системе», первый день, вид, шаг, второй пояс.
     Scene::new("cal-36-zone", calendar_settings, zone_saved).input(ZONE).on_request(),
     // Раздел 24, шаг 7: панель «Снизу» и «Скрыта», письмо вместо списка, Esc — назад.
     Scene::new("cal-24-reading", reading, pane_saved).input(READING).on_request(),
@@ -690,7 +690,7 @@ const SIGN_NEW: &str = "С уважением"; // i18n-ok: ввод сцена�
 const SIGN_REPLY: &str = "Спасибо"; // i18n-ok: ввод сценария
 /// Место нескольких встреч демо.
 const ROOM: &str = "Переговорная 1"; // i18n-ok: ввод сценария
-/// «(UTC+05:00) Екатеринбург»: пятый в списке «Пояс» (`Menu::Zone`), первый — «Как в Windows».
+/// «(UTC+05:00) Екатеринбург»: пятый в списке «Пояс» (`Menu::Zone`), первый — «Как в системе».
 const URAL_ITEM: &str = "settings-cal-item-204";
 const URAL: &str = "Asia/Yekaterinburg";
 /// Ссылка без TLS: календари и занятость её не принимают.
