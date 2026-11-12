@@ -39,12 +39,12 @@ postman-search.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 postman-compose.workspace = true
-pets-commands = { git = "https://github.com/Dicobraz/pets", rev = "23cf38681d4fd69a3449c293cdf350440e2160e1" }
-pets-i18n = { git = "https://github.com/Dicobraz/pets", rev = "23cf38681d4fd69a3449c293cdf350440e2160e1" }
+pets-commands = { git = "https://github.com/Dicobraz/pets", rev = "04174d541c8c455c5826f30c75b0396067e0ed7d" }
+pets-i18n = { git = "https://github.com/Dicobraz/pets", rev = "04174d541c8c455c5826f30c75b0396067e0ed7d" }
 # T3-06: `clipboard` (HTML буфера обмена, pets#44); MAC-02: Связка ключей, экземпляр и `mailto` на macOS (pets#48);
 # MAC-04: буфер HTML, объект входа, политики профиля, память процесса на macOS (pets#55); «Как в системе» (pets#57).
-pets-shell = { git = "https://github.com/Dicobraz/pets", rev = "23cf38681d4fd69a3449c293cdf350440e2160e1" }
-pets-ui = { git = "https://github.com/Dicobraz/pets", rev = "23cf38681d4fd69a3449c293cdf350440e2160e1" }
+pets-shell = { git = "https://github.com/Dicobraz/pets", rev = "04174d541c8c455c5826f30c75b0396067e0ed7d" }
+pets-ui = { git = "https://github.com/Dicobraz/pets", rev = "04174d541c8c455c5826f30c75b0396067e0ed7d" }
 # Обновление программы (решение 2026-11-11 «self-update», Postman#503): проверка GitHub Releases, подпись minisign,
 # установка MSI и portable. Единственная сеть интерфейса по своей инициативе — только модуль `update`.
 pets-update = { git = "https://github.com/Dicobraz421/pets", rev = "c767dfd4489033e2c359e159481f23bd7119646a" }
@@ -64,7 +64,7 @@ gpui-pre-windows = "=0.3.9"
 # macOS (MAC-02): окно, снимок, перетаскивание, уведомления — `pets_gpui_macos` (аналог `gpui_windows::pets`, pets#48);
 # MAC-04: снимок ScreenCaptureKit, щелчок по уведомлению (pets#55).
 [target.'cfg(target_os = "macos")'.dependencies]
-pets-gpui-macos = { git = "https://github.com/Dicobraz/pets", rev = "23cf38681d4fd69a3449c293cdf350440e2160e1" }
+pets-gpui-macos = { git = "https://github.com/Dicobraz/pets", rev = "04174d541c8c455c5826f30c75b0396067e0ed7d" }
 
 # Значок, версия и манифест exe (build.rs, rc.exe из Windows SDK).
 [build-dependencies]
