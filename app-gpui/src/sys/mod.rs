@@ -36,7 +36,15 @@ fn os_memory_field() -> Option<String> {
     Some(format!("idle_phys_footprint_mb={:.0}", bytes as f64 / 1_048_576.0))
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+/// Linux (LIN-03): своя память из `/proc/self/smaps_rollup` (частные страницы и выгруженное) — ближайшее к частному
+/// рабочему набору Windows, то же имя поля (ADR 0011 п. 3).
+#[cfg(target_os = "linux")]
+fn os_memory_field() -> Option<String> {
+    let bytes = pets_shell::memory::phys_footprint()?;
+    Some(format!("idle_private_ws_mb={:.0}", bytes as f64 / 1_048_576.0))
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 fn os_memory_field() -> Option<String> {
     None
 }
@@ -85,9 +93,10 @@ pub fn os_key_on(key: &str, mac: bool) -> &str {
 }
 
 /// Пароль учётной записи — в диспетчере учётных данных Windows (S3-04), тип «общие учётные данные», для этого
-/// пользователя на этой машине; на macOS — в Связке ключей входа (MAC-02). На диск приложения пароль не попадает;
-/// в журнал — тоже (ошибки — только код ОС).
-#[cfg(any(windows, target_os = "macos"))]
+/// пользователя на этой машине; на macOS — в Связке ключей входа (MAC-02); на Linux — Secret Service (GNOME Keyring,
+/// KWallet, LIN-03): службы нет — ошибка, вход каждый раз строкой. На диск приложения пароль не попадает; в журнал —
+/// тоже (ошибки — только код ОС).
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 pub mod credentials {
     use pets_shell::credentials as os;
 
@@ -107,10 +116,10 @@ pub mod credentials {
 }
 
 /// Другие ОС: хранилища секретов нет — вход только из окружения или каждый раз строкой входа.
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub mod credentials {
     pub fn write(_target: &str, _user: &str, _secret: &str) -> Result<(), String> {
-        Err("credential store is Windows and macOS only".into())
+        Err("no credential store on this OS".into())
     }
 
     pub fn read(_target: &str) -> Result<Option<String>, String> {
@@ -168,8 +177,18 @@ pub mod shell;
 #[path = "shell_macos.rs"]
 pub mod shell;
 
+/// Linux (LIN-03): стандарты freedesktop — `.desktop`, `xdg-open`, D-Bus, политики в `/etc`.
+#[cfg(target_os = "linux")]
+#[path = "shell_linux.rs"]
+pub mod shell;
+
+/// Linux (LIN-03): тёмная тема и акцент среды (portal).
+#[cfg(target_os = "linux")]
+#[path = "appearance_linux.rs"]
+pub mod appearance;
+
 /// Другие ОС: ничего из этого нет.
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub mod shell {
     use std::path::Path;
 

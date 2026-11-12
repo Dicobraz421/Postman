@@ -269,6 +269,9 @@ fn main() {
         }
     };
     std::fs::create_dir_all(&dir).unwrap_or_else(|e| fatal("fatal-data-dir", e));
+    // Linux (LIN-03): namespaces песочницы по политике — до первого воркера.
+    #[cfg(target_os = "linux")]
+    security::apply_sandbox_policy();
     // Копии перетащенных вложений (T1-18) прошлого запуска — в фоне; замеры и снимки не трогают копии работающего окна.
     #[cfg(any(windows, target_os = "macos"))]
     if persist {
@@ -328,6 +331,9 @@ fn main() {
             cx.global_mut::<gpui_kit::component::Theme>().font_family = family.into();
         }
         security::apply(&user_prefs);
+        // Linux (LIN-03): тема и акцент среды (portal).
+        #[cfg(target_os = "linux")]
+        sys::appearance::watch(cx);
         // Клавиши — из реестра команд (S2-02) и свои из настроек (S5-09); в поле ввода клавиши без модификаторов — текст.
         commands::bind(cx, &user_prefs);
         prefs::init(user_prefs, prefs_path, cx);

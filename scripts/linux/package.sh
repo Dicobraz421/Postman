@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # LIN-01: Linux build archive (x86_64) for CI - not a release (AppImage, deb and rpm - LIN-06,
 # docs/decisions/2026-11-12-linux.md). The folder postman-<version>-linux-x64 holds postman, postman-worker and
-# postman-viewer (the worker looks for them next to postman); the archive postman-<version>-linux-x64.tar.gz holds it.
+# postman-viewer (the worker looks for them next to postman), postman.desktop and postman.svg (LIN-03); the archive
+# postman-<version>-linux-x64.tar.gz holds it.
 # Takes the binaries of a finished build (cargo build --release --workspace --features postman-worker/viewer).
 # Prints the archive path; in GitHub Actions also sets the outputs name, dir, tar and version.
 # Usage: scripts/linux/package.sh [--target-dir <cargo target dir>] [--profile release|debug] [--out <dir, default dist>]
@@ -44,6 +45,10 @@ tar="$out/$name.tar.gz"
 rm -rf "$stage" "$tar"
 mkdir -p "$stage"
 install -m 755 "$bin/postman" "$bin/postman-worker" "$bin/postman-viewer" "$stage/"
+# LIN-03: desktop entry (mailto handler, menu, autostart) and the app icon; deb/rpm/AppImage install them into
+# share/applications and share/icons/hicolor (LIN-06). Exec=postman resolves through PATH.
+install -m 644 "$root/scripts/linux/postman.desktop" "$stage/"
+install -m 644 "$root/app-gpui/res/postman.svg" "$stage/postman.svg"
 # Owner and times are not part of the archive: the same build gives the same tar.gz.
 tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='2000-01-01 00:00Z' -C "$out" -czf "$tar" "$name"
 
