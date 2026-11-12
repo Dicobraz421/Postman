@@ -37,9 +37,15 @@ mod macos;
 #[cfg(target_os = "macos")]
 use macos as sys;
 
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+use linux as sys;
+#[cfg(target_os = "linux")]
+pub use linux::{PersonalFileError, check_personal_file, clear_personal_files, load_personal_files};
 #[cfg(not(any(windows, target_os = "macos")))]
 mod other;
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 use other as sys;
 
 use std::sync::{Arc, Mutex, PoisonError};
@@ -340,7 +346,11 @@ pub fn can_sign(from: &str, now: i64) -> bool {
     {
         keychain::can_sign(from, now)
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::can_sign(from, now)
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
         let _ = (from, now);
         false
@@ -374,10 +384,18 @@ pub fn seal_outgoing(raw: &[u8], to: &[postman_smime::seal::To]) -> Result<Vec<u
         }
         postman_smime::seal::seal_message(raw, to, &keychain::KeychainOps)
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        // СКЗИ на Linux нет (ГОСТ — LIN-07): получатели ГОСТ не шифруются.
+        if gost > 0 {
+            return Err(SealError::Gost);
+        }
+        linux::seal(raw, to)
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
         let _ = raw;
-        Err(SealError::Failed("encryption needs Windows".into()))
+        Err(SealError::Failed("encryption is not available on this system".into()))
     }
 }
 
@@ -466,7 +484,15 @@ pub fn recipient_candidates(cache: &Cache, addresses: &[String], own: &str, now:
             }
         }
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        for der in linux::own_certs(own) {
+            if !out.contains(&der) {
+                out.push(der);
+            }
+        }
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     let _ = own;
     out
 }
@@ -481,14 +507,17 @@ pub struct Personal {
     pub scheme: Option<postman_smime::Scheme>,
 }
 
-/// Свои сертификаты: Windows — `CurrentUser\My`, macOS — удостоверения Связки ключей (с закрытым ключом); по сроку,
+/// Свои сертификаты: Windows — `CurrentUser\My`, macOS — удостоверения Связки ключей (с закрытым ключом), Linux —
+/// открытые файлы PKCS#12 ([`load_personal_files`]); по сроку,
 /// самый поздний — первым. Свои байты хранилища ОС, не письма.
 pub fn personal_certificates() -> Vec<Personal> {
     #[cfg(windows)]
     let ders = seal_win::my_certs();
     #[cfg(target_os = "macos")]
     let ders = keychain::personal(None);
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    let ders = linux::personal();
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     let ders: Vec<Vec<u8>> = Vec::new();
     personal_from(ders)
 }
@@ -523,7 +552,13 @@ pub fn sign_outgoing(raw: &[u8], from: &str, hwnd: Option<isize>, now: i64) -> R
         // Окна ОС (пароль Связки ключей, PIN карты) — только когда пользователь нажал «Ввести» (`hwnd` есть).
         keychain::sign_message(raw, from, hwnd.is_none(), now)
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        // Ключ — в памяти (файл PKCS#12 открыт паролем заранее): окон и PIN нет.
+        let _ = hwnd;
+        linux::sign_message(raw, from, now)
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
         let _ = (raw, hwnd, now);
         Err(postman_smime::sign::SignError::NoCertificate(from.into()))

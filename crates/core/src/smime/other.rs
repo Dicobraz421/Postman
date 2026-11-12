@@ -1,9 +1,12 @@
-//! Не Windows: хранилищ и СКЗИ нет — якорей нет, цепочка в ОС не подтверждается.
+//! Не Windows и не macOS: СКЗИ нет, цепочка в ОС не подтверждается; на других ОС, кроме Linux (`linux.rs`), нет и
+//! якорей и ключей.
 
+#[cfg(not(target_os = "linux"))]
 use postman_smime::Trust;
 
 use super::Revocation;
 
+#[cfg(not(target_os = "linux"))]
 pub(super) fn load_trust(_corporate_extra: &[String]) -> Trust {
     Trust::default()
 }
@@ -30,6 +33,7 @@ pub(super) fn gost_decrypt(
 }
 
 /// Хранилища ключей нет: письмо — «не для вас».
+#[cfg(not(target_os = "linux"))]
 pub(super) fn unwrap_cek(
     env: &postman_smime::envelope::Envelope,
     _prompt: super::keys::Prompt,

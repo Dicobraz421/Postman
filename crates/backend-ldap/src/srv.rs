@@ -1,4 +1,4 @@
-//! Контроллер домена по DNS (macOS, MAC-05; на Windows — `DsGetDcNameW`): домен — область (realm) билета Kerberos
+//! Контроллер домена по DNS (macOS, MAC-05; Linux, LIN-05; на Windows — `DsGetDcNameW`): домен — область (realm) билета Kerberos
 //! пользователя, контроллеры — записи SRV `_ldap._tcp.dc._msdcs.<домен>` (RFC 2782, как ищет их Windows). Здесь —
 //! разбор ответа и выбор; запрос DNS и билет — в `sys`. Ответ DNS — чужие данные: разбор без паник.
 
@@ -55,6 +55,75 @@ pub(crate) fn choose(records: impl IntoIterator<Item = Srv>) -> Option<String> {
     Some(if best.port == LDAP_PORT { best.target } else { format!("{}:{}", best.target, best.port) })
 }
 
+/// Имя DNS в сообщении `msg` с позиции `at` — метками без сжатия (с нулём на конце); указатели сжатия (RFC 1035
+/// §4.1.4) раскрываются, не больше 16 переходов. Второе — позиция после имени в исходном месте.
+fn read_name(msg: &[u8], mut at: usize) -> Option<(Vec<u8>, usize)> {
+    let mut out = Vec::new();
+    let mut end = None;
+    for _ in 0..16 {
+        loop {
+            let len = *msg.get(at)?;
+            match len & 0xC0 {
+                0 if len == 0 => {
+                    out.push(0);
+                    return Some((out, end.unwrap_or(at + 1)));
+                }
+                0 => {
+                    let label = msg.get(at..at + 1 + usize::from(len))?;
+                    out.extend_from_slice(label);
+                    if out.len() > 255 {
+                        return None;
+                    }
+                    at += 1 + usize::from(len);
+                }
+                0xC0 => {
+                    let low = *msg.get(at + 1)?;
+                    end.get_or_insert(at + 2);
+                    at = usize::from(len & 0x3F) << 8 | usize::from(low);
+                    break;
+                }
+                _ => return None,
+            }
+        }
+    }
+    None
+}
+
+/// Данные записей типа `kind` из ответа DNS `msg` (RFC 1035 §4.1) — для SRV с именем узла без сжатия, как ждёт
+/// [`parse`]. Повреждённый ответ — сколько успели разобрать.
+pub(crate) fn answers(msg: &[u8], kind: u16) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    let Some(head) = msg.first_chunk::<12>() else { return out };
+    let (questions, count) = (u16::from_be_bytes([head[4], head[5]]), u16::from_be_bytes([head[6], head[7]]));
+    let mut at = 12;
+    for _ in 0..questions {
+        let Some((_, next)) = read_name(msg, at) else { return out };
+        at = next + 4;
+    }
+    for _ in 0..count {
+        let Some((_, next)) = read_name(msg, at) else { return out };
+        let Some(fixed) = msg.get(next..next + 10) else { return out };
+        let rtype = u16::from_be_bytes([fixed[0], fixed[1]]);
+        let len = usize::from(u16::from_be_bytes([fixed[8], fixed[9]]));
+        let start = next + 10;
+        let Some(rdata) = msg.get(start..start + len) else { return out };
+        if rtype == kind {
+            if kind == 33 && rdata.len() > 6 {
+                // Имя узла SRV — раскрыть возможное сжатие (некоторые серверы сжимают вопреки RFC 2782).
+                if let Some((name, _)) = read_name(msg, start + 6) {
+                    let mut r = rdata[..6].to_vec();
+                    r.extend_from_slice(&name);
+                    out.push(r);
+                }
+            } else {
+                out.push(rdata.to_vec());
+            }
+        }
+        at = start + len;
+    }
+    out
+}
+
 /// Домен DNS из имени Kerberos `user@CORP.EXAMPLE`: область в нижнем регистре (у AD она и есть домен DNS).
 pub(crate) fn realm_domain(principal: &str) -> Option<String> {
     let realm = principal.rsplit_once('@')?.1.trim().trim_end_matches('.');
@@ -109,6 +178,43 @@ mod tests {
         assert_eq!(choose(records.iter().filter_map(|r| parse(r))), Some("dc2.corp.example".into()));
         assert_eq!(choose(parse(&rdata(0, 0, 3268, "gc.corp.example"))), Some("gc.corp.example:3268".into()));
         assert_eq!(choose(Vec::new()), None);
+    }
+
+    /// Ответ DNS: вопрос, запись CNAME (пропускается), две SRV — одна со сжатым именем узла; обрезанный ответ — без
+    /// паники.
+    #[test]
+    fn parses_dns_answer() {
+        let mut msg = vec![0, 1, 0x81, 0x80, 0, 1, 0, 3, 0, 0, 0, 0];
+        let qname = 12;
+        msg.extend_from_slice(b"\x05_ldap\x04_tcp\x04corp\x07example\x00");
+        msg.extend_from_slice(&[0, 33, 0, 1]);
+        let ptr = |off: usize| [0xC0 | (off >> 8) as u8, off as u8];
+        // CNAME
+        msg.extend_from_slice(&ptr(qname));
+        msg.extend_from_slice(&[0, 5, 0, 1, 0, 0, 0, 60, 0, 2]);
+        msg.extend_from_slice(&ptr(qname));
+        // SRV без сжатия
+        msg.extend_from_slice(&ptr(qname));
+        let plain = rdata(0, 100, 389, "dc1.corp.example");
+        msg.extend_from_slice(&[0, 33, 0, 1, 0, 0, 0, 60, 0, plain.len() as u8]);
+        msg.extend_from_slice(&plain);
+        // SRV: «dc2» + указатель на «corp.example» в вопросе
+        msg.extend_from_slice(&ptr(qname));
+        let mut packed = vec![0, 0, 0, 200, 1, 0x85, 3, b'd', b'c', b'2'];
+        packed.extend_from_slice(&ptr(qname + 11));
+        msg.extend_from_slice(&[0, 33, 0, 1, 0, 0, 0, 60, 0, packed.len() as u8]);
+        msg.extend_from_slice(&packed);
+        let found: Vec<Srv> = answers(&msg, 33).iter().filter_map(|r| parse(r)).collect();
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(found[1].target, "dc2.corp.example");
+        assert_eq!(choose(found), Some("dc2.corp.example".into()));
+        for cut in 0..msg.len() {
+            let _ = answers(&msg[..cut], 33);
+        }
+        // Петля указателей — не зависает.
+        let mut looped = vec![0, 1, 0x81, 0x80, 0, 0, 0, 1, 0, 0, 0, 0, 0xC0, 12];
+        looped.extend_from_slice(&[0, 33, 0, 1, 0, 0, 0, 0, 0, 0]);
+        assert!(answers(&looped, 33).is_empty());
     }
 
     #[test]
