@@ -9,8 +9,12 @@
 - Вопросы владельцу — пакетом «Решения для владельца» (№, вопрос, рекомендация).
 - Ручная проверка задачи — файлом `docs/manual-tests/<задача>.md` (не правкой `docs/MANUAL-TESTS.md`).
 - Локально — `cargo check`/`clippy` во время работы и один прогон тестов затронутых крейтов перед PR; весь набор
-  гоняет CI (`.github/workflows/ci.yml`, только Windows). Архив `postman-<версия>-windows-x64.zip` собирает job
-  `release` на main и тегах `v*` (`scripts/windows/package.ps1`; подпись — если задан секрет); выпуск — ниже.
+  гоняет CI (`.github/workflows/ci.yml` — Windows, `macos.yml` — macOS). Комплекты выпуска собирает job `release`
+  только на тегах `v*`, вручную и в PR, что правят сам выпуск (`scripts/windows/package.ps1`, `scripts/macos/`); выпуск
+  — ниже.
+- Экономия CI (решение `docs/decisions/2026-11-12-ci-economy.md`): PR открывать черновиком (`gh pr create --draft`) и
+  пушить в него сколько угодно — CI не идёт; когда работа готова и локальные проверки прошли — `gh pr ready`, тогда
+  один прогон. Правки после отзыва — одним пушем, а не по коммиту.
 - Спека сессии — `docs/specs/Sx.md`; соответствие сессий фазам плана — в `docs/specs/S0-decisions.md`.
 
 ## Запуск
