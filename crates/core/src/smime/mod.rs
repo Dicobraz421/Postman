@@ -87,6 +87,47 @@ pub enum Confirm {
     Failed,
 }
 
+/// Что ОС сообщила о цепочке, которую воркер уже довёл до доверенного корня, — общий словарь Windows (флаги
+/// CryptoAPI) и macOS (коды `SecTrust`). Итог из него — одно правило на все ОС ([`chain_verdict`], PAR-AUDIT №5).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ChainCheck {
+    pub(crate) distrusted: bool,
+    pub(crate) revoked: bool,
+    pub(crate) bad_signature: bool,
+    pub(crate) untrusted: bool,
+    pub(crate) expired: bool,
+    pub(crate) wrong_usage: bool,
+    /// Другая ошибка цепочки (ограничения имён, неизвестное критическое расширение, политика…).
+    pub(crate) other: bool,
+    /// Статус отзыва не получен (CA недоступен, нет адресов CRL/OCSP).
+    pub(crate) revocation_unknown: bool,
+}
+
+/// Итог цепочки: сначала запрет и отзыв, затем любая ошибка цепочки — «отклонено» (строже: ошибка цепочки вместе с
+/// «отзыв неизвестен» — тоже отклонено), и только чистая цепочка без ответа об отзыве — «не удалось проверить».
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+pub(crate) fn chain_verdict(c: ChainCheck) -> Revocation {
+    if c.distrusted {
+        Revocation::Rejected(Confirm::Distrusted)
+    } else if c.revoked {
+        Revocation::Revoked
+    } else if c.bad_signature {
+        Revocation::Rejected(Confirm::BadSignature)
+    } else if c.untrusted {
+        Revocation::Rejected(Confirm::Untrusted)
+    } else if c.expired {
+        Revocation::Rejected(Confirm::Expired)
+    } else if c.wrong_usage {
+        Revocation::Rejected(Confirm::WrongUsage)
+    } else if c.other {
+        Revocation::Rejected(Confirm::Failed)
+    } else if c.revocation_unknown {
+        Revocation::Unknown
+    } else {
+        Revocation::Good
+    }
+}
+
 /// Чем проверен ГОСТ.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GostEngine {
@@ -577,6 +618,34 @@ pub fn sign_outgoing(raw: &[u8], from: &str, hwnd: Option<isize>, now: i64) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Таблица итогов цепочки — одна на все ОС (PAR-AUDIT №5): Windows и macOS сводят свои коды к [`ChainCheck`].
+    #[test]
+    fn chain_verdicts_are_the_same_everywhere() {
+        let c = |f: fn(&mut ChainCheck)| {
+            let mut c = ChainCheck::default();
+            f(&mut c);
+            c
+        };
+        let rows: [(ChainCheck, Revocation); 12] = [
+            (c(|_| {}), Revocation::Good),
+            (c(|c| c.revocation_unknown = true), Revocation::Unknown),
+            (c(|c| c.revoked = true), Revocation::Revoked),
+            (c(|c| (c.revoked, c.revocation_unknown) = (true, true)), Revocation::Revoked),
+            (c(|c| (c.distrusted, c.revoked) = (true, true)), Revocation::Rejected(Confirm::Distrusted)),
+            (c(|c| c.bad_signature = true), Revocation::Rejected(Confirm::BadSignature)),
+            (c(|c| c.untrusted = true), Revocation::Rejected(Confirm::Untrusted)),
+            (c(|c| (c.expired, c.revocation_unknown) = (true, true)), Revocation::Rejected(Confirm::Expired)),
+            (c(|c| c.wrong_usage = true), Revocation::Rejected(Confirm::WrongUsage)),
+            (c(|c| c.other = true), Revocation::Rejected(Confirm::Failed)),
+            // Было на Windows: ошибка цепочки + «отзыв неизвестен» → `Unknown` («подписано»); теперь отклонено, как macOS.
+            (c(|c| (c.other, c.revocation_unknown) = (true, true)), Revocation::Rejected(Confirm::Failed)),
+            (c(|c| (c.untrusted, c.wrong_usage) = (true, true)), Revocation::Rejected(Confirm::Untrusted)),
+        ];
+        for (check, want) in rows {
+            assert_eq!(chain_verdict(check), want, "{check:?}");
+        }
+    }
     use postman_smime::testkit::{self, Head, NOW, Pki, Sign};
 
     fn letter_report(pki: &Pki) -> Report {

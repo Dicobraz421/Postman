@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
 use postman_smime::p12::{Identity, P12Error};
+use postman_smime::seal::SealError;
 use postman_smime::sign::{SignError, own_certificate};
 use postman_smime::{Anchor, Scheme, Trust};
 
@@ -376,54 +377,40 @@ pub(super) fn unwrap_cek(
 /// из тех же случайных чисел.
 pub(super) struct LinuxOps {
     random: std::fs::File,
-    failed: std::sync::atomic::AtomicBool,
 }
 
 impl LinuxOps {
-    pub(super) fn new() -> Result<LinuxOps, postman_smime::seal::SealError> {
-        let random =
-            std::fs::File::open("/dev/urandom").map_err(|e| postman_smime::seal::SealError::Failed(format!("/dev/urandom: {}", e.kind())))?;
-        Ok(LinuxOps { random, failed: std::sync::atomic::AtomicBool::new(false) })
-    }
-
-    /// Случайные числа не получены — письмо не годится.
-    pub(super) fn failed(&self) -> bool {
-        self.failed.load(std::sync::atomic::Ordering::Relaxed)
+    pub(super) fn new() -> Result<LinuxOps, SealError> {
+        let random = std::fs::File::open("/dev/urandom").map_err(|e| SealError::Failed(format!("/dev/urandom: {}", e.kind())))?;
+        Ok(LinuxOps { random })
     }
 }
 
 impl postman_smime::seal::Ops for LinuxOps {
-    fn random(&self, out: &mut [u8]) {
+    fn random(&self, out: &mut [u8]) -> Result<(), SealError> {
         use std::io::Read;
-        if (&self.random).read_exact(out).is_err() {
+        (&self.random).read_exact(out).map_err(|e| {
             out.fill(0);
-            self.failed.store(true, std::sync::atomic::Ordering::Relaxed);
-        }
+            tracing::error!("smime: system random source failed: {}", e.kind());
+            SealError::Failed("no system random source".into())
+        })
     }
 
-    fn ecdh(&self, bits: u16, peer: &[u8]) -> Result<(Vec<u8>, zeroize::Zeroizing<Vec<u8>>), postman_smime::seal::SealError> {
+    fn ecdh(&self, bits: u16, peer: &[u8]) -> Result<(Vec<u8>, zeroize::Zeroizing<Vec<u8>>), SealError> {
         let mut seed = zeroize::Zeroizing::new(vec![0u8; if bits == 384 { 48 } else { 32 }]);
         // Байты вне порядка кривой — вероятность ~2^-32 и меньше; несколько попыток, затем отказ.
         for _ in 0..4 {
-            self.random(&mut seed);
-            if self.failed() {
-                break;
-            }
+            self.random(&mut seed)?;
             if let Some(r) = postman_smime::soft::ecdh_ephemeral(bits, &seed, peer) {
                 return Ok(r);
             }
         }
-        Err(postman_smime::seal::SealError::Failed("ECDH".into()))
+        Err(SealError::Failed("ECDH".into()))
     }
 }
 
-pub(super) fn seal(raw: &[u8], to: &[postman_smime::seal::To]) -> Result<Vec<u8>, postman_smime::seal::SealError> {
-    let ops = LinuxOps::new()?;
-    let sealed = postman_smime::seal::seal_message(raw, to, &ops)?;
-    if ops.failed() {
-        return Err(postman_smime::seal::SealError::Failed("no random numbers".into()));
-    }
-    Ok(sealed)
+pub(super) fn seal(raw: &[u8], to: &[postman_smime::seal::To]) -> Result<Vec<u8>, SealError> {
+    postman_smime::seal::seal_message(raw, to, &LinuxOps::new()?)
 }
 
 #[cfg(test)]

@@ -29,8 +29,9 @@ pub enum SealError {
 
 /// Случайные числа и ECDH — средствами ОС (ядро) или тестов.
 pub trait Ops {
-    /// Криптографически стойкие случайные байты.
-    fn random(&self, out: &mut [u8]);
+    /// Криптографически стойкие случайные байты. Сбой генератора — ошибка: шифровать без случайных чисел нельзя
+    /// (PAR-AUDIT №6, одинаково на всех ОС).
+    fn random(&self, out: &mut [u8]) -> Result<(), SealError>;
     /// Эфемерный ключ на кривой `bits` (256/384) и общий секрет с точкой `peer` (`04‖X‖Y`): (своя точка, Z
     /// big-endian).
     fn ecdh(&self, bits: u16, peer: &[u8]) -> Result<(Vec<u8>, Zeroizing<Vec<u8>>), SealError>;
@@ -96,23 +97,22 @@ fn rid(p: &Prepared) -> Vec<u8> {
 struct Rng<'a>(&'a dyn Ops);
 
 impl rand_core::TryRng for Rng<'_> {
-    type Error = std::convert::Infallible;
+    type Error = SealError;
 
     fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
         let mut b = [0u8; 4];
-        self.0.random(&mut b);
+        self.0.random(&mut b)?;
         Ok(u32::from_le_bytes(b))
     }
 
     fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
         let mut b = [0u8; 8];
-        self.0.random(&mut b);
+        self.0.random(&mut b)?;
         Ok(u64::from_le_bytes(b))
     }
 
     fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
-        self.0.random(dst);
-        Ok(())
+        self.0.random(dst)
     }
 }
 
@@ -161,7 +161,7 @@ pub fn envelope(content: &[u8], to: &[To], ops: &dyn Ops) -> Result<(Vec<u8>, Ci
     }
     let cipher = choose_cipher(to);
     let mut cek = Zeroizing::new(vec![0u8; 32]);
-    ops.random(&mut cek);
+    ops.random(&mut cek)?;
     let gcm = matches!(cipher, Cipher::AesGcm(_));
     let infos = to.iter().map(|t| recipient_info(t, &cek, gcm, ops)).collect::<Result<Vec<_>, _>>()?.concat();
     let any_v2 = to.iter().any(|t| matches!(t.prepared.key, RecipientKey::Ec { .. }));
@@ -169,7 +169,7 @@ pub fn envelope(content: &[u8], to: &[To], ops: &dyn Ops) -> Result<(Vec<u8>, Ci
         use aes_gcm::aead::AeadInOut;
         use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
         let mut nonce = [0u8; 12];
-        ops.random(&mut nonce);
+        ops.random(&mut nonce)?;
         let mut buf = content.to_vec();
         let tag = Aes256Gcm::new_from_slice(&cek)
             .map_err(failed)?
@@ -180,7 +180,7 @@ pub fn envelope(content: &[u8], to: &[To], ops: &dyn Ops) -> Result<(Vec<u8>, Ci
         seq(&[oid_der(oid::AUTH_ENVELOPED_DATA), tlv(0xA0, &body)])
     } else {
         let mut iv = [0u8; 16];
-        ops.random(&mut iv);
+        ops.random(&mut iv)?;
         let ct = cbc::Encryptor::<aes::Aes256>::new_from_slices(&cek, &iv).map_err(failed)?.encrypt_padded_vec::<Pkcs7>(content);
         let eci = seq(&[oid_der(oid::DATA), alg(oid::AES256_CBC, Some(tlv(0x04, &iv))), tlv(0x80, &ct)]);
         let body = seq(&[tlv(0x02, &[if any_v2 { 2 } else { 0 }]), tlv(0x31, &infos), eci]);

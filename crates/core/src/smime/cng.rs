@@ -47,13 +47,17 @@ impl Drop for Handle {
 
 /// Случайный ключ нужной длины: снятие PKCS#1 не удалось — содержимое не расшифруется той же ошибкой, что и при
 /// неверном ключе (RFC 3218).
-fn random(len: usize) -> Cek {
+fn random(len: usize) -> Result<Cek, KeyError> {
     let mut out = Zeroizing::new(vec![0u8; len]);
+    let n = u32::try_from(len).map_err(|_| KeyError::Failed("random: too long".into()))?;
     // SAFETY: буфер на `len` байтов; системный генератор (`BCRYPT_USE_SYSTEM_PREFERRED_RNG`).
-    unsafe {
-        windows_sys::Win32::Security::Cryptography::BCryptGenRandom(ptr::null_mut(), out.as_mut_ptr(), len as u32, BCRYPT_USE_SYSTEM_PREFERRED_RNG)
-    };
-    out
+    let st =
+        unsafe { windows_sys::Win32::Security::Cryptography::BCryptGenRandom(ptr::null_mut(), out.as_mut_ptr(), n, BCRYPT_USE_SYSTEM_PREFERRED_RNG) };
+    if st != 0 {
+        tracing::error!(status = st, "smime: system random generator failed");
+        return Err(KeyError::Failed(format!("BCryptGenRandom: 0x{:08X}", st as u32)));
+    }
+    Ok(out)
 }
 
 fn wide(s: &str) -> Vec<u16> {
@@ -90,7 +94,7 @@ fn rsa_decrypt(key: usize, wrap: &Wrap, data: &[u8], silent: bool, key_len: usiz
         hr => match key_error(hr, "NCryptDecrypt") {
             // Заполнение PKCS#1 не снялось (KSP отвечает `NTE_BAD_DATA` или `NTE_INVALID_PARAMETER`): случайный ключ —
             // одна ошибка с неверным ключом содержимого (RFC 3218). PIN, карта, отмена — как есть.
-            KeyError::Failed(_) if matches!(wrap, Wrap::RsaPkcs1) => Ok(random(key_len)),
+            KeyError::Failed(_) if matches!(wrap, Wrap::RsaPkcs1) => random(key_len),
             e => Err(e),
         },
     }

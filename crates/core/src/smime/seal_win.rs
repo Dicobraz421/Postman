@@ -44,9 +44,15 @@ impl Drop for Secret {
 }
 
 impl Ops for WindowsOps {
-    fn random(&self, out: &mut [u8]) {
+    fn random(&self, out: &mut [u8]) -> Result<(), SealError> {
+        let len = u32::try_from(out.len()).map_err(|_| SealError::Failed("random: too long".into()))?;
         // SAFETY: буфер своей длины; системный генератор.
-        unsafe { BCryptGenRandom(ptr::null_mut(), out.as_mut_ptr(), out.len() as u32, BCRYPT_USE_SYSTEM_PREFERRED_RNG) };
+        let st = unsafe { BCryptGenRandom(ptr::null_mut(), out.as_mut_ptr(), len, BCRYPT_USE_SYSTEM_PREFERRED_RNG) };
+        if st != 0 {
+            tracing::error!(status = st, "smime: system random generator failed");
+            return Err(failed("BCryptGenRandom", st));
+        }
+        Ok(())
     }
 
     fn ecdh(&self, bits: u16, peer: &[u8]) -> Result<(Vec<u8>, Zeroizing<Vec<u8>>), SealError> {
@@ -280,7 +286,7 @@ pub(crate) fn seal_gost(raw: &[u8], to: &[To]) -> Result<Vec<u8>, SealError> {
         ));
     }
     let mut iv = [0u8; 8];
-    WindowsOps.random(&mut iv);
+    WindowsOps.random(&mut iv)?;
     // SAFETY: IV — 8 байтов.
     if unsafe { CryptSetKeyParam(session.0, KP_IV, iv.as_ptr(), 0) } == 0 {
         return Err(last("CryptSetKeyParam(KP_IV)"));

@@ -40,6 +40,12 @@ manual: docs/manual-tests/LIN-05.md
   `http_proxy`/`no_proxy`); итог — «отозван» / «не отозван» / «не удалось проверить» (`Unknown`, причина — в журнале).
   Не сделано: OCSP (Windows его проверяет через CryptoAPI) — нужен запрос OCSP и проверка ответа в воркере; CDP по
   `https` — нет TLS в загрузчике. Для AD CS (CRL всегда публикуется) итог совпадает с Windows.
+- PAR-AUDIT (волна `x/lin-05c`): №5 — итог цепочки одним правилом на всех ОС (`smime::chain_verdict`, таблица
+  `chain_verdicts_are_the_same_everywhere`): любая ошибка цепочки, кроме отзыва, — «отклонено», и вместе с «отзыв
+  неизвестен» тоже (на Windows было `Unknown`). №6 — `seal::Ops::random` → `Result`: сбой генератора (Windows —
+  код `BCryptGenRandom`, macOS — без нулевого буфера, Linux — `/dev/urandom`) останавливает шифрование
+  (`random_failure_stops_sealing`). №7 (KeyUsage) — уже общий: подписанта проверяет воркер
+  (`chain.rs`, `usage_allows_signing`) на всех ОС до проверки ОС.
 - Что требует UI (выбор файла, пароль в Secret Service, скрытие недоступного, `upn`/`in_domain`) — `LIN-05b`.
 
 ## Приёмка
