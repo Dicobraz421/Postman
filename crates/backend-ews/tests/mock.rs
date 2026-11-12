@@ -830,10 +830,13 @@ fn ntlm_server(accept: fn(&str) -> bool) -> (String, Arc<Mutex<Vec<String>>>) {
 
 /// Пустой пароль — вход учётной записью Windows (SSPI, учётные данные текущего входа, NTLM без сети): почта и
 /// области работают; адрес ящика — у сервера (`ResolveNames` по имени учётной записи), а не логин `DOMAIN\user`.
-/// Только Windows: NTLM/Kerberos на macOS — MAC-05.
-#[cfg(windows)]
+/// Windows — SSPI; macOS — GSS.framework (MAC-05) с учётными данными NTLM в хранилище системы, как после входа в
+/// домен (`SystemLogin`).
+#[cfg(any(windows, target_os = "macos"))]
 #[test]
 fn windows_sign_in_without_password() {
+    #[cfg(target_os = "macos")]
+    let _login = postman_ews::SystemLogin::ntlm("anna@EXAMPLE", "not-a-password").unwrap();
     let (url, log) = ntlm_server(|_| true);
     let live = start_as(&url, r"EXAMPLE\anna", "");
     let Event::Features(f) = live.wait("Features", |e| matches!(e, Event::Features(_))) else { unreachable!() };
