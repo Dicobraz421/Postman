@@ -15,13 +15,13 @@ soft = []
 serde.workspace = true
 thiserror.workspace = true
 # CMS (RFC 5652): решение владельца №13 — точная версия выпуска-кандидата.
-cms = { version = "=0.3.0-rc.0", default-features = false, features = ["std"] }
+cms = { version = "=0.3.0-rc.2", default-features = false, features = ["std"] }
 der = { version = "0.8", features = ["std", "derive", "oid"] }
 x509-cert = { version = "0.3", default-features = false, features = ["std"] }
 spki = { version = "0.8", features = ["std"] }
 const-oid = { version = "0.10", features = ["db"] }
 # Открытые операции RSA (PKCS#1 v1.5, PSS); закрытых ключей здесь нет (RUSTSEC-2023-0071 не относится).
-rsa = { version = "=0.10.0-rc.19", default-features = false, features = ["std", "encoding"] }
+rsa = { version = "0.10.0", default-features = false, features = ["std", "encoding", "pkcs1v15"] }
 crypto-bigint = { version = "0.7", default-features = false, features = ["alloc"] }
 digest = "0.11"
 sha1 = { version = "0.11", features = ["oid"] }

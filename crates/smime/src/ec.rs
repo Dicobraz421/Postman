@@ -302,7 +302,7 @@ impl Curve {
         let g = self.jac(&self.g.0, &self.g.1)?;
         let q = self.jac(qx, qy)?;
         let gq = self.add(&g, &q);
-        let bits = u1.bits_vartime().max(u2.bits_vartime());
+        let bits = u1.bit_width_vartime().max(u2.bit_width_vartime());
         let mut acc = self.infinity();
         for i in (0..bits).rev() {
             acc = self.dbl(&acc);
@@ -329,7 +329,7 @@ impl Curve {
     pub(crate) fn mul_g(&self, k: &U512) -> Option<(U512, U512)> {
         let g = self.jac(&self.g.0, &self.g.1)?;
         let mut acc = self.infinity();
-        for i in (0..k.bits_vartime()).rev() {
+        for i in (0..k.bit_width_vartime()).rev() {
             acc = self.dbl(&acc);
             if k.bit_vartime(i) {
                 acc = self.add(&acc, &g);
@@ -385,7 +385,7 @@ pub(crate) fn ecdsa_verify(c: &Curve, qx: &U512, qy: &U512, hash: &[u8], r: &U51
     if !c.in_range(r) || !c.in_range(s) {
         return false;
     }
-    let qbits = c.order().bits_vartime() as usize;
+    let qbits = c.order().bit_width_vartime() as usize;
     let take = hash.len().min(qbits.div_ceil(8));
     let Some(mut e) = uint_be(&hash[..take]) else { return false };
     if take * 8 > qbits {
@@ -432,7 +432,7 @@ mod tests {
             let (x, y) = c.mul_g(&c.q.wrapping_sub(&U512::ONE)).unwrap();
             assert_eq!(x, c.g.0, "{}", c.name);
             assert_eq!(c.fe(&y).unwrap().add(&c.fe(&c.g.1).unwrap()).retrieve(), U512::ZERO, "{}", c.name);
-            assert_eq!(c.bytes * 8, c.p.modulus().as_ref().bits_vartime().next_multiple_of(8) as usize, "{}", c.name);
+            assert_eq!(c.bytes * 8, c.p.modulus().as_ref().bit_width_vartime().next_multiple_of(8) as usize, "{}", c.name);
         }
     }
 

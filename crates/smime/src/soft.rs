@@ -5,7 +5,7 @@
 //! Сертификат свой (демо, тест), не из письма: разбирать его здесь можно.
 
 use der::{Decode, Encode};
-use rsa::RsaPrivateKey;
+use rsa::PrivateKey as RsaPrivateKey;
 use rsa::pkcs1::DecodeRsaPrivateKey;
 use x509_cert::Certificate;
 use x509_cert::ext::pkix::SubjectKeyIdentifier;

@@ -105,7 +105,7 @@ fn prepare_inner(der: &[u8], others: &[Vec<u8>], trust: &Trust, now: u64) -> Res
             }
             use rsa::pkcs1::DecodeRsaPublicKey;
             use rsa::traits::PublicKeyParts;
-            let k = rsa::RsaPublicKey::from_pkcs1_der(bits).map_err(|e| format!("RSA: {e}"))?;
+            let k = rsa::PublicKey::from_pkcs1_der(bits).map_err(|e| format!("RSA: {e}"))?;
             RecipientKey::Rsa { n: k.n().to_be_bytes().to_vec(), e: k.e().to_be_bytes().to_vec() }
         }
         oid::EC_PUBLIC_KEY => {

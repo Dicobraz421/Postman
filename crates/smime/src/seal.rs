@@ -127,7 +127,7 @@ fn recipient_info(t: &To, cek: &[u8], oaep: bool, ops: &dyn Ops) -> Result<Vec<u
     match &t.prepared.key {
         RecipientKey::Rsa { n, e } => {
             use rsa::pkcs1::DecodeRsaPublicKey;
-            let key = rsa::RsaPublicKey::from_pkcs1_der(&seq(&[integer(n), integer(e)])).map_err(failed)?;
+            let key = rsa::PublicKey::from_pkcs1_der(&seq(&[integer(n), integer(e)])).map_err(failed)?;
             let mut rng = Rng(ops);
             let (alg_id, ek) = if oaep {
                 let params = seq(&[tlv(0xA0, &alg(oid::SHA256, None)), tlv(0xA1, &alg(oid::MGF1, Some(alg(oid::SHA256, None))))]);

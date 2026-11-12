@@ -1,8 +1,9 @@
 # Свежие версии всего, от чего зависит сборка (решение владельца 2026-11-12):
 # раз в неделю — одно сводное PR на экосистему (мелкие и патч-версии), крупные — отдельными PR.
-# Исключение — RustCrypto (`rustcrypto`): шифры и хэши живут поколениями (cipher 0.5, digest 0.11, общий
-# crypto-common), по одному крейту не собираются (#574) — все версии, и крупные, одним PR. Группа стоит раньше
-# `cargo`: зависимость попадает в первую подходящую группу. Имена хэшей — точные, чтобы `sha*`/`md*` не забрали чужое.
+# Исключение — RustCrypto (`rustcrypto`): шифры, хэши, RSA/ECDSA и форматы (DER, X.509, CMS) живут поколениями
+# (cipher 0.5, digest 0.11, общий crypto-common, crypto-bigint 0.7), по одному крейту не собираются (#573, #574) —
+# все версии, и крупные, одним PR. Группа стоит раньше `cargo`: зависимость попадает в первую подходящую группу.
+# Имена — точные (шаблоны только у `aes*`, `block-*`, `pkcs*`), чтобы `sha*`/`md*` не забрали чужие крейты.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -17,25 +18,48 @@ updates:
     groups:
       rustcrypto:
         patterns:
+          # Шифры и AEAD (cipher 0.5).
           - "aes*"
           - "cbc"
           - "des"
-          - "cipher"
           - "ctr"
+          - "cipher"
+          - "aead"
           - "ghash"
           - "polyval"
           - "universal-hash"
-          - "aead"
           - "block-*"
           - "inout"
+          # Хэши и MAC (digest 0.11).
           - "crypto-common"
           - "digest"
           - "hmac"
           - "sha1"
           - "sha2"
+          - "sha3"
           - "md4"
           - "md-5"
           - "streebog"
+          # Подпись и ключи: RSA, ECDSA, кривые, большие числа.
+          - "rsa"
+          - "ecdsa"
+          - "elliptic-curve"
+          - "p256"
+          - "p384"
+          - "p521"
+          - "primeorder"
+          - "sec1"
+          - "signature"
+          - "crypto-bigint"
+          # Форматы: DER, PKCS, SPKI, X.509, CMS.
+          - "der"
+          - "const-oid"
+          - "spki"
+          - "pkcs*"
+          - "x509-cert"
+          - "cms"
+          # rand_core — не RustCrypto, но поколение ключей и подписей привязано к нему (rsa 0.10, p256 0.14 — rand_core 0.10).
+          - "rand_core"
         update-types: [major, minor, patch]
       cargo: { patterns: ["*"], update-types: [minor, patch] }
     open-pull-requests-limit: 2

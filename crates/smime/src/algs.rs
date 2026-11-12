@@ -13,7 +13,7 @@ use digest::Digest;
 use pki_types::{AlgorithmIdentifier, InvalidSignature, SignatureVerificationAlgorithm};
 use rsa::pkcs1::DecodeRsaPublicKey;
 use rsa::traits::PublicKeyParts;
-use rsa::{Pkcs1v15Sign, RsaPublicKey};
+use rsa::{Pkcs1v15Sign, PublicKey as RsaPublicKey};
 use serde::{Deserialize, Serialize};
 use spki::{AlgorithmIdentifierOwned, SubjectPublicKeyInfoOwned};
 
@@ -198,7 +198,7 @@ pub(crate) fn public_key(spki: &SubjectPublicKeyInfoOwned) -> Result<PublicKey, 
 /// Сводка ключа для карточки.
 pub(crate) fn key_kind(spki: &SubjectPublicKeyInfoOwned) -> KeyKind {
     match public_key(spki) {
-        Ok(PublicKey::Rsa(k)) => KeyKind::Rsa { bits: k.n().bits_vartime() },
+        Ok(PublicKey::Rsa(k)) => KeyKind::Rsa { bits: k.n().bit_width_vartime() },
         Ok(PublicKey::Ec { curve, .. }) => KeyKind::Ec { curve: curve.name.into() },
         Ok(PublicKey::Gost { key, size }) => KeyKind::Gost { bits: if size == Size::S256 { 256 } else { 512 }, params: key.curve.name.into() },
         Err(Unsupported(e)) => KeyKind::Other(e),
@@ -341,7 +341,7 @@ impl SignatureVerificationAlgorithm for ChainAlg {
         let ok = match self.kind {
             Kind::RsaPkcs1(h) | Kind::RsaPss(h) => {
                 let Ok(key) = RsaPublicKey::from_pkcs1_der(public_key) else { return Err(InvalidSignature) };
-                if key.n().bits_vartime() < CHAIN_MIN_RSA_BITS {
+                if key.n().bit_width_vartime() < CHAIN_MIN_RSA_BITS {
                     return Err(InvalidSignature);
                 }
                 let digest = h.digest(message);

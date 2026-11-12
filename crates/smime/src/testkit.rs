@@ -18,7 +18,7 @@ use crypto_bigint::U512;
 use der::asn1::{Any, BitString, Ia5String, Null, OctetString, SetOfVec, Uint};
 use der::{Decode, Encode, Sequence};
 use digest::Digest;
-use rsa::RsaPrivateKey;
+use rsa::PrivateKey as RsaPrivateKey;
 use rsa::pkcs1::DecodeRsaPrivateKey;
 use spki::{AlgorithmIdentifierOwned, SubjectPublicKeyInfoOwned};
 use x509_cert::Certificate;
