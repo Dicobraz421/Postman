@@ -29,6 +29,10 @@ pub mod notify;
 mod ntlm;
 mod soap;
 mod sys;
+
+/// Учётные данные NTLM в хранилище macOS — для тестов входа без пароля (MAC-05).
+#[cfg(all(target_os = "macos", feature = "testkit"))]
+pub use sys::SystemLogin;
 pub mod tz;
 mod xml;
 
