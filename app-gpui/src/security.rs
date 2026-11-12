@@ -77,6 +77,7 @@ pub(crate) fn apply(p: &Prefs) {
 /// Политика `SandboxNamespaces` (LIN-03, ADR 0010): `required` — воркер и хост модулей без user/net/ipc namespaces не
 /// работают (письмо — текстом), `optional` или нет политики — по умолчанию. Нераспознанное — WARN и строже
 /// (`required`, ADR 0011 п. 5). Действует на Linux; на других ОС namespaces нет.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code, reason = "namespaces — только Linux; разбор проверяет тест на всех ОС"))]
 pub(crate) fn sandbox_namespaces(value: Option<&str>) -> postman_worker::Namespaces {
     use postman_worker::Namespaces;
     match value.map(str::trim) {
