@@ -48,15 +48,25 @@ const ICON: &[u8] = include_bytes!("../../res/postman.ico");
 /// AUMID без ярлыка в «Пуске» (`Pets.Postman`): имя и значок «Ленты» (T1-01; файл — в каталоге данных,
 /// переписывается, если отличается от вшитого).
 pub fn notify(title: &str, body: &str) -> Result<(), String> {
-    show(title, body, toast::Sound::Default)
+    show(title, body, toast::Sound::Default, None)
+}
+
+/// Уведомление со щелчком (T3-13): `on_click` — из потока Windows, пока Postman запущен.
+pub fn notify_click(title: &str, body: &str, sound: Option<bool>, on_click: impl Fn() + Send + 'static) -> Result<(), String> {
+    let sound = match sound {
+        None => toast::Sound::Default,
+        Some(true) => toast::Sound::Mail,
+        Some(false) => toast::Sound::Silent,
+    };
+    show(title, body, sound, Some(Box::new(on_click)))
 }
 
 /// Уведомление о новом письме (T2-10): звук «Новое письмо» или молча («Настройки → Общие → Звук»).
 pub fn notify_with(title: &str, body: &str, sound: bool) -> Result<(), String> {
-    show(title, body, if sound { toast::Sound::Mail } else { toast::Sound::Silent })
+    show(title, body, if sound { toast::Sound::Mail } else { toast::Sound::Silent }, None)
 }
 
-fn show(title: &str, body: &str, sound: toast::Sound) -> Result<(), String> {
+fn show(title: &str, body: &str, sound: toast::Sound, on_click: Option<Box<dyn Fn() + Send>>) -> Result<(), String> {
     let icon = crate::data_dir().join("postman.ico");
     if std::fs::read(&icon).ok().as_deref() != Some(ICON) {
         // Без файла тост выйдет со значком по умолчанию — не повод его не показывать.
@@ -65,7 +75,11 @@ fn show(title: &str, body: &str, sound: toast::Sound) -> Result<(), String> {
         }
     }
     let sender = toast::Sender { aumid: "Pets.Postman", name: APP, icon: Some(&icon) };
-    toast::show_with(&sender, title, body, sound).map_err(|e| e.to_string())
+    match on_click {
+        Some(on_click) => toast::show_clickable(&sender, title, body, sound, on_click),
+        None => toast::show_with(&sender, title, body, sound),
+    }
+    .map_err(|e| e.to_string())
 }
 
 /// Политика организации (`Software\Policies\Pets\Postman`, сначала HKLM, затем HKCU): строковое значение.

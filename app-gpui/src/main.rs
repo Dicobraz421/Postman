@@ -100,6 +100,7 @@ mod sys;
 mod tabs;
 mod tasks;
 mod thread;
+mod tray;
 mod update;
 mod vacation;
 
@@ -152,7 +153,8 @@ fn forward_args(mut rx: futures::channel::mpsc::UnboundedReceiver<Vec<String>>, 
         use futures::StreamExt as _;
         while let Some(args) = rx.next().await {
             let _ = window.update(cx, |_, window, cx| {
-                window.activate_window();
+                // Окно спрятано в трей (T3-13) — показать.
+                tray::show(window);
                 // Ссылка `mailto:` из другой программы — новое письмо; иначе — «Postman уже открыт».
                 match args.iter().find(|a| a.get(..7).is_some_and(|p| p.eq_ignore_ascii_case("mailto:"))) {
                     Some(uri) => mailer.update(cx, |m, cx| m.open_mailto(uri, cx)),
@@ -367,7 +369,12 @@ fn main() {
                     if listener.is_some() {
                         mac_app::keep_main_window(window, cx);
                     }
-                    if minimized {
+                    // Значок в трее (T3-13): закрытие окна прячет его; замер и снимки — без значка.
+                    if persist {
+                        tray::init(window, &mailer, cx);
+                    }
+                    // Автозапуск — сразу в трей; значка нет — свёрнутым.
+                    if minimized && !tray::hide(window, false, cx) {
                         window.minimize_window();
                     }
                     // «Последняя вкладка» (T2-11): вкладки прошлого запуска; снимки и бенч — без них и без записи.
