@@ -267,7 +267,14 @@ impl Series {
 
 /// Шаг правила в секундах: для месяца и года — приблизительно. Сколько дат даёт один шаг: только если времён суток несколько.
 fn step_of(rule: &Rule) -> (i64, i64, i64) {
-    let (unit, days) = match rule.freq {
+    let (unit, days) = unit_of(rule);
+    let times = times_of(rule);
+    (unit, unit * i64::from(rule.interval.unwrap_or(1).max(1)), if times > 1 { times.saturating_mul(days) } else { 1 })
+}
+
+/// Единица шага в секундах (месяц и год — приблизительно) и сколько в ней дней — не больше.
+fn unit_of(rule: &Rule) -> (i64, i64) {
+    match rule.freq {
         Freq::Secondly => (1, 1),
         Freq::Minutely => (60, 1),
         Freq::Hourly => (3600, 1),
@@ -275,10 +282,12 @@ fn step_of(rule: &Rule) -> (i64, i64, i64) {
         Freq::Weekly => (7 * DAY, 7),
         Freq::Monthly => (30 * DAY, 31),
         Freq::Yearly => (365 * DAY, 366),
-    };
-    // Все времена суток правила: одно обычное, а произведение `BYHOUR`, `BYMINUTE`, `BYSECOND` раздувает каждый шаг.
-    let times = [&rule.byhour, &rule.byminute, &rule.bysecond].iter().map(|by| by.len().max(1) as i64).product::<i64>();
-    (unit, unit * i64::from(rule.interval.unwrap_or(1).max(1)), if times > 1 { times.saturating_mul(days) } else { 1 })
+    }
+}
+
+/// Все времена суток правила: одно обычное, а произведение `BYHOUR`, `BYMINUTE`, `BYSECOND` раздувает каждый шаг.
+fn times_of(rule: &Rule) -> i64 {
+    [&rule.byhour, &rule.byminute, &rule.bysecond].iter().map(|by| by.len().max(1) as i64).product::<i64>()
 }
 
 /// Оценка работы правила на `span` секунд.
@@ -287,10 +296,32 @@ fn steps_of(rule: &Rule, span: i64) -> i64 {
     (span.max(0) / step + 1).saturating_mul(width)
 }
 
+/// Работа серии на `span` секунд: шаги, а у месяца и года с `BYDAY`, `BYMONTHDAY`, `BYYEARDAY`, `BYWEEKNO` — каждый день
+/// шага: развёртка перебирает их все, даже если дат выходит одна (`BYDAY=2MO`) или несколько из многих (`BYSETPOS`).
+/// Без этого такая серия стоила бюджету в десятки раз меньше, чем развёртке.
+fn work_of(rule: &Rule, span: i64) -> i64 {
+    let (_, step, width) = step_of(rule);
+    let by_day = !(rule.byday.is_empty() && rule.bymonthday.is_empty() && rule.byyearday.is_empty() && rule.byweekno.is_empty());
+    let days = match rule.freq {
+        Freq::Monthly if by_day => 31,
+        Freq::Yearly if by_day && !rule.bymonth.is_empty() => 31 * rule.bymonth.len() as i64,
+        Freq::Yearly if by_day => 366,
+        _ => 1,
+    };
+    (span.max(0) / step + 1).saturating_mul(width.max(days.saturating_mul(times_of(rule))))
+}
+
+/// Сколько дат правило может дать на `span` секунд — не меньше настоящего: каждый день шага во все времена суток.
+fn dates_at_most(rule: &Rule, span: i64) -> i64 {
+    let (_, step, _) = step_of(rule);
+    (span.max(0) / step + 1).saturating_mul(unit_of(rule).1.saturating_mul(times_of(rule)))
+}
+
 /// План развёртки компонентов одного `UID`, если среди них есть правило. Старое начало правила без `COUNT` с шагом постоянной
 /// длины передвигается к периоду: фаза `INTERVAL` и день недели те же, экземпляры до периода никому не нужны, а бесконечная
 /// ежедневная серия с 2010 года стоит как новая. `COUNT` считается от начала, `RANGE=THISANDFUTURE` — от своего экземпляра:
-/// их начало не трогаем. Шаг месяца и года непостоянен, да и шагов там единицы в год.
+/// их начало не трогаем, если `COUNT` может кончиться до конца периода. Шаг месяца и года непостоянен, да и шагов там единицы
+/// в год.
 fn plan(comps: &[usize], ical: &ICalendar, zones: &Zones, from: i64, to: i64) -> Option<Series> {
     let master = comps.iter().filter_map(|&i| ical.components.get(i)).find(|c| rule_of(c).is_some())?;
     let rule = rule_of(master)?;
@@ -302,18 +333,21 @@ fn plan(comps: &[usize], ical: &ICalendar, zones: &Zones, from: i64, to: i64) ->
         .iter()
         .filter_map(|&i| ical.components.get(i))
         .any(|c| c.entries.iter().any(|e| e.name == Prop::RecurrenceId && e.params.iter().any(|p| p.name == Param::Range)));
-    let moved = if unit <= 7 * DAY && rule.count.is_none() && !future_ranges {
-        let length = length_of(master, zones, zone, start);
-        (from - MARGIN - length - start).div_euclid(step).saturating_mul(step).max(0)
-    } else {
-        0
-    };
     let until = rule.until.as_ref().and_then(|until| {
         let at = zones.local(until, None, zone)?;
         Some(if until.has_time() { at } else { at + DAY - 1 })
     });
     let last = until.map_or(to + MARGIN, |until| until.min(to + MARGIN));
-    Some(Series { zone, start, all_day: !date.has_time(), moved, last, work: steps_of(rule, last - start - moved) })
+    // `COUNT`, которого до конца периода не исчерпать, ничего не отсекает: серия — как бесконечная, начало можно передвинуть
+    // (`COUNT=4000000000` с 1971 года иначе стоит десятки тысяч дат на серию).
+    let endless = rule.count.is_none_or(|count| i64::from(count) > dates_at_most(rule, last - start));
+    let moved = if unit <= 7 * DAY && endless && !future_ranges {
+        let length = length_of(master, zones, zone, start);
+        (from - MARGIN - length - start).div_euclid(step).saturating_mul(step).max(0)
+    } else {
+        0
+    };
+    Some(Series { zone, start, all_day: !date.has_time(), moved, last, work: work_of(rule, last - start - moved) })
 }
 
 fn date_value(at: i64, all_day: bool) -> PartialDateTime {
@@ -939,6 +973,39 @@ mod tests {
             println!("{rule}: {} байт, {} событий, {:?}", bytes.len(), got.len(), clock.elapsed());
             assert!(clock.elapsed() < TIME_LIMIT, "{rule}");
         }
+    }
+
+    /// `COUNT`, которого до периода не исчерпать, — как бесконечная серия (начало передвигается, экземпляры те же); `COUNT`,
+    /// кончившийся до периода или внутри него, считается от начала, как раньше.
+    #[test]
+    fn count_beyond_the_period_is_endless() {
+        let (from, to) = week();
+        let starts = |rule: &str| -> Vec<i64> {
+            events_in(
+                &event(
+                    "a",
+                    &format!(
+                        "DTSTART:19710101T090000Z
+DURATION:PT1H
+RRULE:{rule}"
+                    ),
+                ),
+                from,
+                to,
+                "UTC",
+            )
+            .iter()
+            .map(|e| e.start)
+            .collect()
+        };
+        let endless = starts("FREQ=DAILY");
+        assert_eq!(endless.len(), 7);
+        assert_eq!(starts("FREQ=DAILY;COUNT=4000000000"), endless);
+        assert_eq!(starts("FREQ=DAILY;INTERVAL=3;COUNT=4000000000"), starts("FREQ=DAILY;INTERVAL=3"));
+        assert!(starts("FREQ=DAILY;COUNT=10").is_empty());
+        // Дней от начала серии до периода — и ещё три: последние три экземпляра — первые дни периода.
+        let before = (from - date(1971, 1, 1, 0, 0)) / DAY;
+        assert_eq!(starts(&format!("FREQ=DAILY;COUNT={}", before + 3)), endless[..3]);
     }
 
     /// Огромная длительность и даты на краю: ни переполнения, ни паники.
