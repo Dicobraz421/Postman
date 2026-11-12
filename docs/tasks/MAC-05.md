@@ -4,7 +4,7 @@ lane: x
 status: todo
 deps: [MAC-02]
 class: B
-files: [crates/ews/src/sys.rs, crates/ews/src/auth.rs, crates/backend-ldap/src/sys.rs, crates/core/src/smime/]
+files: [crates/ews/src/sys.rs, crates/ews/src/auth.rs, crates/backend-ldap/Cargo.toml, crates/backend-ldap/src/, crates/core/src/smime/]
 read: [docs/EXCHANGE.md, docs/SMIME.md, docs/decisions/2026-11-11-macos.md]
 checks: [clippy, nextest]
 manual: docs/manual-tests/MAC-05.md
@@ -17,6 +17,12 @@ manual: docs/manual-tests/MAC-05.md
 - EWS: NTLM / Kerberos вместо SSPI (`crates/ews/src/sys.rs`): крейт `sspi` (Devolutions) или GSS.framework; привязка
   к каналу TLS (`sec_channel_bindings` — сейчас только Windows и тесты).
 - LDAP: GSSAPI-привязка `ldap3`, контроллер домена — DNS SRV вместо `DsGetDcNameW` (без домена — нет).
+  Сейчас (MAC-01) на macOS `ldap3` собран без фичи `gssapi`: `libgssapi` 0.9 не собирается с GSS.framework (нет
+  `gss_wrap_iov`, `gss_unwrap_iov`, `gss_wrap_iov_length`), поэтому в `crates/backend-ldap/Cargo.toml` фича
+  `gssapi` — только `cfg(not(target_os = "macos"))`, а вход «учётной записью» (`Login::Windows`) на macOS отвечает
+  `DirectoryError::Unavailable` («Kerberos (GSSAPI) login … is not supported on macOS yet»). Простой вход по TLS и
+  анонимный — работают. Здесь: GSSAPI через GSS.framework (свой SASL GSSAPI поверх `sasl_*`-вызовов `ldap3` или
+  `cross-krb5`/`libgssapi` с поддержкой macOS), снять `cfg`.
 - S/MIME: доверенные корни — `SecTrust`, подпись и расшифровка — `SecIdentity`/`SecKey` из Связки ключей (сейчас
   `smime/other.rs`); CRL — уже чистый Rust. Проверка подписи в воркере от платформы не зависит.
 - ГОСТ при СКЗИ не делается (отложено, `docs/decisions/2026-10-27-smime-gost-skzi-deferred.md`).

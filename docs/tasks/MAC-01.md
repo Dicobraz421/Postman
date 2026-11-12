@@ -4,7 +4,7 @@ lane: x
 status: in-progress
 deps: []
 class: B
-files: [.github/workflows/macos.yml, scripts/macos/, crates/worker/src/sandbox/, crates/core/src/paths.rs, crates/core/src/viewers.rs, crates/demo/src/lib.rs, crates/ews/src/auth.rs, app-gpui/src/sys/, app-gpui/src/main.rs, app-gpui/src/diagnostics.rs, app-gpui/src/reading.rs, app-gpui/src/settings_keys.rs, app-gpui/src/settings_viewers.rs, app-gpui/src/drill_mail.rs, app-gpui/src/drill_tasks.rs]
+files: [.github/workflows/macos.yml, scripts/macos/, crates/worker/src/sandbox/, crates/core/src/paths.rs, crates/core/src/viewers.rs, crates/core/src/smime/skzi.rs, crates/backend-ldap/, crates/demo/src/lib.rs, crates/ews/src/auth.rs, app-gpui/src/sys/, app-gpui/src/main.rs, app-gpui/src/diagnostics.rs, app-gpui/src/reading.rs, app-gpui/src/settings_keys.rs, app-gpui/src/settings_viewers.rs, app-gpui/src/drill_mail.rs, app-gpui/src/drill_tasks.rs]
 read: [docs/decisions/2026-11-11-macos.md]
 checks: [clippy, nextest, ci-macos]
 manual: docs/manual-tests/MAC-01.md
@@ -22,7 +22,8 @@ Postman собирается на macOS без предупреждений, т�
   Info.plist: bundle id, версия из `Cargo.toml`, `LSMinimumSystemVersion` 13.0, схема `mailto`; `Postman.icns` из
   `postman.ico`), подпись ad-hoc, `postman-<версия>-macos-arm64.zip`; `--screens` из собранного .app — сцены `list`,
   `letter`, `preview-pdf`, `calendar`, PNG артефактом.
-- Ошибки компиляции на macOS: заглушка `notify_with`, `sec_channel_bindings` (только SSPI).
+- Ошибки компиляции на macOS: заглушка `notify_with`, `sec_channel_bindings` (только SSPI); блобы КриптоПро
+  (`smime/skzi.rs`) — только Windows и тесты; `ldap3` без `gssapi` на macOS (вход Kerberos в каталог — MAC-05).
 - Пути данных — одна функция по ОС `postman_core::paths`: `~/Library/Application Support/Postman`, журнал —
   `~/Library/Logs/Postman`, модули администратора — `/Library/Application Support/Postman/viewers`; разбросанные
   `LOCALAPPDATA`/`USERPROFILE` вне Windows-модулей убраны (демо — своя копия правила: он ниже ядра).

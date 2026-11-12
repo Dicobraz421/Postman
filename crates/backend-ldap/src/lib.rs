@@ -147,8 +147,15 @@ async fn search(settings: &Settings, target: &Target, addresses: &[String]) -> R
 
 async fn bound_search(ldap: &mut Ldap, settings: &Settings, target: &Target, addresses: &[String]) -> Result<Vec<Vec<u8>>, DirectoryError> {
     match &settings.login {
+        #[cfg(not(target_os = "macos"))]
         Login::Windows => {
             ldap.sasl_gssapi_bind(&target.host).await.and_then(|r| r.success()).map_err(unavailable)?;
+        }
+        // На macOS ldap3 без GSSAPI (libgssapi не собирается с GSS.framework) — вход Kerberos в MAC-05.
+        #[cfg(target_os = "macos")]
+        Login::Windows => {
+            let spn = &target.host;
+            return Err(DirectoryError::Unavailable(format!("Kerberos (GSSAPI) login to ldap/{spn} is not supported on macOS yet")));
         }
         Login::Simple { user, password } => {
             ldap.simple_bind(user, password).await.and_then(|r| r.success()).map_err(unavailable)?;
