@@ -1,7 +1,7 @@
 # MAC-03: песочница воркера на macOS целиком
 
 lane: sandbox
-status: review               # ADR 0009 ждёт владельца (класс B)
+status: done
 deps: [MAC-01]
 class: B
 files: [crates/worker/src/sandbox/, crates/worker/src/lib.rs, crates/worker/src/bin/, crates/worker/src/wasm.rs, crates/worker/src/ics.rs, crates/worker/tests/, docs/adr/, docs/DEV.md]
