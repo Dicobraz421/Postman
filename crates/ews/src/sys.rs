@@ -1,36 +1,61 @@
-//! SSPI Windows для входа HTTP: `AcquireCredentialsHandleW` + `InitializeSecurityContextW` пакета Negotiate
-//! (Kerberos, иначе NTLM) или NTLM. Единственное место `unsafe` в крейте; у каждого блока — почему он безопасен.
+//! Вход HTTP без пароля средствами ОС: Negotiate (Kerberos, иначе NTLM) или NTLM учётной записи текущего входа.
+//! Единственное место `unsafe` в крейте; у каждого блока — почему он безопасен. Вход с паролем — NTLM на чистом Rust
+//! (`ntlm`), одинаково на всех ОС.
 //!
-//! Без пароля — учётная запись Windows текущего входа (Kerberos на машине в домене). С паролем —
-//! `SEC_WINNT_AUTH_IDENTITY_W`: SSPI копирует её при вызове, буферы с паролем обнуляются сразу после.
+//! Windows — SSPI: `AcquireCredentialsHandleW` (учётная запись Windows текущего входа, Kerberos на машине в домене)
+//! + `InitializeSecurityContextW`. macOS — MAC-05.
 
 use crate::auth::Scheme;
+use crate::ntlm::Ntlm;
 use crate::{Auth, Result};
 
 /// Контекст безопасности одного рукопожатия.
-pub(crate) struct Context(imp::Context);
+pub(crate) struct Context(Inner);
+
+enum Inner {
+    /// Без пароля — средствами ОС.
+    Os(imp::Context),
+    /// С паролем — NTLM на чистом Rust.
+    Ntlm(Ntlm),
+}
 
 impl Context {
     /// Учётные данные и контекст для `target` (SPN `HTTP/<host>`); `binding` — данные привязки к каналу TLS.
     pub(crate) fn new(scheme: Scheme, auth: &Auth, target: &str, binding: Option<&[u8]>) -> Result<Context> {
-        imp::Context::new(scheme, auth, target, binding).map(Context)
+        match auth {
+            Auth::Windows => imp::Context::new(scheme, target, binding).map(|c| Context(Inner::Os(c))),
+            Auth::Password { user, password } => Ntlm::new(user, password, target, binding).map(|c| Context(Inner::Ntlm(c))),
+        }
     }
 
     /// Следующий шаг: токен сервера (на первом шаге — `None`) → токен для сервера (может быть пустым на
     /// последнем шаге).
     pub(crate) fn step(&mut self, input: Option<&[u8]>) -> Result<Vec<u8>> {
-        self.0.step(input)
+        match &mut self.0 {
+            Inner::Os(c) => c.step(input),
+            Inner::Ntlm(c) => c.step(input),
+        }
+    }
+
+    /// Логин на вторую попытку после отказа сервера (только вход с паролем, [`Ntlm::alternative`]).
+    pub(crate) fn alternative(&self) -> Option<String> {
+        match &self.0 {
+            Inner::Os(_) => None,
+            Inner::Ntlm(c) => c.alternative(),
+        }
     }
 
     /// Рукопожатие завершено с нашей стороны.
     pub(crate) fn done(&self) -> bool {
-        self.0.done
+        match &self.0 {
+            Inner::Os(c) => c.done,
+            Inner::Ntlm(c) => c.done,
+        }
     }
 }
 
 #[cfg(windows)]
 mod imp {
-    use std::ffi::c_void;
     use std::ptr;
 
     use windows::Win32::Foundation::{SEC_E_OK, SEC_I_COMPLETE_AND_CONTINUE, SEC_I_COMPLETE_NEEDED, SEC_I_CONTINUE_NEEDED};
@@ -40,23 +65,13 @@ mod imp {
         SecBuffer, SecBufferDesc,
     };
     use windows::Win32::Security::Credentials::SecHandle;
-    use windows::Win32::System::Rpc::{SEC_WINNT_AUTH_IDENTITY_UNICODE, SEC_WINNT_AUTH_IDENTITY_W};
     use windows::core::PCWSTR;
-    use zeroize::Zeroizing;
 
     use crate::auth::{Scheme, sec_channel_bindings};
-    use crate::{Auth, Error, Result};
+    use crate::{Error, Result};
 
     fn wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
-    }
-
-    /// `DOMAIN\user` → (user, domain); UPN `user@domain` — имя целиком, домен пустой (так его принимает SSPI).
-    fn split_user(user: &str) -> (&str, &str) {
-        match user.split_once('\\') {
-            Some((domain, name)) => (name, domain),
-            None => (user, ""),
-        }
     }
 
     pub(super) struct Context {
@@ -70,62 +85,16 @@ mod imp {
     }
 
     impl Context {
-        pub(super) fn new(scheme: Scheme, auth: &Auth, target: &str, binding: Option<&[u8]>) -> Result<Context> {
+        pub(super) fn new(scheme: Scheme, target: &str, binding: Option<&[u8]>) -> Result<Context> {
             let package = wide(match scheme {
                 Scheme::Negotiate => "Negotiate",
                 Scheme::Ntlm => "NTLM",
             });
             let mut cred = SecHandle::default();
-            let status = match auth {
-                Auth::Windows => {
-                    // SAFETY: `package` — строка UTF-16 с нулём, живёт до конца вызова; `cred` — место под
-                    // дескриптор; остальные указатели — нулевые (текущий вход Windows, без ключей и срока).
-                    unsafe {
-                        AcquireCredentialsHandleW(
-                            PCWSTR::null(),
-                            PCWSTR(package.as_ptr()),
-                            SECPKG_CRED_OUTBOUND,
-                            None,
-                            None,
-                            None,
-                            None,
-                            &mut cred,
-                            None,
-                        )
-                    }
-                }
-                Auth::Password { user, password } => {
-                    let (name, domain) = split_user(user);
-                    let mut name: Vec<u16> = name.encode_utf16().collect();
-                    let mut domain: Vec<u16> = domain.encode_utf16().collect();
-                    let mut secret: Zeroizing<Vec<u16>> = Zeroizing::new(password.encode_utf16().collect());
-                    let ptr_or_null = |v: &mut Vec<u16>| if v.is_empty() { ptr::null_mut() } else { v.as_mut_ptr() };
-                    let identity = SEC_WINNT_AUTH_IDENTITY_W {
-                        User: ptr_or_null(&mut name),
-                        UserLength: name.len() as u32,
-                        Domain: ptr_or_null(&mut domain),
-                        DomainLength: domain.len() as u32,
-                        Password: ptr_or_null(&mut secret),
-                        PasswordLength: secret.len() as u32,
-                        Flags: SEC_WINNT_AUTH_IDENTITY_UNICODE,
-                    };
-                    // SAFETY: `identity` и её буферы (`name`, `domain`, `secret`) живут до конца вызова, длины — в
-                    // символах UTF-16 без нуля, как требует `SEC_WINNT_AUTH_IDENTITY_UNICODE`; SSPI копирует их в
-                    // дескриптор. `package` — UTF-16 с нулём; `cred` — место под дескриптор.
-                    unsafe {
-                        AcquireCredentialsHandleW(
-                            PCWSTR::null(),
-                            PCWSTR(package.as_ptr()),
-                            SECPKG_CRED_OUTBOUND,
-                            None,
-                            Some(&identity as *const SEC_WINNT_AUTH_IDENTITY_W as *const c_void),
-                            None,
-                            None,
-                            &mut cred,
-                            None,
-                        )
-                    }
-                }
+            // SAFETY: `package` — строка UTF-16 с нулём, живёт до конца вызова; `cred` — место под дескриптор;
+            // остальные указатели — нулевые (текущий вход Windows, без ключей и срока).
+            let status = unsafe {
+                AcquireCredentialsHandleW(PCWSTR::null(), PCWSTR(package.as_ptr()), SECPKG_CRED_OUTBOUND, None, None, None, None, &mut cred, None)
             };
             status.map_err(|e| Error::Sspi { call: "AcquireCredentialsHandleW", code: e.code().0 as u32 })?;
             let binding = binding.map(|app| {
@@ -215,23 +184,15 @@ mod imp {
     mod tests {
         use super::*;
 
-        #[test]
-        fn users() {
-            assert_eq!(split_user(r"CORP\ivanov"), ("ivanov", "CORP"));
-            assert_eq!(split_user("ivanov@example.test"), ("ivanov@example.test", ""));
-        }
-
-        /// NTLM без сети: первый токен — NEGOTIATE_MESSAGE (`NTLMSSP\0`, тип 1), и с паролем, и от входа Windows.
+        /// NTLM без сети от входа Windows: первый токен — NEGOTIATE_MESSAGE (`NTLMSSP\0`, тип 1); мусор вместо
+        /// вызова сервера — ошибка SSPI, не паника.
         #[test]
         fn ntlm_first_token_offline() {
-            for auth in [Auth::Windows, Auth::password(r"EXAMPLE\nobody", "not-a-password")] {
-                let mut ctx = Context::new(Scheme::Ntlm, &auth, "HTTP/mail.example.test", Some(b"tls-server-end-point:x")).unwrap();
-                let token = ctx.step(None).unwrap();
-                assert!(token.starts_with(b"NTLMSSP\0\x01\0\0\0"), "{:?}", &token[..token.len().min(12)]);
-                assert!(!ctx.done);
-                // Мусор вместо вызова сервера — ошибка SSPI, не паника.
-                assert!(ctx.step(Some(b"garbage")).is_err());
-            }
+            let mut ctx = Context::new(Scheme::Ntlm, "HTTP/mail.example.test", Some(b"tls-server-end-point:x")).unwrap();
+            let token = ctx.step(None).unwrap();
+            assert!(token.starts_with(b"NTLMSSP\0\x01\0\0\0"), "{:?}", &token[..token.len().min(12)]);
+            assert!(!ctx.done);
+            assert!(ctx.step(Some(b"garbage")).is_err());
         }
     }
 }
@@ -239,20 +200,22 @@ mod imp {
 #[cfg(not(windows))]
 mod imp {
     use crate::auth::Scheme;
-    use crate::{Auth, Error, Result};
+    use crate::{Error, Result};
 
-    /// Postman — только для Windows (S0); вне Windows входа SSPI нет.
+    /// Вход без пароля вне Windows: на macOS — MAC-05 (Kerberos через GSS.framework), на других ОС его нет.
     pub(super) struct Context {
         pub(super) done: bool,
     }
 
+    const NO_OS_SIGN_IN: &str = "sign-in without a password is available on Windows only; enter the password";
+
     impl Context {
-        pub(super) fn new(_: Scheme, _: &Auth, _: &str, _: Option<&[u8]>) -> Result<Context> {
-            Err(Error::Auth("SSPI is available on Windows only".into()))
+        pub(super) fn new(_: Scheme, _: &str, _: Option<&[u8]>) -> Result<Context> {
+            Err(Error::Auth(NO_OS_SIGN_IN.into()))
         }
 
         pub(super) fn step(&mut self, _: Option<&[u8]>) -> Result<Vec<u8>> {
-            Err(Error::Auth("SSPI is available on Windows only".into()))
+            Err(Error::Auth(NO_OS_SIGN_IN.into()))
         }
     }
 }

@@ -3,8 +3,17 @@
 Exchange on-prem по EWS, best effort (ADR 0003, ADR 0004, `docs/specs/S7.md`). Почта, календарь, ответы на встречи,
 занятость и справочник — всё по EWS (решение владельца 2026-10-23 вечер, `S0-decisions.md`): у Exchange компании
 IMAP4 и приём SMTP от клиентов выключены. Плагин — `postman-backend-ews` (`MailPlugin` — почта, `AreaPlugin` с ключом
-`ews` — календарь, занятость, GAL), протокол — крейт `postman-ews`. Вход — Negotiate/NTLM через SSPI Windows, логин и
-пароль учётной записи (диспетчер учётных данных Windows). Basic и OAuth не поддерживаются.
+`ews` — календарь, занятость, GAL), протокол — крейт `postman-ews`. Вход без пароля — Negotiate (Kerberos) через SSPI
+Windows; с паролем — NTLMv2 на чистом Rust (`crates/ews/src/ntlm.rs`, одинаково на Windows и macOS, MAC-05), пароль — в
+диспетчере учётных данных Windows или Связке ключей. Оба — с привязкой к каналу TLS (Extended Protection). Basic —
+только запасной: по TLS и если сервер не предлагает ни Negotiate, ни NTLM. OAuth нет.
+
+Логин с паролем — как в Outlook: адрес почты (UPN) или «Имя пользователя (если отличается от адреса)» в мастере —
+`DOMAIN\user` или UPN (адрес ящика Postman узнаёт у сервера, `ResolveNames`). Адрес отклонён — одна попытка
+`ДОМЕН\имя` (домен NetBIOS — из CHALLENGE сервера); с привязкой к каналу отклонено — одна попытка без неё (TLS перед
+Exchange завершает прокси, Extended Protection в режиме «Allow»). Не больше трёх попыток на вход (счётчик неверных
+входов AD); принятый вариант — сразу у всех соединений учётки. Отказ — текст ошибки с подробностями без секретов:
+схемы сервера, выбранная, есть ли привязка, после какого токена пришёл 401.
 
 **Без адресов, доменов и имён:** здесь и в находках — только версии, коды и счётчики.
 
@@ -52,7 +61,7 @@ IMAP4 и приём SMTP от клиентов выключены. Плагин 
 
 | Что | Где | Запуск |
 |---|---|---|
-| Разбор ответов, сборка запросов, вход (заголовки, привязка к каналу, SSPI NTLM без сети) | `crates/ews` | `cargo test -p postman-ews` |
+| Разбор ответов, сборка запросов, вход (заголовки, привязка к каналу, NTLMv2 по примерам MS-NLMP, SSPI NTLM без сети) | `crates/ews` | `cargo test -p postman-ews` |
 | Плагин против подменного сервера EWS | `crates/backend-ews/tests/mock.rs` | `cargo test -p postman-backend-ews --test mock` |
 | Разведка (только чтение) | `crates/ews/tests/probe.rs` | `cargo test -p postman-ews --test probe -- --ignored --nocapture` |
 | Крейт против боевого (`#[ignore]`) | `crates/ews/tests/stand.rs` | `cargo test -p postman-ews --test stand -- --ignored --test-threads=1` |

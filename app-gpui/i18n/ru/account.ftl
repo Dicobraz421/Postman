@@ -67,3 +67,8 @@ signin-keys = Клавиши
 signin-keys-outlook = Outlook
 signin-keys-single = Одиночные, как в Gmail
 signin-address = Адрес
+# Имя пользователя Exchange, как в Outlook (MAC-05).
+signin-login = Имя пользователя (если отличается от адреса)
+signin-login-placeholder = ДОМЕН\имя
+signin-login-hint = Как в Outlook и Outlook в браузере: ДОМЕН\имя или имя@corp.example. Пусто — адрес почты.
+signin-rejected-hint = Проверьте пароль или укажите имя пользователя в формате DOMAIN\user.
