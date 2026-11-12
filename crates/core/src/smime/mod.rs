@@ -243,6 +243,15 @@ fn revocation(report: &Report, chain: &[Vec<u8>], ctx: &Context, skzi: Option<&s
     if report.is_gost() && skzi.is_none() {
         return ctx.crl.as_ref().map_or(Revocation::NotCheckedGost, |c| c.check(chain, now));
     }
+    // Linux: службы ОС нет — CRL по CDP своим кодом, как ГОСТ без СКЗИ; «не проверено» — `Unknown` с причиной в журнале.
+    // Без загрузчика CRL (демо) — ниже, «не проверялся».
+    #[cfg(target_os = "linux")]
+    if let Some(crl) = &ctx.crl {
+        return match crl.check(chain, now) {
+            Revocation::NotCheckedGost => Revocation::Unknown,
+            r => r,
+        };
+    }
     if !ctx.anchors.windows() {
         return Revocation::NotChecked;
     }

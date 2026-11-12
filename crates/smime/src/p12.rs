@@ -378,7 +378,7 @@ fn ec_key(pkcs8: &[u8]) -> Result<Private, P12Error> {
 
 fn private_key(pkcs8: &[u8], found: &mut Found) {
     if let Ok(k) = RsaPrivateKey::from_pkcs8_der(pkcs8) {
-        found.keys.push(Private::Rsa(k));
+        found.keys.push(Private::Rsa(Box::new(k)));
         return;
     }
     let alg = one(pkcs8)

@@ -27,12 +27,19 @@ manual: docs/manual-tests/LIN-05.md
 - LDAP: вход учётной записью — `sasl_gssapi_bind` `ldap3` (привязка к каналу TLS — его), отказ — строкой «Kerberos
   (GSSAPI) login failed — no valid domain ticket? …»; контроллер домена — SRV `_ldap._tcp.dc._msdcs.<область>` через
   `res_query` glibc (`sys/linux.rs`), разбор ответа DNS со сжатием — `srv::answers`.
-- S/MIME: PKCS#12 — свой разбор в `postman-smime` (`p12.rs`: MAC SHA-1/SHA-2, PBES2 AES/3DES, старые 3DES и RC2;
-  ключи RSA), без новых зависимостей; подпись и снятие ключа — ключом в памяти (`soft.rs`). Ядро (`smime/linux.rs`):
+- S/MIME: PKCS#12 — свой разбор в `postman-smime` (`p12.rs`: MAC SHA-1/SHA-2, PBES2 AES/3DES, старые 3DES и RC2 —
+  крейт `rc2`, волна `x/lin-05c`); ключи RSA и EC P-256/P-384, как у Windows (P-521 — нет: крейта `p521` в дереве нет);
+  подпись (RSA, ECDSA) и снятие ключа (RSA, ECDH) — ключом в памяти (`soft.rs`), шифрование получателям EC —
+  эфемерный ECDH `p256`/`p384`. Ядро (`smime/linux.rs`):
   якоря — набор корней дистрибутива (`SSL_CERT_FILE`, `/etc/pki/…/email-ca-bundle.pem`, `/etc/ssl/certs/…`), «корпоративные» —
   добавленные администратором (`/usr/local/share/ca-certificates`, `…/ca-trust/source/anchors`), запрещённые —
   `blocklist`; свои ключи — `load_personal_files` (путь + пароль от приложения), `check_personal_file` для настроек;
-  шифрование — получатели RSA (случайные числа — `/dev/urandom`).
+  случайные числа — `/dev/urandom`.
+- Отзыв (решение 2026-10-22 «проверка отзыва — всегда»): CRL по CDP доверенной цепочки тем же путём, что ГОСТ без
+  СКЗИ (`crl.rs`, проверка CRL — в воркере), загрузка — свой HTTP в `smime/linux.rs` (перенаправления, прокси
+  `http_proxy`/`no_proxy`); итог — «отозван» / «не отозван» / «не удалось проверить» (`Unknown`, причина — в журнале).
+  Не сделано: OCSP (Windows его проверяет через CryptoAPI) — нужен запрос OCSP и проверка ответа в воркере; CDP по
+  `https` — нет TLS в загрузчике. Для AD CS (CRL всегда публикуется) итог совпадает с Windows.
 - Что требует UI (выбор файла, пароль в Secret Service, скрытие недоступного, `upn`/`in_domain`) — `LIN-05b`.
 
 ## Приёмка

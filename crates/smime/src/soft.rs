@@ -21,7 +21,7 @@ use crate::envelope::{Cek, Envelope, Rid, Wrap};
 /// Закрытый ключ в памяти: RSA или EC P-256/P-384 (файл PKCS#12, Linux).
 #[derive(Clone)]
 pub enum Private {
-    Rsa(RsaPrivateKey),
+    Rsa(Box<RsaPrivateKey>),
     P256(p256::SecretKey),
     P384(p384::SecretKey),
 }
@@ -81,7 +81,7 @@ impl SoftKey {
             issuer: tbs.issuer().to_der().ok()?,
             serial: tbs.serial_number().as_bytes().to_vec(),
             ski,
-            key: Private::Rsa(RsaPrivateKey::from_pkcs1_der(pkcs1).ok()?),
+            key: Private::Rsa(Box::new(RsaPrivateKey::from_pkcs1_der(pkcs1).ok()?)),
         })
     }
 
