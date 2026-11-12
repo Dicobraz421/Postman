@@ -1058,10 +1058,11 @@ impl Default for TestOps {
 }
 
 impl crate::seal::Ops for TestOps {
-    fn random(&self, out: &mut [u8]) {
+    fn random(&self, out: &mut [u8]) -> Result<(), crate::seal::SealError> {
         let mut rng = TestRng::new(self.0.get());
         rand_core::TryRng::try_fill_bytes(&mut rng, out).unwrap();
         self.0.set(self.0.get().wrapping_add(1));
+        Ok(())
     }
 
     fn ecdh(&self, bits: u16, peer: &[u8]) -> Result<(Vec<u8>, zeroize::Zeroizing<Vec<u8>>), crate::seal::SealError> {

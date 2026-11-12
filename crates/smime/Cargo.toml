@@ -9,7 +9,7 @@ license.workspace = true
 # Тестовый набор: сертификаты, подписанты и сборка писем S/MIME для тестов воркера, ядра и демо-образцов.
 testkit = ["dep:p256", "dep:p384", "soft"]
 # Ключи в памяти: демо-ящик и тесты ядра (ключ — не из хранилища Windows).
-soft = []
+soft = ["dep:p256", "dep:p384", "dep:rc2"]
 
 [dependencies]
 serde.workspace = true
@@ -36,6 +36,8 @@ aes = "0.9.4"
 cbc = { version = "0.2.1", features = ["alloc"] }
 des = "0.9.0"
 aes-gcm = { version = "0.11.1", default-features = false, features = ["aes"] }
+# Старые файлы PKCS#12 (сертификаты RC2-40, OpenSSL 1.x) — только расшифровка (`p12`, Linux, LIN-05).
+rc2 = { version = "0.9.0", optional = true }
 zeroize = "1"
 # Ключи в памяти (демо и тесты, `soft`): снятие PKCS#1 и OAEP своими ключами — без CNG.
 rand_core = { version = "0.10", default-features = false }
