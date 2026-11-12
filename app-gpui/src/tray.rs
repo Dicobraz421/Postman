@@ -15,6 +15,7 @@ use postman_core::newmail::Fresh;
 use crate::Mailer;
 
 /// Что просит значок или уведомление.
+#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Signal {
     /// Показать окно.
@@ -25,9 +26,11 @@ pub(crate) enum Signal {
     Letter(Option<String>),
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 static TX: OnceLock<UnboundedSender<Signal>> = OnceLock::new();
 
 /// Передать событие задаче интерфейса; значка нет — никуда.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn send(signal: Signal) {
     if let Some(tx) = TX.get() {
         let _ = tx.unbounded_send(signal);
@@ -35,6 +38,7 @@ pub(crate) fn send(signal: Signal) {
 }
 
 /// Подсказка значка: непрочитанные «Входящих».
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn tip(unread: u32) -> String {
     if unread == 0 { "Postman".to_owned() } else { tr!("tray-tip-unread", n = unread) }
 }
@@ -89,9 +93,7 @@ mod os {
         };
         tray.set_menu(vec![Item::Command(OPEN, tr!("tray-open")), Item::Separator, Item::Command(QUIT, tr!("tray-quit"))]);
         cx.set_global(Icon { tray, unread: 0 });
-        window.on_window_should_close(cx, |window, cx| {
-            crate::prefs::get(cx).general.on_close != OnClose::Tray || !hide(window, true, cx)
-        });
+        window.on_window_should_close(cx, |window, cx| crate::prefs::get(cx).general.on_close != OnClose::Tray || !hide(window, true, cx));
         let folders = mailer.read(cx).folders.clone();
         cx.observe(&folders, |folders, cx| {
             let unread: u32 = folders.read(cx).of(None).filter(|m| m.role.as_deref() == Some("inbox")).map(|m| m.unread).sum();

@@ -47,11 +47,7 @@ const ICON: &[u8] = include_bytes!("../../res/postman.ico");
 /// Уведомление Windows (S6-07: напоминание задачи, когда окно свёрнуто): тост центра уведомлений от имени Postman.
 /// AUMID без ярлыка в «Пуске» (`Pets.Postman`): имя и значок «Ленты» (T1-01; файл — в каталоге данных,
 /// переписывается, если отличается от вшитого).
-pub fn notify(title: &str, body: &str) -> Result<(), String> {
-    show(title, body, toast::Sound::Default, None)
-}
-
-/// Уведомление со щелчком (T3-13): `on_click` — из потока Windows, пока Postman запущен.
+/// Щелчок (T3-13): `on_click` — из потока Windows, пока Postman запущен. `sound`: `None` — звук по умолчанию.
 pub fn notify_click(title: &str, body: &str, sound: Option<bool>, on_click: impl Fn() + Send + 'static) -> Result<(), String> {
     let sound = match sound {
         None => toast::Sound::Default,
