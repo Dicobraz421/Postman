@@ -34,7 +34,7 @@ pki-types = { package = "rustls-pki-types", version = "1.12", default-features =
 # то же, что уже в сборке.
 aes = "0.8"
 cbc = { version = "0.1", features = ["alloc"] }
-des = "0.8"
+des = "0.9"
 aes-gcm = { version = "0.10", default-features = false, features = ["aes"] }
 zeroize = "1"
 # Ключи в памяти (демо и тесты, `soft`): снятие PKCS#1 и OAEP своими ключами — без CNG.
