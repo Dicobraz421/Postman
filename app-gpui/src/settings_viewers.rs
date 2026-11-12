@@ -107,7 +107,7 @@ fn switch(id: &str, on: bool, cx: &mut App) {
 
 /// Папка модулей пользователя: создать, если нет, и открыть.
 fn open_folder() -> Result<(), String> {
-    let dir = postman_core::viewers::dirs().into_iter().find(|d| d.third_party).ok_or("LOCALAPPDATA is not set")?;
+    let dir = postman_core::viewers::dirs().into_iter().find(|d| d.third_party).ok_or("user data folder is not set")?;
     std::fs::create_dir_all(&dir.path).map_err(|e| format!("{}: {e}", dir.path.display()))?;
     crate::sys::shell::open(&dir.path.to_string_lossy())
 }

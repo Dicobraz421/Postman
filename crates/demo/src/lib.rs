@@ -42,16 +42,18 @@ pub const SUBJECTS: &[&str] = &[
 ];
 
 /// Каталог тестовых данных Postman (H-01): `%LOCALAPPDATA%\Pets\testdata\postman` — общий для приложений Pets,
-/// не во временном каталоге; чистится `pets/scripts/stand/clean.ps1 -Testdata`.
+/// не во временном каталоге; чистится `pets/scripts/stand/clean.ps1 -Testdata`. Корень — по ОС, как
+/// `postman_core::paths::data_root` (демо ниже ядра): macOS — `~/Library/Application Support`.
 pub fn testdata_dir() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA")
-        .or_else(|| std::env::var_os("XDG_DATA_HOME"))
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("Pets")
-        .join("testdata")
-        .join("postman")
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let root = if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+    } else if cfg!(target_os = "macos") {
+        home.map(|h| h.join("Library").join("Application Support"))
+    } else {
+        std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).or_else(|| home.map(|h| h.join(".local").join("share")))
+    };
+    root.unwrap_or_else(|| PathBuf::from(".")).join("Pets").join("testdata").join("postman")
 }
 
 /// Свежий ящик для `--bench`: копия шаблона `bench-template-<n>.redb` (создаётся один раз и переиспользуется:

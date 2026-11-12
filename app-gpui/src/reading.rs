@@ -1164,10 +1164,7 @@ pub(crate) fn render_image(rgba: Rgba) -> Result<Arc<RenderImage>, String> {
 
 /// Каталог по умолчанию для «Сохранить как».
 fn downloads_dir() -> PathBuf {
-    std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(|h| PathBuf::from(h).join("Downloads"))
-        .unwrap_or_else(|| PathBuf::from("."))
+    postman_core::paths::downloads()
 }
 
 impl Render for ReadingPane {

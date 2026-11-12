@@ -1,0 +1,108 @@
+# CI Postman для macOS (MAC-01, docs/decisions/2026-11-11-macos.md): Apple Silicon (arm64), macOS 13+.
+# Отдельно от ci.yml: required check `gate` его не ждёт, пока macOS не догонит Windows (MAC-02…MAC-06).
+# `test` — clippy и тесты крейтов, что проходят на macOS; `bundle` — release, Postman.app с подписью ad-hoc, zip и
+# снимки демо-ящика из собранного приложения. Строка macos-arm64 в выпуске (job `release` в ci.yml) — MAC-06.
+name: macOS
+
+on:
+  pull_request:
+    paths-ignore: ['docs/**', '**/*.md']
+  push:
+    branches: [main]
+    paths-ignore: ['docs/**', '**/*.md']
+  workflow_dispatch:
+
+concurrency:
+  # Новый пуш в PR отменяет устаревший прогон.
+  group: macos-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_TARGET_DIR: target
+  # Сборка — только для macOS 13 и новее (LSMinimumSystemVersion в Info.plist — то же).
+  MACOSX_DEPLOYMENT_TARGET: '13.0'
+
+jobs:
+  test:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal -c clippy --no-self-update && rustup default stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      # Clippy — это и `cargo check` всех целей, с предупреждениями как ошибками.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      # Образец модуля просмотра для тестов хоста модулей (как в ci.yml).
+      - name: Модули просмотра (wasm32)
+        shell: bash
+        run: |
+          shopt -s nullglob
+          manifests=(viewers/*/Cargo.toml)
+          if [ ${#manifests[@]} -eq 0 ]; then echo "Крейтов viewers/*/ нет — пропуск"; exit 0; fi
+          rustup target add wasm32-unknown-unknown
+          for m in "${manifests[@]}"; do
+            cargo build --manifest-path "$m" --release --target wasm32-unknown-unknown --locked
+          done
+
+      # Песочница воркера — полная (Seatbelt), как на Windows в CI.
+      - name: Тесты
+        run: cargo nextest run --workspace --locked --profile ci
+        env:
+          POSTMAN_REQUIRE_FULL_SANDBOX: '1'
+
+  bundle:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Release-сборка
+        run: cargo build --release --workspace --locked --features postman-worker/viewer
+
+      - name: Postman.app и zip
+        id: package
+        run: bash scripts/macos/package.sh --target-dir "$CARGO_TARGET_DIR" --out dist
+
+      # Снимки из собранного .app (воркер — в Contents/MacOS): список, письмо (HTML в песочнице), PDF (рендер в
+      # песочнице), календарь. Все сцены — MAC-04.
+      - name: Снимки демо-ящика
+        timeout-minutes: 10
+        env:
+          POSTMAN_SCREENS_ONLY: list,letter,preview-pdf,calendar
+        run: |
+          mkdir -p shots
+          "${{ steps.package.outputs.app }}/Contents/MacOS/postman" --screens shots --lang ru
+
+      - name: Артефакт снимков
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screens-macos
+          path: shots
+          if-no-files-found: warn
+
+      - name: Артефакт сборки
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: ${{ steps.package.outputs.zip }}
+          if-no-files-found: error

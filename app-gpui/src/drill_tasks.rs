@@ -1814,7 +1814,7 @@ fn pst_chosen(_: &Scene, m: &Mailer, _: &App) -> bool {
 
 /// Каталог сценария — внутри временного `LOCALAPPDATA` прогона.
 fn export_dir(name: &str) -> PathBuf {
-    let base = std::env::var_os("LOCALAPPDATA").map_or_else(std::env::temp_dir, PathBuf::from);
+    let base = postman_core::paths::data_root().unwrap_or_else(std::env::temp_dir);
     base.join("drill-export").join(name)
 }
 

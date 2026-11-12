@@ -29,6 +29,7 @@ pub mod migrate;
 pub mod model;
 pub mod newmail;
 pub mod palette;
+pub mod paths;
 pub mod prefs;
 pub mod query;
 pub mod recur;

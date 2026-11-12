@@ -123,13 +123,9 @@ pub(crate) fn format_date(ts: i64) -> String {
     if t.date() == now.date() { t.strftime("%H:%M").to_string() } else { t.strftime("%d.%m %H:%M").to_string() }
 }
 
+/// Каталог данных по ОС (`postman_core::paths`).
 pub(crate) fn data_dir() -> std::path::PathBuf {
-    std::env::var_os("LOCALAPPDATA")
-        .or_else(|| std::env::var_os("XDG_DATA_HOME"))
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/share")))
-        .unwrap_or_else(|| ".".into())
-        .join("Postman")
+    postman_core::paths::data_dir()
 }
 
 /// Запуск невозможен (нет каталога данных, хранилище или окно не открылись): сообщение в журнал

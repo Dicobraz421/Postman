@@ -27,8 +27,9 @@ pub(crate) fn component_download(file: &str) -> String {
     format!("{REPO}/releases/download/v{}/{file}", env!("CARGO_PKG_VERSION"))
 }
 
+/// Каталог журнала по ОС (`postman_core::paths::log_dir`; macOS — `~/Library/Logs/Postman`).
 pub(crate) fn log_dir(data: &Path) -> PathBuf {
-    data.join("logs")
+    postman_core::paths::log_dir(data)
 }
 
 fn today() -> String {
@@ -66,8 +67,8 @@ pub(crate) fn folder_size(dir: &Path) -> u64 {
 
 /// Куда положить отчёт: рабочий стол, без него — папка загрузок или временная.
 pub(crate) fn report_path() -> PathBuf {
-    let home = std::env::var_os("USERPROFILE").map(PathBuf::from);
-    let dir = home.iter().flat_map(|h| [h.join("Desktop"), h.join("Downloads")]).find(|d| d.is_dir()).unwrap_or_else(std::env::temp_dir);
+    use postman_core::paths;
+    let dir = [paths::desktop(), paths::downloads()].into_iter().find(|d| d.is_dir()).unwrap_or_else(std::env::temp_dir);
     dir.join(format!("postman-report-{}.zip", today()))
 }
 
