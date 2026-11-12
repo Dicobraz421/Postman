@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
-# MAC-01: Postman.app for macOS (Apple Silicon, macOS 13+) and the zip postman-<version>-macos-arm64.zip.
+# MAC-01, MAC-06: Postman.app for macOS (Apple Silicon, macOS 13+), the zip postman-<version>-macos-arm64.zip
+# (Postman.app and README.txt - the self-update replaces the bundle from it) and the disk image
+# postman-<version>-macos-arm64.dmg (Postman.app, README.txt and the "Applications" shortcut to drag it onto).
 # Contents/MacOS: postman, postman-worker, postman-viewer (the worker looks for them next to postman);
 # Info.plist: bundle id, version from Cargo.toml, LSMinimumSystemVersion 13.0, the mailto scheme; Postman.icns made
-# from app-gpui/res/postman.ico (PNG frames). Ad-hoc signature (codesign -s -): no Apple Developer ID yet
-# (docs/decisions/2026-11-11-macos.md) - the user opens it via "Privacy & Security -> Open Anyway".
+# from app-gpui/res/postman.ico (PNG frames).
+# Signature: ad-hoc (codesign -s -) by default - no Apple Developer ID yet (docs/decisions/2026-11-11-macos.md), the
+# user opens it via "Privacy & Security -> Open Anyway". With MACOS_SIGN_IDENTITY ("Developer ID Application: ...",
+# in an unlocked keychain) - hardened runtime and a timestamp; with APPLE_ID, APPLE_TEAM_ID and APPLE_APP_PASSWORD too -
+# notarization (notarytool) and a stapled ticket on the app and the dmg. Both are off until the owner has the account.
 # Takes the binaries of a finished build (cargo build --release --workspace --features postman-worker/viewer).
-# Prints the zip path; in GitHub Actions also sets the outputs name, app, zip and version.
+# Prints the zip and dmg paths; in GitHub Actions also sets the outputs name, app, zip, dmg, dir and assets (the folder
+# with the zip and the dmg: the build artifact and the release files, docs/DEV.md "Выпуск") and version.
 # Usage: scripts/macos/package.sh [--target-dir <cargo target dir>] [--profile release|debug] [--out <dir, default dist>]
 set -euo pipefail
 
@@ -57,8 +63,11 @@ build="$major.$minor.$((patch * 1000 + r))"
 name="postman-$version-macos-arm64"
 stage="$out/$name"
 app="$stage/Postman.app"
-zip="$out/$name.zip"
-rm -rf "$stage" "$zip"
+assets="$out/assets"
+zip="$assets/$name.zip"
+dmg="$assets/$name.dmg"
+rm -rf "$stage" "$assets"
+mkdir -p "$assets"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin/postman" "$bin/postman-worker" "$bin/postman-viewer" "$app/Contents/MacOS/"
 
@@ -138,7 +147,8 @@ codesign --verify --deep --strict "$app"
 # Notarization: the service checks the upload and issues a ticket; stapler puts it into the file, so Gatekeeper does
 # not need the network on the first launch. Apple ID with an app-specific password (appleid.apple.com).
 notarize_file() {
-  xcrun notarytool submit "$1" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"     --wait --timeout 30m
+  xcrun notarytool submit "$1" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" \
+    --wait --timeout 30m
 }
 if [ -n "$notarize" ]; then
   upload="$(mktemp -d)/Postman.zip"
@@ -179,7 +189,11 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "name=$name"
     echo "app=$app"
     echo "zip=$zip"
+    echo "dmg=$dmg"
+    echo "dir=$assets"
+    echo "assets=$assets"
     echo "version=$version"
   } >> "$GITHUB_OUTPUT"
 fi
 echo "package: $zip"
+echo "package: $dmg"
