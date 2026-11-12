@@ -156,3 +156,8 @@ python docs/stand/net.py serve                                   # только 
 Какое ограничение не даёт воркеру стартовать (только отладочная сборка):
 `cargo test -p postman-worker --test windows_probe -- --ignored --nocapture`. В CI — при ручном запуске
 (`workflow_dispatch`).
+
+macOS (ADR 0009): `cargo test -p postman-worker --test macos_probe -- --ignored --nocapture` — профиль `deny default`
+плюс одно исключение на строку (`POSTMAN_SANDBOX_ALLOW`, только отладочная сборка). Отказы Seatbelt — в журнале:
+`log show --last 5m --style compact --predicate 'sender == "Sandbox"'`. Отказ самого `sandbox_init` приходит клиенту
+текстом «песочница: sandbox_init: код …» (errno и разбор профиля).

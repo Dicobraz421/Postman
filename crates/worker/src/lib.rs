@@ -32,9 +32,17 @@ use zeroize::Zeroizing;
 
 pub use preview::{Entry, Listing, OfficeFormat, OfficeScan, Preview, PreviewKind, Section, SectionTitle};
 pub use sandbox::Level;
+/// Распределитель с пределом кучи для `#[global_allocator]` процессов песочницы на macOS (MAC-03): `RLIMIT_AS` там не
+/// действует. Приложению и тестам не нужен.
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub use sandbox::Limited;
 
 /// Код выхода воркера, которого остановил сторож времени: разбор одного запроса дольше [`TIME_LIMIT`].
 pub const EXIT_TIME: i32 = 5;
+/// Код выхода процесса песочницы сверх предела памяти (macOS: распределитель `Limited`; на Windows предел ставит Job
+/// Object, на Linux — `RLIMIT_AS`, коды там свои).
+pub const EXIT_MEMORY: i32 = 6;
 /// Предел времени на один запрос внутри воркера (сторож в [`serve`]); клиент ждёт чуть дольше.
 pub const TIME_LIMIT: Duration = Duration::from_secs(8);
 /// Сколько клиент ждёт ответа на просмотр вложения: сторож воркера срабатывает раньше.
@@ -236,27 +244,64 @@ fn smime_verify(bin: &[u8], now: u64) -> (Response, Vec<u8>) {
 
 #[cfg(debug_assertions)]
 #[doc(hidden)]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Probe {
     ReadFile(String),
     Connect(String),
     Spawn(String),
     Hang,
+    /// Занять столько байт кучи (нулями: страницы не трогаются) — предел памяти должен сработать раньше.
+    Alloc(u64),
+    /// Записать столько байт в унаследованный stderr; ответ — «stderr: записано».
+    Stderr(u32),
+    /// macOS: найти службу Mach у launchd.
+    MachLookup(String),
+    /// macOS: прочитать sysctl.
+    Sysctl(String),
 }
 
 #[cfg(debug_assertions)]
 fn probe(p: Probe) -> Response {
-    let r = match p {
-        Probe::ReadFile(path) => std::fs::read(path).map(|_| ()),
-        Probe::Connect(addr) => std::net::TcpStream::connect(addr).map(drop),
-        Probe::Spawn(cmd) => std::process::Command::new(cmd).status().map(drop),
+    if let Probe::Stderr(n) = p {
+        let line = b"postman-worker: stderr probe
+";
+        let text: Vec<u8> = line.iter().copied().cycle().take(n as usize).collect();
+        return Response::Err(match io::stderr().write_all(&text) {
+            Ok(()) => "stderr: записано".into(),
+            Err(e) => format!("stderr: {e}"),
+        });
+    }
+    match attempt(p) {
+        Ok(()) => Response::Err("ДОСТУП РАЗРЕШЁН".into()),
+        Err(e) => Response::Err(format!("запрещено: {e}")),
+    }
+}
+
+/// Проверка [`Probe`] в вызывающем процессе, без песочницы: тест убеждается, что сама проверка умеет удаваться и отказ в
+/// воркере — от песочницы, а не от ошибки в проверке (службы Mach, sysctl). Только отладочная сборка.
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub fn probe_here(p: Probe) -> Result<(), String> {
+    attempt(p)
+}
+
+#[cfg(debug_assertions)]
+fn attempt(p: Probe) -> Result<(), String> {
+    match p {
+        Probe::ReadFile(path) => std::fs::read(path).map(|_| ()).map_err(|e| e.to_string()),
+        Probe::Connect(addr) => std::net::TcpStream::connect(addr).map(drop).map_err(|e| e.to_string()),
+        Probe::Spawn(cmd) => std::process::Command::new(cmd).status().map(drop).map_err(|e| e.to_string()),
         Probe::Hang => loop {
             std::hint::spin_loop();
         },
-    };
-    match r {
-        Ok(()) => Response::Err("ДОСТУП РАЗРЕШЁН".into()),
-        Err(e) => Response::Err(format!("запрещено: {e}")),
+        Probe::Alloc(n) => usize::try_from(n).map_err(|e| e.to_string()).map(|n| drop(std::hint::black_box(vec![0u8; n]))),
+        Probe::Stderr(n) => io::stderr().write_all(&vec![b'.'; n as usize]).map_err(|e| e.to_string()),
+        #[cfg(target_os = "macos")]
+        Probe::MachLookup(name) => sandbox::probe::mach_lookup(&name),
+        #[cfg(target_os = "macos")]
+        Probe::Sysctl(name) => sandbox::probe::sysctl(&name),
+        #[cfg(not(target_os = "macos"))]
+        Probe::MachLookup(_) | Probe::Sysctl(_) => Err("только macOS".into()),
     }
 }
 
@@ -1383,10 +1428,15 @@ fn open_request(raw: &[u8], cek: &[u8], trust: &postman_smime::Trust) -> Result<
     Ok(bin)
 }
 
-/// Код завершения с расшифровкой частых NTSTATUS.
+/// Код завершения с расшифровкой своих кодов, частых NTSTATUS и сигналов (macOS: 128 + номер).
 fn exit_name(code: u32) -> String {
     let name = match code {
+        // `EXIT_TIME`, `EXIT_MEMORY`.
         5 => " (превышено время разбора)",
+        6 => " (превышен предел памяти)",
+        134 if cfg!(unix) => " (аварийное завершение, SIGABRT)",
+        137 if cfg!(unix) => " (убит, SIGKILL)",
+        138 | 139 if cfg!(unix) => " (нарушение доступа к памяти)",
         0xC000_0005 => " (нарушение доступа к памяти)",
         0xC000_0022 => " (нет доступа — вероятно, AppContainer не может прочитать файлы воркера)",
         0xC000_0135 => " (не найдена DLL)",
