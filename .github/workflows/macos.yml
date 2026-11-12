@@ -1,7 +1,7 @@
 # CI Postman для macOS (MAC-01, docs/decisions/2026-11-11-macos.md): Apple Silicon (arm64), macOS 13+.
 # Отдельно от ci.yml: required check `gate` его не ждёт, пока macOS не догонит Windows (MAC-02…MAC-06).
 # `test` — clippy и тесты крейтов, что проходят на macOS; `bundle` — release, Postman.app с подписью ad-hoc, zip и
-# снимки всех сцен демо-ящика из собранного приложения (MAC-04). Строка macos-arm64 в выпуске (job `release` в ci.yml) — MAC-06.
+# снимки всех сцен демо-ящика из собранного приложения (MAC-04). Выпуск для macOS — строка macos-arm64 job `release` в ci.yml (MAC-06).
 name: macOS
 
 on:
