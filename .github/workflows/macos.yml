@@ -29,16 +29,16 @@ env:
 
 jobs:
   test:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
       - run: rustup toolchain install stable --profile minimal -c clippy --no-self-update && rustup default stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.3
         with:
           shared-key: macos
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2.90.3
         with:
           tool: cargo-nextest
 
@@ -65,12 +65,12 @@ jobs:
           POSTMAN_REQUIRE_FULL_SANDBOX: '1'
 
   bundle:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
       - run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.3
         with:
           shared-key: macos-release
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -94,14 +94,14 @@ jobs:
 
       - name: Артефакт снимков
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: screens-macos
           path: shots
           if-no-files-found: warn
 
       - name: Артефакт сборки
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: ${{ steps.package.outputs.name }}
           path: ${{ steps.package.outputs.zip }}
