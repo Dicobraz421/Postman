@@ -145,3 +145,16 @@ Apple Silicon, macOS 13+; подпись ad-hoc до волны выпуска. 
 | [MAC-04](MAC-04.md) | Система: HTML-буфер, перетаскивание, автозапуск, все снимки, тема, замеры | x | B | todo | MAC-02 |
 | [MAC-05](MAC-05.md) | Корпоративное: EWS NTLM/Kerberos, LDAP GSSAPI, S/MIME через Связку ключей | x | B | todo | MAC-02 |
 | [MAC-06](MAC-06.md) | Выпуск: строка в `release`, подпись и нотаризация, .dmg, обновление | ci | B | todo | MAC-02, MAC-03 |
+
+## LIN — Postman для Linux (`docs/decisions/2026-11-12-linux.md`)
+
+x86_64, tier 2 до конца LIN-03: CI отдельным `linux.yml`, в `gate` не входит. Ручные проверки отложены — стенда нет.
+
+| Задача | Суть | Полоса | Класс | Статус | Зависит |
+|---|---|---|---|---|---|
+| [LIN-01](LIN-01.md) | Собирается и тестируется в CI: `linux.yml`, clippy, nextest, архив, `--bench` | ci | B | todo | — |
+| [LIN-02](LIN-02.md) | Значки SVG, пути XDG, снимки `--screens` под X11 | x | B | todo | LIN-01 |
+| [LIN-03](LIN-03.md) | Системное: Secret Service, mailto, журнал, тема, буфер, перетаскивание | x | B | todo | LIN-02 |
+| [LIN-04](LIN-04.md) | Песочница целиком: seccomp, Landlock, тесты, диагностика, ADR | sandbox | B | todo | LIN-01 |
+| [LIN-05](LIN-05.md) | Корпоративное: EWS NTLM/Kerberos, LDAP GSSAPI, S/MIME | x | B | todo | LIN-03 |
+| [LIN-06](LIN-06.md) | Выпуск: AppImage, deb, rpm, строка в `release`, обновление | ci | B | todo | LIN-03, LIN-04 |
