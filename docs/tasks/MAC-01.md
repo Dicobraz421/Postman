@@ -1,7 +1,7 @@
 # MAC-01: собирается и запускается на macOS в CI
 
 lane: x
-status: in-progress
+status: done
 deps: []
 class: B
 files: [.github/workflows/macos.yml, scripts/macos/, crates/worker/src/sandbox/, crates/core/src/paths.rs, crates/core/src/viewers.rs, crates/core/src/smime/skzi.rs, crates/backend-ldap/, crates/demo/src/lib.rs, crates/ews/src/auth.rs, app-gpui/src/sys/, app-gpui/src/main.rs, app-gpui/src/diagnostics.rs, app-gpui/src/reading.rs, app-gpui/src/settings_keys.rs, app-gpui/src/settings_viewers.rs, app-gpui/src/drill_mail.rs, app-gpui/src/drill_tasks.rs]
