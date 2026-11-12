@@ -737,9 +737,9 @@ const CRC_TABLES: [[u32; 256]; 8] = {
 pub(super) fn crc(data: &[u8]) -> u32 {
     let t = &CRC_TABLES;
     let byte = |v: u32, k: u32| ((v >> (8 * k)) & 0xFF) as usize;
-    let mut words = data.chunks_exact(8);
+    let (words, rest) = data.as_chunks::<8>();
     let mut c = 0u32;
-    for w in &mut words {
+    for w in words {
         let lo = c ^ u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
         let hi = u32::from_le_bytes([w[4], w[5], w[6], w[7]]);
         c = t[7][byte(lo, 0)]
@@ -751,7 +751,7 @@ pub(super) fn crc(data: &[u8]) -> u32 {
             ^ t[1][byte(hi, 2)]
             ^ t[0][byte(hi, 3)];
     }
-    words.remainder().iter().fold(c, |c, &b| t[0][((c ^ u32::from(b)) & 0xFF) as usize] ^ (c >> 8))
+    rest.iter().fold(c, |c, &b| t[0][((c ^ u32::from(b)) & 0xFF) as usize] ^ (c >> 8))
 }
 
 #[cfg(test)]
