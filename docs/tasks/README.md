@@ -15,6 +15,7 @@
 | [S5-12.5а](S5-12.5а.md) | Сертификаты из LDAP: ядро и плагин `backend-ldap` | core | B | done | S5-12 |
 | [S5-12.5б](S5-12.5б.md) | Сертификаты из LDAP: настройки, «Найти в каталоге» | app-gpui | B | done | S5-12.5а |
 | [S5-12.5в](S5-12.5в.md) | `userSMIMECertificate` (PKCS#7) — в воркере | sandbox | B | done | S5-12.5а |
+| [S5-12.7](S5-12.7.md) | Свои сертификаты в настройках «Безопасность» (Windows и macOS) | app-gpui | A | todo | MAC-05 |
 
 ## S7 — второй путь
 

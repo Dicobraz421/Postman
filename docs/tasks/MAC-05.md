@@ -31,6 +31,7 @@ manual: docs/manual-tests/MAC-05.md
   `personal_certificates()` — список своих сертификатов для настроек (Windows — `My`); тест во временной Связке
   ключей CI — подпись и расшифровка туда и обратно. Подсказка «Проверка отзыва» — без «до 10 с» (срок — у системы).
   Описание — `docs/SMIME.md` §4а, ручная проверка — `docs/manual-tests/MAC-05.md`, раздел «S/MIME».
+  Решения по вопросам PR — `docs/decisions/2026-11-12-macos-smime.md`; экран своих сертификатов — `S5-12.7`.
 - Вход без пароля в Exchange: `sys::shell::upn` и `in_domain` на macOS (`app-gpui/src/sys/shell_macos.rs`) — сейчас
   «нет» (MAC-04), чтобы не предлагать вход, который не работает; здесь — домен AD (`dsconfigad -show` или Kerberos
   `klist`) и UPN.
