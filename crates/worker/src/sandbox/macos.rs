@@ -12,9 +12,12 @@
 
 use std::ffi::{CStr, c_char, c_int};
 use std::io;
+use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::ptr::null_mut;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use super::Level;
 use crate::Process;
@@ -51,14 +54,29 @@ pub(crate) fn spawn(exe: &Path, _relaxed: bool, _memory: usize) -> io::Result<Pr
         let _ = child.wait();
         return Err(io::Error::other("worker pipes are missing"));
     };
+    let child = Arc::new(Mutex::new(child));
+    let watched = Arc::clone(&child);
     Ok(Process {
         stdin: Box::new(stdin),
         stdout: Box::new(stdout),
         kill: Box::new(move || {
-            let _ = child.kill();
-            let _ = child.wait();
+            let mut c = child.lock().unwrap_or_else(PoisonError::into_inner);
+            let _ = c.kill();
+            let _ = c.wait();
         }),
-        exit_code: Box::new(|| None),
+        // Код выхода (сторож времени — `EXIT_TIME`) для текста ошибки; сигнал — как в оболочке, 128 + номер. Ждём
+        // завершения не дольше 500 мс, как на Windows.
+        exit_code: Box::new(move || {
+            let mut c = watched.lock().unwrap_or_else(PoisonError::into_inner);
+            let until = Instant::now() + Duration::from_millis(500);
+            loop {
+                match c.try_wait() {
+                    Ok(Some(st)) => return st.code().map(|v| v as u32).or_else(|| st.signal().map(|s| 128 + s as u32)),
+                    Ok(None) if Instant::now() < until => std::thread::sleep(Duration::from_millis(10)),
+                    _ => return None,
+                }
+            }
+        }),
         // Без песочницы воркер не работает (`lockdown` → выход 3), поэтому ответивший воркер — в полной изоляции.
         level: Level::Full,
         fallback: None,

@@ -814,6 +814,8 @@ fn ntlm_server(accept: bool) -> (String, Arc<Mutex<Vec<String>>>) {
 
 /// Пустой пароль — вход учётной записью Windows (SSPI, учётные данные текущего входа, NTLM без сети): почта и
 /// области работают; адрес ящика — у сервера (`ResolveNames` по имени учётной записи), а не логин `DOMAIN\user`.
+/// Только Windows: NTLM/Kerberos на macOS — MAC-05.
+#[cfg(windows)]
 #[test]
 fn windows_sign_in_without_password() {
     let (url, log) = ntlm_server(true);

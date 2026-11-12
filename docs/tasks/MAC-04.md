@@ -17,7 +17,7 @@ manual: docs/manual-tests/MAC-04.md
 - Перетаскивание вложения в Finder и другие приложения: `NSDraggingSource` / `NSFilePromiseProvider`.
 - Автозапуск: `SMAppService.mainApp` (macOS 13+).
 - Снимки окна через ScreenCaptureKit вместо устаревшей `CGWindowListCreateImage` (MAC-01); `--screens` — все сцены
-  (в MAC-01 — четыре: `list`, `letter`, `preview-pdf`, `calendar`), снимки macOS — артефактом `macos.yml`.
+  (в MAC-01 — пять: `list`, `letter`, `attachments`, `preview-pdf`, `calendar`), снимки macOS — артефактом `macos.yml`.
 - Тема и акцент системы: `NSColor.controlAccentColor`, светлая/тёмная по `NSAppearance`.
 - Политики и сведения о машине (`policy`, `upn`, `in_domain`; шифрование диска — FileVault вместо BitLocker):
   `CFPreferences` или заглушки с понятным текстом.
