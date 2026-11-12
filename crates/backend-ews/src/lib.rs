@@ -60,6 +60,9 @@ pub fn auth(user: &str, password: &str) -> postman_ews::Auth {
 /// сервер не принял текущего пользователя.
 pub const WINDOWS_SIGN_IN_UNAVAILABLE: &str = "windows sign-in unavailable";
 
+/// Сервер отклонил логин и пароль (в `SyncError::detail`): неверный пароль или логин не того вида.
+pub use postman_ews::CREDENTIALS_REJECTED;
+
 /// Ошибка входа: у входа учётной записью Windows отказ SSPI или сервера — с причиной
 /// [`WINDOWS_SIGN_IN_UNAVAILABLE`], род — `Auth`.
 pub fn sign_in_error(stage: Stage, a: &postman_ews::Auth, e: &postman_ews::Error) -> SyncError {

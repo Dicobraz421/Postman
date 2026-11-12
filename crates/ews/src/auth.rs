@@ -1,11 +1,11 @@
-//! Вход HTTP без SSPI: разбор `WWW-Authenticate`, выбор схемы, заголовок `Authorization`, привязка к каналу TLS
+//! Вход HTTP без SSPI и NTLM: разбор `WWW-Authenticate`, выбор схемы, заголовок `Authorization`, привязка к каналу TLS
 //! (`tls-server-end-point`, RFC 5929) — её требует Extended Protection у Exchange 2019 CU14+ и SE.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use sha2::Digest as _;
 
-/// Схема входа. Basic не поддерживается вовсе.
+/// Схема входа рукопожатием. Basic — только запасной, по TLS (`Http::basic`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Scheme {
     /// SPNEGO: Kerberos, если есть домен и SPN, иначе NTLM внутри.
@@ -43,17 +43,29 @@ pub(crate) fn challenges(values: &[String]) -> Vec<(String, Option<Vec<u8>>)> {
         .collect()
 }
 
-/// Схема из предложенных сервером: Negotiate, иначе NTLM.
-pub(crate) fn choose(values: &[String]) -> Option<Scheme> {
+/// Схема из предложенных сервером: Negotiate, иначе NTLM. С паролем (`ntlm_first`) токены — NTLMSSP: схема NTLM,
+/// если сервер её предлагает, иначе те же токены под Negotiate (IIS принимает NTLMSSP и там).
+pub(crate) fn choose(values: &[String], ntlm_first: bool) -> Option<Scheme> {
     let offered = challenges(values);
     let has = |s: &str| offered.iter().any(|(n, _)| n.eq_ignore_ascii_case(s));
-    if has("Negotiate") {
-        Some(Scheme::Negotiate)
-    } else if has("NTLM") {
-        Some(Scheme::Ntlm)
-    } else {
-        None
+    match (has("Negotiate"), has("NTLM")) {
+        (_, true) if ntlm_first => Some(Scheme::Ntlm),
+        (true, _) => Some(Scheme::Negotiate),
+        (false, true) => Some(Scheme::Ntlm),
+        (false, false) => None,
     }
+}
+
+/// Сервер предлагает схему `name` (без учёта регистра).
+pub(crate) fn offers(values: &[String], name: &str) -> bool {
+    challenges(values).iter().any(|(n, _)| n.eq_ignore_ascii_case(name))
+}
+
+/// Заголовок Basic (`user:password` в base64) — запасной вход по TLS, когда сервер не предлагает ни Negotiate, ни
+/// NTLM.
+pub(crate) fn basic(user: &str, password: &str) -> String {
+    let secret = zeroize::Zeroizing::new(format!("{user}:{password}"));
+    format!("Basic {}", B64.encode(secret.as_bytes()))
 }
 
 /// Токен сервера для этой схемы.
@@ -77,8 +89,8 @@ pub(crate) fn channel_binding(cert_der: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Структура `SEC_CHANNEL_BINDINGS` с данными приложения сразу за ней (8 × u32, смещение данных — 32). Нужна только
-/// SSPI (Windows); на macOS вход Windows — MAC-05.
+/// Структура `SEC_CHANNEL_BINDINGS` с данными приложения сразу за ней (8 × u32, смещение данных — 32) — для SSPI
+/// Windows. NTLM с паролем (`ntlm`, все ОС) берёт те же данные приложения и хэширует их сам (`ntlm::binding_hash`).
 #[cfg(any(windows, test))]
 pub(crate) fn sec_channel_bindings(app: &[u8]) -> Vec<u8> {
     let mut out = vec![0u8; 32];
@@ -147,13 +159,17 @@ mod tests {
     #[test]
     fn challenge_headers() {
         let v = vec!["Negotiate".to_owned(), "NTLM".to_owned(), "Basic realm=\"mail\"".to_owned()];
-        assert_eq!(choose(&v), Some(Scheme::Negotiate));
-        assert_eq!(choose(&["NTLM, Basic realm=\"x\"".to_owned()]), Some(Scheme::Ntlm));
-        assert_eq!(choose(&["Basic realm=\"x\"".to_owned()]), None);
+        assert_eq!(choose(&v, false), Some(Scheme::Negotiate));
+        assert_eq!(choose(&v, true), Some(Scheme::Ntlm), "с паролем — NTLM");
+        assert_eq!(choose(&["Negotiate".to_owned()], true), Some(Scheme::Negotiate), "только Negotiate — NTLMSSP под ним");
+        assert_eq!(choose(&["NTLM, Basic realm=\"x\"".to_owned()], false), Some(Scheme::Ntlm));
+        assert_eq!(choose(&["Basic realm=\"x\"".to_owned()], true), None);
         let with_token = vec![format!("Negotiate {}", B64.encode(b"srv-token=="))];
         assert_eq!(token(&with_token, Scheme::Negotiate).as_deref(), Some(&b"srv-token=="[..]));
         assert_eq!(token(&with_token, Scheme::Ntlm), None);
         assert_eq!(header(Scheme::Ntlm, b"abc"), "NTLM YWJj");
+        assert!(offers(&v, "basic") && !offers(&["NTLM".to_owned()], "Basic"));
+        assert_eq!(basic("anna@corp.example", "p:w"), format!("Basic {}", B64.encode("anna@corp.example:p:w")));
     }
 
     fn cert_with(oid: &[u8], params: &[u8]) -> Vec<u8> {

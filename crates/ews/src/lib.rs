@@ -6,9 +6,9 @@
 //! `SyncFolderItems`/`SyncFolderHierarchy`, а что и когда опрашивать — по уведомлениям сервера (`notify`: streaming,
 //! запасной — pull, T1-21а).
 //!
-//! Транспорт — HTTP/1.1 одним соединением TLS на сессию (hyper, тот же, что под reqwest): вход Negotiate (Kerberos
-//! от учётной записи Windows) или NTLM с паролем через SSPI Windows (`sys`), с привязкой к каналу TLS. Basic и
-//! OAuth нет. TLS — SChannel Windows (`native-tls`): шифры и проверка сертификата — как у Outlook (`http.rs`).
+//! Транспорт — HTTP/1.1 одним соединением TLS на сессию (hyper, тот же, что под reqwest): вход без пароля —
+//! Negotiate (Kerberos от учётной записи Windows) через SSPI Windows (`sys`), с паролем — NTLMv2 на чистом Rust
+//! (`ntlm`, все ОС); оба — с привязкой к каналу TLS. Basic — только запасной (по TLS), OAuth нет. TLS — SChannel Windows (`native-tls`): шифры и проверка сертификата — как у Outlook (`http.rs`).
 //!
 //! Ответы сервера разбираются здесь (`xml`): без DTD и сущностей, с пределами размера и глубины. Модель Postman —
 //! типы `postman-calendar` (`Event`, `Participant`, `Busy`); перевод в кэш и интерфейс — в `postman_core` (S7-06б).
@@ -26,6 +26,7 @@ pub mod directory;
 mod http;
 pub mod mail;
 pub mod notify;
+mod ntlm;
 mod soap;
 mod sys;
 pub mod tz;
@@ -75,10 +76,11 @@ pub enum Error {
     /// Сервер отклонил вход.
     #[error("authentication failed: {0}")]
     Auth(String),
-    /// Сервер не предлагает ни Negotiate, ни NTLM (только Basic или ничего) — не Exchange или вход выключен.
+    /// Сервер не предлагает ни Negotiate, ни NTLM (и Basic по TLS для входа с паролем) — не Exchange или вход
+    /// выключен.
     #[error("server offers neither Negotiate nor NTLM")]
     AuthScheme,
-    /// Вызов SSPI вернул ошибку (`SEC_E_*`).
+    /// Вызов SSPI (или NTLM на Rust — те же коды) вернул ошибку (`SEC_E_*`).
     #[error("sspi {call}: 0x{code:08x}")]
     Sspi { call: &'static str, code: u32 },
     #[error("bad url: {0}")]
@@ -119,6 +121,10 @@ impl Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Причина [`Error::Auth`], когда сервер отклонил логин и пароль (401 на AUTHENTICATE или Basic): неверный пароль или
+/// логин не того вида (`DOMAIN\user` или UPN, а не адрес почты).
+pub const CREDENTIALS_REJECTED: &str = "credentials rejected";
+
 /// Только TLS 1.3 для новых соединений («Настройки → Безопасность»), как у JMAP и DAV.
 pub fn set_tls13_only(on: bool) {
     http::set_tls13_only(on);
@@ -142,12 +148,13 @@ pub async fn probe(url: &str) -> bool {
     }
 }
 
-/// Вход. Только SSPI: Basic и OAuth не поддерживаются (решение владельца, ADR 0003).
+/// Вход: Negotiate или NTLM (ADR 0003); Basic — только запасной, по TLS, если сервер не предлагает ни того ни
+/// другого (MAC-05). OAuth нет.
 #[derive(Clone)]
 pub enum Auth {
     /// Учётная запись Windows, без пароля: Kerberos на машине в домене (Negotiate), иначе NTLM текущего входа.
     Windows,
-    /// Явная учётная запись: `DOMAIN\user` или `user@domain` (UPN) и пароль — NTLM или Kerberos через Negotiate.
+    /// Явная учётная запись: `DOMAIN\user` или `user@domain` (UPN) и пароль — NTLMv2 (`ntlm`), на всех ОС одинаково.
     Password { user: String, password: zeroize::Zeroizing<String> },
 }
 
