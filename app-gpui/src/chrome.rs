@@ -8,6 +8,8 @@
 //! (`WM_NCLBUTTONDOWN` по `HTCAPTION`/`HTMAXBUTTON`), иначе пропали бы Snap и развёртывание двойным щелчком.
 //! Зоны перетаскивания — соседи кнопок, а не их родители: gpui спрашивает зону по всем элементам под мышью, и кнопка
 //! внутри зоны двигала бы окно вместо щелчка. Зазоры между кнопками — тоже заголовок окна ([`drag_gap`]).
+//! Linux (LIN-02): кнопки и рамка — свои, как на Windows (`WindowDecorations::Client`), но зоны gpui там не
+//! разбирает — кнопки и перетаскивание со своими обработчиками, край окна — [`resize_edges`].
 
 use std::time::{Duration, Instant};
 
@@ -23,14 +25,27 @@ use crate::settings::settings;
 use crate::tabs::{MailState, Tab, TabKind};
 use crate::{Mailer, Section};
 
-/// Шрифт значков ОС (базис Pets): Segoe Fluent Icons, Windows 11. На macOS его нет — значки SVG (`icons::mac_glyph`).
+/// Шрифт значков ОС (базис Pets): Segoe Fluent Icons, Windows 11. Вне Windows его нет — значки SVG (`icons::svg_glyph`).
 pub(crate) const ICON_FONT: &str = "Segoe Fluent Icons";
 
-/// Моноширинный шрифт ОС: отпечатки, команды, исходный текст письма (MAC-02: на macOS — Menlo).
-pub(crate) const MONO_FONT: &str = if cfg!(target_os = "macos") { "Menlo" } else { "Consolas" };
+/// Моноширинный шрифт ОС: отпечатки, команды, исходный текст письма (MAC-02: на macOS — Menlo; LIN-02: на Linux —
+/// DejaVu Sans Mono, он есть почти в каждом дистрибутиве).
+pub(crate) const MONO_FONT: &str = if cfg!(target_os = "macos") {
+    "Menlo"
+} else if cfg!(target_os = "linux") {
+    "DejaVu Sans Mono"
+} else {
+    "Consolas"
+};
 
-/// Моноширинный шрифт блоков кода в письме: Cascadia Mono (Windows 11), Menlo (macOS).
-pub(crate) const CODE_FONT: &str = if cfg!(target_os = "macos") { "Menlo" } else { "Cascadia Mono" };
+/// Моноширинный шрифт блоков кода в письме: Cascadia Mono (Windows 11), Menlo (macOS), DejaVu Sans Mono (Linux).
+pub(crate) const CODE_FONT: &str = if cfg!(target_os = "macos") {
+    "Menlo"
+} else if cfg!(target_os = "linux") {
+    "DejaVu Sans Mono"
+} else {
+    "Cascadia Mono"
+};
 
 /// macOS: «светофоры» окна (MAC-02) рисует система; место под них слева в заголовке и их положение.
 #[cfg(target_os = "macos")]
@@ -152,10 +167,10 @@ pub(crate) const STATUS_HEIGHT: f32 = 28.0;
 /// Меню «…» не открывается снова тем же щелчком, которым его закрыли (нажатие вне меню — по кнопке «…»).
 const REOPEN_GUARD: Duration = Duration::from_millis(400);
 
-/// Значок шрифтом ОС; на macOS — SVG того же значка цветом текста (шрифта Segoe Fluent Icons там нет).
+/// Значок шрифтом ОС; вне Windows — SVG того же значка цветом текста (шрифта Segoe Fluent Icons там нет).
 pub(crate) fn icon(g: char, size: f32) -> Div {
-    #[cfg(target_os = "macos")]
-    if let Some(path) = icons::mac_glyph(g) {
+    #[cfg(not(windows))]
+    if let Some(path) = icons::svg_glyph(g) {
         return div().flex_none().size(px(size)).child(icons::Tinted { path, size });
     }
     div().flex_none().font_family(ICON_FONT).text_size(px(size)).line_height(px(size)).child(String::from(g))
@@ -272,9 +287,20 @@ fn drag_gap(id: impl Into<ElementId>, w: f32) -> Stateful<Div> {
 
 /// Зона перетаскивания окна. Windows — `WindowControlArea::Drag` (нажатие обрабатывает система, Snap и двойной щелчок
 /// — её). macOS (MAC-02) — зону заголовка AppKit не знает: нажатие двигает окно (`start_window_move`), двойной
-/// щелчок — как в настройках системы («Увеличить» или «Свернуть»).
+/// щелчок — как в настройках системы («Увеличить» или «Свернуть»). Linux (LIN-02) — зоны заголовка gpui на Linux не
+/// разбирает: нажатие двигает окно, двойной щелчок — развернуть, правая кнопка — меню окна среды.
 fn drag_area(d: Stateful<Div>) -> Stateful<Div> {
     let d = d.window_control_area(WindowControlArea::Drag);
+    #[cfg(target_os = "linux")]
+    let d = d
+        .on_mouse_down(MouseButton::Left, |e, window, _| {
+            if e.click_count == 2 {
+                window.zoom_window();
+            } else {
+                window.start_window_move();
+            }
+        })
+        .on_mouse_down(MouseButton::Right, |e, window, _| window.show_window_menu(e.position));
     #[cfg(target_os = "macos")]
     let d = d.on_mouse_down(MouseButton::Left, |e, window, _| {
         if e.click_count == 2 {
@@ -285,6 +311,54 @@ fn drag_area(d: Stateful<Div>) -> Stateful<Div> {
     });
     d
 }
+
+/// Linux (LIN-02): рамки окна рисует не система (`WindowDecorations::Client`) — нажатие у края окна (не развёрнутого
+/// к этому краю) начинает изменение размера, как за системную рамку. Система рисует рамку сама — ничего.
+#[cfg(target_os = "linux")]
+pub(crate) fn resize_edges(d: Div, window: &Window) -> Div {
+    let Decorations::Client { tiling } = window.window_decorations() else { return d };
+    d.capture_any_mouse_down(move |e, window, cx| {
+        if e.button != MouseButton::Left {
+            return;
+        }
+        if let Some(edge) = resize_edge(e.position, window.viewport_size(), tiling) {
+            window.start_window_resize(edge);
+            cx.stop_propagation();
+        }
+    })
+}
+
+/// Край окна под точкой `at`: полоса [`RESIZE_EDGE`] px, углы — квадрат вдвое больше; край, прижатый к экрану
+/// (`tiling`), не тянется.
+#[cfg(any(target_os = "linux", test))]
+fn resize_edge(at: Point<Pixels>, size: Size<Pixels>, tiling: Tiling) -> Option<ResizeEdge> {
+    let (x, y, w, h) = (f32::from(at.x), f32::from(at.y), f32::from(size.width), f32::from(size.height));
+    let near = |d: f32, band: f32| d >= 0. && d < band;
+    let corner = RESIZE_EDGE * 2.;
+    let top = !tiling.top && near(y, RESIZE_EDGE);
+    let bottom = !tiling.bottom && near(h - y, RESIZE_EDGE);
+    let left = !tiling.left && near(x, RESIZE_EDGE);
+    let right = !tiling.right && near(w - x, RESIZE_EDGE);
+    let top_c = !tiling.top && near(y, corner);
+    let bottom_c = !tiling.bottom && near(h - y, corner);
+    let left_c = !tiling.left && near(x, corner);
+    let right_c = !tiling.right && near(w - x, corner);
+    Some(match () {
+        _ if (top || left) && top_c && left_c => ResizeEdge::TopLeft,
+        _ if (top || right) && top_c && right_c => ResizeEdge::TopRight,
+        _ if (bottom || left) && bottom_c && left_c => ResizeEdge::BottomLeft,
+        _ if (bottom || right) && bottom_c && right_c => ResizeEdge::BottomRight,
+        _ if top => ResizeEdge::Top,
+        _ if bottom => ResizeEdge::Bottom,
+        _ if left => ResizeEdge::Left,
+        _ if right => ResizeEdge::Right,
+        _ => return None,
+    })
+}
+
+/// Ширина полосы изменения размера у края окна (Linux, своя рамка).
+#[cfg(any(target_os = "linux", test))]
+const RESIZE_EDGE: f32 = 5.0;
 
 impl Mailer {
     /// Название вкладки и есть ли в ней несохранённое (письмо — точка после названия).
@@ -390,7 +464,7 @@ impl Mailer {
                 .on_click(cx.listener(move |this, _, window, cx| this.activate_tab(id, window, cx)))
         });
         let caption = |id: &'static str, g: char, area: WindowControlArea, close: bool| {
-            div()
+            let d = div()
                 .id(id)
                 .children(crate::screens::spot(id))
                 .w(px(W_CAPTION))
@@ -403,7 +477,15 @@ impl Mailer {
                 .when(close, |d| d.hover(|d| d.bg(l.pm(Pm::CaptionClose)).text_color(l.pm(Pm::CaptionCloseOn))))
                 .when(!close, |d| d.hover(|d| d.bg(l.hover())))
                 .window_control_area(area)
-                .child(icon(g, 10.))
+                .child(icon(g, 10.));
+            // Linux (LIN-02): кнопки окна свои, как на Windows, но система их не разбирает — щелчок делает действие.
+            #[cfg(target_os = "linux")]
+            let d = d.on_click(move |_, window, _| match area {
+                WindowControlArea::Min => window.minimize_window(),
+                WindowControlArea::Max => window.zoom_window(),
+                _ => window.remove_window(),
+            });
+            d
         };
         let max = if window.is_maximized() { glyph::RESTORE } else { glyph::MAX };
         // macOS (MAC-02): слева — место «светофоров» системы вместо значка приложения, справа своих «─ □ ✕» нет.
@@ -1279,6 +1361,22 @@ pub(crate) fn worker_notice(t: &mut crate::notices::Notices, cx: &mut Context<cr
 #[cfg(test)]
 mod tests {
     use super::MoreMenu;
+
+    /// LIN-02: край и угол окна своей рамки; прижатый к экрану край не тянется, середина окна — не край.
+    #[test]
+    fn resize_edge_by_position() {
+        use gpui_kit::{ResizeEdge as E, Tiling, point, px, size};
+        let s = size(px(800.), px(600.));
+        let free = Tiling::default();
+        let at = |x: f32, y: f32, t: Tiling| super::resize_edge(point(px(x), px(y)), s, t);
+        assert_eq!(at(400., 300., free), None);
+        assert_eq!(at(400., 2., free), Some(E::Top));
+        assert_eq!(at(799., 300., free), Some(E::Right));
+        assert_eq!(at(2., 598., free), Some(E::BottomLeft));
+        assert_eq!(at(8., 2., free), Some(E::TopLeft), "угол шире края");
+        assert_eq!(at(400., 2., Tiling { top: true, ..free }), None);
+        assert_eq!(at(400., 2., Tiling::tiled()), None);
+    }
 
     /// Щелчок по «…» при открытом меню: нажатие вне меню закрыло его — тот же щелчок не открывает снова.
     #[test]

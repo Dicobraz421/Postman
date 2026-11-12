@@ -6566,11 +6566,13 @@ dependencies = [
  "postman-search",
  "postman-smime",
  "postman-worker",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "tracing",
+ "x11rb",
  "zeroize",
  "zip",
 ]

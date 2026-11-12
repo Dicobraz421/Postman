@@ -1,6 +1,6 @@
 //! Значки Fluent UI System Icons, Regular 20 (ADR 0008, DESIGN «Значки»): файлы `res/icons/`, вшиты в exe, источник
 //! активов gpui — [`Assets`], рисует [`icon`]. Остальные значки — шрифтом ОС (`chrome::icon`), кнопки окна — всегда им;
-//! на macOS шрифта Segoe Fluent Icons нет — те же значки SVG Lucide из gpui-kit (MAC-02, [`mac_glyph`]).
+//! вне Windows (macOS, Linux) шрифта Segoe Fluent Icons нет — те же значки SVG Lucide из gpui-kit (MAC-02, LIN-02, [`svg_glyph`]).
 //!
 //! Пути активов — `fluent/…`, не `icons/…`: под `icons/` компоненты gpui-kit ищут свои значки, и совпавшее имя появилось
 //! бы в них само. `svg()` берёт цвет только из своего стиля, не наследует: цвет — обязательный параметр [`icon`].
@@ -65,18 +65,18 @@ impl AssetSource for Assets {
         if path == APP {
             return Ok(Some(Cow::Borrowed(APP_BYTES)));
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(not(windows))]
         if path.starts_with("icons/") {
-            return MacGlyphs.load(path);
+            return SvgGlyphs.load(path);
         }
         Ok(SET.iter().find(|(p, _)| *p == path).map(|(_, bytes)| Cow::Borrowed(*bytes)))
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        #[cfg_attr(not(target_os = "macos"), expect(unused_mut))]
+        #[cfg_attr(windows, expect(unused_mut))]
         let mut list: Vec<SharedString> = SET.iter().filter(|(p, _)| p.starts_with(path)).map(|(p, _)| SharedString::from(*p)).collect();
-        #[cfg(target_os = "macos")]
-        list.extend(MacGlyphs.list(path)?);
+        #[cfg(not(windows))]
+        list.extend(SvgGlyphs.list(path)?);
         Ok(list)
     }
 }
@@ -86,10 +86,10 @@ pub(crate) fn icon(ico: Ico, size: f32, color: Hsla) -> Svg {
     svg().path(ico.0).flex_none().size(px(size)).text_color(color)
 }
 
-// macOS: значки шрифта Segoe Fluent Icons (`chrome::icon`) — встроенными SVG Lucide (gpui-kit-assets, ISC): шрифта
-// на Mac нет. Вшиты только эти; путь `icons/…` — тот же, что у компонентов gpui-kit (значки те же).
-#[cfg(target_os = "macos")]
-gpui_kit::assets::icon_assets!(pub(crate) MacGlyphs, [
+// Вне Windows (MAC-02, LIN-02): значки шрифта Segoe Fluent Icons (`chrome::icon`) — встроенными SVG Lucide (gpui-kit-assets, ISC): шрифта
+// на macOS и Linux нет. Вшиты только эти; путь `icons/…` — тот же, что у компонентов gpui-kit (значки те же).
+#[cfg(not(windows))]
+gpui_kit::assets::icon_assets!(pub(crate) SvgGlyphs, [
     Archive, ArrowDown, ArrowDownUp, ArrowLeft, ArrowUp, BadgeCheck, Ban, BellRing, Bold, BookOpen, Calendar,
     Calendar1, CalendarCheck, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Circle,
     CircleCheck, CircleQuestionMark, CircleX, Clock, ClockArrowLeft, Copy, Download, Ellipsis, Eraser, ExternalLink,
@@ -103,8 +103,8 @@ gpui_kit::assets::icon_assets!(pub(crate) MacGlyphs, [
 
 /// SVG для значка шрифта Segoe Fluent Icons; нет пары — `None` (значок рисуется шрифтом). Таблица собирается на всех
 /// ОС (MAC-04): тест полноты идёт и в обязательном CI Windows, а не только в `macos.yml`.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(crate) fn mac_glyph(g: char) -> Option<&'static str> {
+#[cfg_attr(windows, allow(dead_code))]
+pub(crate) fn svg_glyph(g: char) -> Option<&'static str> {
     Some(match g {
         '\u{E121}' => "icons/clock.svg",
         '\u{E707}' => "icons/map-pin.svg",
@@ -213,16 +213,16 @@ pub(crate) fn mac_glyph(g: char) -> Option<&'static str> {
     })
 }
 
-/// macOS: значок шрифта, нарисованный SVG ([`mac_glyph`]) цветом текста родителя — `svg()` своего цвета не наследует,
+/// Вне Windows: значок шрифта, нарисованный SVG ([`svg_glyph`]) цветом текста родителя — `svg()` своего цвета не наследует,
 /// а цвет текста к моменту `render` уже задан предками (`chrome::icon(…).text_color(…)`).
-#[cfg(target_os = "macos")]
+#[cfg(not(windows))]
 #[derive(IntoElement)]
 pub(crate) struct Tinted {
     pub(crate) path: &'static str,
     pub(crate) size: f32,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(not(windows))]
 impl RenderOnce for Tinted {
     fn render(self, window: &mut Window, _: &mut App) -> impl IntoElement {
         svg().path(self.path).flex_none().size(px(self.size)).text_color(window.text_style().color)
@@ -261,16 +261,16 @@ mod tests {
         for (path, _) in SET {
             assert!(Assets.load(path).unwrap().is_some(), "{path}");
         }
-        // На macOS под `icons/` — значки вместо шрифта (`MacGlyphs`), это значки самих компонентов gpui-kit.
-        #[cfg(not(target_os = "macos"))]
+        // Вне Windows под `icons/` — значки вместо шрифта (`SvgGlyphs`), это значки самих компонентов gpui-kit.
+        #[cfg(windows)]
         assert!(Assets.load("icons/search.svg").unwrap().is_none());
         assert_eq!(Assets.list("fluent/").unwrap().len(), SET.len());
     }
 
-    /// macOS: у каждого значка шрифта в коде интерфейса — SVG во вшитом наборе (иначе на Mac был бы «тофу» — квадрат
-    /// с «?»). Пара проверяется на всех ОС (MAC-04), загрузка SVG — на macOS (набор `MacGlyphs` вшит только там).
+    /// Вне Windows: у каждого значка шрифта в коде интерфейса — SVG во вшитом наборе (иначе на macOS и Linux был бы «тофу» — квадрат
+    /// с «?»). Пара проверяется на всех ОС (MAC-04), загрузка SVG — вне Windows (набор `SvgGlyphs` вшит только там).
     #[test]
-    fn every_font_glyph_has_an_svg_on_macos() {
+    fn every_font_glyph_has_an_svg() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut missing = Vec::new();
         let mut dirs = vec![dir];
@@ -287,10 +287,10 @@ mod tests {
                     let Some(g) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) else { continue };
                     // Частная область Unicode (значки шрифта); границы — числами, чтобы тест не нашёл сам себя.
                     if (0xE000..=0xF8FF).contains(&u32::from(g)) {
-                        match super::mac_glyph(g) {
+                        match super::svg_glyph(g) {
                             Some(p) => {
                                 assert!(p.starts_with("icons/") && p.ends_with(".svg"), "{p}");
-                                #[cfg(target_os = "macos")]
+                                #[cfg(not(windows))]
                                 assert!(Assets.load(p).unwrap().is_some(), "{p}");
                             }
                             None => missing.push(format!("{}: U+{hex}", path.display())),
@@ -299,7 +299,7 @@ mod tests {
                 }
             }
         }
-        assert!(missing.is_empty(), "значки без SVG на macOS: {missing:?}");
+        assert!(missing.is_empty(), "значки без SVG вне Windows: {missing:?}");
     }
 
     /// У каждой команды со значком Fluent и у каждой роли папки — файл в наборе.
