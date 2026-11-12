@@ -78,7 +78,8 @@ jobs:
 
   test:
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    # Пуш в main не тестируется: тот же код уже проверила очередь слияния (merge_group). Тег — тестируется.
+    if: needs.changes.outputs.rust == 'true' && !(github.event_name == 'push' && github.ref_type == 'branch')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7.0.1
