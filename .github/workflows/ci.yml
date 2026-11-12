@@ -77,6 +77,24 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7.0.1
+      # Ускорение тестов (решение владельца 2026-11-12): тесты с демо-ящиком (redb во временной папке) на Windows
+      # шли по 100–150 с против 4–8 с на Linux/macOS. Временная папка — на диск раннера D: (runner.temp) вместо C:,
+      # каталоги сборки, кэша cargo и временный — вне проверки Defender в реальном времени. Набор тестов не меняется;
+      # не вышло добавить исключение — только предупреждение.
+      - name: Временная папка и исключения Defender
+        shell: pwsh
+        run: |
+          $tmp = "${{ runner.temp }}"
+          "TEMP=$tmp" >> $env:GITHUB_ENV
+          "TMP=$tmp" >> $env:GITHUB_ENV
+          $paths = @($tmp, $env:GITHUB_WORKSPACE, (Join-Path $env:GITHUB_WORKSPACE $env:CARGO_TARGET_DIR), (Join-Path $env:USERPROFILE '.cargo'), (Join-Path $env:USERPROFILE '.rustup'))
+          try {
+            Add-MpPreference -ExclusionPath $paths -ErrorAction Stop
+            Add-MpPreference -ExclusionProcess 'cargo.exe', 'rustc.exe', 'cargo-nextest.exe' -ErrorAction Stop
+            "Исключения Defender: $($paths -join '; ')"
+          } catch {
+            Write-Warning "Исключения Defender не добавлены: $_"
+          }
       - run: rustup toolchain install stable --profile minimal -c clippy,rustfmt --no-self-update && rustup default stable
       - uses: Swatinem/rust-cache@v2.9.3
         with:
