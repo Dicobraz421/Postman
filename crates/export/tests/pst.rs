@@ -622,8 +622,8 @@ fn attachment_bytes(message: &Rc<UnicodeMessage>, row: u32) -> Vec<u8> {
     }
 }
 
-/// 10 000 писем в трёх папках («Проекты» — внутри «Входящих»): все папки, письма и вложения читаются, таблицы
-/// содержимого сходятся с письмами (многоуровневый BTH, куча в много блоков), память писателя — до 64 МиБ.
+/// 10 000 писем в трёх папках («Проекты» — внутри «Входящих»): все папки и строки таблиц читаются, письма и вложения —
+/// выборкой (каждое десятое и все большие вложения), таблицы содержимого сходятся с письмами (многоуровневый BTH, куча в много блоков), память писателя — до 64 МиБ.
 #[test]
 fn ten_thousand_letters_in_three_folders() {
     const N: usize = 10_000;
@@ -687,7 +687,14 @@ fn ten_thousand_letters_in_three_folders() {
             // Индекс строк (BTH) находит каждую строку.
             assert_eq!(u32::from(contents.find_row(TableRowId::new(*id)).unwrap().id()), *id);
         }
+        total += subjects.len();
         for (n, ((id, _), i)) in subjects.iter().zip(&expect).enumerate() {
+            // Письмо целиком (свойства, таблица вложений, вложение) — у каждого десятого, у всех с вложением 64 КиБ и
+            // у последнего в папке. Строки таблицы содержимого выше проверены у всех, узлы и блоки всех писем —
+            // `check_blocks`; чтение всех 10 000 через outlook-pst в отладочной сборке занимало 2/3 времени теста.
+            if n % 10 != 0 && n % 499 != 0 && !i.is_multiple_of(100) && n + 1 != expect.len() {
+                continue;
+            }
             let message = UnicodeMessage::read(store.clone(), &props_entry(&store, *id), None).unwrap();
             assert_eq!(unicode(message.properties().get(0x0037)), format!("Письмо {i}"));
             let rows = column(message.attachment_table().unwrap().as_ref(), 0x3704_001F);
@@ -697,7 +704,6 @@ fn ten_thousand_letters_in_three_folders() {
                 let object: BTreeMap<u16, String> = message.properties().iter().map(|(id, v)| (*id, format!("{v:?}"))).collect();
                 same(contents.as_ref(), *id, &object);
             }
-            total += 1;
         }
     }
     assert_eq!(total, N);
