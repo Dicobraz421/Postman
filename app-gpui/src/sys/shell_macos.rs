@@ -12,9 +12,15 @@ use pets_gpui_macos::toast;
 const MAILTO: &str = "mailto";
 
 /// Шифрование диска с данными (S8-35): FileVault — `fdesetup status` (без прав администратора; шифруется весь
-/// загрузочный том с домашней папкой, где данные Postman). Имени диска в текстах macOS нет — пустая строка.
+/// загрузочный том с домашней папкой, где данные Postman); имя диска — имя загрузочного тома (`diskutil info /`).
 /// `Some(true)` — включён, `Some(false)` — выключен, `None` — не ответил. Звать в фоне.
 pub fn bitlocker(_path: &Path) -> (String, Option<bool>) {
+    let drive = std::process::Command::new("/usr/sbin/diskutil")
+        .args(["info", "/"])
+        .output()
+        .ok()
+        .and_then(|o| volume_name(&String::from_utf8_lossy(&o.stdout)))
+        .unwrap_or_else(|| "/".to_owned());
     let out = std::process::Command::new("/usr/bin/fdesetup").arg("status").output();
     let state = match out {
         Ok(o) if o.status.success() => filevault(&String::from_utf8_lossy(&o.stdout)),
@@ -27,7 +33,13 @@ pub fn bitlocker(_path: &Path) -> (String, Option<bool>) {
             None
         }
     };
-    (String::new(), state)
+    (drive, state)
+}
+
+/// Имя тома из `diskutil info`: строка «Volume Name: Macintosh HD».
+fn volume_name(info: &str) -> Option<String> {
+    let name = info.lines().find_map(|l| l.trim().strip_prefix("Volume Name:"))?.trim();
+    (!name.is_empty()).then(|| name.to_owned())
 }
 
 /// Ответ `fdesetup status`: «FileVault is On.» (и «… Encryption in progress» — уже защищает новые данные),
@@ -168,5 +180,15 @@ Decryption in progress: Percent completed = 40
             Some(false)
         );
         assert_eq!(super::filevault(""), None);
+        assert_eq!(
+            super::volume_name(
+                "   Device Node:  /dev/disk3s1s1
+   Volume Name:              Macintosh HD
+"
+            )
+            .as_deref(),
+            Some("Macintosh HD")
+        );
+        assert_eq!(super::volume_name(""), None);
     }
 }

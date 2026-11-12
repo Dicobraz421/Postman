@@ -3,7 +3,7 @@
 //! на других ОС — заглушки. `unsafe` — только счётчик кучи (`alloc`) и `set_var` в начале `main`
 //! (`shell::default_env`).
 //!
-//! Тексты интерфейса, где ОС названа или нарисованы её клавиши, на macOS — свой вариант ключа ([`os_key`], MAC-04).
+//! Тексты интерфейса, где нарисованы клавиши ОС, на macOS — свой вариант ключа ([`os_key`], MAC-04).
 
 use gpui_kit::Window;
 #[cfg(windows)]
@@ -58,42 +58,17 @@ pub fn attach_parent_console() {
     pets_shell::console::attach_parent();
 }
 
-/// Тексты со своим вариантом на macOS (MAC-04): «⌘» вместо «Ctrl», «macOS» вместо «Windows», FileVault вместо
-/// BitLocker, Связка ключей вместо Диспетчера учётных данных. Вариант — тот же ключ с `-mac`.
+/// Тексты со своим вариантом на macOS (MAC-04): только там, где на Mac другие клавиши (⌘ вместо Ctrl, Option вместо
+/// Alt). Названий ОС в текстах нет (решение 2026-11-12 «no-os-names»): «системное хранилище паролей», «Как в
+/// системе». Вариант — тот же ключ с `-mac`.
 pub const MAC_TEXTS: &[(&str, &str)] = &[
     ("bulk-pick", "bulk-pick-mac"),
     ("signin-demo", "signin-demo-mac"),
-    ("signin-store-windows", "signin-store-windows-mac"),
     ("settings-reading-aside-1", "settings-reading-aside-1-mac"),
     ("settings-keys-layout-1", "settings-keys-layout-1-mac"),
     ("settings-keys-layout-2", "settings-keys-layout-2-mac"),
     ("settings-keys-note-outlook", "settings-keys-note-outlook-mac"),
-    ("settings-keys-no-conflicts", "settings-keys-no-conflicts-mac"),
     ("settings-keytips", "settings-keytips-mac"),
-    ("settings-mailto-hint", "settings-mailto-hint-mac"),
-    ("settings-autostart", "settings-autostart-mac"),
-    ("settings-autostart-on", "settings-autostart-on-mac"),
-    ("settings-theme-hint", "settings-theme-hint-mac"),
-    ("settings-lang-auto", "settings-lang-auto-mac"),
-    ("settings-cal-zone-system", "settings-cal-zone-system-mac"),
-    ("settings-font-hint", "settings-font-hint-mac"),
-    ("settings-notify-group", "settings-notify-group-mac"),
-    ("settings-sound-hint", "settings-sound-hint-mac"),
-    ("settings-hint-accounts", "settings-hint-accounts-mac"),
-    ("settings-passwords-hint", "settings-passwords-hint-mac"),
-    ("settings-passwords-vault", "settings-passwords-vault-mac"),
-    ("settings-protection-vault", "settings-protection-vault-mac"),
-    ("settings-account-password-stored", "settings-account-password-stored-mac"),
-    ("settings-account-secrets-1", "settings-account-secrets-1-mac"),
-    ("settings-wipe-hint", "settings-wipe-hint-mac"),
-    ("settings-protection-disk-on", "settings-protection-disk-on-mac"),
-    ("settings-protection-disk-off", "settings-protection-disk-off-mac"),
-    ("settings-bitlocker-off", "settings-bitlocker-off-mac"),
-    ("settings-bitlocker-off-hint", "settings-bitlocker-off-hint-mac"),
-    ("settings-bitlocker-open", "settings-bitlocker-open-mac"),
-    ("settings-bitlocker-on", "settings-bitlocker-on-mac"),
-    ("settings-bitlocker-unknown", "settings-bitlocker-unknown-mac"),
-    ("settings-bitlocker-unknown-hint", "settings-bitlocker-unknown-hint-mac"),
 ];
 
 /// Ключ текста для этой ОС: на macOS — вариант из [`MAC_TEXTS`], иначе — `key` как есть.
@@ -411,12 +386,40 @@ mod os_texts {
             for (key, mac) in super::MAC_TEXTS {
                 assert_ne!(i18n.get(key), *key, "{lang}: {key}");
                 assert_ne!(i18n.get(mac), *mac, "{lang}: {mac}");
-                assert!(!i18n.get(mac).contains("Windows"), "{lang}: {mac}");
             }
         }
         assert_eq!(super::os_key_on("bulk-pick", false), "bulk-pick");
         assert_eq!(super::os_key_on("bulk-pick", true), "bulk-pick-mac");
         assert_eq!(super::os_key_on("nav-mail", true), "nav-mail");
+    }
+
+    /// Решение 2026-11-12 «no-os-names»: в текстах интерфейса нет названий ОС и их хранилищ — «система», «системное
+    /// хранилище паролей». Комментарии `.ftl` не в счёт.
+    #[test]
+    fn texts_have_no_os_names() {
+        const NAMES: [&str; 9] =
+            ["Windows", "macOS", "BitLocker", "FileVault", "Keychain", "Связк", "Credential Manager", "Диспетчер учётных", "Проводник"];
+        let mut texts = crate::parts::texts();
+        texts.push(pets_ui::FTL);
+        let mut found = Vec::new();
+        for set in &texts {
+            for (lang, source) in set.iter() {
+                for line in source.lines().filter(|l| !l.trim_start().starts_with('#')) {
+                    if let Some(name) = NAMES.iter().find(|n| line.contains(*n)) {
+                        found.push(format!("{lang}: {name}: {line}"));
+                    }
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "названия ОС в текстах:
+{}",
+            found.join(
+                "
+"
+            )
+        );
     }
 }
 

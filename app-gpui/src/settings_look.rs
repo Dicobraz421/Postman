@@ -112,11 +112,7 @@ impl SettingsView {
                 })
             })
             .collect();
-        let theme_hint = if locked {
-            Some(tr!("pets-ui-theme-locked"))
-        } else {
-            self.theme_error.clone().or(Some(tr!(crate::sys::os_key("settings-theme-hint"))))
-        };
+        let theme_hint = if locked { Some(tr!("pets-ui-theme-locked")) } else { self.theme_error.clone().or(Some(tr!("settings-theme-hint"))) };
         let row_px = l.density().row();
         // Две плотности, как в макете: прежние «удобная» и «просторная» — обычная (`Prefs::normalized`).
         let densities: Vec<Stateful<Div>> = [(20u16, "settings-density-compact"), (24, "settings-density-normal")]
@@ -213,7 +209,7 @@ impl SettingsView {
             .child(row(tr!("settings-accent"), Some(tr!("settings-accent-hint")), accents, l))
             .child(row(tr!("settings-density"), Some(tr!("settings-density-hint")), seg_group(densities, l), l))
             .child(group(tr!("settings-text-group"), l))
-            .child(row(tr!("settings-font"), Some(tr!(crate::sys::os_key("settings-font-hint"))), font, l))
+            .child(row(tr!("settings-font"), Some(tr!("settings-font-hint")), font, l))
             .child(group(tr!("settings-layout-group"), l))
             .child(row(tr!("settings-look-pane"), Some(tr!("settings-look-pane-hint")), pane_control, l))
             .child(row(

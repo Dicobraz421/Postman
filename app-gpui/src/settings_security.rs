@@ -49,7 +49,8 @@ impl SettingsView {
         }
         self.disk_asked = true;
         if !self.info.live {
-            self.disk = Some(("C:".into(), Some(false)));
+            let demo = if cfg!(target_os = "macos") { "Macintosh HD" } else { "C:" };
+            self.disk = Some((demo.into(), Some(false)));
             return;
         }
         let task = cx.background_spawn(async move { crate::sys::shell::bitlocker(&crate::data_dir()) });
@@ -69,7 +70,7 @@ impl SettingsView {
         let (drive, state) = self.disk.clone()?;
         let (glyph, title, hint) = disk_texts(&drive, state);
         let button = (state == Some(false)).then(|| {
-            button("settings-bitlocker-open", tr!(crate::sys::os_key("settings-bitlocker-open")), false, l).on_click(cx.listener(|_, _, _, cx| {
+            button("settings-bitlocker-open", tr!("settings-bitlocker-open"), false, l).on_click(cx.listener(|_, _, _, cx| {
                 if let Err(e) = crate::sys::shell::open_bitlocker() {
                     tracing::warn!("{e}");
                 }
@@ -127,8 +128,8 @@ impl SettingsView {
         let phishing = p.general.phishing_report.clone();
         let disk = self.disk.clone().map(|(drive, state)| {
             let v = match state {
-                Some(true) => tr!(crate::sys::os_key("settings-protection-disk-on"), drive = drive),
-                Some(false) => tr!(crate::sys::os_key("settings-protection-disk-off"), drive = drive),
+                Some(true) => tr!("settings-protection-disk-on", drive = drive),
+                Some(false) => tr!("settings-protection-disk-off", drive = drive),
                 None => tr!("settings-protection-unknown"),
             };
             line(state, tr!("settings-protection-disk"), v)
@@ -148,7 +149,7 @@ impl SettingsView {
             .child(line(
                 None,
                 tr!("settings-protection-passwords"),
-                tr!(crate::sys::os_key(if eff.store_password { "settings-protection-vault" } else { "settings-protection-no-store" })),
+                tr!(if eff.store_password { "settings-protection-vault" } else { "settings-protection-no-store" }),
             ))
             .child(line(None, tr!("settings-protection-tls"), tr!(if eff.tls13 { "settings-protection-tls13" } else { "settings-protection-tls12" })))
             .child(line(
@@ -196,7 +197,7 @@ impl SettingsView {
         let passwords = seg_group(
             [(true, "settings-passwords-vault"), (false, "settings-passwords-none")].map(|(v, key)| {
                 let enabled = policy.store_password.is_none();
-                seg(("settings-passwords", v as usize), tr!(crate::sys::os_key(key)), eff.store_password == v, enabled, l).when(enabled, |d| {
+                seg(("settings-passwords", v as usize), tr!(key), eff.store_password == v, enabled, l).when(enabled, |d| {
                     d.on_click(cx.listener(move |this, _, _, cx| {
                         crate::prefs::update(cx, |p| p.security.store_password = v);
                         // «Не хранить» — сохранённый пароль удаляется сразу.
@@ -256,7 +257,7 @@ impl SettingsView {
         } else if self.wipe_confirm {
             tr!("settings-wipe-ask")
         } else if stored {
-            tr!(crate::sys::os_key("settings-wipe-hint"))
+            tr!("settings-wipe-hint")
         } else {
             tr!("settings-wipe-nothing")
         };
@@ -371,7 +372,7 @@ impl SettingsView {
             .child(row(
                 tr!("settings-passwords"),
                 Some(pinned(
-                    tr!(crate::sys::os_key(if eff.store_password { "settings-passwords-hint" } else { "settings-passwords-none-hint" })),
+                    tr!(if eff.store_password { "settings-passwords-hint" } else { "settings-passwords-none-hint" }),
                     policy.store_password.is_some(),
                 )),
                 passwords,
@@ -394,17 +395,9 @@ impl SettingsView {
 pub(crate) fn disk_texts(drive: &str, state: Option<bool>) -> (char, String, Option<String>) {
     use crate::chrome::glyph;
     match state {
-        Some(false) => (
-            glyph::WARNING,
-            tr!(crate::sys::os_key("settings-bitlocker-off"), drive = drive),
-            Some(tr!(crate::sys::os_key("settings-bitlocker-off-hint"))),
-        ),
-        Some(true) => (glyph::CHECK, tr!(crate::sys::os_key("settings-bitlocker-on"), drive = drive), None),
-        None => (
-            glyph::INFO,
-            tr!(crate::sys::os_key("settings-bitlocker-unknown"), drive = drive),
-            Some(tr!(crate::sys::os_key("settings-bitlocker-unknown-hint"))),
-        ),
+        Some(false) => (glyph::WARNING, tr!("settings-bitlocker-off", drive = drive), Some(tr!("settings-bitlocker-off-hint"))),
+        Some(true) => (glyph::CHECK, tr!("settings-bitlocker-on", drive = drive), None),
+        None => (glyph::INFO, tr!("settings-bitlocker-unknown", drive = drive), Some(tr!("settings-bitlocker-unknown-hint"))),
     }
 }
 
@@ -415,21 +408,13 @@ mod tests {
     fn disk_states() {
         use crate::chrome::glyph;
         let _ = pets_i18n::init(&crate::parts::texts(), "ru");
-        let mac = cfg!(target_os = "macos");
         let (g, t, h) = super::disk_texts("C:", Some(false));
-        let off = if mac {
-            "Диск с данными Postman не зашифрован FileVault"
-        } else {
-            "Диск C: с данными Postman не зашифрован BitLocker"
-        };
-        assert_eq!((g, t.as_str()), (glyph::WARNING, off));
+        assert_eq!((g, t.as_str()), (glyph::WARNING, "Диск C: с данными Postman не зашифрован"));
         assert!(h.is_some());
         assert_eq!(super::disk_texts("C:", Some(true)).0, glyph::CHECK);
         assert!(super::disk_texts("C:", Some(true)).2.is_none());
         assert_eq!(super::disk_texts("D:", None).0, glyph::INFO);
         let _ = pets_i18n::init(&crate::parts::texts(), "en");
-        let on =
-            if mac { "The disk with Postman data is encrypted with FileVault" } else { "Drive C: with Postman data is encrypted with BitLocker" };
-        assert_eq!(super::disk_texts("C:", Some(true)).1, on);
+        assert_eq!(super::disk_texts("C:", Some(true)).1, "Drive C: with Postman data is encrypted");
     }
 }

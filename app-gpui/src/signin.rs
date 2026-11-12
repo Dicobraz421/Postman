@@ -525,7 +525,7 @@ impl SignIn {
                                 .flex_col()
                                 .gap_2()
                                 .child(div().text_color(l.text2()).child(tr!("signin-store")))
-                                .child(self.radio_row(l, "signin-store-windows", self.store, tr!(crate::sys::os_key("signin-store-windows")), cx))
+                                .child(self.radio_row(l, "signin-store-windows", self.store, tr!("signin-store-windows"), cx))
                                 .child(self.radio_row(l, "signin-store-never", !self.store, tr!("signin-store-never"), cx))
                                 .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("signin-store-note"))),
                         )

@@ -138,12 +138,10 @@ impl SettingsView {
         let g = p.general.clone();
         // Язык.
         let lang = g.language.clone();
-        let mut langs = vec![seg("settings-lang-auto", tr!(crate::sys::os_key("settings-lang-auto")), lang.is_none(), true, l).on_click(
-            cx.listener(|_, _, _, cx| {
-                crate::prefs::set_language(None, cx);
-                cx.notify();
-            }),
-        )];
+        let mut langs = vec![seg("settings-lang-auto", tr!("settings-lang-auto"), lang.is_none(), true, l).on_click(cx.listener(|_, _, _, cx| {
+            crate::prefs::set_language(None, cx);
+            cx.notify();
+        }))];
         for (i, code) in LANGUAGES.iter().copied().enumerate() {
             let on = lang.as_deref() == Some(code);
             langs.push(seg(("settings-lang", i), tr!(&format!("settings-lang-{code}")), on, true, l).on_click(cx.listener(move |_, _, _, cx| {
@@ -299,8 +297,8 @@ impl SettingsView {
             .child(group(tr!("settings-language-group"), l))
             .child(row(tr!("settings-language"), Some(tr!("settings-language-hint")), seg_group(langs, l), l))
             .child(row(
-                tr!(crate::sys::os_key("settings-autostart")),
-                Some(tr!(crate::sys::os_key(if auto { "settings-autostart-on" } else { "settings-autostart-off" }))),
+                tr!("settings-autostart"),
+                Some(tr!(if auto { "settings-autostart-on" } else { "settings-autostart-off" })),
                 toggle("settings-autostart", auto, l).on_click(cx.listener(move |this, _, _, cx| this.set_autostart(!auto, cx))),
                 l,
             ))
@@ -309,16 +307,16 @@ impl SettingsView {
             .child(group(tr!("settings-mailto-group"), l))
             .child(row(
                 tr!("settings-mailto"),
-                Some(tr!(crate::sys::os_key(if is_default { "settings-mailto-done-hint" } else { "settings-mailto-hint" }))),
+                Some(tr!(if is_default { "settings-mailto-done-hint" } else { "settings-mailto-hint" })),
                 mailto_control,
                 l,
             ))
-            .child(group(tr!(crate::sys::os_key("settings-notify-group")), l))
+            .child(group(tr!("settings-notify-group"), l))
             .child(row(tr!("settings-notify"), Some(notify_hint), seg_group(notifies, l), l))
             .when(on, |d| {
                 d.child(row(tr!("settings-quiet"), Some(tr!("settings-quiet-hint")), quiet, l)).child(row(
                     tr!("settings-sound"),
-                    Some(tr!(crate::sys::os_key("settings-sound-hint"))),
+                    Some(tr!("settings-sound-hint")),
                     toggle("settings-sound", g.sound, l).on_click(cx.listener(|_, _, _, cx| {
                         crate::prefs::update(cx, |p| p.general.sound = !p.general.sound);
                         cx.notify();

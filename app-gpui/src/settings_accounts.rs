@@ -193,7 +193,7 @@ impl SettingsView {
                 let password = match self.stored {
                     // Вход учётной записью Windows (T1-02б): пароля нет.
                     _ if a.windows => tr!("settings-account-windows"),
-                    Some(true) => tr!(crate::sys::os_key("settings-account-password-stored")),
+                    Some(true) => tr!("settings-account-password-stored"),
                     Some(false) => tr!("settings-account-password-none"),
                     None => String::new(),
                 };
@@ -354,11 +354,7 @@ impl SettingsView {
         let (tls, ok) = crate::signin::security_line();
         let security = aside_card(tr!("settings-account-security"), vec![tr!("settings-account-tls"), tr!("settings-account-revocation")], l)
             .when(!ok, |d| d.child(div().text_color(l.warning()).child(tls)));
-        let secrets = aside_card(
-            tr!("settings-account-secrets"),
-            vec![tr!(crate::sys::os_key("settings-account-secrets-1")), tr!("settings-account-secrets-2")],
-            l,
-        );
+        let secrets = aside_card(tr!("settings-account-secrets"), vec![tr!("settings-account-secrets-1"), tr!("settings-account-secrets-2")], l);
         (add, body.into_any_element(), vec![security, secrets])
     }
 }

@@ -95,7 +95,7 @@ impl Section {
     }
 
     fn hint(self) -> String {
-        tr!(crate::sys::os_key(&format!("settings-hint-{}", self.key())))
+        tr!(&format!("settings-hint-{}", self.key()))
     }
 
     fn glyph(self) -> char {
@@ -1033,7 +1033,7 @@ impl SettingsView {
             }
             Section::Viewers => (None, self.viewers(l, cx).into_any_element(), Vec::new()),
             Section::Look => {
-                // «По умолчанию» (T2-58): тема «Как в Windows», обычная плотность, акцент, шрифт, аватары, превью, KeyTips.
+                // «По умолчанию» (T2-58): тема «Как в системе», обычная плотность, акцент, шрифт, аватары, превью, KeyTips.
                 let reset = crate::buttons::button("settings-look-reset", tr!("settings-reset"), false, l).on_click(cx.listener(|this, _, _, cx| {
                     crate::prefs::update(cx, |p| {
                         p.look = Default::default();
