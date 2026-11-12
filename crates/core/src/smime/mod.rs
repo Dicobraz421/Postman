@@ -30,9 +30,16 @@ mod windows;
 #[cfg(windows)]
 use windows as sys;
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+mod keychain;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+use macos as sys;
+
+#[cfg(not(any(windows, target_os = "macos")))]
 mod other;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 use other as sys;
 
 use std::sync::{Arc, Mutex, PoisonError};
@@ -328,7 +335,11 @@ pub fn can_sign(from: &str, now: i64) -> bool {
     {
         sign_win::can_sign(from, now)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        keychain::can_sign(from, now)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = (from, now);
         false
@@ -354,7 +365,15 @@ pub fn seal_outgoing(raw: &[u8], to: &[postman_smime::seal::To]) -> Result<Vec<u
         }
         postman_smime::seal::seal_message(raw, to, &seal_win::WindowsOps)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        // СКЗИ на macOS нет (ГОСТ отложен): получатели ГОСТ не шифруются.
+        if gost > 0 {
+            return Err(SealError::Gost);
+        }
+        postman_smime::seal::seal_message(raw, to, &keychain::KeychainOps)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = raw;
         Err(SealError::Failed("encryption needs Windows".into()))
@@ -438,8 +457,50 @@ pub fn recipient_candidates(cache: &Cache, addresses: &[String], own: &str, now:
             }
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        for der in keychain::address_book().into_iter().chain(keychain::own_certs(own)) {
+            if !out.contains(&der) {
+                out.push(der);
+            }
+        }
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = own;
+    out
+}
+
+/// Свой сертификат для списка в настройках «Безопасность» (`docs/SMIME.md` §7): сводка, годится ли для подписи
+/// почты, схема по ключу (`None` — ключ не поддерживается).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Personal {
+    pub der: Vec<u8>,
+    pub info: postman_smime::CertInfo,
+    pub can_sign: bool,
+    pub scheme: Option<postman_smime::Scheme>,
+}
+
+/// Свои сертификаты: Windows — `CurrentUser\My`, macOS — удостоверения Связки ключей (с закрытым ключом); по сроку,
+/// самый поздний — первым. Свои байты хранилища ОС, не письма.
+pub fn personal_certificates() -> Vec<Personal> {
+    #[cfg(windows)]
+    let ders = seal_win::my_certs();
+    #[cfg(target_os = "macos")]
+    let ders = keychain::personal(None);
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let ders: Vec<Vec<u8>> = Vec::new();
+    personal_from(ders)
+}
+
+fn personal_from(ders: Vec<Vec<u8>>) -> Vec<Personal> {
+    let mut out: Vec<Personal> = ders
+        .into_iter()
+        .filter_map(|der| {
+            let (info, can_sign, scheme) = postman_smime::sign::own_certificate(&der)?;
+            Some(Personal { der, info, can_sign, scheme })
+        })
+        .collect();
+    out.sort_by_key(|p| std::cmp::Reverse(p.info.not_after));
     out
 }
 
@@ -456,7 +517,12 @@ pub fn sign_outgoing(raw: &[u8], from: &str, hwnd: Option<isize>, now: i64) -> R
         let gost = SystemGost.provider();
         sign_win::sign_message(raw, from, hwnd, now, gost)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        // Окна ОС (пароль Связки ключей, PIN карты) — только когда пользователь нажал «Ввести» (`hwnd` есть).
+        keychain::sign_message(raw, from, hwnd.is_none(), now)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = (raw, hwnd, now);
         Err(postman_smime::sign::SignError::NoCertificate(from.into()))
@@ -590,5 +656,37 @@ mod tests {
         // Открытое письмо — как есть.
         let plain = Draft { encrypt_to: vec![], ..draft };
         assert_eq!(split_for_encryption(&plain).unwrap().len(), 1);
+    }
+
+    /// Список своих сертификатов: не сертификат — пропуск, самый поздний срок — первым; поля получателя своего
+    /// сертификата (`own_rid`) совпадают с полями из письма (так их сравнивает Связка ключей на macOS).
+    #[test]
+    fn personal_list_and_own_rid() {
+        let a = Pki::rsa("Postman Test Root", "Иванов", "user1@example.test");
+        let b = Pki::build(testkit::Key::rsa('a'), testkit::Key::p256("personal"), "Postman Test Root 2", "Петров", "user2@example.test");
+        let list = personal_from(vec![a.user.der.clone(), b"junk".to_vec(), b.user.der.clone()]);
+        assert_eq!(list.len(), 2);
+        assert!(list[0].info.not_after >= list[1].info.not_after);
+        assert!(list.iter().all(|p| p.can_sign && p.scheme.is_some()));
+
+        let cms = testkit::enveloped(
+            &testkit::text_part("x"),
+            &[testkit::To { cert: &a.user, key: &a.user_key, alg: testkit::KeyAlg::RsaPkcs1, ski: false }],
+            postman_smime::envelope::Cipher::AesCbc(256),
+            &[1; 32],
+            false,
+        );
+        let m = testkit::encrypted_letter(
+            &Head { from: "x@example.test", to: "user1@example.test", subject: "s", date: "Wed, 21 Oct 2026 10:00:00 +0300" },
+            &cms,
+            false,
+        );
+        let env = postman_worker::smime::envelope(&m).unwrap();
+        let own = postman_smime::sign::own_rid(&a.user.der).unwrap();
+        let postman_smime::envelope::Rid::IssuerSerial { issuer, serial } = &env.recipients[0].rid else { panic!() };
+        assert_eq!(&own.issuer, issuer);
+        let le: Vec<u8> = own.serial.iter().rev().copied().collect();
+        assert!(postman_smime::envelope::serial_matches(serial, &le));
+        assert!(postman_smime::sign::own_rid(b"junk").is_none());
     }
 }

@@ -32,6 +32,14 @@ tracing = "0.1"
 version = "0.61"
 features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Cryptography"]
 
+# S/MIME на macOS (MAC-05, `smime/macos.rs`, `smime/keychain.rs`): якоря и подтверждение цепочки — `SecTrust`, подпись и
+# расшифровка — `SecIdentity`/`SecKey` из Связки ключей.
+[target.'cfg(target_os = "macos")'.dependencies]
+# `macos-12`: `SecTrustCopyCertificateChain` (цель — macOS 13+).
+security-framework = { version = "3.7", features = ["macos-12"] }
+security-framework-sys = "2.17"
+core-foundation = "0.10"
+
 [dev-dependencies]
 postman-smime = { workspace = true, features = ["testkit"] }
 # Демо-данные в тестах поручений и меток; в обычных зависимостях демо нет (слои).
