@@ -307,7 +307,7 @@ impl Mailer {
         let dir = run.dir.clone();
         let action = ToastAction::new(tr!("export-open"), move |_, _| {
             if let Err(e) = crate::sys::shell::open(&dir.to_string_lossy()) {
-                tracing::warn!("export folder: {e}");
+                tracing::error!("export: export folder not opened: {e}");
             }
         });
         self.toasts.update(cx, |t, cx| t.push_action(level, text, action, cx));

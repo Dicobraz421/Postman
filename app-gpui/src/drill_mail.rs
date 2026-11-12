@@ -1083,7 +1083,7 @@ fn index_minutes(m: &mut Mailer) -> Result<(), String> {
         .name("screens-index".into())
         .spawn(move || {
             if let Err(e) = postman_core::indexer::rebuild(&built, &cache, &|| false) {
-                tracing::warn!("screens index: {e}");
+                tracing::warn!("screens: index not built: {e}");
             }
             postman_core::extract::Extractor::spawn(cache, built).queue(vec![key]);
         })

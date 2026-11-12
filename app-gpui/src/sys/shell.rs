@@ -67,7 +67,7 @@ fn show(title: &str, body: &str, sound: toast::Sound, on_click: Option<Box<dyn F
     if std::fs::read(&icon).ok().as_deref() != Some(ICON) {
         // Без файла тост выйдет со значком по умолчанию — не повод его не показывать.
         if let Err(e) = std::fs::write(&icon, ICON) {
-            tracing::warn!("toast icon {}: {e}", icon.display());
+            tracing::warn!(path = %icon.display(), "shell: toast icon not written, using the default icon: {e}");
         }
     }
     let sender = toast::Sender { aumid: "Pets.Postman", name: APP, icon: Some(&icon) };
@@ -143,7 +143,7 @@ pub fn bitlocker(path: &Path) -> (String, Option<bool>) {
         Ok(BitLocker::Off) => Some(false),
         Ok(BitLocker::Unknown) => None,
         Err(e) => {
-            tracing::warn!("bitlocker: {e}");
+            tracing::warn!("shell: disk encryption state not read: {e}");
             None
         }
     };

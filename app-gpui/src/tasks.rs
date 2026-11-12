@@ -621,7 +621,7 @@ impl TasksView {
                     v.letters = rows;
                     v.reshow(cx);
                 }
-                Err(e) => tracing::warn!("tasks: letters with due: {e}"),
+                Err(e) => tracing::error!("tasks: letters with due not read: {e}"),
             });
         })
         .detach();
@@ -1331,7 +1331,7 @@ impl TasksView {
                 let done = write.await;
                 let _ = this.update(cx, |_, cx| match done {
                     Ok(()) => cx.emit(TasksAction::Send(Request::Flush)),
-                    Err(e) => tracing::warn!("tasks: save: {e}"),
+                    Err(e) => tracing::error!("tasks: task not saved: {e}"),
                 });
             })
             .detach();
@@ -1349,7 +1349,7 @@ impl TasksView {
                 let done = write.await;
                 let _ = this.update(cx, |_, cx| match done {
                     Ok(()) => cx.emit(TasksAction::Send(Request::Flush)),
-                    Err(e) => tracing::warn!("tasks: delete: {e}"),
+                    Err(e) => tracing::error!("tasks: task not deleted: {e}"),
                 });
             })
             .detach();
@@ -3612,7 +3612,7 @@ impl crate::Mailer {
                     let (head, title) = (tr!("tasks-remind-title"), title.clone());
                     cx.background_spawn(async move {
                         if let Err(e) = crate::screens::notify(&head, &title) {
-                            tracing::warn!("task reminder notification: {e}");
+                            tracing::error!("tasks: task reminder notification not shown: {e}");
                         }
                     })
                     .detach();

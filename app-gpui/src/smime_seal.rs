@@ -152,7 +152,7 @@ impl Mailer {
             let mut b = lock(&book);
             match prepared {
                 Ok(list) => b.add(list.into_iter().flatten()),
-                Err(e) => tracing::warn!("S/MIME recipients are not prepared: {e:?}"),
+                Err(e) => tracing::error!("smime: recipient certificates not prepared: {e:?}"),
             }
             for a in addrs {
                 b.pending.remove(&a);
@@ -212,7 +212,10 @@ impl Mailer {
                     DirectoryStatus::Done { found, refused: searched.refused }
                 }
                 Err(e) => {
-                    tracing::info!("directory: {e}");
+                    match e {
+                        postman_core::smime::directory::DirectoryError::NotConfigured => tracing::debug!("directory: {e}"),
+                        _ => tracing::error!("directory: recipient certificates lookup failed: {e}"),
+                    }
                     DirectoryStatus::Failed(crate::directory::error_text(&e))
                 }
             });

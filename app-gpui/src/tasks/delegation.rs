@@ -560,7 +560,7 @@ impl TasksView {
         let input = flow::Input { comment, due, to: Some(to) };
         match flow::assign(&t, &me, &watchers, &input, self.now(), &self.tz) {
             Ok(plan) => self.deleg_run(plan, cx),
-            Err(e) => tracing::warn!("delegate: {e}"),
+            Err(e) => tracing::warn!("delegation: task not delegated: {e}"),
         }
     }
 
@@ -589,7 +589,7 @@ impl TasksView {
                 cx.emit(TasksAction::Toast(Toast::Info, tr!("assign-too-soon", time = when(next, self.now(), &self.tz))));
             }
             Err(e) => {
-                tracing::warn!(uid = %t.uid, "delegation: {e}");
+                tracing::warn!(uid = %t.uid, "delegation: delegation action failed: {e}");
                 cx.emit(TasksAction::Toast(Toast::Info, tr!("assign-invalid")));
             }
         }
@@ -647,7 +647,7 @@ impl TasksView {
         let plan = match flow::act(&t, &self.me_email(), Action::Revoke, &flow::Input::default(), self.now(), &self.tz) {
             Ok(p) => p,
             Err(e) => {
-                tracing::warn!(uid = %t.uid, "delegation: {e}");
+                tracing::warn!(uid = %t.uid, "delegation: delegation not revoked: {e}");
                 return cx.emit(TasksAction::Toast(Toast::Info, tr!("assign-invalid")));
             }
         };
@@ -754,7 +754,7 @@ impl TasksView {
                     n += 1;
                 }
                 Err(flow::Error::TooSoon { .. }) => soon += 1,
-                Err(e) => tracing::warn!(uid = %t.uid, "delegation: {e}"),
+                Err(e) => tracing::warn!(uid = %t.uid, "delegation: delegation reminder not sent: {e}"),
             }
         }
         let text = if n > 0 { tr!("assign-toast-reminded-all", n = n, soon = soon) } else { tr!("assign-remind-all-soon") };

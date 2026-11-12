@@ -29,7 +29,7 @@ pub(crate) fn load(dir: &Path) -> Prefs {
     let mut p = match Prefs::load(&path(dir)) {
         Ok(p) => p,
         Err(e) => {
-            tracing::warn!("{e}");
+            tracing::warn!("prefs: settings not read, using defaults: {e}");
             Prefs::default()
         }
     };
@@ -93,7 +93,7 @@ pub(crate) fn update(cx: &mut App, f: impl FnOnce(&mut Prefs)) {
     cx.background_executor()
         .spawn(async move {
             if let Err(e) = writer.write(seq, || after.save(&path)) {
-                tracing::warn!("{e}");
+                tracing::error!("prefs: settings not written: {e}");
             }
         })
         .detach();
