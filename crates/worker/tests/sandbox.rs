@@ -391,3 +391,33 @@ fn worker_gets_no_profile_paths() {
         assert_eq!(e, format!("запрещено: {name} не задана"));
     }
 }
+
+/// stderr процесса песочницы — канал на всех ОС (SBX-01): строка доходит до журнала клиента, поток сверх
+/// `STDERR_RATE` строк в секунду не останавливает процесс и даёт одну строку WARN.
+#[test]
+fn worker_stderr_reaches_the_journal() {
+    use std::sync::{Arc, Mutex};
+    let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sink = Arc::clone(&lines);
+    let mut c = Client::new(PathBuf::from(env!("CARGO_BIN_EXE_postman-worker")), Duration::from_secs(20))
+        .journal(move |l| sink.lock().unwrap().push(l.to_owned()));
+    let line = "postman-worker: stderr probe\n".len() as u32;
+    assert_eq!(c.render(&Request::Probe(Probe::Stderr(line * 3))).unwrap_err(), "stderr: записано");
+    let wait = |pred: &dyn Fn(&[String]) -> bool| {
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        while !pred(&lines.lock().unwrap()) && std::time::Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        lines.lock().unwrap().clone()
+    };
+    let got = wait(&|l| l.len() >= 3);
+    assert_eq!(&got[..3], ["postman-worker: stderr probe"; 3], "{got:?}");
+    // 1 МиБ строк: канал не переполняется, процесс отвечает, лишнее отброшено одной строкой WARN.
+    assert_eq!(c.render(&Request::Probe(Probe::Stderr(1 << 20))).unwrap_err(), "stderr: записано");
+    assert!(c.render(&Request::Text("ещё жив".into())).is_ok());
+    drop(c);
+    let got = wait(&|l| l.iter().any(|s| s.starts_with("WARN stderr rate limit")));
+    // Записано ~36 тыс. строк; в журнал — не больше `STDERR_RATE` в секунду (запись идёт секунды на медленном CI).
+    assert!(got.len() < 36_000 / 10, "{}", got.len());
+    assert!(got.iter().any(|s| s.starts_with("WARN stderr rate limit")), "{:?}", &got[got.len().saturating_sub(3)..]);
+}

@@ -327,11 +327,13 @@ impl Drop for Attributes {
 fn create(exe: &Path, sid: Option<PSID>, memory: usize) -> io::Result<Process> {
     let (child_in, parent_in) = pipe(true)?;
     let (child_out, parent_out) = pipe(false)?;
+    // Журнал воркера — канал к клиенту (SBX-01): дочернему — только конец на запись.
+    let (child_err, parent_err) = pipe(false)?;
     let job = job(memory)?;
 
     let mitigations: u64 = mitigations();
     let child_policy: u32 = PROCESS_CREATION_CHILD_PROCESS_RESTRICTED;
-    let handles: [HANDLE; 2] = [child_in.0, child_out.0];
+    let handles: [HANDLE; 3] = [child_in.0, child_out.0, child_err.0];
     let caps = sid.map(|sid| SECURITY_CAPABILITIES { AppContainerSid: sid, Capabilities: null_mut(), CapabilityCount: 0, Reserved: 0 });
     let mut attrs = Attributes::new(if caps.is_some() { 4 } else { 3 })?;
     // SAFETY: все значения — локальные переменные, живущие до CreateProcessW.
@@ -352,7 +354,7 @@ fn create(exe: &Path, sid: Option<PSID>, memory: usize) -> io::Result<Process> {
     si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     si.StartupInfo.hStdInput = child_in.0;
     si.StartupInfo.hStdOutput = child_out.0;
-    si.StartupInfo.hStdError = null_mut();
+    si.StartupInfo.hStdError = child_err.0;
     si.lpAttributeList = attrs.ptr();
 
     let app: Vec<u16> = exe.as_os_str().encode_wide().chain(Some(0)).collect();
@@ -398,7 +400,7 @@ fn create(exe: &Path, sid: Option<PSID>, memory: usize) -> io::Result<Process> {
             return Err(e);
         }
     }
-    drop((child_in, child_out, thread));
+    drop((child_in, child_out, child_err, thread));
 
     let into_file = |h: Owned| {
         let raw = h.0;
@@ -408,11 +410,13 @@ fn create(exe: &Path, sid: Option<PSID>, memory: usize) -> io::Result<Process> {
     };
     let stdin = into_file(parent_in);
     let stdout = into_file(parent_out);
+    let stderr = into_file(parent_err);
     let mut job = Some(job);
     let watched = process.clone();
     Ok(Process {
         stdin: Box::new(stdin),
         stdout: Box::new(stdout),
+        stderr: Box::new(stderr),
         kill: Box::new(move || {
             process.terminate();
             // Закрытие джоба (KILL_ON_JOB_CLOSE) добивает всё, что осталось.

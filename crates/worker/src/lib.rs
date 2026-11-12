@@ -23,7 +23,7 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use postman_ir::Document;
 use postman_smime::envelope::{Envelope, OpenError, Opened};
@@ -911,10 +911,90 @@ fn watchdog(limit: Duration) -> Option<mpsc::Sender<bool>> {
     spawned.ok().map(|_| tx)
 }
 
+/// Приёмник строк журнала процесса песочницы ([`Client::journal`]).
+pub type Journal = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// Наибольшая длина строки stderr процесса песочницы в журнале, байт; длиннее — обрезается с пометкой.
+pub const STDERR_LINE: usize = 2048;
+/// Наибольшее число строк stderr процесса песочницы в журнале за секунду; сверх — одна строка WARN за секунду.
+pub const STDERR_RATE: u32 = 100;
+
+fn default_journal(line: &str) {
+    // Журнал приложения — его stderr (в файл его направляет приложение); строка уже ограничена по длине.
+    let _ = writeln!(io::stderr().lock(), "worker: {line}");
+}
+
+/// Ограничитель строк журнала: длина — [`STDERR_LINE`], частота — [`STDERR_RATE`] в секунду; первая лишняя строка
+/// за секунду заменяется одной строкой WARN, остальные до конца секунды отбрасываются.
+struct StderrLog {
+    journal: Journal,
+    window: Instant,
+    lines: u32,
+}
+
+impl StderrLog {
+    fn line(&mut self, bytes: &[u8], cut: bool) {
+        if self.window.elapsed() >= Duration::from_secs(1) {
+            self.window = Instant::now();
+            self.lines = 0;
+        }
+        self.lines = self.lines.saturating_add(1);
+        if self.lines > STDERR_RATE {
+            if self.lines == STDERR_RATE + 1 {
+                (self.journal)(&format!("WARN stderr rate limit: over {STDERR_RATE} lines/s, dropping the rest of this second"));
+            }
+            return;
+        }
+        let text = String::from_utf8_lossy(bytes.strip_suffix(b"\r").unwrap_or(bytes));
+        if cut { (self.journal)(&format!("{text} [line truncated]")) } else { (self.journal)(&text) }
+    }
+}
+
+/// Фоновое чтение stderr процесса песочницы до его закрытия: канал не переполняется (процесс не встанет на записи),
+/// UI не ждёт. Строки — в `journal` с ограничением [`StderrLog`].
+fn drain_stderr(mut stderr: Box<dyn Read + Send>, journal: Journal) -> io::Result<()> {
+    std::thread::Builder::new()
+        .name("worker-stderr".into())
+        .spawn(move || {
+            let mut log = StderrLog { journal, window: Instant::now(), lines: 0 };
+            let mut buf = [0u8; 4096];
+            let mut line = Vec::with_capacity(256);
+            let mut cut = false;
+            loop {
+                let n = match stderr.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                };
+                for part in buf[..n].split_inclusive(|&b| b == b'\n') {
+                    let (body, end) = match part.strip_suffix(b"\n") {
+                        Some(body) => (body, true),
+                        None => (part, false),
+                    };
+                    let room = STDERR_LINE.saturating_sub(line.len());
+                    line.extend_from_slice(&body[..body.len().min(room)]);
+                    cut |= body.len() > room;
+                    if end {
+                        log.line(&line, cut);
+                        line.clear();
+                        cut = false;
+                    }
+                }
+            }
+            if !line.is_empty() {
+                log.line(&line, cut);
+            }
+        })
+        .map(drop)
+}
+
 /// Запущенный процесс-воркер, как его видит клиент.
 pub(crate) struct Process {
     pub stdin: Box<dyn Write + Send>,
     pub stdout: Box<dyn Read + Send>,
+    /// Журнал процесса — канал на всех ОС (SBX-01); клиент читает его в фоне ([`drain_stderr`]).
+    pub stderr: Box<dyn Read + Send>,
     pub kill: Box<dyn FnMut() + Send>,
     /// Код завершения, если процесс уже завершился (для текста ошибки).
     pub exit_code: Box<dyn FnMut() -> Option<u32> + Send>,
@@ -952,6 +1032,8 @@ pub struct Client {
     memory: usize,
     /// Что отсекли пределы в последнем календаре ([`Client::take_cut`]).
     cut: Option<Cut>,
+    /// Куда идут строки stderr процесса ([`Client::journal`]).
+    journal: Journal,
     /// Режим namespaces процесса песочницы (Linux).
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     namespaces: Namespaces,
@@ -967,6 +1049,7 @@ impl Client {
             fallback: None,
             memory: sandbox::MEMORY_LIMIT,
             cut: None,
+            journal: Arc::new(default_journal),
             namespaces: Namespaces::Optional,
         }
     }
@@ -981,6 +1064,13 @@ impl Client {
     /// следующему запуску процесса.
     pub fn namespaces(mut self, mode: Namespaces) -> Self {
         self.namespaces = mode;
+        self
+    }
+
+    /// Куда писать строки stderr процесса песочницы: по умолчанию — в stderr приложения (его журнал) с префиксом
+    /// `worker: `. Строки уже ограничены [`STDERR_LINE`] и [`STDERR_RATE`].
+    pub fn journal(mut self, sink: impl Fn(&str) + Send + Sync + 'static) -> Self {
+        self.journal = Arc::new(sink);
         self
     }
 
@@ -1407,6 +1497,7 @@ impl Client {
             (_, Some(reason)) => self.fallback = Some(reason),
             _ => {}
         }
+        drain_stderr(p.stderr, Arc::clone(&self.journal)).map_err(|e| e.to_string())?;
         let (tx, rx) = mpsc::channel();
         let mut stdout = p.stdout;
         let max_bin = Arc::new(AtomicUsize::new(MAX_FRAME));
