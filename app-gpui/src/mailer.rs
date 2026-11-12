@@ -461,7 +461,7 @@ impl Mailer {
             if to_stdout {
                 let k = &ev.keystroke;
                 let action = ev.action.as_ref().map_or("—", |a| a.name());
-                this.last_key = format!("{} ({}) → {action}", k.unparse(), k.key_char.as_deref().unwrap_or(""));
+                this.last_key = format!("{} ({}) → {action}", k.unparse(cx.platform_info().os), k.key_char.as_deref().unwrap_or(""));
                 println!("key {}", this.last_key);
             }
             cx.notify();
