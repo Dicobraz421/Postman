@@ -8,6 +8,7 @@
 //! (993, 465) или STARTTLS (143, 587); без TLS не подключаемся. Письма — чужие данные: здесь они только байты,
 //! разбор MIME — в воркере-песочнице.
 
+pub mod fetch;
 pub mod flags;
 pub mod names;
 pub mod smtp;
@@ -288,6 +289,20 @@ async fn starttls<S: AsyncRead + AsyncWrite + Unpin>(s: &mut S) -> Result<()> {
     }
 }
 
+/// Признак строки `LIST`; неизвестные `imap-proto` (`\Inbox`, `\Spam` у `XLIST`-серверов) — по тексту.
+fn list_attr(a: &NameAttribute<'_>) -> names::Attr {
+    match a {
+        NameAttribute::Sent => names::Attr::Role(Role::Sent),
+        NameAttribute::Drafts => names::Attr::Role(Role::Drafts),
+        NameAttribute::Trash => names::Attr::Role(Role::Trash),
+        NameAttribute::Junk => names::Attr::Role(Role::Junk),
+        NameAttribute::Archive => names::Attr::Role(Role::Archive),
+        NameAttribute::NoSelect => names::Attr::NoSelect,
+        NameAttribute::Extension(t) => names::attr(t),
+        _ => names::Attr::Other,
+    }
+}
+
 fn fetch_flags(f: &async_imap::types::Fetch) -> Vec<String> {
     f.flags().map(|x| flags::flag_text(&x)).collect()
 }
@@ -336,28 +351,10 @@ impl Session {
         self.has("CONDSTORE") || self.has("QRESYNC")
     }
 
-    /// Все папки с ролями: `SPECIAL-USE`, иначе — по имени (ru/en).
+    /// Все папки с ролями: `SPECIAL-USE`, иначе — по имени (ru/en); у роли одна папка ([`names::folders`]).
     pub async fn folders(&mut self) -> Result<Vec<Folder>> {
         let names: Vec<async_imap::types::Name> = timed(async { Ok(self.inner.list(Some(""), Some("*")).await?.try_collect().await?) }).await?;
-        Ok(names
-            .iter()
-            .map(|n| {
-                let attrs: Vec<names::Attr> = n
-                    .attributes()
-                    .iter()
-                    .map(|a| match a {
-                        NameAttribute::Sent => names::Attr::Role(Role::Sent),
-                        NameAttribute::Drafts => names::Attr::Role(Role::Drafts),
-                        NameAttribute::Trash => names::Attr::Role(Role::Trash),
-                        NameAttribute::Junk => names::Attr::Role(Role::Junk),
-                        NameAttribute::Archive => names::Attr::Role(Role::Archive),
-                        NameAttribute::NoSelect => names::Attr::NoSelect,
-                        _ => names::Attr::Other,
-                    })
-                    .collect();
-                names::folder(n.name(), n.delimiter(), &attrs)
-            })
-            .collect())
+        Ok(names::folders(names.iter().map(|n| (n.name(), n.delimiter(), n.attributes().iter().map(list_attr).collect()))))
     }
 
     /// Разделитель иерархии ящика: `LIST "" ""` (RFC 3501 §6.3.8), иначе — у папок верхнего уровня (`LIST "" "%"`):
@@ -410,13 +407,16 @@ impl Session {
 
     /// Заголовки писем выбранной папки по набору UID (`1:*`, `5,7,9`, `100:*`).
     pub async fn headers(&mut self, uids: &str) -> Result<Vec<Header>> {
-        let query = if self.condstore() {
-            "(UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE BODYSTRUCTURE MODSEQ BODY.PEEK[HEADER.FIELDS (IN-REPLY-TO REFERENCES)])"
-        } else {
-            "(UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (IN-REPLY-TO REFERENCES)])"
-        };
-        let fetched: Vec<async_imap::types::Fetch> = timed(async { Ok(self.inner.uid_fetch(uids, query).await?.try_collect().await?) }).await?;
-        Ok(fetched.iter().filter_map(header).collect())
+        self.headers_with(uids, fetch::Fields::Full).await
+    }
+
+    /// Заголовки писем с выбранными полями ([`fetch::Fields`]); неразобранный ответ — [`Error::Protocol`] без байтов
+    /// письма ([`fetch::unparsed`]).
+    pub async fn headers_with(&mut self, uids: &str, fields: fetch::Fields) -> Result<Vec<Header>> {
+        let query = fields.query(self.condstore());
+        let fetched: Result<Vec<async_imap::types::Fetch>> =
+            timed(async { Ok(self.inner.uid_fetch(uids, &query).await?.try_collect().await?) }).await;
+        Ok(fetched.map_err(fetch::unparsed)?.iter().filter_map(header).collect())
     }
 
     /// Флаги писем, изменённых после `modseq` (CONDSTORE, RFC 7162 §3.1.4).
@@ -864,6 +864,77 @@ mod tests {
     fn quoted_strings_escape() {
         assert_eq!(quote(r#"отчёт "Q3" \ итог"#), r#""отчёт \"Q3\" \\ итог""#);
         assert_eq!(quote("a\r\nb"), "\"a  b\"");
+    }
+
+    /// Папки ящика из записанных строк `LIST` (разделитель `|`, как у Яндекса): `(признаки, имя на сервере)`.
+    fn listed(lines: &[(&str, &str)]) -> Vec<super::Folder> {
+        use super::{list_attr, names};
+        use async_imap::imap_proto::{MailboxDatum, MailboxListData};
+        let raw: Vec<String> = lines.iter().map(|(attrs, name)| format!(r#"* LIST ({attrs}) "|" "{name}""#) + "\r\n").collect();
+        let parsed: Vec<MailboxListData<'_>> = raw
+            .iter()
+            .map(|l| match Response::parse(l.as_bytes()).unwrap().1 {
+                Response::MailboxData(MailboxDatum::List(d)) => d,
+                r => panic!("{r:?}"),
+            })
+            .collect();
+        names::folders(parsed.iter().map(|d| (d.name.as_ref(), d.delimiter.as_deref(), d.name_attributes.iter().map(list_attr).collect())))
+    }
+
+    /// Записанный `LIST "" "*"` ящика Яндекс 360: корзина — папка с `\Trash`, «Deleted Messages» — обычная папка;
+    /// «Спам», «Отправленные», «Черновики», «Архив» — по признакам, хоть имена и английские.
+    #[test]
+    fn yandex_list_roles() {
+        use super::{Role, names};
+        let study = names::encode_utf7("Обучение");
+        let folders = listed(&[
+            (r"\HasNoChildren \Unmarked \Archive", "Archive"),
+            (r"\HasNoChildren \Unmarked", "Deleted Messages"),
+            (r"\HasNoChildren \Unmarked \Drafts", "Drafts"),
+            (r"\HasNoChildren \Marked \NoInferiors", "INBOX"),
+            (r"\HasNoChildren \Unmarked \Junk", "Spam"),
+            (r"\HasNoChildren \Unmarked \Sent", "Sent"),
+            (r"\HasChildren \Unmarked \Trash", "Trash"),
+            (r"\HasNoChildren \Unmarked", "Trash|bifit.com"),
+            (r"\HasNoChildren \Unmarked", &study),
+            (r"\HasNoChildren \Unmarked", "Outbox"),
+        ]);
+        let role = |raw: &str| folders.iter().find(|f| f.raw == raw).unwrap().role;
+        assert_eq!(role("INBOX"), Some(Role::Inbox));
+        assert_eq!(role("Trash"), Some(Role::Trash));
+        assert_eq!(role("Deleted Messages"), None, "вторая корзина — обычная папка");
+        assert_eq!(role("Spam"), Some(Role::Junk));
+        assert_eq!(role("Sent"), Some(Role::Sent));
+        assert_eq!(role("Drafts"), Some(Role::Drafts));
+        assert_eq!(role("Archive"), Some(Role::Archive));
+        assert_eq!((role(&study), role("Outbox")), (None, None));
+        let sub = folders.iter().find(|f| f.raw == "Trash|bifit.com").unwrap();
+        assert_eq!((sub.parent.as_deref(), sub.name.as_str(), sub.role), (Some("Trash"), "bifit.com", None));
+        for r in [Role::Inbox, Role::Sent, Role::Drafts, Role::Trash, Role::Junk, Role::Archive] {
+            assert_eq!(folders.iter().filter(|f| f.role == Some(r)).count(), 1, "{r:?}");
+        }
+    }
+
+    /// Тот же ящик с русскими именами папок и признаками `XLIST` (`\Spam`, `\Inbox`): роли — по признакам.
+    #[test]
+    fn yandex_russian_names_and_xlist_attrs() {
+        use super::{Role, names};
+        let u = names::encode_utf7;
+        let folders = listed(&[
+            (r"\HasNoChildren \Inbox", "INBOX"),
+            (r"\HasNoChildren \Trash", &u("Удаленные")),
+            (r"\HasNoChildren", "Deleted Messages"),
+            (r"\HasNoChildren \Spam", &u("Спам")),
+            (r"\HasNoChildren \Sent", &u("Отправленные")),
+            (r"\HasNoChildren", &u("Черновики")),
+        ]);
+        let role = |name: &str| folders.iter().find(|f| f.name == name).unwrap().role;
+        assert_eq!(role("INBOX"), Some(Role::Inbox));
+        assert_eq!(role("Удаленные"), Some(Role::Trash));
+        assert_eq!(role("Deleted Messages"), None);
+        assert_eq!(role("Спам"), Some(Role::Junk));
+        assert_eq!(role("Отправленные"), Some(Role::Sent));
+        assert_eq!(role("Черновики"), Some(Role::Drafts), "без признака — по имени: черновиков по признаку нет");
     }
 
     #[test]

@@ -38,8 +38,44 @@ pub enum Attr {
     Other,
 }
 
-/// Папка из строки `LIST`: имя, родитель по разделителю, роль (SPECIAL-USE, иначе по имени).
+/// Папка из строки `LIST`: имя, родитель по разделителю, роль (SPECIAL-USE, иначе по имени). Роль одной папки, без
+/// оглядки на остальные; весь ящик — [`folders`].
 pub fn folder(raw: &str, delimiter: Option<&str>, attrs: &[Attr]) -> Folder {
+    let mut f = named(raw, delimiter, attrs);
+    if f.role.is_none() {
+        f.role = role_by_name(raw, &decode_utf7(raw));
+    }
+    f
+}
+
+/// Папки ящика из строк `LIST` (имя на сервере, разделитель, признаки) — как у Outlook: у каждой роли одна папка.
+/// Признак SPECIAL-USE (RFC 6154) главнее имени: у Яндекса `\Trash` — у «Trash», а «Deleted Messages» (её заводит
+/// почта Apple, не найдя корзины) остаётся обычной папкой со своим именем. По имени роль получает первая подходящая
+/// папка, верхнего уровня раньше вложенных, — и только та роль, которой ни у одной папки нет по признаку.
+pub fn folders<'a>(list: impl IntoIterator<Item = (&'a str, Option<&'a str>, Vec<Attr>)>) -> Vec<Folder> {
+    let mut out: Vec<Folder> = list.into_iter().map(|(raw, d, attrs)| named(raw, d, &attrs)).collect();
+    // Одна роль по признаку у двух папок (бывает после переноса ящика) — у первой.
+    let mut taken: Vec<Role> = Vec::new();
+    for f in &mut out {
+        match f.role {
+            Some(r) if taken.contains(&r) => f.role = None,
+            Some(r) => taken.push(r),
+            None => {}
+        }
+    }
+    for top in [true, false] {
+        for f in out.iter_mut().filter(|f| f.role.is_none() && f.parent.is_none() == top) {
+            if let Some(r) = role_by_name(&f.raw, &decode_utf7(&f.raw)).filter(|r| !taken.contains(r)) {
+                f.role = Some(r);
+                taken.push(r);
+            }
+        }
+    }
+    out
+}
+
+/// Папка с ролью только по признаку SPECIAL-USE (и `INBOX` — по имени: оно служебное, RFC 3501 §5.1).
+fn named(raw: &str, delimiter: Option<&str>, attrs: &[Attr]) -> Folder {
     let decoded = decode_utf7(raw);
     let (parent, name) = match delimiter.filter(|d| !d.is_empty()) {
         Some(d) => match (raw.rsplit_once(d), decoded.rsplit_once(d)) {
@@ -52,7 +88,24 @@ pub fn folder(raw: &str, delimiter: Option<&str>, attrs: &[Attr]) -> Folder {
         Attr::Role(r) => Some(*r),
         _ => None,
     });
-    Folder { raw: raw.to_owned(), name, parent, role: special.or_else(|| role_by_name(raw, &decoded)), selectable: !attrs.contains(&Attr::NoSelect) }
+    let inbox = raw.eq_ignore_ascii_case("INBOX").then_some(Role::Inbox);
+    Folder { raw: raw.to_owned(), name, parent, role: inbox.or(special), selectable: !attrs.contains(&Attr::NoSelect) }
+}
+
+/// Признак папки из `LIST` по его тексту: SPECIAL-USE (RFC 6154) и признаки `XLIST` (`\Inbox`, `\Spam`), которые
+/// отдают Gmail и Яндекс.
+pub fn attr(text: &str) -> Attr {
+    let t = text.trim_start_matches('\\').to_ascii_lowercase();
+    match t.as_str() {
+        "inbox" => Attr::Role(Role::Inbox),
+        "sent" => Attr::Role(Role::Sent),
+        "drafts" => Attr::Role(Role::Drafts),
+        "trash" => Attr::Role(Role::Trash),
+        "junk" | "spam" => Attr::Role(Role::Junk),
+        "archive" => Attr::Role(Role::Archive),
+        "noselect" | "nonexistent" => Attr::NoSelect,
+        _ => Attr::Other,
+    }
 }
 
 /// Роль по имени папки (без SPECIAL-USE): «Входящие» — всегда `INBOX`; остальное — частые имена en/ru верхнего
@@ -388,6 +441,28 @@ mod tests {
         let root = folder("[Gmail]", Some("/"), &[Attr::NoSelect]);
         assert!(!root.selectable && root.parent.is_none());
         assert_eq!(Role::Junk.jmap(), "junk");
+    }
+
+    /// Без SPECIAL-USE: роль по имени — одной папке, верхнего уровня раньше вложенной; признак у двух — у первой.
+    #[test]
+    fn one_folder_per_role() {
+        use super::folders;
+        let f = folders([
+            ("INBOX.Trash", Some("."), vec![]),
+            ("Deleted Messages", Some("."), vec![]),
+            ("Trash", Some("."), vec![]),
+            ("INBOX", Some("."), vec![]),
+            ("Sent", Some("."), vec![Attr::Role(Role::Sent)]),
+            ("Old Sent", Some("."), vec![Attr::Role(Role::Sent)]),
+        ]);
+        let role = |raw: &str| f.iter().find(|x| x.raw == raw).unwrap().role;
+        assert_eq!(role("Deleted Messages"), Some(Role::Trash), "первая верхнего уровня");
+        assert_eq!((role("Trash"), role("INBOX.Trash")), (None, None));
+        assert_eq!(role("INBOX"), Some(Role::Inbox));
+        assert_eq!((role("Sent"), role("Old Sent")), (Some(Role::Sent), None));
+        assert_eq!(super::attr("\\Spam"), Attr::Role(Role::Junk));
+        assert_eq!(super::attr("\\HasChildren"), Attr::Other);
+        assert_eq!(super::attr("\\NonExistent"), Attr::NoSelect);
     }
 
     #[test]
