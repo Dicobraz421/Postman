@@ -152,6 +152,11 @@ pub(crate) fn own_certs(from: &str) -> Vec<Vec<u8>> {
         .collect()
 }
 
+/// Все свои сертификаты `My` (список в настройках).
+pub(crate) fn my_certs() -> Vec<Vec<u8>> {
+    store_certs("MY")
+}
+
 /// «Другие пользователи» (`AddressBook`) — все: адреса узнает воркер.
 pub(crate) fn address_book() -> Vec<Vec<u8>> {
     store_certs("AddressBook")

@@ -125,6 +125,42 @@ Windows, `windows-sys`, фичи `Win32_Security_Cryptography`); вне Windows 
 рабочие станции — под MDM. Тогда сертификаты ставит MDM (профили SCEP/PKCS) в CurrentUser\My, ключ — в TPM
 или программном KSP. Для Postman это одно и то же: CNG. Откуда сертификаты будут у пользователей — решение №11.
 
+### 4а. macOS: Связка ключей (MAC-05)
+
+Модули `smime/macos.rs` (якоря, подтверждение цепочки) и `smime/keychain.rs` (ключи), крейт `security-framework`;
+поведение Windows не меняется. ГОСТ и СКЗИ на macOS не делаются (`docs/decisions/2026-10-27-smime-gost-skzi-deferred.md`):
+письмо ГОСТ — «нужно СКЗИ», подпись ключом ГОСТ — «нужно СКЗИ», получатель ГОСТ не шифруется.
+
+- **Якоря.** Корни системы (`SecTrustCopyAnchorCertificates`) и корни с настройками доверия пользователя и
+  администратора (`SecTrustSettingsCopyCertificates`). «Корпоративные» — домен администратора (профиль MDM или
+  администратор Mac; аналог групповой политики Windows) и отпечатки `POSTMAN_CORPORATE_CA`. «Никогда не доверять»
+  (Связка ключей) — в `disallowed`. Отдельного хранилища промежуточных, как `CA` Windows, нет — промежуточные из письма.
+- **Подтверждение цепочки** (решение №3): `SecTrust` с политикой S/MIME (`kSecPolicyAppleSMIME`) и политикой отзыва
+  (OCSP и CRL по адресам CA). Две оценки: «по возможности» — отозван, не доверен, «Никогда не доверять», срок,
+  назначение; затем с обязательным ответом — не получен — отзыв «не проверен» (как `REVOCATION_STATUS_UNKNOWN`).
+- **Свои сертификаты** — удостоверения (`SecIdentity`) Связки ключей входа и смарт-карт (CryptoTokenKit, группа
+  доступа токенов) [проверить с картой]. Выбор для подписи — как на Windows: адрес «От», годен для подписи почты,
+  действует, самый поздний срок. Получатель письма сравнивается побайтно с издателем, серийным номером и SKI своего
+  сертификата (`postman_smime::sign::own_rid`: macOS отдаёт издателя только нормализованным).
+- **Операции** — `SecKey`, ключ не покидает Связку ключей:
+
+| Что | Вызов Security.framework |
+|---|---|
+| RSA PKCS#1 v1.5, RSA-OAEP (SHA-1…512, MGF1 тем же хэшем, без метки) | `SecKeyCreateDecryptedData` (`kSecKeyAlgorithmRSAEncryptionPKCS1`, `…OAEPSHA*`); сбой заполнения PKCS#1 — случайный ключ (RFC 3218) |
+| ECDH (kari) | `SecKeyCreateWithData` (точка отправителя) → `SecKeyCopyKeyExchangeResult(kSecKeyAlgorithmECDHKeyExchangeStandard)` → Z (big-endian); KDF X9.63 и AES Key Unwrap — в Rust |
+| Подпись | хэш считаем сами → `SecKeyCreateSignature`: `kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA*`, `kSecKeyAlgorithmECDSASignatureDigestX962SHA*` (ответ — уже DER) |
+| Шифрование исходящих | случайные числа — `SecRandomCopyBytes`, эфемерный ECDH — временный ключ `SecKeyCreateRandomKey` (не в Связке) |
+| Промежуточные своей подписи | цепочка `SecTrust` без сети, без корня |
+
+- **Окна ОС.** Открытие письма — молча: окна Связки ключей запрещены на время операции
+  (`SecKeychainSetUserInteractionAllowed`), нужен пароль или PIN — «Ввести»; нажатие «Ввести» повторяет с окном ОС.
+  Коды: `errSecInteractionNotAllowed` — «нужен PIN», `errSecUserCanceled` — «отменено», CryptoTokenKit «токена нет» —
+  «карта не вставлена».
+- **Сертификаты адресатов** из Связки ключей — сертификаты с адресом, кроме своих (аналог «Других пользователей»).
+- **Список своих сертификатов** для настроек — `postman_core::smime::personal_certificates()` (Windows — `My`).
+- **Тест** (CI `macOS`): временная Связка (`security create-keychain`, удаляется после), сертификаты RSA и P-256 на
+  `example.test` → подпись и расшифровка (PKCS#1, OAEP, ECDH) туда и обратно; список поиска пользователя не меняется.
+
 ## 5. Сертификаты получателей
 
 | Источник | Как | Фаза |

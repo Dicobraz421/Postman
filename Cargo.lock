@@ -6495,6 +6495,7 @@ dependencies = [
 name = "postman-core"
 version = "0.1.0-beta.5"
 dependencies = [
+ "core-foundation 0.10.1",
  "cpu-time",
  "jiff",
  "memory-stats",
@@ -6508,6 +6509,8 @@ dependencies = [
  "postman-search",
  "postman-smime",
  "postman-worker",
+ "security-framework",
+ "security-framework-sys",
  "serde",
  "serde_json",
  "tempfile",

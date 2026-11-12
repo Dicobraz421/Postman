@@ -279,3 +279,29 @@ pub fn own_certificate(der: &[u8]) -> Option<(crate::CertInfo, bool, Option<Sche
     };
     Some((info, can, scheme))
 }
+
+/// Поля своего сертификата (из хранилища ОС, не из письма), по которым письмо находит получателя: DER `Name`
+/// издателя, содержимое `INTEGER` серийного номера (big-endian) и SKI. Нужны там, где ОС не отдаёт издателя байтами
+/// как в сертификате (macOS: `SecCertificateCopyNormalizedIssuerSequence` — нормализованный).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnRid {
+    pub issuer: Vec<u8>,
+    pub serial: Vec<u8>,
+    pub ski: Option<Vec<u8>>,
+}
+
+/// [`OwnRid`] своего сертификата `der`; не сертификат — `None`.
+pub fn own_rid(der: &[u8]) -> Option<OwnRid> {
+    use x509_cert::ext::pkix::SubjectKeyIdentifier;
+    std::panic::catch_unwind(|| {
+        let c = Certificate::from_der(der).ok()?;
+        let tbs = c.tbs_certificate();
+        Some(OwnRid {
+            issuer: tbs.issuer().to_der().ok()?,
+            serial: tbs.serial_number().as_bytes().to_vec(),
+            ski: tbs.get_extension::<SubjectKeyIdentifier>().ok().flatten().map(|(_, s)| s.0.as_bytes().to_vec()),
+        })
+    })
+    .ok()
+    .flatten()
+}
