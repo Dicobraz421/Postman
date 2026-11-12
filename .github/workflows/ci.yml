@@ -208,8 +208,8 @@ jobs:
   cache:
     needs: changes
     if: >-
-      github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true' &&
-      (github.event_name == 'push' || github.event_name == 'schedule')
+      needs.changes.outputs.rust == 'true' &&
+      (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'pull_request')
     runs-on: windows-latest
     env:
       # Компоновщик rust-lld (идёт с rustc) вместо link.exe — быстрее компонует ~100 тестовых exe. Через переменную,
@@ -255,8 +255,8 @@ jobs:
   cache-release:
     needs: changes
     if: >-
-      github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true' &&
-      (github.event_name == 'push' || github.event_name == 'schedule')
+      needs.changes.outputs.rust == 'true' &&
+      (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'pull_request')
     strategy:
       fail-fast: false
       matrix:
