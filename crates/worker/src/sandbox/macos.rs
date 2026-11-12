@@ -102,7 +102,8 @@ pub(crate) fn spawn(exe: &Path, _relaxed: bool, memory: usize) -> io::Result<Pro
 }
 
 pub(crate) fn lockdown() -> Result<(), String> {
-    let memory = std::env::args().find_map(|a| a.strip_prefix("--memory=")?.parse::<usize>().ok()).unwrap_or(MEMORY_LIMIT);
+    // `args_os`: `args` упал бы на аргументе не в UTF-8.
+    let memory = std::env::args_os().find_map(|a| a.to_str()?.strip_prefix("--memory=")?.parse::<usize>().ok()).unwrap_or(MEMORY_LIMIT);
     LIMIT.store(memory, Relaxed);
     set_rlimits()?;
     let allow = if cfg!(debug_assertions) { std::env::var(ALLOW).unwrap_or_default() } else { String::new() };
