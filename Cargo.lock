@@ -2780,7 +2780,7 @@ dependencies = [
 [[package]]
 name = "gpui-base"
 version = "0.9.1"
-source = "git+https://github.com/Dicobraz421/pets?rev=2d0f8405f28ceae8eed70f013adf4824321ee3fd#2d0f8405f28ceae8eed70f013adf4824321ee3fd"
+source = "git+https://github.com/Dicobraz421/pets?rev=2b387b40d19358d54496515ed69ac3ae95d1a21c#2b387b40d19358d54496515ed69ac3ae95d1a21c"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -3359,7 +3359,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-windows"
 version = "0.3.12"
-source = "git+https://github.com/Dicobraz421/pets?rev=2d0f8405f28ceae8eed70f013adf4824321ee3fd#2d0f8405f28ceae8eed70f013adf4824321ee3fd"
+source = "git+https://github.com/Dicobraz421/pets?rev=2b387b40d19358d54496515ed69ac3ae95d1a21c#2b387b40d19358d54496515ed69ac3ae95d1a21c"
 dependencies = [
  "accesskit",
  "accesskit_windows",
@@ -5978,7 +5978,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 [[package]]
 name = "pets-commands"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz421/pets?rev=2d0f8405f28ceae8eed70f013adf4824321ee3fd#2d0f8405f28ceae8eed70f013adf4824321ee3fd"
+source = "git+https://github.com/Dicobraz421/pets?rev=2b387b40d19358d54496515ed69ac3ae95d1a21c#2b387b40d19358d54496515ed69ac3ae95d1a21c"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -5986,7 +5986,7 @@ dependencies = [
 [[package]]
 name = "pets-gpui-macos"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz421/pets?rev=2d0f8405f28ceae8eed70f013adf4824321ee3fd#2d0f8405f28ceae8eed70f013adf4824321ee3fd"
+source = "git+https://github.com/Dicobraz421/pets?rev=2b387b40d19358d54496515ed69ac3ae95d1a21c#2b387b40d19358d54496515ed69ac3ae95d1a21c"
 dependencies = [
  "block2 0.6.2",
  "objc2 0.6.5",
@@ -6002,7 +6002,7 @@ dependencies = [
 [[package]]
 name = "pets-i18n"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz421/pets?rev=2d0f8405f28ceae8eed70f013adf4824321ee3fd#2d0f8405f28ceae8eed70f013adf4824321ee3fd"
+source = "git+https://github.com/Dicobraz421/pets?rev=2b387b40d19358d54496515ed69ac3ae95d1a21c#2b387b40d19358d54496515ed69ac3ae95d1a21c"
 dependencies = [
  "fluent-bundle",
  "fluent-syntax",
@@ -6015,7 +6015,7 @@ dependencies = [
 [[package]]
 name = "pets-shell"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz421/pets?rev=2d0f8405f28ceae8eed70f013adf4824321ee3fd#2d0f8405f28ceae8eed70f013adf4824321ee3fd"
+source = "git+https://github.com/Dicobraz421/pets?rev=2b387b40d19358d54496515ed69ac3ae95d1a21c#2b387b40d19358d54496515ed69ac3ae95d1a21c"
 dependencies = [
  "core-foundation 0.10.1",
  "libc",
@@ -6024,17 +6024,19 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
  "objc2-service-management",
+ "oo7",
  "security-framework",
  "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
  "windows-sys 0.61.2",
+ "zbus",
 ]
 
 [[package]]
 name = "pets-ui"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz421/pets?rev=2d0f8405f28ceae8eed70f013adf4824321ee3fd#2d0f8405f28ceae8eed70f013adf4824321ee3fd"
+source = "git+https://github.com/Dicobraz421/pets?rev=2b387b40d19358d54496515ed69ac3ae95d1a21c#2b387b40d19358d54496515ed69ac3ae95d1a21c"
 dependencies = [
  "futures",
  "gpui-kit",
@@ -6050,7 +6052,7 @@ dependencies = [
 [[package]]
 name = "pets-update"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz421/pets?rev=2d0f8405f28ceae8eed70f013adf4824321ee3fd#2d0f8405f28ceae8eed70f013adf4824321ee3fd"
+source = "git+https://github.com/Dicobraz421/pets?rev=2b387b40d19358d54496515ed69ac3ae95d1a21c#2b387b40d19358d54496515ed69ac3ae95d1a21c"
 dependencies = [
  "minisign-verify",
  "semver",
