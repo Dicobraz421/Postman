@@ -1145,7 +1145,14 @@ fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
         .on_action(cx.listener(|this, _: &tab::Next, window, cx| this.step_tab(1, window, cx)))
         .on_action(cx.listener(|this, _: &tab::Prev, window, cx| this.step_tab(-1, window, cx)))
         .on_action(cx.listener(|this, _: &tab::Close, window, cx| {
-            let id = this.tabs.active().id;
+            let tab = this.tabs.active();
+            // macOS (MAC-04): ⌘W на главной вкладке — как красная кнопка, скрыть Postman (почта живёт).
+            #[cfg(target_os = "macos")]
+            if tab.kind == TabKind::Main {
+                cx.hide();
+                return;
+            }
+            let id = tab.id;
             this.close_tab(id, window, cx);
         }))
         .on_action(cx.listener(|this, _: &view::Notifications, _, cx| {

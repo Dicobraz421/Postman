@@ -2,6 +2,8 @@
 //! `gpui_windows::pets` (pets-gpui-windows) и `pets_gpui_macos` (MAC-02), без UI — `pets_shell`. Вызовов ОС здесь нет,
 //! на других ОС — заглушки. `unsafe` — только счётчик кучи (`alloc`) и `set_var` в начале `main`
 //! (`shell::default_env`).
+//!
+//! Тексты интерфейса, где нарисованы клавиши ОС, на macOS — свой вариант ключа ([`os_key`], MAC-04).
 
 use gpui_kit::Window;
 #[cfg(windows)]
@@ -12,7 +14,7 @@ use gpui_windows::pets;
 pub mod alloc;
 
 /// Поля бенча в конце простоя (S4-08, `docs/MEMORY.md`): частный рабочий набор (столбец «Память» диспетчера
-/// задач), куча Rust при фиче `alloc-count`. `POSTMAN_BENCH_MEMMAP=1` — ещё разбивка по модулям, файлам и блокам
+/// задач; macOS — `phys_footprint`, «Память» Мониторинга системы), куча Rust при фиче `alloc-count`. `POSTMAN_BENCH_MEMMAP=1` — ещё разбивка по модулям, файлам и блокам
 /// частной памяти в stderr.
 pub fn bench_idle_fields() -> String {
     [os_memory_field(), heap_field()].into_iter().flatten().collect::<Vec<String>>().join(" ")
@@ -27,8 +29,14 @@ fn os_memory_field() -> Option<String> {
     Some(format!("idle_private_ws_mb={:.0}", private_ws as f64 / 1_048_576.0))
 }
 
-/// Частный рабочий набор на других ОС — MAC-04.
-#[cfg(not(windows))]
+/// macOS (MAC-04): `phys_footprint` — столбец «Память» Мониторинга системы (аналог частного рабочего набора).
+#[cfg(target_os = "macos")]
+fn os_memory_field() -> Option<String> {
+    let bytes = pets_shell::memory::phys_footprint()?;
+    Some(format!("idle_phys_footprint_mb={:.0}", bytes as f64 / 1_048_576.0))
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn os_memory_field() -> Option<String> {
     None
 }
@@ -48,6 +56,32 @@ fn heap_field() -> Option<String> {
 pub fn attach_parent_console() {
     #[cfg(windows)]
     pets_shell::console::attach_parent();
+}
+
+/// Тексты со своим вариантом на macOS (MAC-04): только там, где на Mac другие клавиши (⌘ вместо Ctrl, Option вместо
+/// Alt). Названий ОС в текстах нет (решение 2026-11-12 «no-os-names»): «системное хранилище паролей», «Как в
+/// системе». Вариант — тот же ключ с `-mac`.
+pub const MAC_TEXTS: &[(&str, &str)] = &[
+    ("bulk-pick", "bulk-pick-mac"),
+    ("signin-demo", "signin-demo-mac"),
+    ("settings-reading-aside-1", "settings-reading-aside-1-mac"),
+    ("settings-keys-layout-1", "settings-keys-layout-1-mac"),
+    ("settings-keys-layout-2", "settings-keys-layout-2-mac"),
+    ("settings-keys-note-outlook", "settings-keys-note-outlook-mac"),
+    ("settings-keytips", "settings-keytips-mac"),
+];
+
+/// Ключ текста для этой ОС: на macOS — вариант из [`MAC_TEXTS`], иначе — `key` как есть.
+pub fn os_key(key: &str) -> &str {
+    os_key_on(key, cfg!(target_os = "macos"))
+}
+
+/// [`os_key`] для заданной ОС (тесты).
+pub fn os_key_on(key: &str, mac: bool) -> &str {
+    if !mac {
+        return key;
+    }
+    MAC_TEXTS.iter().find(|(k, _)| *k == key).map_or(key, |(_, m)| m)
 }
 
 /// Пароль учётной записи — в диспетчере учётных данных Windows (S3-04), тип «общие учётные данные», для этого
@@ -337,6 +371,56 @@ pub fn set_icons(window: &Window) -> Result<(), String> {
 #[cfg(not(windows))]
 pub fn set_icons(_window: &Window) -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(test)]
+mod os_texts {
+    /// MAC-04: у каждого текста macOS есть перевод на обоих языках, у исходного ключа — тоже; на Windows ключ не
+    /// меняется.
+    #[test]
+    fn mac_texts_are_translated() {
+        let mut texts = crate::parts::texts();
+        texts.push(pets_ui::FTL);
+        for lang in ["ru", "en"] {
+            let (i18n, _) = pets_i18n::I18n::new(&texts, lang);
+            for (key, mac) in super::MAC_TEXTS {
+                assert_ne!(i18n.get(key), *key, "{lang}: {key}");
+                assert_ne!(i18n.get(mac), *mac, "{lang}: {mac}");
+            }
+        }
+        assert_eq!(super::os_key_on("bulk-pick", false), "bulk-pick");
+        assert_eq!(super::os_key_on("bulk-pick", true), "bulk-pick-mac");
+        assert_eq!(super::os_key_on("nav-mail", true), "nav-mail");
+    }
+
+    /// Решение 2026-11-12 «no-os-names»: в текстах интерфейса нет названий ОС и их хранилищ — «система», «системное
+    /// хранилище паролей». Комментарии `.ftl` не в счёт.
+    #[test]
+    fn texts_have_no_os_names() {
+        const NAMES: [&str; 9] =
+            ["Windows", "macOS", "BitLocker", "FileVault", "Keychain", "Связк", "Credential Manager", "Диспетчер учётных", "Проводник"];
+        let mut texts = crate::parts::texts();
+        texts.push(pets_ui::FTL);
+        let mut found = Vec::new();
+        for set in &texts {
+            for (lang, source) in set.iter() {
+                for line in source.lines().filter(|l| !l.trim_start().starts_with('#')) {
+                    if let Some(name) = NAMES.iter().find(|n| line.contains(*n)) {
+                        found.push(format!("{lang}: {name}: {line}"));
+                    }
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "названия ОС в текстах:
+{}",
+            found.join(
+                "
+"
+            )
+        );
+    }
 }
 
 #[cfg(all(test, windows))]

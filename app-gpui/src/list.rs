@@ -1664,7 +1664,7 @@ pub(crate) fn list_row(
         .cursor_pointer()
         .when(!state.boxes, |d| d.invisible().group_hover(ROW_GROUP, |s| s.visible()))
         .child(checkbox(state.picked, l))
-        .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(tr!("bulk-pick")).build(window, cx))
+        .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(tr!(crate::sys::os_key("bulk-pick"))).build(window, cx))
         .on_click(cx.listener(move |this, _, _, cx| {
             cx.stop_propagation();
             this.pick(i, false, cx);
@@ -1798,7 +1798,7 @@ pub(crate) fn list_row(
             let m = ev.modifiers();
             if m.shift {
                 this.extend_to(i, cx);
-            } else if m.control {
+            } else if crate::keymap::pick_click(&m) {
                 this.pick(i, true, cx);
             } else {
                 this.select(i, cx);

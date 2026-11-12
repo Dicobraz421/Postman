@@ -1849,7 +1849,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.3",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5210,7 +5210,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5613,6 +5613,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-screen-capture-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74b7c5390f477482f001bc354d6571a70db7e4f8d5288e860c45521fbce11394"
+dependencies = [
+ "block2 0.6.2",
+ "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "objc2-security"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5962,7 +5975,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 [[package]]
 name = "pets-commands"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz/pets?rev=b1e344098d9ce15bec9bfa5f273f211ca0fec81f#b1e344098d9ce15bec9bfa5f273f211ca0fec81f"
+source = "git+https://github.com/Dicobraz/pets?rev=23cf38681d4fd69a3449c293cdf350440e2160e1#23cf38681d4fd69a3449c293cdf350440e2160e1"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -5970,12 +5983,14 @@ dependencies = [
 [[package]]
 name = "pets-gpui-macos"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz/pets?rev=4bde6054717a0a6e614b6929292d619d920d939c#4bde6054717a0a6e614b6929292d619d920d939c"
+source = "git+https://github.com/Dicobraz/pets?rev=23cf38681d4fd69a3449c293cdf350440e2160e1#23cf38681d4fd69a3449c293cdf350440e2160e1"
 dependencies = [
  "block2 0.6.2",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
+ "objc2-core-graphics",
  "objc2-foundation 0.3.2",
+ "objc2-screen-capture-kit",
  "objc2-user-notifications",
  "raw-window-handle",
  "tracing",
@@ -5984,7 +5999,7 @@ dependencies = [
 [[package]]
 name = "pets-i18n"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz/pets?rev=b1e344098d9ce15bec9bfa5f273f211ca0fec81f#b1e344098d9ce15bec9bfa5f273f211ca0fec81f"
+source = "git+https://github.com/Dicobraz/pets?rev=23cf38681d4fd69a3449c293cdf350440e2160e1#23cf38681d4fd69a3449c293cdf350440e2160e1"
 dependencies = [
  "fluent-bundle",
  "fluent-syntax",
@@ -6016,10 +6031,12 @@ dependencies = [
 [[package]]
 name = "pets-ui"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz/pets?rev=b1e344098d9ce15bec9bfa5f273f211ca0fec81f#b1e344098d9ce15bec9bfa5f273f211ca0fec81f"
+source = "git+https://github.com/Dicobraz/pets?rev=23cf38681d4fd69a3449c293cdf350440e2160e1#23cf38681d4fd69a3449c293cdf350440e2160e1"
 dependencies = [
  "futures",
  "gpui-kit",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
  "pets-i18n",
  "thiserror 2.0.21",
  "toml 1.1.8+spec-1.1.0",
@@ -10789,7 +10806,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d6f32a0ff4a9f6f01231eb2059cc85479330739333e0e58cadf03b6af2cca10"
 dependencies = [
  "cfg-if",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
