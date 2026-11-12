@@ -415,13 +415,21 @@ mod tests {
     fn disk_states() {
         use crate::chrome::glyph;
         let _ = pets_i18n::init(&crate::parts::texts(), "ru");
+        let mac = cfg!(target_os = "macos");
         let (g, t, h) = super::disk_texts("C:", Some(false));
-        assert_eq!((g, t.as_str()), (glyph::WARNING, "Диск C: с данными Postman не зашифрован BitLocker"));
+        let off = if mac {
+            "Диск с данными Postman не зашифрован FileVault"
+        } else {
+            "Диск C: с данными Postman не зашифрован BitLocker"
+        };
+        assert_eq!((g, t.as_str()), (glyph::WARNING, off));
         assert!(h.is_some());
         assert_eq!(super::disk_texts("C:", Some(true)).0, glyph::CHECK);
         assert!(super::disk_texts("C:", Some(true)).2.is_none());
         assert_eq!(super::disk_texts("D:", None).0, glyph::INFO);
         let _ = pets_i18n::init(&crate::parts::texts(), "en");
-        assert_eq!(super::disk_texts("C:", Some(true)).1, "Drive C: with Postman data is encrypted with BitLocker");
+        let on =
+            if mac { "The disk with Postman data is encrypted with FileVault" } else { "Drive C: with Postman data is encrypted with BitLocker" };
+        assert_eq!(super::disk_texts("C:", Some(true)).1, on);
     }
 }

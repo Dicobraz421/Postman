@@ -830,8 +830,10 @@ mod tests {
 
     #[test]
     fn keystrokes_are_recorded_without_bare_modifiers() {
-        assert_eq!(recorded("ctrl-shift-r").as_deref(), Some("ctrl-shift-r"));
-        assert_eq!(recorded("shift-ctrl-k").as_deref(), Some("ctrl-shift-k"));
+        // macOS (MAC-04): главный модификатор нажатия — ⌘, физический ⌃ — `cmd` таблицы.
+        let main = if MAC { "cmd" } else { "ctrl" };
+        assert_eq!(recorded(&format!("{main}-shift-r")).as_deref(), Some("ctrl-shift-r"));
+        assert_eq!(recorded(&format!("shift-{main}-k")).as_deref(), Some("ctrl-shift-k"));
         assert_eq!(recorded("ctrl-control"), None);
         assert_eq!(recorded("shift"), None);
         assert_eq!(recorded("f5").as_deref(), Some("f5"));
