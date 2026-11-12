@@ -1,12 +1,13 @@
 //! Слои рабочей области (S2-01, `docs/specs/S2.md`; плагины путей — ADR 0004): ниже интерфейса нет
 //! UI-зависимостей, слой ниже не зависит от слоя выше, у каждого крейта есть слой; `core` не знает протоколов,
 //! плагин знает `core` и только свой протокол, интерфейс — плагины, но не протоколы. Проверка по `cargo tree`
-//! (обычные зависимости, по Cargo.lock, без сети).
+//! (обычные зависимости, по Cargo.lock, без сети; один вызов на процесс).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // интеграционный тест: «не падать» — для кода приложения (S2-03)
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
+use std::sync::OnceLock;
 
 const L0: u8 = 0;
 const L1: u8 = 1;
@@ -68,15 +69,79 @@ const EXPORT: &str = "postman-export";
 const MIME_PARSER: &str = "mail-parser";
 const WORKER: &str = "postman-worker";
 
-fn cargo_tree(args: &[&str]) -> Vec<String> {
-    let out = Command::new(env!("CARGO"))
-        .args(["tree", "--offline", "--prefix", "none", "-e", "normal"])
-        .args(args)
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .expect("cargo tree");
-    assert!(out.status.success(), "cargo tree {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-    String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.split_whitespace().next()).map(str::to_owned).collect()
+/// Граф обычных зависимостей рабочей области: крейт → прямые зависимости. Один вызов `cargo tree` на процесс:
+/// запуск cargo на Windows — секунды, а вызов на каждый крейт давал тестам слоёв по ~30 с. Возможности (features)
+/// объединены по всей рабочей области, как в `cargo build --workspace`: дерево крейта не уже, чем у `-p`.
+struct Graph {
+    members: BTreeSet<String>,
+    deps: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl Graph {
+    fn direct(&self, name: &str) -> BTreeSet<String> {
+        self.deps.get(name).cloned().unwrap_or_default()
+    }
+
+    /// Всё дерево крейта, без него самого.
+    fn all(&self, name: &str) -> BTreeSet<String> {
+        let mut seen = BTreeSet::new();
+        let mut stack = vec![name.to_owned()];
+        while let Some(n) = stack.pop() {
+            for d in self.deps.get(&n).into_iter().flatten() {
+                if seen.insert(d.clone()) {
+                    stack.push(d.clone());
+                }
+            }
+        }
+        seen
+    }
+
+    /// Кто зависит от `target` (с ним самим), не проходя через `pruned`, — как `cargo tree -i target --prune pruned`.
+    fn users_of(&self, target: &str, pruned: &str) -> BTreeSet<String> {
+        let mut seen = BTreeSet::from([target.to_owned()]);
+        let mut stack = vec![target.to_owned()];
+        while let Some(n) = stack.pop() {
+            for (user, deps) in &self.deps {
+                if user != pruned && deps.contains(&n) && seen.insert(user.clone()) {
+                    stack.push(user.clone());
+                }
+            }
+        }
+        seen
+    }
+}
+
+/// `cargo tree --workspace --prefix depth`: строка — глубина и имя; родитель — ближайшая строка выше с глубиной на 1
+/// меньше. Повтор поддерева (`(*)`) не раскрывается, но его рёбра уже записаны там, где оно раскрыто впервые.
+fn graph() -> &'static Graph {
+    static GRAPH: OnceLock<Graph> = OnceLock::new();
+    GRAPH.get_or_init(|| {
+        let out = Command::new(env!("CARGO"))
+            .args(["tree", "--offline", "--workspace", "--prefix", "depth", "-e", "normal"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .expect("cargo tree");
+        assert!(out.status.success(), "cargo tree: {}", String::from_utf8_lossy(&out.stderr));
+        let mut g = Graph { members: BTreeSet::new(), deps: BTreeMap::new() };
+        let mut path: Vec<String> = Vec::new();
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let digits = line.chars().take_while(char::is_ascii_digit).count();
+            let Ok(depth) = line[..digits].parse::<usize>() else { continue };
+            let Some(name) = line[digits..].split_whitespace().next() else { continue };
+            path.truncate(depth);
+            match path.last() {
+                Some(parent) => {
+                    g.deps.entry(parent.clone()).or_default().insert(name.to_owned());
+                }
+                None => {
+                    g.members.insert(name.to_owned());
+                }
+            }
+            path.push(name.to_owned());
+        }
+        assert!(!g.members.is_empty(), "cargo tree: пустой вывод");
+        g
+    })
 }
 
 fn layer(name: &str) -> Option<u8> {
@@ -97,7 +162,7 @@ fn is_plugin(name: &str) -> bool {
 
 #[test]
 fn every_crate_has_a_layer() {
-    let members: BTreeSet<String> = cargo_tree(&["--workspace", "--depth", "0"]).into_iter().collect();
+    let members = &graph().members;
     let missing: Vec<_> = members.iter().filter(|m| layer(m).is_none()).collect();
     assert!(missing.is_empty(), "крейты без слоя — добавьте в LAYERS и в docs/specs/S2.md: {missing:?}");
     let unlisted: Vec<_> = LAYERS.iter().filter(|&&(n, l)| l == L2B && !is_plugin(n)).map(|(n, _)| n).collect();
@@ -107,7 +172,7 @@ fn every_crate_has_a_layer() {
 #[test]
 fn no_ui_dependencies_below_the_interface() {
     for &(name, l) in LAYERS.iter().filter(|(_, l)| *l < UI_LAYER) {
-        let ui: BTreeSet<String> = cargo_tree(&["-p", name]).into_iter().filter(|d| is_ui(d)).collect();
+        let ui: BTreeSet<String> = graph().all(name).into_iter().filter(|d| is_ui(d)).collect();
         assert!(ui.is_empty(), "{name} ({}) зависит от библиотек интерфейса: {ui:?}", label(l));
     }
 }
@@ -115,7 +180,7 @@ fn no_ui_dependencies_below_the_interface() {
 #[test]
 fn lower_layers_do_not_depend_on_higher() {
     for &(name, l) in LAYERS {
-        for dep in cargo_tree(&["-p", name, "--depth", "1"]).iter().skip(1) {
+        for dep in &graph().direct(name) {
             let Some(dl) = layer(dep) else { continue };
             assert!(dl <= l, "{name} ({}) зависит от {dep} ({})", label(l), label(dl));
             assert!(dep != "postman-demo" || l == UI_LAYER, "{name} ({}) зависит от демо-данных", label(l));
@@ -126,7 +191,7 @@ fn lower_layers_do_not_depend_on_higher() {
 /// Ядро функционально (решение владельца 2026-10-23, ADR 0004): ни протоколов, ни плагинов во всём дереве.
 #[test]
 fn core_does_not_know_protocols() {
-    let deps: BTreeSet<String> = cargo_tree(&["-p", CORE]).into_iter().collect();
+    let deps = graph().all(CORE);
     let known: Vec<_> = PROTOCOL_CRATES.iter().filter(|p| deps.contains(**p)).collect();
     assert!(known.is_empty(), "{CORE} зависит от протокольных крейтов (их знают только плагины backend-*): {known:?}");
     let plugins: Vec<_> = PLUGINS.iter().map(|(p, _)| p).filter(|p| deps.contains(**p)).collect();
@@ -136,7 +201,7 @@ fn core_does_not_know_protocols() {
 /// `export` — только байты: ни ядра, ни протоколов, ни воркера во всём дереве (S8-03).
 #[test]
 fn export_knows_only_bytes() {
-    let deps: BTreeSet<String> = cargo_tree(&["-p", EXPORT]).into_iter().collect();
+    let deps = graph().all(EXPORT);
     let known: Vec<_> = PROTOCOL_CRATES.iter().chain(&[CORE, "postman-worker"]).filter(|p| deps.contains(**p)).collect();
     assert!(known.is_empty(), "{EXPORT} зависит от ядра, протоколов или воркера: {known:?}");
 }
@@ -145,9 +210,9 @@ fn export_knows_only_bytes() {
 #[test]
 fn plugins_know_core_and_their_own_protocol() {
     for &(plugin, own) in PLUGINS {
-        let direct: BTreeSet<String> = cargo_tree(&["-p", plugin, "--depth", "1"]).into_iter().collect();
+        let direct = graph().direct(plugin);
         assert!(direct.contains(CORE) && direct.contains(own), "{plugin} должен зависеть от {CORE} и {own}: {direct:?}");
-        let all: BTreeSet<String> = cargo_tree(&["-p", plugin]).into_iter().collect();
+        let all = graph().all(plugin);
         let foreign: Vec<_> = PROTOCOL_CRATES.iter().filter(|p| **p != own && all.contains(**p)).collect();
         assert!(foreign.is_empty(), "{plugin} зависит от чужих протоколов: {foreign:?}");
         let others: Vec<_> = PLUGINS.iter().map(|(p, _)| p).filter(|p| **p != plugin && all.contains(**p)).collect();
@@ -158,7 +223,7 @@ fn plugins_know_core_and_their_own_protocol() {
 #[test]
 fn interface_does_not_know_protocols() {
     for &(name, _) in LAYERS.iter().filter(|(_, l)| *l == UI_LAYER) {
-        let deps: BTreeSet<String> = cargo_tree(&["-p", name, "--depth", "1"]).into_iter().collect();
+        let deps = graph().direct(name);
         let known: Vec<_> = PROTOCOL_CRATES.iter().filter(|p| deps.contains(**p)).collect();
         assert!(known.is_empty(), "{name} зависит от протокольных крейтов (только через плагины backend-*): {known:?}");
     }
@@ -168,7 +233,6 @@ fn interface_does_not_know_protocols() {
 /// S/MIME, протоколы, ядро и интерфейс получают от воркера готовые части, сами письмо не разбирают.
 #[test]
 fn only_the_worker_parses_mail() {
-    let users: BTreeSet<String> =
-        cargo_tree(&["--workspace", "-i", MIME_PARSER, "--prune", WORKER]).into_iter().filter(|d| layer(d).is_some()).collect();
+    let users: BTreeSet<String> = graph().users_of(MIME_PARSER, WORKER).into_iter().filter(|d| layer(d).is_some()).collect();
     assert!(users.is_empty(), "{MIME_PARSER} нужен не только через {WORKER}: {users:?}");
 }
