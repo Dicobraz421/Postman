@@ -36,8 +36,10 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7.0.1
+      # tzdata-legacy: старые имена поясов IANA (America/Buenos_Aires …) — с Ubuntu 24.04 отдельным пакетом, а таблица
+      # CLDR Windows ↔ IANA (crates/ews, tz.rs) ссылается на них.
       - name: Системные пакеты
-        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends $APT_PACKAGES
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends $APT_PACKAGES tzdata-legacy
       - run: rustup toolchain install stable --profile minimal -c clippy --no-self-update && rustup default stable
       - uses: Swatinem/rust-cache@v2.9.3
         with:
