@@ -192,7 +192,7 @@ fn check_signer(si: &Tlv<'_>, certs: &[(Vec<u8>, Option<Certificate>)], content:
     let (signer_der, signer) = find_signer(&s.sid, certs).ok_or(Status::NoCertificate)?;
     let signer = signer.as_ref().ok_or_else(|| malformed("signer certificate"))?;
     let key = algs::public_key(signer.tbs_certificate().subject_public_key_info()).map_err(unsupported)?;
-    let weak_key = matches!(&key, PublicKey::Rsa(k) if rsa::traits::PublicKeyParts::n(k).bits_vartime() < 2048);
+    let weak_key = matches!(&key, PublicKey::Rsa(k) if rsa::traits::PublicKeyParts::n(k).bit_width_vartime() < 2048);
     let digest = hash.digest(content);
     let mut out = Checked {
         scheme,
