@@ -284,7 +284,8 @@ mod tests {
                 for part in source.split("'\\u{").skip(1) {
                     let hex: String = part.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
                     let Some(g) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) else { continue };
-                    if ('\u{E000}'..='\u{F8FF}').contains(&g) {
+                    // Частная область Unicode (значки шрифта); границы — числами, чтобы тест не нашёл сам себя.
+                    if (0xE000..=0xF8FF).contains(&u32::from(g)) {
                         match super::mac_glyph(g) {
                             Some(p) => assert!(Assets.load(p).unwrap().is_some(), "{p}"),
                             None => missing.push(format!("{}: U+{hex}", path.display())),
