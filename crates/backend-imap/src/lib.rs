@@ -750,28 +750,28 @@ impl Imap {
             Plan::Same => {}
             Plan::Reload => {
                 gone.extend(here.iter().map(|r| r.id.clone()));
-                let session = self.session().await?;
-                let uids = session.uids().await?;
+                let uids = self.session().await?.uids().await?;
                 let newest = &uids[uids.len().saturating_sub(INITIAL)..];
                 if !newest.is_empty() {
-                    let headers = session.headers(&uid_set(newest)).await?;
+                    let (headers, _) = self.fetch_headers(f, validity, newest).await?;
                     let headers = self.threads(headers).await;
                     upsert.extend(headers.iter().map(|h| row(scope.as_deref(), f, validity, h)));
                 }
                 gone.retain(|g| !upsert.iter().any(|r| &r.id == g));
             }
             Plan::Delta { from, modseq } => {
-                let session = self.session().await?;
-                let server: HashSet<u32> = session.uids().await?.into_iter().collect();
+                let server: HashSet<u32> = self.session().await?.uids().await?.into_iter().collect();
                 for r in &here {
                     let ok = parse_key(&r.id).is_some_and(|(fid, v, u)| fid == f.id && v == validity && server.contains(&u));
                     if !ok {
                         gone.push(r.id.clone());
                     }
                 }
-                if sel.state.uid_next > from {
-                    let headers = session.headers(&format!("{from}:*")).await?;
-                    let headers = self.threads(headers.into_iter().filter(|h| h.uid >= from).collect()).await;
+                let mut fresh: Vec<u32> = server.iter().copied().filter(|&u| u >= from).collect();
+                fresh.sort_unstable();
+                if !fresh.is_empty() {
+                    let (headers, _) = self.fetch_headers(f, validity, &fresh).await?;
+                    let headers = self.threads(headers).await;
                     upsert.extend(headers.iter().map(|h| row(scope.as_deref(), f, validity, h)));
                 }
                 let session = self.session().await?;
@@ -800,6 +800,41 @@ impl Imap {
         }
         self.cache.set_state(&state_key, &sel.state.encode()).map_err(db)?;
         Ok(!gone.is_empty() || !upsert.is_empty())
+    }
+
+    /// Заголовки писем `uids` выбранной папки `f` порциями ([`postman_imap::fetch`]): отказ сервера на большой порции
+    /// (Яндекс: `NO [UNAVAILABLE] FETCH Backend error`, тайм-аут) или письмо, которое не разбирается, не оставляют
+    /// папку пустой. Соединение после тайм-аута или неразобранного ответа — заново, папка — выбрана снова; сменился
+    /// `UIDVALIDITY` — ошибка (сверка папки начнётся заново). Ответ — заголовки и письма, которых сервер не отдал.
+    async fn fetch_headers(&mut self, f: &Folder, validity: u32, uids: &[u32]) -> postman_imap::Result<(Vec<Header>, Vec<u32>)> {
+        use postman_imap::fetch::{Batches, drops_session, retry_smaller};
+        let mut plan = Batches::new(uids);
+        let mut out = Vec::with_capacity(uids.len());
+        while let Some((set, fields)) = plan.next_batch() {
+            let e = match self.session().await?.headers_with(&uid_set(&set), fields).await {
+                Ok(h) => {
+                    out.extend(h);
+                    continue;
+                }
+                Err(e) if retry_smaller(&e) => e,
+                Err(e) => return Err(e),
+            };
+            tracing::warn!("imap folder {}: FETCH of {} letters ({fields:?}): {e}", f.name, set.len());
+            if !plan.failed(set, fields) {
+                return Err(e);
+            }
+            if drops_session(&e) {
+                self.session = None;
+                let sel = self.session().await?.select(&f.raw).await?;
+                if sel.state.uid_validity != validity {
+                    return Err(postman_imap::Error::Protocol(format!("UIDVALIDITY of {} changed", f.name)));
+                }
+            }
+        }
+        if !plan.skipped().is_empty() {
+            tracing::warn!("imap folder {}: server gave no headers for {} letters", f.name, plan.skipped().len());
+        }
+        Ok((out, plan.skipped().to_vec()))
     }
 
     /// Письмо по ключу: папка и UID; папку — выбрать.
@@ -1079,7 +1114,7 @@ impl Imap {
             let known: HashSet<String> = self.cache.rows_by_ids(&keys).map_err(db)?.into_iter().map(|r| r.id).collect();
             let missing: Vec<u32> = uids.iter().zip(&keys).filter(|(_, k)| !known.contains(*k)).map(|(&u, _)| u).collect();
             if !missing.is_empty() {
-                let headers = self.session().await?.headers(&uid_set(&missing)).await?;
+                let (headers, _) = self.fetch_headers(&f, sel.state.uid_validity, &missing).await?;
                 let headers = self.threads(headers).await;
                 let rows: Vec<EmailRow> = headers.iter().map(|h| row(scope.as_deref(), &f, sel.state.uid_validity, h)).collect();
                 self.cache.upsert_emails(&rows).map_err(db)?;
@@ -1102,7 +1137,7 @@ impl Imap {
         if page.is_empty() {
             return Ok(0);
         }
-        let headers = session.headers(&uid_set(page)).await?;
+        let (headers, _) = self.fetch_headers(&f, sel.state.uid_validity, page).await?;
         let headers = self.threads(headers).await;
         let rows: Vec<EmailRow> = headers.iter().map(|h| row(scope.as_deref(), &f, sel.state.uid_validity, h)).collect();
         self.cache.upsert_emails(&rows).map_err(db)?;
@@ -1131,13 +1166,14 @@ impl Imap {
         let f = self.folder_by_key(mailbox).cloned().ok_or_else(|| postman_imap::Error::Protocol(format!("no folder {mailbox}")))?;
         let uids: Vec<u32> = keys.iter().filter_map(|k| parse_key(k).map(|(_, _, u)| u)).collect();
         let scope = self.scope.clone();
-        let session = self.session().await?;
-        let sel = session.select(&f.raw).await?;
-        let headers = session.headers(&uid_set(&uids)).await?;
+        let sel = self.session().await?.select(&f.raw).await?;
+        let (headers, skipped) = self.fetch_headers(&f, sel.state.uid_validity, &uids).await?;
         let headers = self.threads(headers).await;
         let rows: Vec<EmailRow> = headers.iter().map(|h| row(scope.as_deref(), &f, sel.state.uid_validity, h)).collect();
         self.cache.upsert_emails(&rows).map_err(db)?;
-        let found: HashSet<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+        // Пропущенные сервером не отдал, но они есть: не «удалены».
+        let mut found: HashSet<String> = rows.iter().map(|r| r.id.clone()).collect();
+        found.extend(skipped.iter().map(|&u| email_key(scope.as_deref(), &f.id, sel.state.uid_validity, u)));
         Ok(keys.iter().filter(|k| !found.contains(k.as_str())).cloned().collect())
     }
 

@@ -81,7 +81,7 @@ enum Field {
 }
 
 impl SettingsView {
-    /// Пароль каталога — в Диспетчер учётных данных (в фоне), поле очищается.
+    /// Пароль каталога — в системное хранилище паролей (в фоне), поле очищается.
     fn save_directory_password(&mut self, secret: String, cx: &mut Context<Self>) {
         let p = crate::prefs::get(cx).security.directory;
         let target = crate::directory::credential_target(&p.server);

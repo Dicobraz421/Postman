@@ -187,9 +187,10 @@ pub(crate) fn badge<E: ParentElement + Styled>(el: E, key: Option<String>, l: &L
 // --- экран почты ---
 
 impl crate::Mailer {
-    /// Модификаторы сменились: один Ctrl — ждать [`DELAY`]; другие или отпущен — плашек нет.
+    /// Модификаторы сменились: один Ctrl (macOS — один ⌘, MAC-04) — ждать [`DELAY`]; другие или отпущен — плашек нет.
     pub(crate) fn keytips_modifiers(&mut self, m: Modifiers, cx: &mut Context<Self>) {
-        let ctrl_only = m.control && !m.alt && !m.shift && !m.platform && !m.function;
+        let main = if crate::keymap::MAC { m.platform && !m.control } else { m.control && !m.platform };
+        let ctrl_only = main && !m.alt && !m.shift && !m.function;
         self.keytips.delay = Duration::from_millis(u64::from(crate::prefs::get(cx).look.keytips_delay));
         if self.keytips.modifiers(ctrl_only, Instant::now()) {
             set_shown(false, cx);

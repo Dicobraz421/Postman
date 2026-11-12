@@ -1,6 +1,7 @@
 //! Значок в трее (T3-13, решение 2026-11-12 «tray-and-notifications»): пока Postman запущен — значок в области
 //! уведомлений; закрытие окна прячет его в трей, синхронизация и уведомления живут. Щелчок по значку или уведомлению
-//! Windows возвращает окно. Только Windows: на macOS окно прячет система (`mac_app`), на остальных ОС значка нет.
+//! Windows возвращает окно. Значок — только Windows: на macOS окно прячет система (`mac_app`), а щелчок по уведомлению
+//! возвращает окно и открывает письмо ([`mac`], MAC-04); на остальных ОС значка нет.
 //!
 //! Значок и уведомление сообщают о щелчке не из задачи интерфейса (оконная процедура значка, поток Windows) —
 //! событие уходит каналом ([`send`]) в задачу интерфейса.
@@ -163,12 +164,45 @@ mod os {
     }
 }
 
+/// macOS (MAC-04): значка нет, окно скрывает система; щелчок по уведомлению — вернуть окно и открыть письмо.
+#[cfg(target_os = "macos")]
+mod mac {
+    use futures::StreamExt as _;
+
+    use super::*;
+
+    pub(crate) fn init(window: &mut Window, mailer: &Entity<Mailer>, cx: &mut App) {
+        let (tx, mut rx) = futures::channel::mpsc::unbounded();
+        if TX.set(tx).is_err() {
+            return;
+        }
+        let handle = window.window_handle();
+        let mailer = mailer.clone();
+        cx.spawn(async move |cx| {
+            while let Some(signal) = rx.next().await {
+                let _ = handle.update(cx, |_, window, cx| {
+                    cx.activate(true);
+                    window.activate_window();
+                    match signal {
+                        Signal::Open => {}
+                        Signal::Quit => cx.quit(),
+                        Signal::Letter(id) => mailer.update(cx, |m, cx| m.open_new_mail(id, cx)),
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+}
+
 /// Поставить значок и прятать окно при закрытии («Настройки → Общие → Закрытие окна»). Не удалось — окно
-/// закрывается, как раньше.
+/// закрывается, как раньше. macOS — только щелчок по уведомлению.
 pub(crate) fn init(window: &mut Window, mailer: &Entity<Mailer>, cx: &mut App) {
     #[cfg(windows)]
     os::init(window, mailer, cx);
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    mac::init(window, mailer, cx);
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = (window, mailer, cx);
 }
 

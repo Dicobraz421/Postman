@@ -312,7 +312,7 @@ impl SettingsView {
             ],
             l,
         );
-        let note = if single { tr!("settings-keys-note-single") } else { tr!("settings-keys-note-outlook") };
+        let note = if single { tr!("settings-keys-note-single") } else { tr!(crate::sys::os_key("settings-keys-note-outlook")) };
         let body = div()
             .flex()
             .flex_col()
@@ -338,7 +338,7 @@ impl SettingsView {
                     .gap_3()
                     .child(div().flex_1().child(aside_card(
                         tr!("settings-keys-layout"),
-                        vec![tr!("settings-keys-layout-1"), tr!("settings-keys-layout-2")],
+                        vec![tr!(crate::sys::os_key("settings-keys-layout-1")), tr!(crate::sys::os_key("settings-keys-layout-2"))],
                         l,
                     )))
                     .child(
