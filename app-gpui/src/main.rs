@@ -354,6 +354,10 @@ fn main() {
             // Linux (LIN-02): заголовок и рамка — свои, как на Windows; без композитора X11 gpui вернёт системные.
             #[cfg(target_os = "linux")]
             window_decorations: Some(WindowDecorations::Client),
+            // LIN-03: app_id Wayland и класс окна X11 — `postman`, как `StartupWMClass` в `postman.desktop` (LIN-06):
+            // панель и док узнают окно.
+            #[cfg(target_os = "linux")]
+            app_id: Some("postman".into()),
             ..Default::default()
         };
         let opened = gpui_kit::open_window(options, cx, |window, cx| {

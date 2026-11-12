@@ -48,22 +48,23 @@ pub fn open_bitlocker() -> Result<(), String> {
 /// UPN для входа без пароля: принципал билета Kerberos (`klist` MIT: `Default principal: anna@CORP.EXAMPLE` →
 /// `anna@corp.example`). Звать в фоне.
 pub fn upn() -> Option<String> {
-    let klist = run("klist", &[])?;
+    let klist = run(KLIST, &[])?;
     kerberos_principal(&klist).map(|p| upn_of(&p))
 }
 
-/// Вход без пароля имеет смысл: есть действующий билет Kerberos (`klist -s`). Один раз за запуск.
+/// Вход без пароля имеет смысл: есть действующий билет Kerberos (`klist -s`). Без кэша: билет появляется и
+/// истекает во время работы (PAR-AUDIT №24); процесс — единицы миллисекунд.
 pub fn in_domain() -> bool {
-    static TICKET: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *TICKET.get_or_init(|| {
-        std::process::Command::new("klist")
-            .arg("-s")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
-    })
+    std::process::Command::new(KLIST)
+        .arg("-s")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
+
+/// `klist` MIT — полным путём, не из `PATH`.
+const KLIST: &str = "/usr/bin/klist";
 
 /// Вывод команды при успехе.
 fn run(cmd: &str, args: &[&str]) -> Option<String> {
