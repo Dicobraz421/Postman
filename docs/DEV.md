@@ -56,6 +56,7 @@ Actions — для разработки. Схема общая для Pets (ск
 | `postman-<версия>-windows-x64.msi` | Установщик для всех пользователей (`tools/pack`, решение 2026-11-07); его же ставит winget `Pets.Postman` |
 | `postman-<версия>-<os>-<arch>.zip` | Комплект целиком с `install.ps1` (для себя, без прав администратора): `windows-x64` сейчас; Linux — `linux-x64.tar.gz` |
 | `postman-worker.exe`, `postman-viewer.exe` | Компоненты под своими именами — скачать один файл вместо всего («Нет компонента», S8-38) |
+| `<файл .msi или .zip>.minisig` | Подпись minisign для самообновления (решение 2026-11-11 «self-update») |
 | `SHA256SUMS.txt` | Контрольные суммы всех файлов |
 
 - Тег `v<версия>` — ровно `version` из `Cargo.toml` (CI сверяет). `v0.2.0` — стабильный выпуск, `v0.2.0-beta.1` —
@@ -64,8 +65,13 @@ Actions — для разработки. Схема общая для Pets (ск
   `git push origin v<версия>`. CI собирает, подписывает, проверяет тесты и публикует (job `publish`); описание — что
   скачать и какие нужны права (`.github/release-notes.md`): страница для пользователей, без списка PR и
   подробностей. Изменения для разработчиков — в истории `main`.
-- Ссылки приложения: «Проверить обновления» — `releases/latest` (стабильный) или `releases` (предварительный);
-  «Скачать» у «Нет компонента» — `releases/download/v<своя версия>/<файл>`: компонент той же версии.
+- Подпись обновления: job `publish` подписывает каждый `.msi` и `.zip` minisign (`.minisig`, до `SHA256SUMS.txt`) —
+  секрет `UPDATE_SIGNING_KEY`, переменная `UPDATE_PUBLIC_KEY` (строка `RW…`, та же, что в `UPDATE_PUBLIC_KEYS`,
+  `app-gpui/src/update.rs`); без них выпуск красный. Ключ создаёт владелец — pets `crates/pets-update/README.md`,
+  «Подпись в release-workflow». Самообновление ищет файлы по именам из таблицы выше: их не переименовывать.
+- Ссылки приложения: «Проверить обновления» — проверка через `pets-update` (`app-gpui/src/update.rs`); «Все выпуски» —
+  `releases/latest` (стабильный) или `releases` (предварительный); «Скачать» у «Нет компонента» —
+  `releases/download/v<своя версия>/<файл>`: компонент той же версии.
 - Linux: строка в matrix job `release` и `scripts/linux/package.sh` с теми же выходами; `publish` не меняется.
 - MSI: `package.ps1` вызывает `postman-pack msi` той же сборки. Версия MSI для бет — `a.b.(c·1000 + r)`
   (`0.1.0-beta.2` → `0.1.302`, `tools/pack/src/ids.rs`). `UpgradeCode` постоянный, `ProductCode` выводится из версии.

@@ -3,8 +3,9 @@
 //!
 //! Действуют сразу: язык, автозапуск (HKCU Run), регистрация `mailto:` (выбор — в «Приложениях по умолчанию»),
 //! открыть папку журнала, отчёт. Помечены «сохраняется» (выбор запомнен, действия пока нет): стартовый экран
-//! «Последняя вкладка», уведомления Windows, тихие часы, звук, канал обновлений. Уровень журнала — со следующего
-//! запуска (если `POSTMAN_LOG` не задан).
+//! «Последняя вкладка», уведомления Windows, тихие часы, звук. Уровень журнала — со следующего запуска (если
+//! `POSTMAN_LOG` не задан). Обновления (решение 2026-11-11 «self-update») — канал, «Проверять автоматически»,
+//! «Проверить обновления» и «Установить» — модуль `update`.
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -212,6 +213,49 @@ impl SettingsView {
                 cx.notify();
             }))
         });
+        // Самообновление (решение 2026-11-11 «self-update»): выключатель; при политике `AllowUpdate = 0` — заперт, кнопки
+        // «Проверить» нет. Страница выпусков — второй ссылкой.
+        let upd = crate::update::view(cx);
+        let auto_check = g.auto_update && upd.allowed;
+        let auto_hint = if upd.allowed {
+            tr!(if auto_check { "settings-auto-update-on-hint" } else { "settings-auto-update-off-hint" })
+        } else {
+            format!("{} {}", tr!("update-policy"), tr!("settings-policy-pinned"))
+        };
+        let auto_control = if upd.allowed {
+            toggle("settings-auto-update", auto_check, l)
+                .on_click(cx.listener(|_, _, _, cx| {
+                    crate::prefs::update(cx, |p| p.general.auto_update = !p.general.auto_update);
+                    cx.notify();
+                }))
+                .into_any_element()
+        } else {
+            div().opacity(0.6).child(crate::settings_tab::switch(false, l)).into_any_element()
+        };
+        let auto_update_row = row(tr!("settings-auto-update"), Some(auto_hint), auto_control, l);
+        let busy =
+            matches!(upd.status, crate::update::Status::Checking | crate::update::Status::Downloading(_) | crate::update::Status::Installing(_));
+        let channel = g.channel;
+        let check_control = div()
+            .flex()
+            .gap_2()
+            .child(crate::settings_tab::link("settings-releases", tr!("settings-releases"), l).on_click(cx.listener(move |_, _, _, _| {
+                if let Err(e) = crate::sys::shell::open(&crate::diagnostics::releases(channel)) {
+                    tracing::warn!("updates: {e}");
+                }
+            })))
+            .when_some(upd.offer.clone().filter(|_| upd.allowed && !busy), |d, _| {
+                d.child(button("settings-update-install", tr!("update-install"), true, l).on_click(cx.listener(|_, _, _, cx| {
+                    crate::update::install(cx);
+                    cx.notify();
+                })))
+            })
+            .when(upd.allowed, |d| {
+                d.child(button("settings-check", tr!("settings-check"), false, l).on_click(cx.listener(|_, _, _, cx| {
+                    crate::update::check_now(cx);
+                    cx.notify();
+                })))
+            });
         let logs = LogLevel::ALL.map(|v| {
             seg(("settings-log", v as usize), tr!(&format!("settings-log-{}", v.filter())), g.log == v, true, l).on_click(cx.listener(
                 move |_, _, _, cx| {
@@ -277,16 +321,8 @@ impl SettingsView {
                 seg_group(channels, l),
                 l,
             ))
-            .child(row(
-                tr!("settings-version", version = env!("CARGO_PKG_VERSION")),
-                Some(tr!("settings-version-hint")),
-                button("settings-check", tr!("settings-check"), false, l).on_click(cx.listener(move |_, _, _, _| {
-                    if let Err(e) = crate::sys::shell::open(&crate::diagnostics::releases(g.channel)) {
-                        tracing::warn!("updates: {e}");
-                    }
-                })),
-                l,
-            ))
+            .child(auto_update_row)
+            .child(row(tr!("settings-version", version = env!("CARGO_PKG_VERSION")), Some(crate::update::status_text(&upd)), check_control, l))
             .child(group(tr!("settings-log-group"), l))
             .child(row(tr!("settings-log"), Some(tr!("settings-log-hint")), seg_group(logs, l), l))
             .child(row(

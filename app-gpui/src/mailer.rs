@@ -345,6 +345,8 @@ impl Mailer {
             cx.observe(&toasts, |_, _, cx| cx.notify()),
             // Настройки (S5-09): «Панель чтения» меняет раскладку; вид беседы (S5-05б) — область чтения.
             crate::prefs::observe(cx),
+            // Обновление: полоса скачивания (решение 2026-11-11 «self-update»).
+            cx.observe_global::<crate::update::Model>(|_, cx| cx.notify()),
             crate::prefs::observe_with(cx, |this: &mut Self, cx| this.reading.update(cx, |r, cx| r.view_changed(cx))),
             // Ответ в области чтения — над своим письмом: открыли другое — ответ уходит во вкладку или закрывается.
             // Скрытая панель чтения (S5-09) — письмо на месте списка: раскладка меняется вместе с письмом.
@@ -744,6 +746,8 @@ impl Render for Mailer {
             .children(self.migration_bar(&l, cx).filter(|_| bars))
             // «Экспорт…» (S8-32): выбор формата и охвата, ход.
             .children(self.export_bar(&l, cx).filter(|_| bars))
+            // Скачивание обновления — и в «Настройках»: «Установить» нажимают и там.
+            .children(self.update_bar(&l, cx).filter(|_| !first_run))
             .map(|d| match (letter, meeting) {
                 (Some(view), _) => d.child(div().flex().flex_1().min_h_0().px(px(8.)).child(view.cached(StyleRefinement::default().size_full()))),
                 (None, Some(view)) => d.child(

@@ -270,6 +270,8 @@ impl SettingsView {
             s
         });
         let mut subscriptions = subscriptions;
+        // «Обновления» в «Общих»: строка итога проверки и скачивания.
+        subscriptions.push(cx.observe_global::<crate::update::Model>(|_, cx| cx.notify()));
         // Адрес — в настройки по мере ввода: пусто — без пересылки; не адрес — подсказка, настройка — пустая.
         subscriptions.push(cx.subscribe_in(&phishing, window, |this: &mut Self, state, ev: &InputEvent, _, cx| {
             if let InputEvent::Change = ev {

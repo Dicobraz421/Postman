@@ -20,7 +20,8 @@ param(
 $ErrorActionPreference = "Stop"
 
 # postman-viewer.exe (viewer host, ADR 0007) is optional: copied and removed when present.
-$Files = "postman.exe", "postman-worker.exe", "postman-viewer.exe", "README.txt", "install.ps1"
+# postman.portable: the self-update flag - this copy is updated from the zip, not from the MSI.
+$Files = "postman.exe", "postman-worker.exe", "postman-viewer.exe", "README.txt", "install.ps1", "postman.portable"
 $Shortcut = Join-Path ([Environment]::GetFolderPath("Programs")) "Postman.lnk"
 $EventKey = "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\Postman"
 # The .NET message file holds "%1" for every event id: the log shows our text as is (pets-shell writes id 1000).
@@ -92,6 +93,9 @@ if ($src -ine $dest) {
     if (Test-Path -LiteralPath $p) { Copy-Item -LiteralPath $p -Destination $dest -Force }
   }
 }
+# A zip older than the flag: write it, the copy is portable all the same.
+$flag = Join-Path $dest "postman.portable"
+if (-not (Test-Path -LiteralPath $flag)) { Set-Content -LiteralPath $flag -Value "Postman portable: updates replace these files from the zip." -Encoding ascii }
 # Files from a downloaded zip carry the "from the Internet" mark; the user has chosen to install them.
 Get-ChildItem -LiteralPath $dest -File | Unblock-File
 
