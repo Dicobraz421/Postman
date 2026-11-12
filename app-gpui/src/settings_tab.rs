@@ -1011,7 +1011,11 @@ impl SettingsView {
                 let note = tr!("settings-reading-preview-note", view = conversation_hint(p.conversation), pane = pane_name(p.pane).to_lowercase()); // i18n-ok: строчные
                 let aside = vec![
                     preview_card(pane_scheme(p.pane, l), conversation_name(p.conversation), note, l),
-                    aside_card(tr!("settings-reading-aside"), vec![tr!("settings-reading-aside-1"), tr!("settings-reading-aside-2")], l),
+                    aside_card(
+                        tr!("settings-reading-aside"),
+                        vec![tr!(crate::sys::os_key("settings-reading-aside-1")), tr!("settings-reading-aside-2")],
+                        l,
+                    ),
                 ];
                 // «По умолчанию» (T2-58): все настройки чтения, и свои виды папок.
                 let reset = reset_button("settings-reading-reset", l, cx, |p| p.reading = Default::default());
@@ -1029,7 +1033,7 @@ impl SettingsView {
             }
             Section::Viewers => (None, self.viewers(l, cx).into_any_element(), Vec::new()),
             Section::Look => {
-                // «По умолчанию» (T2-58): тема «Как в Windows», обычная плотность, акцент, шрифт, аватары, превью, KeyTips.
+                // «По умолчанию» (T2-58): тема «Как в системе», обычная плотность, акцент, шрифт, аватары, превью, KeyTips.
                 let reset = crate::buttons::button("settings-look-reset", tr!("settings-reset"), false, l).on_click(cx.listener(|this, _, _, cx| {
                     crate::prefs::update(cx, |p| {
                         p.look = Default::default();
