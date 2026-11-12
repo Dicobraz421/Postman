@@ -67,3 +67,8 @@ signin-keys = Keys
 signin-keys-outlook = Outlook
 signin-keys-single = Single keys, like Gmail
 signin-address = Address
+# Exchange user name, as in Outlook (MAC-05).
+signin-login = User name (if different from the address)
+signin-login-placeholder = DOMAIN\user
+signin-login-hint = As in Outlook and Outlook on the web: DOMAIN\user or user@corp.example. Empty — the e-mail address.
+signin-rejected-hint = Check the password or enter the user name as DOMAIN\user.
