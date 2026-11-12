@@ -15,18 +15,32 @@ pub mod alloc;
 /// задач), куча Rust при фиче `alloc-count`. `POSTMAN_BENCH_MEMMAP=1` — ещё разбивка по модулям, файлам и блокам
 /// частной памяти в stderr.
 pub fn bench_idle_fields() -> String {
-    let mut out = Vec::new();
-    #[cfg(windows)]
-    {
-        let (text, private_ws) = pets_shell::memory::report();
-        out.push(format!("idle_private_ws_mb={:.0}", private_ws as f64 / 1_048_576.0));
-        if std::env::var_os("POSTMAN_BENCH_MEMMAP").is_some() {
-            eprint!("{text}");
-        }
+    [os_memory_field(), heap_field()].into_iter().flatten().collect::<Vec<String>>().join(" ")
+}
+
+#[cfg(windows)]
+fn os_memory_field() -> Option<String> {
+    let (text, private_ws) = pets_shell::memory::report();
+    if std::env::var_os("POSTMAN_BENCH_MEMMAP").is_some() {
+        eprint!("{text}");
     }
-    #[cfg(feature = "alloc-count")]
-    out.push(alloc::fields());
-    out.join(" ")
+    Some(format!("idle_private_ws_mb={:.0}", private_ws as f64 / 1_048_576.0))
+}
+
+/// Частный рабочий набор на других ОС — MAC-04.
+#[cfg(not(windows))]
+fn os_memory_field() -> Option<String> {
+    None
+}
+
+#[cfg(feature = "alloc-count")]
+fn heap_field() -> Option<String> {
+    Some(alloc::fields())
+}
+
+#[cfg(not(feature = "alloc-count"))]
+fn heap_field() -> Option<String> {
+    None
 }
 
 /// Вывод в консоль родителя, если stdout или stderr не перенаправлены (release без консоли, S4-01):
