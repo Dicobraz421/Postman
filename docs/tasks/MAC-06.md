@@ -1,7 +1,7 @@
 # MAC-06: выпуск для macOS
 
 lane: ci
-status: todo
+status: in-progress
 deps: [MAC-02, MAC-03]
 class: B
 files: [.github/workflows/ci.yml, .github/workflows/macos.yml, .github/release-notes.md, scripts/macos/, docs/DEV.md]

@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
-# MAC-01: Postman.app for macOS (Apple Silicon, macOS 13+) and the zip postman-<version>-macos-arm64.zip.
+# MAC-01, MAC-06: Postman.app for macOS (Apple Silicon, macOS 13+), the zip postman-<version>-macos-arm64.zip
+# (Postman.app and README.txt - the self-update replaces the bundle from it) and the disk image
+# postman-<version>-macos-arm64.dmg (Postman.app, README.txt and the "Applications" shortcut to drag it onto).
 # Contents/MacOS: postman, postman-worker, postman-viewer (the worker looks for them next to postman);
 # Info.plist: bundle id, version from Cargo.toml, LSMinimumSystemVersion 13.0, the mailto scheme; Postman.icns made
-# from app-gpui/res/postman.ico (PNG frames). Ad-hoc signature (codesign -s -): no Apple Developer ID yet
-# (docs/decisions/2026-11-11-macos.md) - the user opens it via "Privacy & Security -> Open Anyway".
+# from app-gpui/res/postman.ico (PNG frames).
+# Signature: ad-hoc (codesign -s -) by default - no Apple Developer ID yet (docs/decisions/2026-11-11-macos.md), the
+# user opens it via "Privacy & Security -> Open Anyway". With MACOS_SIGN_IDENTITY ("Developer ID Application: ...",
+# in an unlocked keychain) - hardened runtime and a timestamp; with APPLE_ID, APPLE_TEAM_ID and APPLE_APP_PASSWORD too -
+# notarization (notarytool) and a stapled ticket on the app and the dmg. Both are off until the owner has the account.
 # Takes the binaries of a finished build (cargo build --release --workspace --features postman-worker/viewer).
-# Prints the zip path; in GitHub Actions also sets the outputs name, app, zip and version.
+# Prints the zip and dmg paths; in GitHub Actions also sets the outputs name, app, zip, dmg, dir and assets (the folder
+# with the zip and the dmg: the build artifact and the release files, docs/DEV.md "Выпуск") and version.
 # Usage: scripts/macos/package.sh [--target-dir <cargo target dir>] [--profile release|debug] [--out <dir, default dist>]
 set -euo pipefail
 
@@ -57,8 +63,11 @@ build="$major.$minor.$((patch * 1000 + r))"
 name="postman-$version-macos-arm64"
 stage="$out/$name"
 app="$stage/Postman.app"
-zip="$out/$name.zip"
-rm -rf "$stage" "$zip"
+assets="$out/assets"
+zip="$assets/$name.zip"
+dmg="$assets/$name.dmg"
+rm -rf "$stage" "$assets"
+mkdir -p "$assets"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin/postman" "$bin/postman-worker" "$bin/postman-viewer" "$app/Contents/MacOS/"
 
@@ -118,21 +127,73 @@ cat > "$app/Contents/Info.plist" <<PLIST
 PLIST
 plutil -lint "$app/Contents/Info.plist" > /dev/null
 
-# Ad-hoc signature of the whole bundle: helpers first, then the app (the bundle seal covers Info.plist and Resources).
-codesign --force --sign - "$app/Contents/MacOS/postman-worker" "$app/Contents/MacOS/postman-viewer"
-codesign --force --sign - "$app"
+identity="${MACOS_SIGN_IDENTITY:-}"
+notarize=""
+if [ -n "$identity" ] && [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ] && [ -n "${APPLE_APP_PASSWORD:-}" ]; then
+  notarize=1
+fi
+
+# Signature of the whole bundle: helpers first, then the app (the bundle seal covers Info.plist and Resources).
+# Developer ID - hardened runtime (no entitlements needed: no JIT, the WASM viewers are interpreted) and a timestamp.
+if [ -n "$identity" ]; then
+  sign=(codesign --force --options runtime --timestamp --sign "$identity")
+else
+  sign=(codesign --force --sign -)
+fi
+"${sign[@]}" "$app/Contents/MacOS/postman-worker" "$app/Contents/MacOS/postman-viewer"
+"${sign[@]}" "$app"
 codesign --verify --deep --strict "$app"
+
+# Notarization: the service checks the upload and issues a ticket; stapler puts it into the file, so Gatekeeper does
+# not need the network on the first launch. Apple ID with an app-specific password (appleid.apple.com).
+notarize_file() {
+  xcrun notarytool submit "$1" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" \
+    --wait --timeout 30m
+}
+if [ -n "$notarize" ]; then
+  upload="$(mktemp -d)/Postman.zip"
+  ditto -c -k --keepParent "$app" "$upload"
+  notarize_file "$upload"
+  rm -rf "$(dirname "$upload")"
+  xcrun stapler staple "$app"
+fi
 
 cp "$root/scripts/macos/README.txt" "$stage/README.txt"
 # ditto keeps the bundle as Finder does (extended attributes, the signature); the zip holds Postman.app and README.txt.
 ditto -c -k --sequesterRsrc "$stage" "$zip"
+
+# Disk image: Postman.app, README.txt and a shortcut to /Applications - the user drags the app onto it. hdiutil on
+# CI runners sometimes fails with "Resource busy" - three attempts.
+dmgsrc="$(mktemp -d)/Postman"
+mkdir -p "$dmgsrc"
+ditto "$app" "$dmgsrc/Postman.app"
+cp "$stage/README.txt" "$dmgsrc/README.txt"
+ln -s /Applications "$dmgsrc/Applications"
+for attempt in 1 2 3; do
+  if hdiutil create -volname "Postman $version" -srcfolder "$dmgsrc" -format UDZO -ov "$dmg" > /dev/null; then break; fi
+  if [ "$attempt" = 3 ]; then echo "hdiutil create failed" >&2; exit 1; fi
+  sleep 5
+done
+rm -rf "$(dirname "$dmgsrc")"
+hdiutil verify "$dmg" > /dev/null
+if [ -n "$identity" ]; then
+  codesign --force --timestamp --sign "$identity" "$dmg"
+fi
+if [ -n "$notarize" ]; then
+  notarize_file "$dmg"
+  xcrun stapler staple "$dmg"
+fi
 
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
   {
     echo "name=$name"
     echo "app=$app"
     echo "zip=$zip"
+    echo "dmg=$dmg"
+    echo "dir=$assets"
+    echo "assets=$assets"
     echo "version=$version"
   } >> "$GITHUB_OUTPUT"
 fi
 echo "package: $zip"
+echo "package: $dmg"
