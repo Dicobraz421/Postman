@@ -1,5 +1,8 @@
 # Свежие версии всего, от чего зависит сборка (решение владельца 2026-11-12):
 # раз в неделю — одно сводное PR на экосистему (мелкие и патч-версии), крупные — отдельными PR.
+# Исключение — RustCrypto (`rustcrypto`): шифры и хэши живут поколениями (cipher 0.5, digest 0.11, общий
+# crypto-common), по одному крейту не собираются (#574) — все версии, и крупные, одним PR. Группа стоит раньше
+# `cargo`: зависимость попадает в первую подходящую группу. Имена хэшей — точные, чтобы `sha*`/`md*` не забрали чужое.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -12,6 +15,28 @@ updates:
     directory: /
     schedule: { interval: weekly, day: monday }
     groups:
+      rustcrypto:
+        patterns:
+          - "aes*"
+          - "cbc"
+          - "des"
+          - "cipher"
+          - "ctr"
+          - "ghash"
+          - "polyval"
+          - "universal-hash"
+          - "aead"
+          - "block-*"
+          - "inout"
+          - "crypto-common"
+          - "digest"
+          - "hmac"
+          - "sha1"
+          - "sha2"
+          - "md4"
+          - "md-5"
+          - "streebog"
+        update-types: [major, minor, patch]
       cargo: { patterns: ["*"], update-types: [minor, patch] }
     open-pull-requests-limit: 2
     commit-message: { prefix: build, include: scope }

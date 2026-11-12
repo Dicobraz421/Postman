@@ -15,7 +15,7 @@
 //! Одна ошибка на всё, что может быть оракулом (RFC 3218): неверное заполнение CBC, тег GCM, длина ключа, сбой
 //! снятия PKCS#1 в ядре (там — случайный ключ той же длины) — [`OpenError::Damaged`].
 
-use aes::cipher::{BlockDecrypt, BlockDecryptMut, KeyInit, KeyIvInit};
+use aes::cipher::{BlockCipherDecrypt, BlockModeDecrypt, KeyInit, KeyIvInit};
 use const_oid::ObjectIdentifier as Oid;
 use der::asn1::OctetString;
 use der::{Decode, Encode, Sequence};
@@ -578,19 +578,19 @@ fn decrypt_content(c: &Content, cek: &[u8]) -> Result<Zeroizing<Vec<u8>>, OpenEr
     let out = match cipher {
         Cipher::AesCbc(128) => cbc::Decryptor::<aes::Aes128>::new_from_slices(cek, &c.iv)
             .map_err(|_| OpenError::Damaged)?
-            .decrypt_padded_vec_mut::<Pkcs7>(&c.data)
+            .decrypt_padded_vec::<Pkcs7>(&c.data)
             .map_err(damaged)?,
         Cipher::AesCbc(192) => cbc::Decryptor::<aes::Aes192>::new_from_slices(cek, &c.iv)
             .map_err(|_| OpenError::Damaged)?
-            .decrypt_padded_vec_mut::<Pkcs7>(&c.data)
+            .decrypt_padded_vec::<Pkcs7>(&c.data)
             .map_err(damaged)?,
         Cipher::AesCbc(_) => cbc::Decryptor::<aes::Aes256>::new_from_slices(cek, &c.iv)
             .map_err(|_| OpenError::Damaged)?
-            .decrypt_padded_vec_mut::<Pkcs7>(&c.data)
+            .decrypt_padded_vec::<Pkcs7>(&c.data)
             .map_err(damaged)?,
         Cipher::Des3 => cbc::Decryptor::<des::TdesEde3>::new_from_slices(cek, &c.iv)
             .map_err(|_| OpenError::Damaged)?
-            .decrypt_padded_vec_mut::<Pkcs7>(&c.data)
+            .decrypt_padded_vec::<Pkcs7>(&c.data)
             .map_err(damaged)?,
         Cipher::AesGcm(bits) => gcm(bits, cek, c)?,
         // Ключ ГОСТ из СКЗИ не выходит: содержимое расшифровывает ядро (`open_inner`).
@@ -601,18 +601,19 @@ fn decrypt_content(c: &Content, cek: &[u8]) -> Result<Zeroizing<Vec<u8>>, OpenEr
 
 /// AES-GCM: тег проверяется до того, как кто-либо увидит открытый текст.
 fn gcm(bits: u16, cek: &[u8], c: &Content) -> Result<Vec<u8>, OpenError> {
-    use aes_gcm::aead::AeadInPlace;
+    use aes_gcm::aead::AeadInOut;
     use aes_gcm::aead::consts::{U12, U16};
     use aes_gcm::{AesGcm, Nonce, Tag};
     fn run<C, T>(key: &[u8], c: &Content) -> Result<Vec<u8>, OpenError>
     where
-        C: aes::cipher::BlockCipher + aes::cipher::BlockSizeUser<BlockSize = aes::cipher::consts::U16> + aes::cipher::BlockEncrypt + KeyInit,
+        C: aes::cipher::BlockSizeUser<BlockSize = aes::cipher::consts::U16> + aes::cipher::BlockCipherEncrypt + KeyInit,
         T: aes_gcm::TagSize,
     {
         let aead = AesGcm::<C, U12, T>::new_from_slice(key).map_err(|_| OpenError::Damaged)?;
         let mut buf = c.data.clone();
-        let tag = Tag::<T>::from_exact_iter(c.tag.iter().copied()).ok_or(OpenError::Damaged)?;
-        aead.decrypt_in_place_detached(Nonce::from_slice(&c.iv), &c.aad, &mut buf, &tag).map_err(|_| OpenError::Damaged)?;
+        let tag = Tag::<T>::try_from(c.tag.as_slice()).map_err(|_| OpenError::Damaged)?;
+        let nonce = Nonce::<U12>::try_from(c.iv.as_slice()).map_err(|_| OpenError::Damaged)?;
+        aead.decrypt_inout_detached(&nonce, &c.aad, buf.as_mut_slice().into(), &tag).map_err(|_| OpenError::Damaged)?;
         Ok(buf)
     }
     match (bits, c.tag.len()) {
@@ -735,8 +736,11 @@ const KW_IV: [u8; 8] = [0xA6; 8];
 
 /// AES Key Wrap (RFC 3394): обёртка ключа `key` ключом `kek` (Ф4, ECDH-получатели).
 pub fn wrap_key(kek: &[u8], key: &[u8]) -> Option<Vec<u8>> {
-    use aes::cipher::BlockEncrypt;
-    fn run<C: BlockEncrypt + KeyInit + aes::cipher::BlockSizeUser<BlockSize = aes::cipher::consts::U16>>(kek: &[u8], key: &[u8]) -> Option<Vec<u8>> {
+    use aes::cipher::BlockCipherEncrypt;
+    fn run<C: BlockCipherEncrypt + KeyInit + aes::cipher::BlockSizeUser<BlockSize = aes::cipher::consts::U16>>(
+        kek: &[u8],
+        key: &[u8],
+    ) -> Option<Vec<u8>> {
         let cipher = C::new_from_slice(kek).ok()?;
         let n = key.len() / 8;
         let mut a = KW_IV;
@@ -770,7 +774,7 @@ pub fn wrap_key(kek: &[u8], key: &[u8]) -> Option<Vec<u8>> {
 
 /// AES Key Unwrap (RFC 3394); неверная проверка целостности — `None`.
 pub fn unwrap_key(kek: &[u8], wrapped: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
-    fn run<C: BlockDecrypt + KeyInit + aes::cipher::BlockSizeUser<BlockSize = aes::cipher::consts::U16>>(
+    fn run<C: BlockCipherDecrypt + KeyInit + aes::cipher::BlockSizeUser<BlockSize = aes::cipher::consts::U16>>(
         kek: &[u8],
         wrapped: &[u8],
     ) -> Option<Zeroizing<Vec<u8>>> {

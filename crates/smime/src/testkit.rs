@@ -813,8 +813,8 @@ fn hash_alg_der(h: Hash) -> Vec<u8> {
 
 /// AES Key Wrap (RFC 3394) — тестам, чтобы собрать ECDH-получателя.
 pub fn wrap_key(kek: &[u8], key: &[u8]) -> Vec<u8> {
-    use aes::cipher::{BlockEncrypt, KeyInit};
-    fn run<C: BlockEncrypt + KeyInit + aes::cipher::BlockSizeUser<BlockSize = aes::cipher::consts::U16>>(kek: &[u8], key: &[u8]) -> Vec<u8> {
+    use aes::cipher::{BlockCipherEncrypt, KeyInit};
+    fn run<C: BlockCipherEncrypt + KeyInit + aes::cipher::BlockSizeUser<BlockSize = aes::cipher::consts::U16>>(kek: &[u8], key: &[u8]) -> Vec<u8> {
         let cipher = C::new_from_slice(kek).unwrap();
         let n = key.len() / 8;
         let mut a = [0xA6u8; 8];
@@ -948,7 +948,7 @@ fn ecdh_ri(to: &To<'_>, z: &[u8], point: &[u8], kdf: Hash, bits: u16, cek: &[u8]
 pub fn enveloped(content: &[u8], to: &[To<'_>], cipher: crate::envelope::Cipher, cek: &[u8], tamper: bool) -> Vec<u8> {
     use crate::envelope::Cipher;
     use aes::cipher::block_padding::Pkcs7;
-    use aes::cipher::{BlockEncryptMut, KeyIvInit};
+    use aes::cipher::{BlockModeEncrypt, KeyIvInit};
     let infos: Vec<u8> = to.iter().enumerate().map(|(i, t)| recipient_info(t, cek, i as u64)).collect::<Vec<_>>().concat();
     let iv: Vec<u8> = seed("iv", 16);
     let data_ct = oid_der(oid::DATA);
@@ -960,26 +960,27 @@ pub fn enveloped(content: &[u8], to: &[To<'_>], cipher: crate::envelope::Cipher,
                 _ => oid::AES256_CBC,
             };
             let ct = match bits {
-                128 => cbc::Encryptor::<aes::Aes128>::new_from_slices(cek, &iv).unwrap().encrypt_padded_vec_mut::<Pkcs7>(content),
-                192 => cbc::Encryptor::<aes::Aes192>::new_from_slices(cek, &iv).unwrap().encrypt_padded_vec_mut::<Pkcs7>(content),
-                _ => cbc::Encryptor::<aes::Aes256>::new_from_slices(cek, &iv).unwrap().encrypt_padded_vec_mut::<Pkcs7>(content),
+                128 => cbc::Encryptor::<aes::Aes128>::new_from_slices(cek, &iv).unwrap().encrypt_padded_vec::<Pkcs7>(content),
+                192 => cbc::Encryptor::<aes::Aes192>::new_from_slices(cek, &iv).unwrap().encrypt_padded_vec::<Pkcs7>(content),
+                _ => cbc::Encryptor::<aes::Aes256>::new_from_slices(cek, &iv).unwrap().encrypt_padded_vec::<Pkcs7>(content),
             };
             (alg_der(o, Some(tlv(0x04, &iv))), ct, None)
         }
         Cipher::Des3 => {
-            let ct = cbc::Encryptor::<des::TdesEde3>::new_from_slices(cek, &iv[..8]).unwrap().encrypt_padded_vec_mut::<Pkcs7>(content);
+            let ct = cbc::Encryptor::<des::TdesEde3>::new_from_slices(cek, &iv[..8]).unwrap().encrypt_padded_vec::<Pkcs7>(content);
             (alg_der(oid::DES_EDE3_CBC, Some(tlv(0x04, &iv[..8]))), ct, None)
         }
         // ГОСТ 28147-89: шифровать нечем (только СКЗИ) — содержимое как есть, параметры настоящие.
         Cipher::Gost28147 => (alg_der(oid::GOST28147, Some(seq(&[tlv(0x04, &iv[..8]), oid_der(oid::GOST28147_PARAM_A)]))), content.to_vec(), None),
         Cipher::AesGcm(bits) => {
-            use aes_gcm::aead::AeadInPlace;
+            use aes_gcm::aead::AeadInOut;
             use aes_gcm::{Aes128Gcm, Aes256Gcm, KeyInit, Nonce};
             let nonce = &iv[..12];
+            let n = Nonce::try_from(nonce).unwrap();
             let mut buf = content.to_vec();
             let tag = match bits {
-                128 => Aes128Gcm::new_from_slice(cek).unwrap().encrypt_in_place_detached(Nonce::from_slice(nonce), &[], &mut buf).unwrap().to_vec(),
-                _ => Aes256Gcm::new_from_slice(cek).unwrap().encrypt_in_place_detached(Nonce::from_slice(nonce), &[], &mut buf).unwrap().to_vec(),
+                128 => Aes128Gcm::new_from_slice(cek).unwrap().encrypt_inout_detached(&n, &[], buf.as_mut_slice().into()).unwrap().to_vec(),
+                _ => Aes256Gcm::new_from_slice(cek).unwrap().encrypt_inout_detached(&n, &[], buf.as_mut_slice().into()).unwrap().to_vec(),
             };
             let o = if bits == 128 { oid::AES128_GCM } else { oid::AES256_GCM };
             // GCMParameters: nonce и длина тега 16.

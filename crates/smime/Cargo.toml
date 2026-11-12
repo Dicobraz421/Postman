@@ -30,12 +30,12 @@ streebog = "0.11"
 # Цепочка к якорям (ISC, решение №14); алгоритмы подписи — свои (`algs`), без ring и aws-lc.
 webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["std"] }
 pki-types = { package = "rustls-pki-types", version = "1.12", default-features = false, features = ["std"] }
-# Расшифровка содержимого (Ф2): AES-CBC/GCM, 3DES (только чтение старых писем, решение №10). Поколение cipher 0.4 —
-# то же, что уже в сборке.
-aes = "0.8"
-cbc = { version = "0.1", features = ["alloc"] }
-des = "0.8"
-aes-gcm = { version = "0.10", default-features = false, features = ["aes"] }
+# Расшифровка содержимого (Ф2): AES-CBC/GCM, 3DES (только чтение старых писем, решение №10). Одно поколение
+# cipher 0.5 на все четыре — Dependabot поднимает их вместе (группа `rustcrypto`).
+aes = "0.9.4"
+cbc = { version = "0.2.1", features = ["alloc"] }
+des = "0.9.0"
+aes-gcm = { version = "0.11.1", default-features = false, features = ["aes"] }
 zeroize = "1"
 # Ключи в памяти (демо и тесты, `soft`): снятие PKCS#1 и OAEP своими ключами — без CNG.
 rand_core = { version = "0.10", default-features = false }

@@ -155,7 +155,7 @@ fn recipient_info(t: &To, cek: &[u8], oaep: bool, ops: &dyn Ops) -> Result<Vec<u
 /// CMS (`ContentInfo`, DER) над MIME-сущностью `content` для получателей `to`.
 pub fn envelope(content: &[u8], to: &[To], ops: &dyn Ops) -> Result<(Vec<u8>, Cipher), SealError> {
     use aes::cipher::block_padding::Pkcs7;
-    use aes::cipher::{BlockEncryptMut, KeyIvInit};
+    use aes::cipher::{BlockModeEncrypt, KeyIvInit};
     if to.is_empty() {
         return Err(SealError::NoRecipients);
     }
@@ -166,20 +166,22 @@ pub fn envelope(content: &[u8], to: &[To], ops: &dyn Ops) -> Result<(Vec<u8>, Ci
     let infos = to.iter().map(|t| recipient_info(t, &cek, gcm, ops)).collect::<Result<Vec<_>, _>>()?.concat();
     let any_v2 = to.iter().any(|t| matches!(t.prepared.key, RecipientKey::Ec { .. }));
     let cms = if gcm {
-        use aes_gcm::aead::AeadInPlace;
+        use aes_gcm::aead::AeadInOut;
         use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
         let mut nonce = [0u8; 12];
         ops.random(&mut nonce);
         let mut buf = content.to_vec();
-        let tag =
-            Aes256Gcm::new_from_slice(&cek).map_err(failed)?.encrypt_in_place_detached(Nonce::from_slice(&nonce), &[], &mut buf).map_err(failed)?;
+        let tag = Aes256Gcm::new_from_slice(&cek)
+            .map_err(failed)?
+            .encrypt_inout_detached(&Nonce::from(nonce), &[], buf.as_mut_slice().into())
+            .map_err(failed)?;
         let eci = seq(&[oid_der(oid::DATA), alg(oid::AES256_GCM, Some(seq(&[tlv(0x04, &nonce), tlv(0x02, &[16])]))), tlv(0x80, &buf)]);
         let body = seq(&[tlv(0x02, &[0]), tlv(0x31, &infos), eci, tlv(0x04, &tag)]);
         seq(&[oid_der(oid::AUTH_ENVELOPED_DATA), tlv(0xA0, &body)])
     } else {
         let mut iv = [0u8; 16];
         ops.random(&mut iv);
-        let ct = cbc::Encryptor::<aes::Aes256>::new_from_slices(&cek, &iv).map_err(failed)?.encrypt_padded_vec_mut::<Pkcs7>(content);
+        let ct = cbc::Encryptor::<aes::Aes256>::new_from_slices(&cek, &iv).map_err(failed)?.encrypt_padded_vec::<Pkcs7>(content);
         let eci = seq(&[oid_der(oid::DATA), alg(oid::AES256_CBC, Some(tlv(0x04, &iv))), tlv(0x80, &ct)]);
         let body = seq(&[tlv(0x02, &[if any_v2 { 2 } else { 0 }]), tlv(0x31, &infos), eci]);
         seq(&[oid_der(oid::ENVELOPED_DATA), tlv(0xA0, &body)])
