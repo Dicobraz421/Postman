@@ -1,7 +1,8 @@
 //! Значок в трее (T3-13, решение 2026-11-12 «tray-and-notifications»): пока Postman запущен — значок в области
 //! уведомлений; закрытие окна прячет его в трей, синхронизация и уведомления живут. Щелчок по значку или уведомлению
 //! Windows возвращает окно. Значок — только Windows: на macOS окно прячет система (`mac_app`), а щелчок по уведомлению
-//! возвращает окно и открывает письмо ([`mac`], MAC-04); на остальных ОС значка нет.
+//! возвращает окно и открывает письмо ([`mac`], MAC-04); непрочитанные «Входящих» там — бейдж на значке в Dock
+//! (MAC-07, [`badge`]); на остальных ОС значка нет.
 //!
 //! Значок и уведомление сообщают о щелчке не из задачи интерфейса (оконная процедура значка, поток Windows) —
 //! событие уходит каналом ([`send`]) в задачу интерфейса.
@@ -14,6 +15,8 @@ use pets_i18n::tr;
 use postman_core::newmail::Fresh;
 
 use crate::Mailer;
+#[cfg(any(windows, target_os = "macos"))]
+use crate::folders::Folders;
 
 /// Что просит значок или уведомление.
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -42,6 +45,23 @@ pub(crate) fn send(signal: Signal) {
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn tip(unread: u32) -> String {
     if unread == 0 { "Postman".to_owned() } else { tr!("tray-tip-unread", n = unread) }
+}
+
+/// Бейдж на значке в Dock (MAC-07): непрочитанные «Входящих»; нет непрочитанных — без бейджа, больше 999 — «999+»
+/// (бейдж узкий).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn badge(unread: u32) -> Option<String> {
+    match unread {
+        0 => None,
+        1..=999 => Some(unread.to_string()),
+        _ => Some("999+".to_owned()),
+    }
+}
+
+/// Непрочитанные «Входящих» всех учётных записей — подсказка значка в трее и бейдж в Dock.
+#[cfg(any(windows, target_os = "macos"))]
+fn inbox_unread(folders: &Entity<Folders>, cx: &App) -> u32 {
+    folders.read(cx).of(None).filter(|m| m.role.as_deref() == Some("inbox")).map(|m| m.unread).sum()
 }
 
 /// Куда ведёт щелчок по уведомлению о новых письмах: одно письмо — оно, несколько — «Входящие».
@@ -97,7 +117,7 @@ mod os {
         window.on_window_should_close(cx, |window, cx| crate::prefs::get(cx).general.on_close != OnClose::Tray || !hide(window, true, cx));
         let folders = mailer.read(cx).folders.clone();
         cx.observe(&folders, |folders, cx| {
-            let unread: u32 = folders.read(cx).of(None).filter(|m| m.role.as_deref() == Some("inbox")).map(|m| m.unread).sum();
+            let unread = inbox_unread(&folders, cx);
             set_unread(unread, cx);
         })
         .detach();
@@ -164,7 +184,8 @@ mod os {
     }
 }
 
-/// macOS (MAC-04): значка нет, окно скрывает система; щелчок по уведомлению — вернуть окно и открыть письмо.
+/// macOS (MAC-04): значка в трее нет, окно скрывает система; щелчок по уведомлению — вернуть окно и открыть письмо.
+/// Непрочитанные «Входящих» — бейдж на значке в Dock (MAC-07), там же, где Windows меняет подсказку значка.
 #[cfg(target_os = "macos")]
 mod mac {
     use futures::StreamExt as _;
@@ -176,6 +197,10 @@ mod mac {
         if TX.set(tx).is_err() {
             return;
         }
+        let folders = mailer.read(cx).folders.clone();
+        let mut shown = 0;
+        set_badge(&mut shown, inbox_unread(&folders, cx));
+        cx.observe(&folders, move |folders, cx| set_badge(&mut shown, inbox_unread(&folders, cx))).detach();
         let handle = window.window_handle();
         let mailer = mailer.clone();
         cx.spawn(async move |cx| {
@@ -192,6 +217,17 @@ mod mac {
             }
         })
         .detach();
+    }
+
+    /// Бейдж в Dock — только когда число сменилось.
+    fn set_badge(shown: &mut u32, unread: u32) {
+        if *shown == unread {
+            return;
+        }
+        *shown = unread;
+        if let Err(e) = crate::sys::set_dock_badge(badge(unread).as_deref()) {
+            tracing::warn!("tray: dock badge not updated: {e}");
+        }
     }
 }
 
@@ -228,7 +264,7 @@ pub(crate) fn show(window: &mut Window) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Fresh, target, tip};
+    use super::{Fresh, badge, target, tip};
 
     fn f(n: usize) -> Fresh {
         Fresh { id: n.to_string(), from: String::new(), subject: String::new(), received_at: 0, important: false }
@@ -240,5 +276,15 @@ mod tests {
         assert_eq!(target(&[f(7)]), Some("7".to_owned()));
         assert_eq!(target(&[f(1), f(2)]), None);
         assert_eq!(tip(0), "Postman");
+    }
+
+    /// Бейдж в Dock (MAC-07): 0 — нет, 1…999 — число, больше — «999+».
+    #[test]
+    fn dock_badge_text() {
+        assert_eq!(badge(0), None);
+        assert_eq!(badge(1).as_deref(), Some("1"));
+        assert_eq!(badge(999).as_deref(), Some("999"));
+        assert_eq!(badge(1000).as_deref(), Some("999+"));
+        assert_eq!(badge(u32::MAX).as_deref(), Some("999+"));
     }
 }

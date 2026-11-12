@@ -157,6 +157,7 @@ x86_64, tier 2 до конца LIN-03: CI отдельным `linux.yml`, в `ga
 | [LIN-02](LIN-02.md) | Значки SVG, пути XDG, снимки `--screens` под X11 | x | B | todo | LIN-01 |
 | [LIN-03](LIN-03.md) | Системное: Secret Service, mailto, журнал, тема, буфер, перетаскивание | x | B | todo | LIN-02 |
 | [LIN-04](LIN-04.md) | Песочница целиком: seccomp, Landlock, тесты, диагностика, ADR | sandbox | B | todo | LIN-01 |
-| [LIN-05](LIN-05.md) | Корпоративное: EWS NTLM/Kerberos, LDAP GSSAPI, S/MIME | x | B | todo | LIN-03 |
+| [LIN-05](LIN-05.md) | Корпоративное: EWS NTLM/Kerberos, LDAP GSSAPI, S/MIME | x | B | review | LIN-03 |
+| [LIN-05b](LIN-05b.md) | Корпоративное на Linux: файл PKCS#12 в настройках, скрытие недоступного, вход без пароля | app-gpui | B | todo | LIN-05, GKIT-02 |
 | [LIN-06](LIN-06.md) | Выпуск: AppImage, deb, rpm, строка в `release`, обновление | ci | B | todo | LIN-03, LIN-04 |
 | [LIN-07](LIN-07.md) | ГОСТ в S/MIME на Linux: СКЗИ, подпись и расшифровка | x | B | deferred | LIN-05 |

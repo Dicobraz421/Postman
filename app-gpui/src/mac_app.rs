@@ -6,14 +6,18 @@
 //!   приложение, а не закрывают окно: почта продолжает
 //!   синхронизироваться и показывать уведомления, щелчок по значку в Dock возвращает окно (как «Почта» Apple).
 //! - Ссылки `mailto:` и щелчок по Dock приходят первому экземпляру событием Apple — `main.rs`.
+//! - Строка меню (MAC-07) — по таблице `mac_menu::MENUS`: команды реестра, правка текста, системные пункты.
 
+use gpui_kit::component::input;
 use gpui_kit::*;
 use pets_i18n::tr;
 
+use crate::mac_menu::{self, Edit, Item, Sys};
+
 gpui_kit::actions!(mac, [Quit, Hide, HideOthers, ShowAll, Minimize, Zoom, FullScreen, CloseWindow]);
 
-/// Системные клавиши и меню приложения. Вызывать после `gpui_kit::init` и до `commands::bind` (тот оставляет чужие
-/// привязки как есть).
+/// Системные клавиши. Вызывать после `gpui_kit::init` и до `commands::bind` (тот оставляет чужие привязки как есть и
+/// ставит строку меню — [`set_menus`]).
 pub(crate) fn init(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.on_action(|_: &Hide, cx| cx.hide());
@@ -32,22 +36,62 @@ pub(crate) fn init(cx: &mut App) {
         // ⌘W вкладки (`tab.close`, контекст `Mailer`) глубже и срабатывает первой; это — для окна без вкладок.
         KeyBinding::new("cmd-w", CloseWindow, None),
     ]);
-    cx.set_menus([
-        Menu::new("Postman").items([
-            MenuItem::os_submenu(tr!("mac-menu-services"), SystemMenuType::Services),
-            MenuItem::separator(),
-            MenuItem::action(tr!("mac-menu-hide"), Hide),
-            MenuItem::action(tr!("mac-menu-hide-others"), HideOthers),
-            MenuItem::action(tr!("mac-menu-show-all"), ShowAll),
-            MenuItem::separator(),
-            MenuItem::action(tr!("mac-menu-quit"), Quit),
-        ]),
-        Menu::new(tr!("mac-menu-window")).items([
-            MenuItem::action(tr!("mac-menu-minimize"), Minimize),
-            MenuItem::action(tr!("mac-menu-zoom"), Zoom),
-            MenuItem::action(tr!("mac-menu-fullscreen"), FullScreen),
-        ]),
-    ]);
+}
+
+/// Строка меню по таблице `mac_menu::MENUS`. Клавиши пунктов система берёт из привязок в момент вызова — звать после
+/// каждой привязки клавиш (`commands::bind`).
+pub(crate) fn set_menus(cx: &App) {
+    let menus: Vec<Menu> = mac_menu::MENUS
+        .iter()
+        .map(|m| {
+            let title: SharedString = m.title.map_or_else(|| "Postman".into(), |k| tr!(k).into());
+            Menu::new(title).items(m.items.iter().filter_map(|item| menu_item(item, cx)))
+        })
+        .collect();
+    cx.set_menus(menus);
+}
+
+/// Пункт меню gpui; команды без действия — в журнал и без пункта (тест реестра ловит это раньше).
+fn menu_item(item: &Item, cx: &App) -> Option<MenuItem> {
+    Some(match *item {
+        Item::Command(id, label) => {
+            let c = pets_commands::find(crate::commands::all(), id)?;
+            let action = match cx.build_action(&c.action_name(), None) {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::error!(command = %id, "mac menu: no action {} ({e})", c.action_name());
+                    return None;
+                }
+            };
+            let name = label.map_or_else(|| tr!(&c.name_key()), |k| tr!(k));
+            MenuItem::Action { name: name.into(), action, os_action: None, checked: false, disabled: false }
+        }
+        Item::Sys(sys, label) => {
+            let name = tr!(label);
+            match sys {
+                Sys::Hide => MenuItem::action(name, Hide),
+                Sys::HideOthers => MenuItem::action(name, HideOthers),
+                Sys::ShowAll => MenuItem::action(name, ShowAll),
+                Sys::Quit => MenuItem::action(name, Quit),
+                Sys::Minimize => MenuItem::action(name, Minimize),
+                Sys::Zoom => MenuItem::action(name, Zoom),
+                Sys::FullScreen => MenuItem::action(name, FullScreen),
+            }
+        }
+        Item::Edit(edit, label) => {
+            let name = tr!(label);
+            match edit {
+                Edit::Undo => MenuItem::os_action(name, input::Undo, OsAction::Undo),
+                Edit::Redo => MenuItem::os_action(name, input::Redo, OsAction::Redo),
+                Edit::Cut => MenuItem::os_action(name, input::Cut, OsAction::Cut),
+                Edit::Copy => MenuItem::os_action(name, input::Copy, OsAction::Copy),
+                Edit::Paste => MenuItem::os_action(name, input::Paste, OsAction::Paste),
+                Edit::SelectAll => MenuItem::os_action(name, input::SelectAll, OsAction::SelectAll),
+            }
+        }
+        Item::Services(label) => MenuItem::os_submenu(tr!(label), SystemMenuType::Services),
+        Item::Separator => MenuItem::separator(),
+    })
 }
 
 /// Действие над окном впереди (у системных действий своего окна нет).

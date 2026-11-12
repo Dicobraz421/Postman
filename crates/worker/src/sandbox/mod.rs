@@ -47,3 +47,33 @@ pub enum Level {
     /// Часть механизмов недоступна (например, нет AppContainer-профиля или user namespaces).
     Partial,
 }
+
+/// Нужны ли процессу песочницы отдельные user/net/ipc namespaces (Linux, ADR 0010). Политику администратора
+/// (`SandboxNamespaces`) читает приложение (LIN-03) и передаёт клиенту ([`crate::Client::namespaces`]); на остальных
+/// платформах режим не используется.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Namespaces {
+    /// Дистрибутив запретил — работаем без них (WARN в журнале); Landlock, seccomp, rlimits остаются обязательными.
+    #[default]
+    Optional,
+    /// Без namespaces процесс не работает.
+    Required,
+}
+
+impl Namespaces {
+    /// Значение аргумента `--namespaces=…`.
+    pub fn as_arg(self) -> &'static str {
+        match self {
+            Self::Optional => "optional",
+            Self::Required => "required",
+        }
+    }
+
+    pub fn from_arg(v: &str) -> Option<Self> {
+        match v {
+            "optional" => Some(Self::Optional),
+            "required" => Some(Self::Required),
+            _ => None,
+        }
+    }
+}

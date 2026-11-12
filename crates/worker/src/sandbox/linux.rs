@@ -1,6 +1,8 @@
-//! Linux (LIN-04, ADR 0010): user/net/ipc namespaces, rlimits, Landlock (ФС, сеть, scopes), `no_new_privs`,
-//! seccomp-bpf со списком разрешённых вызовов. Без любого из механизмов воркер не работает: `isolate`/`lockdown` вернут
-//! причину, клиент покажет её текстом («песочница: …»), процесс выйдет с кодом 3.
+//! Linux (LIN-04, LIN-04b, ADR 0010): user/net/ipc namespaces, rlimits, Landlock (ФС, сеть, scopes), `no_new_privs`,
+//! seccomp-bpf со списком разрешённых вызовов. Без rlimits, Landlock, `no_new_privs` или seccomp воркер не работает:
+//! `isolate`/`lockdown` вернут причину, клиент покажет её текстом («песочница: …»), процесс выйдет с кодом 3.
+//! Namespaces — по режиму [`Namespaces`] (аргумент `--namespaces=…`): `optional` (по умолчанию) — запрет дистрибутива
+//! пишется в журнал (WARN, какой sysctl) и воркер работает без них; `required` — отказ, как без остальных механизмов.
 //!
 //! Порядок: `isolate` — первым делом, пока процесс однопоточный (`unshare(CLONE_NEWUSER)` в многопоточном процессе
 //! запрещён ядром); потом сторож времени (новый поток), потом `lockdown`.
@@ -15,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use seccompiler::{BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter, SeccompRule};
 
-use super::Level;
+use super::{Level, Namespaces};
 use crate::Process;
 
 /// Предел адресного пространства воркера (`RLIMIT_AS`), если клиент не передал свой.
@@ -26,7 +28,7 @@ pub(crate) const MEMORY_LIMIT: usize = 1 << 30;
 const LANDLOCK_ABI: landlock::ABI = landlock::ABI::V6;
 
 /// Диагностика (только отладочные сборки, по образцу `POSTMAN_SANDBOX_DROP` на Windows): `userns,rlimits,landlock,nnp,
-/// seccomp` — снять перечисленные механизмы, `all` — все. Так видно, какой запрет мешает воркеру стартовать
+/// seccomp` — снять перечисленные механизмы, `all` — все; `userns-deny` — вести себя так, будто namespaces запрещены. Так видно, какой запрет мешает воркеру стартовать
 /// (`tests/linux_probe.rs`). В release переменная не читается и не передаётся — ослабить песочницу снаружи нельзя.
 const DROP: &str = "POSTMAN_SANDBOX_DROP";
 
@@ -34,11 +36,17 @@ fn dropped(what: &str) -> bool {
     cfg!(debug_assertions) && std::env::var(DROP).is_ok_and(|v| v.split(',').map(str::trim).any(|d| d == what || d == "all"))
 }
 
-/// `_relaxed` не используется: ослабленного режима нет. `memory` — `RLIMIT_AS` процесса: уходит аргументом `--memory=…`,
-/// окружение очищено.
-pub(crate) fn spawn(exe: &Path, _relaxed: bool, memory: usize) -> io::Result<Process> {
+/// `_relaxed` не используется: ослабленного режима нет. `memory` — `RLIMIT_AS` процесса, `namespaces` — режим
+/// namespaces: уходят аргументами `--memory=…` и `--namespaces=…`, окружение очищено.
+pub(crate) fn spawn(exe: &Path, _relaxed: bool, memory: usize, namespaces: Namespaces) -> io::Result<Process> {
     let mut cmd = Command::new(exe);
-    cmd.env_clear().current_dir("/").arg(format!("--memory={memory}")).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+    cmd.env_clear()
+        .current_dir("/")
+        .arg(format!("--memory={memory}"))
+        .arg(format!("--namespaces={}", namespaces.as_arg()))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
     if cfg!(debug_assertions)
         && let Some(drop) = std::env::var_os(DROP)
     {
@@ -90,33 +98,56 @@ pub(crate) fn spawn(exe: &Path, _relaxed: bool, memory: usize) -> io::Result<Pro
     })
 }
 
+/// Режим namespaces из аргумента `--namespaces=…`; без аргумента — [`Namespaces::Optional`], неизвестное значение — отказ.
+fn namespaces_mode() -> Result<Namespaces, String> {
+    let arg = std::env::args_os().find_map(|a| a.to_str()?.strip_prefix("--namespaces=").map(str::to_owned));
+    match arg.as_deref() {
+        None => Ok(Namespaces::default()),
+        Some(v) => Namespaces::from_arg(v).ok_or_else(|| format!("неизвестный режим namespaces: {v}")),
+    }
+}
+
 /// Отдельные user/net/ipc namespaces: без сети и без System V IPC даже при ошибке в остальных механизмах.
-/// Вызывается, пока процесс однопоточный.
+/// Вызывается, пока процесс однопоточный. Недоступны: `required` — отказ с причиной, `optional` — WARN в журнал.
 pub(crate) fn isolate() -> Result<(), String> {
+    let mode = namespaces_mode()?;
     if dropped("userns") {
         return Ok(());
     }
+    // Диагностика (отладочная сборка): как будто дистрибутив запретил namespaces — проверка обоих режимов на машине,
+    // где они разрешены.
     // SAFETY: простой системный вызов без указателей.
-    if unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNET | libc::CLONE_NEWIPC) } == 0 {
+    let err = if dropped("userns-deny") {
+        io::Error::from_raw_os_error(libc::EPERM)
+    } else if unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNET | libc::CLONE_NEWIPC) } == 0 {
         return Ok(());
+    } else {
+        io::Error::last_os_error()
+    };
+    let sysctl = userns_sysctl();
+    if mode == Namespaces::Required {
+        let why = sysctl.map(|s| format!(": запрещены дистрибутивом ({s})")).unwrap_or_default();
+        return Err(format!("user namespaces недоступны ({err}){why}, а режим namespaces — required"));
     }
-    let os = io::Error::last_os_error();
-    Err(format!("user namespaces недоступны ({os}){}", userns_reason()))
+    // Журнал — по-английски, без содержимого; stderr воркера унаследован от приложения.
+    eprintln!(
+        "WARN postman-worker: user namespaces unavailable ({err}; {}), running with Landlock + seccomp + rlimits only",
+        sysctl.unwrap_or("no sysctl forbids them")
+    );
+    Ok(())
 }
 
-/// Какой запрет дистрибутива мешает user namespaces (читается до запирания).
-fn userns_reason() -> String {
+/// Какой sysctl дистрибутива запрещает user namespaces (читается до запирания).
+fn userns_sysctl() -> Option<&'static str> {
     let read = |p: &str| std::fs::read_to_string(p).ok().map(|s| s.trim().to_owned());
-    if read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").as_deref() == Some("1") {
-        return ": запрещены AppArmor (kernel.apparmor_restrict_unprivileged_userns = 1)".into();
-    }
-    if read("/proc/sys/kernel/unprivileged_userns_clone").as_deref() == Some("0") {
-        return ": запрещены ядром (kernel.unprivileged_userns_clone = 0)".into();
-    }
-    if read("/proc/sys/user/max_user_namespaces").as_deref() == Some("0") {
-        return ": запрещены ядром (user.max_user_namespaces = 0)".into();
-    }
-    String::new()
+    [
+        ("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", "1", "kernel.apparmor_restrict_unprivileged_userns = 1"),
+        ("/proc/sys/kernel/unprivileged_userns_clone", "0", "kernel.unprivileged_userns_clone = 0"),
+        ("/proc/sys/user/max_user_namespaces", "0", "user.max_user_namespaces = 0"),
+    ]
+    .into_iter()
+    .find(|(path, bad, _)| read(path).as_deref() == Some(*bad))
+    .map(|(_, _, name)| name)
 }
 
 pub(crate) fn lockdown() -> Result<(), String> {

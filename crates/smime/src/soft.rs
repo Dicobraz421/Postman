@@ -3,6 +3,9 @@
 //! ключей здесь не бывает — у живого ящика ключи только в хранилище Windows (`postman_core::smime::keys`).
 //!
 //! Сертификат свой (демо, тест), не из письма: разбирать его здесь можно.
+//!
+//! Исключение — Linux (LIN-05, решение владельца 2026-11-12): свои ключи — файл PKCS#12 ([`crate::p12`]), закрытые
+//! операции — здесь же. `rsa` 0.10 считает на `crypto-bigint` в постоянном времени (RUSTSEC-2023-0071 закрыт в 0.10).
 
 use der::{Decode, Encode};
 use rsa::PrivateKey as RsaPrivateKey;
@@ -43,6 +46,14 @@ impl SoftKey {
             ski,
             key: RsaPrivateKey::from_pkcs1_der(pkcs1).ok()?,
         })
+    }
+
+    /// Сертификат (DER) и готовый ключ (из файла PKCS#12).
+    pub fn from_key(cert: &[u8], key: RsaPrivateKey) -> Option<SoftKey> {
+        let c = Certificate::from_der(cert).ok()?;
+        let tbs = c.tbs_certificate();
+        let ski = tbs.get_extension::<SubjectKeyIdentifier>().ok().flatten().map(|(_, s)| s.0.as_bytes().to_vec());
+        Some(SoftKey { issuer: tbs.issuer().to_der().ok()?, serial: tbs.serial_number().as_bytes().to_vec(), ski, key })
     }
 
     fn matches(&self, rid: &Rid) -> bool {
@@ -87,6 +98,40 @@ pub fn unwrap(keys: &[SoftKey], env: &Envelope) -> Result<Cek, SoftError> {
         }
     }
     Err(unsupported.unwrap_or(SoftError::NotForYou))
+}
+
+/// Подписант ключом в памяти (RSA PKCS#1 v1.5; файл PKCS#12 на Linux).
+pub struct SoftSigner {
+    pub(crate) cert: Vec<u8>,
+    pub(crate) chain: Vec<Vec<u8>>,
+    pub(crate) scheme: crate::Scheme,
+    pub(crate) key: RsaPrivateKey,
+}
+
+impl crate::sign::Signer for SoftSigner {
+    fn certificate(&self) -> &[u8] {
+        &self.cert
+    }
+
+    fn chain(&self) -> &[Vec<u8>] {
+        &self.chain
+    }
+
+    fn scheme(&self) -> crate::Scheme {
+        self.scheme
+    }
+
+    fn sign(&self, digest: &[u8]) -> Result<Vec<u8>, crate::sign::SignError> {
+        use rsa::Pkcs1v15Sign;
+        let padding = match self.scheme {
+            crate::Scheme::RsaPkcs1(Hash::Sha1) => Pkcs1v15Sign::new::<sha1::Sha1>(),
+            crate::Scheme::RsaPkcs1(Hash::Sha256) => Pkcs1v15Sign::new::<sha2::Sha256>(),
+            crate::Scheme::RsaPkcs1(Hash::Sha384) => Pkcs1v15Sign::new::<sha2::Sha384>(),
+            crate::Scheme::RsaPkcs1(Hash::Sha512) => Pkcs1v15Sign::new::<sha2::Sha512>(),
+            s => return Err(crate::sign::SignError::Failed(format!("key in memory: {s:?} is not supported"))),
+        };
+        self.key.sign(padding, digest).map_err(|e| crate::sign::SignError::Failed(e.to_string()))
+    }
 }
 
 /// Ключ PKCS#1 в DER (для демо-образцов).

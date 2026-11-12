@@ -133,6 +133,9 @@ pub fn bind(cx: &mut App, prefs: &postman_core::prefs::Prefs) {
         }
     }
     cx.bind_keys(bindings);
+    // Строка меню macOS (MAC-07): клавиши пунктов — из этих же привязок, система читает их при установке меню.
+    #[cfg(target_os = "macos")]
+    crate::mac_app::set_menus(cx);
 }
 
 /// Действие с данными из клавиши: у `mail.categorize` клавиша — цифра категории. Остальные команды — `None`
