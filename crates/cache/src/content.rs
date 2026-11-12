@@ -57,6 +57,7 @@ const CHUNKS: TableDefinition<([u8; 32], u32), &[u8]> = TableDefinition::new("ch
 #[derive(Serialize, Deserialize)]
 struct ContentRow {
     /// Письмо без вынутых частей.
+    #[serde(with = "bytes")]
     skeleton: Vec<u8>,
     /// По возрастанию `at`.
     parts: Vec<PartRef>,
@@ -79,9 +80,53 @@ struct PartRow {
 
 #[derive(Serialize, Deserialize)]
 enum PartData {
-    Bytes(Vec<u8>),
+    Bytes(#[serde(with = "bytes")] Vec<u8>),
     /// Столько кусков в [`CHUNKS`].
     Chunks(u32),
+}
+
+/// `Vec<u8>` строк содержимого — одним куском (`serialize_bytes`), а не последовательностью по байту: в postcard
+/// это те же байты (длина и данные), но без разбора каждого байта отдельно — запись и чтение частей в десятки КиБ и
+/// уменьшение `refs` (строка части читается целиком) были на трети времени записи содержимого.
+mod bytes {
+    use std::fmt;
+
+    use serde::de::{SeqAccess, Visitor};
+    use serde::{Deserializer, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(v: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_bytes(v)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        d.deserialize_byte_buf(Bytes)
+    }
+
+    struct Bytes;
+
+    impl<'de> Visitor<'de> for Bytes {
+        type Value = Vec<u8>;
+
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("bytes")
+        }
+
+        fn visit_bytes<E>(self, v: &[u8]) -> Result<Vec<u8>, E> {
+            Ok(v.to_vec())
+        }
+
+        fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Vec<u8>, E> {
+            Ok(v)
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<u8>, A::Error> {
+            let mut out = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(1 << 20));
+            while let Some(b) = seq.next_element()? {
+                out.push(b);
+            }
+            Ok(out)
+        }
+    }
 }
 
 /// Как часть была закодирована в исходнике — всё, что нужно, чтобы получить те же байты.
@@ -698,6 +743,42 @@ mod tests {
 
     fn assert_refs(c: &Cache) {
         assert_eq!(c.check_refs().unwrap(), Vec::<String>::new());
+    }
+
+    /// Части и скелет пишутся куском, но байты строки — прежние (последовательность `u8` в postcard): старые базы
+    /// читаются, новые — читаются старым кодом.
+    #[test]
+    fn bytes_rows_keep_the_postcard_format() {
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        struct OldContent {
+            skeleton: Vec<u8>,
+            parts: Vec<u8>,
+            refs: u32,
+        }
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        enum OldData {
+            Bytes(Vec<u8>),
+            Chunks(u32),
+        }
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        struct OldPart {
+            data: OldData,
+            refs: u32,
+        }
+        let data = noise(300, 7);
+        let new = enc(&PartRow { data: PartData::Bytes(data.clone()), refs: 3 }).unwrap();
+        let old = enc(&OldPart { data: OldData::Bytes(data.clone()), refs: 3 }).unwrap();
+        assert_eq!(new, old);
+        let back: PartRow = dec(&old).unwrap();
+        assert!(matches!(back.data, PartData::Bytes(ref b) if *b == data) && back.refs == 3);
+        assert_eq!(
+            dec::<OldPart>(&enc(&PartRow { data: PartData::Chunks(5), refs: 1 }).unwrap()).unwrap(),
+            OldPart { data: OldData::Chunks(5), refs: 1 }
+        );
+        let new = enc(&ContentRow { skeleton: data.clone(), parts: Vec::new(), refs: 2 }).unwrap();
+        let old = enc(&OldContent { skeleton: data.clone(), parts: Vec::new(), refs: 2 }).unwrap();
+        assert_eq!(new, old);
+        assert_eq!(dec::<ContentRow>(&old).unwrap().skeleton, data);
     }
 
     /// Одно вложение в двух учётках и в другом письме — одна запись части; сборка — исходные байты; удаление
