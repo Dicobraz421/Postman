@@ -42,7 +42,7 @@ pub const MAX_ERROR: usize = 1000;
 pub const VIEW_LIMIT: Duration = Duration::from_secs(10);
 /// Сколько клиент ждёт ответа хоста: сторож срабатывает раньше.
 pub const VIEW_TIMEOUT: Duration = Duration::from_secs(12);
-/// Предел памяти процесса-хоста (Job Object).
+/// Предел памяти процесса-хоста (Windows — Job Object, macOS — распределитель с пределом).
 pub const JOB_MEMORY: usize = 512 * 1024 * 1024;
 
 /// Ответ модуля (ABI v1, postcard). Типы — общие с SDK модулей (`viewers/sdk`).
@@ -220,6 +220,9 @@ mod host {
                     r => (Response::View(r), Vec::new()),
                 }
             }
+            // Проверки песочницы (предел памяти хоста — `JOB_MEMORY`) — те же, что у воркера.
+            #[cfg(debug_assertions)]
+            Ok(Request::Probe(p)) => (crate::probe(p), Vec::new()),
             Ok(_) => (Response::Err("только запрос модуля просмотра".into()), Vec::new()),
             Err(e) => (Response::Err(e.to_string()), Vec::new()),
         })

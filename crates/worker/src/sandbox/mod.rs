@@ -13,6 +13,10 @@ pub(crate) use windows::{MEMORY_LIMIT, lockdown, spawn};
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
+pub use macos::Limited;
+#[cfg(all(target_os = "macos", debug_assertions))]
+pub(crate) use macos::probe;
+#[cfg(target_os = "macos")]
 pub(crate) use macos::{MEMORY_LIMIT, lockdown, spawn};
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
