@@ -46,7 +46,7 @@ pub(crate) fn spawn(exe: &Path, memory: usize, namespaces: Namespaces) -> io::Re
         .arg(format!("--namespaces={}", namespaces.as_arg()))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
+        .stderr(Stdio::piped());
     if cfg!(debug_assertions)
         && let Some(drop) = std::env::var_os(DROP)
     {
@@ -68,7 +68,7 @@ pub(crate) fn spawn(exe: &Path, memory: usize, namespaces: Namespaces) -> io::Re
         });
     }
     let mut child = cmd.spawn()?;
-    let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+    let (Some(stdin), Some(stdout), Some(stderr)) = (child.stdin.take(), child.stdout.take(), child.stderr.take()) else {
         let _ = child.kill();
         let _ = child.wait();
         return Err(io::Error::other("worker pipes are missing"));
@@ -78,6 +78,7 @@ pub(crate) fn spawn(exe: &Path, memory: usize, namespaces: Namespaces) -> io::Re
     Ok(Process {
         stdin: Box::new(stdin),
         stdout: Box::new(stdout),
+        stderr: Box::new(stderr),
         kill: Box::new(move || {
             let mut c = child.lock().unwrap_or_else(PoisonError::into_inner);
             let _ = c.kill();
