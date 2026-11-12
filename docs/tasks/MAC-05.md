@@ -23,8 +23,14 @@ manual: docs/manual-tests/MAC-05.md
   `DirectoryError::Unavailable` («Kerberos (GSSAPI) login … is not supported on macOS yet»). Простой вход по TLS и
   анонимный — работают. Здесь: GSSAPI через GSS.framework (свой SASL GSSAPI поверх `sasl_*`-вызовов `ldap3` или
   `cross-krb5`/`libgssapi` с поддержкой macOS), снять `cfg`.
-- S/MIME: доверенные корни — `SecTrust`, подпись и расшифровка — `SecIdentity`/`SecKey` из Связки ключей (сейчас
-  `smime/other.rs`); CRL — уже чистый Rust. Проверка подписи в воркере от платформы не зависит.
+- ✅ S/MIME (ветка `x/mac-05-smime`): доверенные корни — `SecTrust`, подпись и расшифровка — `SecIdentity`/`SecKey`
+  из Связки ключей; CRL — уже чистый Rust. Проверка подписи в воркере от платформы не зависит. Сделано:
+  `smime/macos.rs` (якоря: корни системы и настройки доверия, «корпоративные» — домен администратора; «Никогда не
+  доверять» — запрещённые; подтверждение цепочки с отзывом), `smime/keychain.rs` (удостоверения Связки ключей и
+  смарт-карт, RSA PKCS#1/OAEP, ECDH, подпись RSA/ECDSA, шифрование исходящих, сертификаты адресатов из Связки),
+  `personal_certificates()` — список своих сертификатов для настроек (Windows — `My`); тест во временной Связке
+  ключей CI — подпись и расшифровка туда и обратно. Подсказка «Проверка отзыва» — без «до 10 с» (срок — у системы).
+  Описание — `docs/SMIME.md` §4а, ручная проверка — `docs/manual-tests/MAC-05.md`, раздел «S/MIME».
 - Вход без пароля в Exchange: `sys::shell::upn` и `in_domain` на macOS (`app-gpui/src/sys/shell_macos.rs`) — сейчас
   «нет» (MAC-04), чтобы не предлагать вход, который не работает; здесь — домен AD (`dsconfigad -show` или Kerberos
   `klist`) и UPN.
