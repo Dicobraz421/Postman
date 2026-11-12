@@ -263,7 +263,7 @@ pub fn moved(span: Span, time_zone: &str) -> Changes {
 impl EwsAreas {
     /// Войти (основной календарь) и запомнить состояние календаря «сейчас».
     pub async fn connect(url: &str, user: &str, password: &str, email: &str) -> Result<EwsAreas, Error> {
-        let mut client = Client::new(url, crate::auth(user, password))?;
+        let mut client = crate::client(url, crate::auth(user, password))?;
         client.calendar_folder().await?;
         let mut a = EwsAreas { client, me: email.to_owned(), state: None, items: HashMap::new(), find_people: true, contacts: None };
         a.poll().await?;
