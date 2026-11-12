@@ -585,7 +585,7 @@ settings-account-host = Сервер
 settings-account-port = Порт
 settings-account-path = Путь
 settings-account-tls-row = Шифрование
-settings-account-tls-on = TLS 1.2+ (проверяет Windows)
+settings-account-tls-on = TLS 1.2+ (проверяет система)
 settings-account-tls-off = без шифрования
 settings-account-login = Логин
 settings-account-sync = Синхронизация
@@ -882,7 +882,7 @@ settings-bitlocker-open = Параметры BitLocker
 settings-bitlocker-on = Диск { $drive } с данными Postman зашифрован BitLocker
 settings-bitlocker-unknown = Шифрование диска { $drive } неизвестно
 settings-bitlocker-unknown-hint = Windows не сообщила состояние BitLocker без прав администратора.
-settings-account-windows = Учётная запись Windows — без пароля
+settings-account-windows = Учётная запись компьютера — без пароля
 # Каталог сертификатов адресатов (S5-12.5б)
 settings-directory-group = Каталог сертификатов
 settings-directory-server = Сервер каталога

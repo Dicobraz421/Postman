@@ -32,10 +32,17 @@ zeroize = "1"
 thiserror.workspace = true
 tracing = "0.1"
 
+# Вход с паролем — NTLMv2 на чистом Rust (`ntlm.rs`), одинаково на Windows и macOS: MD4, HMAC-MD5, случайный вызов
+# клиента. RustCrypto, MIT/Apache.
+md4 = "0.11"
+md-5 = "0.11"
+hmac = "0.13"
+getrandom = "0.4"
+
 # SSPI (Negotiate, NTLM) — `sys.rs`, единственное место `unsafe`; та же версия `windows`, что у gpui и app-gpui.
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.61"
-features = ["Win32_Foundation", "Win32_Security_Authentication_Identity", "Win32_Security_Credentials", "Win32_System_Rpc"]
+features = ["Win32_Foundation", "Win32_Security_Authentication_Identity", "Win32_Security_Credentials"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros", "time", "net"] }

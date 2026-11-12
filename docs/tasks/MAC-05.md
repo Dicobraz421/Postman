@@ -14,6 +14,13 @@ manual: docs/manual-tests/MAC-05.md
 шифрование S/MIME ключами из Связки ключей.
 
 ## Что входит
+- [x] EWS, вход с паролем на обеих ОС (PR «MAC-05: вход в Exchange с паролем»): NTLMv2 на чистом Rust
+  (`crates/ews/src/ntlm.rs`) вместо SSPI, с привязкой к каналу TLS и MIC; «Имя пользователя (если отличается от
+  адреса)» в мастере; вторая попытка `ДОМЕН\имя` из CHALLENGE и попытка без привязки; Basic — запасной по TLS;
+  подробности отказа в тексте ошибки. Крейт `sspi` не подошёл: закреплённый `rsa =0.10.0-rc.18` против
+  `=0.10.0-rc.19` у `postman-smime`.
+- [ ] EWS без пароля на macOS: Kerberos через GSS.framework (`sys.rs`), `upn`/`in_domain` в `shell_macos.rs`, тексты
+  `-mac`.
 - EWS: NTLM / Kerberos вместо SSPI (`crates/ews/src/sys.rs`): крейт `sspi` (Devolutions) или GSS.framework; привязка
   к каналу TLS (`sec_channel_bindings` — сейчас только Windows и тесты).
 - LDAP: GSSAPI-привязка `ldap3`, контроллер домена — DNS SRV вместо `DsGetDcNameW` (без домена — нет).

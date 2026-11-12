@@ -577,7 +577,7 @@ settings-account-host = Server
 settings-account-port = Port
 settings-account-path = Path
 settings-account-tls-row = Encryption
-settings-account-tls-on = TLS 1.2+ (checked by Windows)
+settings-account-tls-on = TLS 1.2+ (checked by the system)
 settings-account-tls-off = no encryption
 settings-account-login = Login
 settings-account-sync = Synchronization
@@ -874,7 +874,7 @@ settings-bitlocker-open = BitLocker settings
 settings-bitlocker-on = Drive { $drive } with Postman data is encrypted with BitLocker
 settings-bitlocker-unknown = Encryption of drive { $drive } is unknown
 settings-bitlocker-unknown-hint = Windows didn’t report BitLocker status without administrator rights.
-settings-account-windows = Windows account — no password
+settings-account-windows = Computer account — no password
 # Recipient certificate directory (S5-12.5b)
 settings-directory-group = Certificate directory
 settings-directory-server = Directory server
