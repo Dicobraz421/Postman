@@ -950,29 +950,64 @@ mod tests {
         body
     }
 
-    /// Предел работы: файл предельного размера с дорогими правилами укладывается в сторожа воркера.
-    #[test]
-    fn hostile_rules_are_bounded() {
+    /// Предел работы: файл предельного размера с дорогими правилами одного вида укладывается в сторожа воркера.
+    /// Каждое правило — свой тест: файлы по 8 МиБ разбираются параллельно, а не друг за другом (в CI — 22 с подряд).
+    fn hostile_rule_is_bounded(rule: &str) {
         let (from, to) = week();
-        for rule in [
-            "FREQ=SECONDLY",
-            "FREQ=MINUTELY;BYSECOND=0,10,20,30,40,50",
-            // Редкое правило: тысячи шагов на один экземпляр.
-            "FREQ=SECONDLY;BYHOUR=3;BYMINUTE=3;BYSECOND=3",
-            // Ни одного экземпляра: `calcard` сдаётся через 100 000 шагов.
-            "FREQ=SECONDLY;BYMONTH=2;BYMONTHDAY=30",
-            "FREQ=SECONDLY;COUNT=4000000000",
-            "FREQ=DAILY;COUNT=4000000000",
+        let bytes = file(&hostile(rule));
+        let clock = Instant::now();
+        let got = parse_ics(&bytes, from, to, "UTC").unwrap().events;
+        println!("{rule}: {} байт, {} событий, {:?}", bytes.len(), got.len(), clock.elapsed());
+        assert!(clock.elapsed() < TIME_LIMIT, "{rule}");
+    }
+
+    #[test]
+    fn hostile_rules_are_bounded_secondly() {
+        hostile_rule_is_bounded("FREQ=SECONDLY");
+    }
+
+    #[test]
+    fn hostile_rules_are_bounded_minutely_by_second() {
+        hostile_rule_is_bounded("FREQ=MINUTELY;BYSECOND=0,10,20,30,40,50");
+    }
+
+    /// Редкое правило: тысячи шагов на один экземпляр.
+    #[test]
+    fn hostile_rules_are_bounded_rare_secondly() {
+        hostile_rule_is_bounded("FREQ=SECONDLY;BYHOUR=3;BYMINUTE=3;BYSECOND=3");
+    }
+
+    /// Ни одного экземпляра: `calcard` сдаётся через 100 000 шагов.
+    #[test]
+    fn hostile_rules_are_bounded_secondly_never() {
+        hostile_rule_is_bounded("FREQ=SECONDLY;BYMONTH=2;BYMONTHDAY=30");
+    }
+
+    #[test]
+    fn hostile_rules_are_bounded_secondly_huge_count() {
+        hostile_rule_is_bounded("FREQ=SECONDLY;COUNT=4000000000");
+    }
+
+    #[test]
+    fn hostile_rules_are_bounded_daily_huge_count() {
+        hostile_rule_is_bounded("FREQ=DAILY;COUNT=4000000000");
+    }
+
+    #[test]
+    fn hostile_rules_are_bounded_yearly_every_second_by_lists() {
+        hostile_rule_is_bounded(
             "FREQ=YEARLY;BYHOUR=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23;BYMINUTE=0,1,2,3,4,5,6,7,8,9,10;BYSECOND=0,1,2,3,4,5,6,7,8,9,10;BYDAY=MO,TU,WE,TH,FR,SA,SU",
-            "FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYSETPOS=1,2,3,4,5,6,7,8,9,10",
-            "FREQ=YEARLY;BYDAY=MO,TU,WE,TH,FR,SA,SU",
-        ] {
-            let bytes = file(&hostile(rule));
-            let clock = Instant::now();
-            let got = parse_ics(&bytes, from, to, "UTC").unwrap().events;
-            println!("{rule}: {} байт, {} событий, {:?}", bytes.len(), got.len(), clock.elapsed());
-            assert!(clock.elapsed() < TIME_LIMIT, "{rule}");
-        }
+        );
+    }
+
+    #[test]
+    fn hostile_rules_are_bounded_monthly_by_setpos() {
+        hostile_rule_is_bounded("FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYSETPOS=1,2,3,4,5,6,7,8,9,10");
+    }
+
+    #[test]
+    fn hostile_rules_are_bounded_yearly_every_day() {
+        hostile_rule_is_bounded("FREQ=YEARLY;BYDAY=MO,TU,WE,TH,FR,SA,SU");
     }
 
     /// `COUNT`, которого до периода не исчерпать, — как бесконечная серия (начало передвигается, экземпляры те же); `COUNT`,
@@ -1187,52 +1222,63 @@ RRULE:{rule}"
     }
 
     /// Тысячи поясов и правил на пределе размера: воркер укладывается, дальше — пояс показа, обычные события на месте.
-    #[test]
-    fn hostile_file_zones_are_bounded() {
+    /// Каждый вид поясов — свой тест (параллельно, как и `hostile_rules_are_bounded_*`).
+    fn hostile_zones_are_bounded(name: &str, zone: fn(usize) -> String) {
         let (from, to) = week();
-        type Maker = fn(usize) -> String;
-        let cases: [(&str, Maker); 4] = [
-            ("обычные годовые", |i| {
-                format!(
-                    "BEGIN:VTIMEZONE\nTZID:Z{i}\nBEGIN:STANDARD\nDTSTART:16010101T030000\nTZOFFSETFROM:+0400\nTZOFFSETTO:+0300\nRRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=10\nEND:STANDARD\nBEGIN:DAYLIGHT\nDTSTART:16010101T020000\nTZOFFSETFROM:+0300\nTZOFFSETTO:+0400\nRRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=3\nEND:DAYLIGHT\nEND:VTIMEZONE\n"
-                )
-            }),
-            ("секундные", |i| {
-                format!(
-                    "BEGIN:VTIMEZONE\nTZID:Z{i}\nBEGIN:STANDARD\nDTSTART:16010101T030000\nTZOFFSETFROM:+0400\nTZOFFSETTO:+0300\nRRULE:FREQ=SECONDLY\nEND:STANDARD\nEND:VTIMEZONE\n"
-                )
-            }),
-            ("годовые COUNT", |i| {
-                format!(
-                    "BEGIN:VTIMEZONE\nTZID:Z{i}\nBEGIN:STANDARD\nDTSTART:16010101T030000\nTZOFFSETFROM:+0400\nTZOFFSETTO:+0300\nRRULE:FREQ=YEARLY;COUNT=4000000\nEND:STANDARD\nEND:VTIMEZONE\n"
-                )
-            }),
-            ("много RDATE", |i| {
-                let list = (0..500).map(|d| format!("RDATE:2026{:02}{:02}T030000\n", d % 12 + 1, d % 28 + 1)).collect::<String>();
-                format!(
-                    "BEGIN:VTIMEZONE\nTZID:Z{i}\nBEGIN:STANDARD\nDTSTART:16010101T030000\n{list}TZOFFSETFROM:+0400\nTZOFFSETTO:+0300\nEND:STANDARD\nEND:VTIMEZONE\n"
-                )
-            }),
-        ];
-        for (name, zone) in cases {
-            let mut body = event("plain", "DTSTART;TZID=Asia/Tokyo:20261103T120000\nDURATION:PT1H");
-            let mut i = 0;
-            // Размер считается с переводами строк файла: в нём их по два байта.
-            let mut size = body.len() + 1024;
-            while size < crate::MAX_ICS - 16_384 {
-                let chunk = zone(i) + &event(&format!("e{i}"), &format!("DTSTART;TZID=Z{i}:20261104T120000\nDURATION:PT1H"));
-                size += chunk.len() + chunk.matches('\n').count();
-                body += &chunk;
-                i += 1;
-            }
-            let bytes = file(&body);
-            let clock = Instant::now();
-            let (got, cut) = crate::ics_of(&bytes, from, to, "UTC").unwrap();
-            println!("{name}: {} байт, {i} поясов, {} событий, {cut:?}: {:?}", bytes.len(), got.events.len(), clock.elapsed());
-            assert!(clock.elapsed() < TIME_LIMIT, "{name}");
-            assert!(got.events.iter().any(|e| e.uid == "plain"), "{name}");
-            assert!(cut.zones_skipped > 0, "{name}: {cut:?}");
+        let mut body = event("plain", "DTSTART;TZID=Asia/Tokyo:20261103T120000\nDURATION:PT1H");
+        let mut i = 0;
+        // Размер считается с переводами строк файла: в нём их по два байта.
+        let mut size = body.len() + 1024;
+        while size < crate::MAX_ICS - 16_384 {
+            let chunk = zone(i) + &event(&format!("e{i}"), &format!("DTSTART;TZID=Z{i}:20261104T120000\nDURATION:PT1H"));
+            size += chunk.len() + chunk.matches('\n').count();
+            body += &chunk;
+            i += 1;
         }
+        let bytes = file(&body);
+        let clock = Instant::now();
+        let (got, cut) = crate::ics_of(&bytes, from, to, "UTC").unwrap();
+        println!("{name}: {} байт, {i} поясов, {} событий, {cut:?}: {:?}", bytes.len(), got.events.len(), clock.elapsed());
+        assert!(clock.elapsed() < TIME_LIMIT, "{name}");
+        assert!(got.events.iter().any(|e| e.uid == "plain"), "{name}");
+        assert!(cut.zones_skipped > 0, "{name}: {cut:?}");
+    }
+
+    #[test]
+    fn hostile_file_zones_are_bounded_yearly() {
+        hostile_zones_are_bounded("обычные годовые", |i| {
+            format!(
+                "BEGIN:VTIMEZONE\nTZID:Z{i}\nBEGIN:STANDARD\nDTSTART:16010101T030000\nTZOFFSETFROM:+0400\nTZOFFSETTO:+0300\nRRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=10\nEND:STANDARD\nBEGIN:DAYLIGHT\nDTSTART:16010101T020000\nTZOFFSETFROM:+0300\nTZOFFSETTO:+0400\nRRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=3\nEND:DAYLIGHT\nEND:VTIMEZONE\n"
+            )
+        });
+    }
+
+    #[test]
+    fn hostile_file_zones_are_bounded_secondly() {
+        hostile_zones_are_bounded("секундные", |i| {
+            format!(
+                "BEGIN:VTIMEZONE\nTZID:Z{i}\nBEGIN:STANDARD\nDTSTART:16010101T030000\nTZOFFSETFROM:+0400\nTZOFFSETTO:+0300\nRRULE:FREQ=SECONDLY\nEND:STANDARD\nEND:VTIMEZONE\n"
+            )
+        });
+    }
+
+    #[test]
+    fn hostile_file_zones_are_bounded_yearly_count() {
+        hostile_zones_are_bounded("годовые COUNT", |i| {
+            format!(
+                "BEGIN:VTIMEZONE\nTZID:Z{i}\nBEGIN:STANDARD\nDTSTART:16010101T030000\nTZOFFSETFROM:+0400\nTZOFFSETTO:+0300\nRRULE:FREQ=YEARLY;COUNT=4000000\nEND:STANDARD\nEND:VTIMEZONE\n"
+            )
+        });
+    }
+
+    #[test]
+    fn hostile_file_zones_are_bounded_many_rdates() {
+        hostile_zones_are_bounded("много RDATE", |i| {
+            let list = (0..500).map(|d| format!("RDATE:2026{:02}{:02}T030000\n", d % 12 + 1, d % 28 + 1)).collect::<String>();
+            format!(
+                "BEGIN:VTIMEZONE\nTZID:Z{i}\nBEGIN:STANDARD\nDTSTART:16010101T030000\n{list}TZOFFSETFROM:+0400\nTZOFFSETTO:+0300\nEND:STANDARD\nEND:VTIMEZONE\n"
+            )
+        });
     }
 
     /// Пределы считаются, а в тексте для журнала только числа и название предела.
