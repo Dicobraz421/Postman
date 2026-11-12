@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use postman_worker::{Client, Probe, Request};
+use postman_worker::{Client, Namespaces, Probe, Request};
 
 /// Тесты файла меняют окружение процесса: по одному.
 static ENV: Mutex<()> = Mutex::new(());
@@ -42,6 +42,40 @@ fn layers_hold_without_seccomp() {
     assert!(e.starts_with("запрещено: "), "{e}");
 }
 
+/// Режимы namespaces (ADR 0010, LIN-04b) на машине, где они разрешены: `userns-deny` имитирует запрет дистрибутива.
+/// `optional` (по умолчанию) — воркер работает, файл и сеть по-прежнему закрыты; `required` — отказ с причиной.
+#[test]
+fn namespaces_modes() {
+    let _env = ENV.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let ok = |mut c: Client| c.render(&Request::Text("проверка".into())).map(drop);
+    ok(client("")).unwrap();
+    ok(client("").namespaces(Namespaces::Required)).unwrap();
+    ok(client("userns-deny")).unwrap();
+    let mut c = client("userns-deny");
+    let e = c.render(&Request::Probe(Probe::ReadFile("/etc/hostname".into()))).unwrap_err();
+    assert!(e.contains("seccomp"), "{e}");
+    let e = ok(client("userns-deny").namespaces(Namespaces::Required)).unwrap_err();
+    assert!(e.contains("user namespaces недоступны") && e.contains("required"), "{e}");
+    // Отказ в запирании — уровень «нет изоляции» с причиной, а не «полная» (SBX-03, аудит №16).
+    let mut c = client("userns-deny").namespaces(Namespaces::Required);
+    assert!(c.render(&Request::Text("проверка".into())).is_err());
+    assert_eq!(c.level(), postman_worker::Level::None);
+    assert!(c.fallback().is_some_and(|f| f.contains("user namespaces")), "{:?}", c.fallback());
+}
+
+/// Неизвестный режим — отказ до первого запроса (код 3), а не молчаливый `optional`.
+#[test]
+fn unknown_namespaces_mode_is_refused() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_postman-worker"))
+        .arg("--namespaces=maybe")
+        .env_clear()
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("неизвестный режим namespaces: maybe"));
+}
+
 #[test]
 #[ignore = "диагностика, запускается явно"]
 fn which_restriction_breaks_startup() {
@@ -53,7 +87,7 @@ fn which_restriction_breaks_startup() {
         let v = std::fs::read_to_string(format!("/proc/sys/{f}")).map(|s| s.trim().to_owned()).unwrap_or_else(|_| "нет".into());
         println!("{f} = {v}");
     }
-    for v in ["", "userns", "rlimits", "landlock", "nnp", "seccomp", "all"] {
+    for v in ["", "userns", "userns-deny", "rlimits", "landlock", "nnp", "seccomp", "all"] {
         let mut c = client(v);
         let r = c.render(&Request::Text("проверка".into()));
         println!("снято [{v:>8}]: {}", r.map(|_| "ОК".to_string()).unwrap_or_else(|e| e));

@@ -386,6 +386,12 @@ pub fn set_icons(_window: &Window) -> Result<(), String> {
     Ok(())
 }
 
+/// macOS (MAC-07): бейдж на значке в Dock (`NSDockTile`); `None` — убрать. Только из потока интерфейса.
+#[cfg(target_os = "macos")]
+pub fn set_dock_badge(text: Option<&str>) -> Result<(), String> {
+    pets_gpui_macos::dock::set_badge_label(text).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod os_texts {
     /// MAC-04: у каждого текста macOS есть перевод на обоих языках, у исходного ключа — тоже; на Windows ключ не

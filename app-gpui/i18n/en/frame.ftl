@@ -38,7 +38,7 @@ frame-list-sort = By date
 frame-reading-to = To: { $to } · { $date }
 frame-tab-settings = Settings
 frame-settings = All settings
-# macOS application menu (MAC-02).
+# macOS application menu (MAC-02, MAC-07: menu bar — `mac_menu.rs`).
 mac-menu-services = Services
 mac-menu-hide = Hide Postman
 mac-menu-hide-others = Hide Others
@@ -48,3 +48,14 @@ mac-menu-window = Window
 mac-menu-minimize = Minimize
 mac-menu-zoom = Zoom
 mac-menu-fullscreen = Enter Full Screen
+mac-menu-settings = Settings…
+mac-menu-file = File
+mac-menu-new-meeting = New Meeting
+mac-menu-edit = Edit
+mac-menu-undo = Undo
+mac-menu-redo = Redo
+mac-menu-cut = Cut
+mac-menu-copy = Copy
+mac-menu-paste = Paste
+mac-menu-select-all = Select All
+mac-menu-view = View

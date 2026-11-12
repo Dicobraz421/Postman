@@ -144,3 +144,33 @@ fn gost_recipient_is_not_sealed_here() {
     assert_eq!(seal::seal_message(RAW, &[To { prepared: p, gcm: false }], &TestOps::default()), Err(seal::SealError::Gost));
     assert_eq!(seal::seal_message(RAW, &[], &TestOps::default()), Err(seal::SealError::NoRecipients));
 }
+
+/// Генератор случайных отказал (PAR-AUDIT №6) — письмо не шифруется ни на каком шаге: ключ содержимого, IV/nonce,
+/// заполнение RSA, эфемерный ECDH.
+#[test]
+fn random_failure_stops_sealing() {
+    struct Broken(std::cell::Cell<usize>);
+    impl seal::Ops for Broken {
+        fn random(&self, out: &mut [u8]) -> Result<(), seal::SealError> {
+            // Первые `n` вызовов — успешны: отказ на разных шагах.
+            let n = self.0.get();
+            if n == 0 {
+                return Err(seal::SealError::Failed("rng".into()));
+            }
+            self.0.set(n - 1);
+            out.fill(0x5A);
+            Ok(())
+        }
+        fn ecdh(&self, _: u16, _: &[u8]) -> Result<(Vec<u8>, zeroize::Zeroizing<Vec<u8>>), seal::SealError> {
+            Err(seal::SealError::Failed("ecdh".into()))
+        }
+    }
+    let pki = Pki::rsa("Postman Test Root", "Смирнова", "me@itt.test");
+    let p = prep(&pki, &pki.user);
+    for gcm in [false, true] {
+        for ok_calls in 0..3 {
+            let r = seal::seal_message(RAW, &[To { prepared: p.clone(), gcm }], &Broken(std::cell::Cell::new(ok_calls)));
+            assert!(matches!(r, Err(seal::SealError::Failed(_))), "gcm={gcm} ok={ok_calls}: {r:?}");
+        }
+    }
+}

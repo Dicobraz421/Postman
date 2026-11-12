@@ -7,7 +7,8 @@
 //! (OpenLDAP); компьютер вне домена — сервер и база из настроек. Вход — учётной записью Windows (SASL GSSAPI,
 //! Kerberos через SSPI): по `ldap://` — с шифрованием Kerberos, по TLS — с привязкой к каналу. Простой вход (имя и
 //! пароль, в том числе служебная учётная запись LDAP-шлюза authentik) — только по TLS: `ldaps://` или StartTLS.
-//! На macOS вход учётной записью — свой SASL GSSAPI поверх GSS.framework (`kerberos.rs`), остальное — общее.
+//! На macOS вход учётной записью — свой SASL GSSAPI поверх GSS.framework (`kerberos.rs`), остальное — общее. На
+//! Linux — SASL GSSAPI `ldap3` (MIT Kerberos, билет `kinit` или SSSD), контроллер домена — DNS SRV, как на macOS.
 //! Без входа — каталог, открытый на чтение (частая настройка OpenLDAP). TLS — с проверкой сертификата Windows.
 //!
 //! Поиск — по `mail` и `proxyAddresses` (`smtp:`), атрибут `userCertificate` (у каталогов по RFC 4523 — с
@@ -17,7 +18,7 @@
 
 #[cfg(any(target_os = "macos", test))]
 mod kerberos;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 mod srv;
 mod sys;
 #[cfg(test)]
@@ -144,6 +145,14 @@ fn unavailable(e: LdapError) -> DirectoryError {
     DirectoryError::Unavailable(e.to_string())
 }
 
+/// Отказ входа Kerberos — понятной строкой: чаще всего нет действующего билета домена.
+#[cfg(not(target_os = "macos"))]
+fn kerberos_failed(e: LdapError) -> DirectoryError {
+    DirectoryError::Unavailable(format!(
+        "Kerberos (GSSAPI) login failed — no valid domain ticket? Sign in to the domain or run kinit, or use a simple login: {e}"
+    ))
+}
+
 /// Подключиться, войти, найти сертификаты адресов `addresses` и выйти.
 async fn search(settings: &Settings, target: &Target, addresses: &[String]) -> Result<Vec<Vec<u8>>, DirectoryError> {
     let mut ldap = connect(settings, target).await?;
@@ -172,7 +181,13 @@ async fn connect(settings: &Settings, target: &Target) -> Result<Ldap, Directory
     ldap3::drive!(conn);
     let bound = match &settings.login {
         #[cfg(not(target_os = "macos"))]
-        Login::Windows => ldap.sasl_gssapi_bind(&target.host).await.and_then(|r| r.success()).map(drop),
+        Login::Windows => match ldap.sasl_gssapi_bind(&target.host).await.and_then(|r| r.success()) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let _ = ldap.unbind().await;
+                return Err(kerberos_failed(e));
+            }
+        },
         // Сюда не попадаем: на macOS вход Kerberos — выше.
         #[cfg(target_os = "macos")]
         Login::Windows => Ok(()),

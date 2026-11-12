@@ -1,7 +1,11 @@
 //! Контроллер домена компьютера — службой Windows (`DsGetDcNameW`, решение владельца №12); на macOS — DNS SRV и
-//! Kerberos GSS.framework (`sys/macos.rs`, MAC-05). Единственное место `unsafe` в крейте; у каждого блока — почему он
-//! безопасен.
+//! Kerberos GSS.framework (`sys/macos.rs`, MAC-05); на Linux — DNS SRV и билет MIT Kerberos (`sys/linux.rs`,
+//! LIN-05). Единственное место `unsafe` в крейте; у каждого блока — почему он безопасен.
 
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub(crate) use linux::domain_controller;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
@@ -56,8 +60,8 @@ unsafe fn wide(p: *const u16) -> Option<String> {
     Some(String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(p, len) }))
 }
 
-/// Не Windows и не macOS: домена нет — только сервер из настроек.
-#[cfg(not(any(windows, target_os = "macos")))]
+/// Другие ОС: домена нет — только сервер из настроек.
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub(crate) fn domain_controller() -> Option<String> {
     None
 }

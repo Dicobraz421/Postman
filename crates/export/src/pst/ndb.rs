@@ -705,8 +705,9 @@ fn sig(ib: u64, bid: u64) -> u16 {
     ((v >> 16) ^ (v & 0xFFFF)) as u16
 }
 
-const CRC_TABLE: [u32; 256] = {
-    let mut t = [0u32; 256];
+/// Таблицы CRC «по 8 байт» (slicing-by-8): `[0]` — обычная побайтовая, `[k]` — сдвиг `[k - 1]` ещё на байт.
+const CRC_TABLES: [[u32; 256]; 8] = {
+    let mut t = [[0u32; 256]; 8];
     let mut i = 0;
     while i < 256 {
         let mut c = i as u32;
@@ -715,15 +716,42 @@ const CRC_TABLE: [u32; 256] = {
             c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
             k += 1;
         }
-        t[i] = c;
+        t[0][i] = c;
         i += 1;
+    }
+    let mut s = 1;
+    while s < 8 {
+        let mut i = 0;
+        while i < 256 {
+            let p = t[s - 1][i];
+            t[s][i] = (p >> 8) ^ t[0][(p & 0xFF) as usize];
+            i += 1;
+        }
+        s += 1;
     }
     t
 };
 
-/// CRC MS-PST (5.3): CRC-32 без начального и конечного обращения.
+/// CRC MS-PST (5.3): CRC-32 без начального и конечного обращения. По 8 байт за шаг: CRC считается от каждого блока
+/// и страницы, побайтовый счёт был заметной долей записи PST.
 pub(super) fn crc(data: &[u8]) -> u32 {
-    data.iter().fold(0, |c, &b| CRC_TABLE[((c ^ u32::from(b)) & 0xFF) as usize] ^ (c >> 8))
+    let t = &CRC_TABLES;
+    let byte = |v: u32, k: u32| ((v >> (8 * k)) & 0xFF) as usize;
+    let (words, rest) = data.as_chunks::<8>();
+    let mut c = 0u32;
+    for w in words {
+        let lo = c ^ u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+        let hi = u32::from_le_bytes([w[4], w[5], w[6], w[7]]);
+        c = t[7][byte(lo, 0)]
+            ^ t[6][byte(lo, 1)]
+            ^ t[5][byte(lo, 2)]
+            ^ t[4][byte(lo, 3)]
+            ^ t[3][byte(hi, 0)]
+            ^ t[2][byte(hi, 1)]
+            ^ t[1][byte(hi, 2)]
+            ^ t[0][byte(hi, 3)];
+    }
+    rest.iter().fold(c, |c, &b| t[0][((c ^ u32::from(b)) & 0xFF) as usize] ^ (c >> 8))
 }
 
 #[cfg(test)]
@@ -739,6 +767,12 @@ mod tests {
         // CRC-32 с нулевым началом и без обращения результата (обычный CRC-32 этой строки — CBF43926).
         assert_eq!(crc(b""), 0);
         assert_eq!(crc(b"123456789"), 0x2DFD_2D88);
+        // По 8 байт — как побайтово, при любом остатке.
+        let data: Vec<u8> = (0..1000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8).collect();
+        for len in [1, 7, 8, 9, 16, 17, 511, 1000] {
+            let slow = data[..len].iter().fold(0u32, |c, &b| CRC_TABLES[0][((c ^ u32::from(b)) & 0xFF) as usize] ^ (c >> 8));
+            assert_eq!(crc(&data[..len]), slow, "{len}");
+        }
         // Как у страниц пустого файла Outlook: DList 0x4200 с BID 0x17F, BBT 0x8400 с BID 0x17B.
         assert_eq!(sig(0x4200, 0x17F), 0x437F);
         assert_eq!(sig(0x8400, 0x17B), 0x857B);

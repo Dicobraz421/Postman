@@ -6,6 +6,8 @@
 //!   входа (Kerberos на машине в домене).
 //! - macOS — GSS.framework (MAC-05): `gss_init_sec_context` механизма SPNEGO или NTLM, учётные данные системы по
 //!   умолчанию (билет Kerberos домена AD, Kerberos SSO, `kinit`).
+//! - Linux — тот же GSS-API (RFC 2744) из MIT Kerberos `libgssapi_krb5` (LIN-05): SPNEGO с билетом из кэша по
+//!   умолчанию (`kinit`, SSSD); NTLM — только если в системе есть механизм NTLM для GSS (gss-ntlmssp), иначе отказ.
 
 use crate::auth::Scheme;
 use crate::ntlm::Ntlm;
@@ -196,6 +198,22 @@ mod imp {
             assert!(!ctx.done);
             assert!(ctx.step(Some(b"garbage")).is_err());
         }
+
+        /// Linux без билета Kerberos (пустой кэш): отказ GSS ошибкой входа, не паника и не зависание.
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn negotiate_without_ticket_fails() {
+            let dir = std::env::temp_dir().join(format!("postman-ews-krb5-{}", std::process::id()));
+            // SAFETY (окружение): переменные читает только libkrb5 в этом тесте; nextest запускает тест отдельным
+            // процессом.
+            unsafe {
+                std::env::set_var("KRB5CCNAME", format!("FILE:{}", dir.join("none").display()));
+                std::env::set_var("KRB5_CONFIG", dir.join("none.conf"));
+            }
+            let mut ctx = Context::new(Scheme::Negotiate, "HTTP/mail.example.test", Some(b"tls-server-end-point:x")).unwrap();
+            assert!(matches!(ctx.step(None), Err(crate::Error::Sspi { call: "gss_init_sec_context", .. })));
+            assert!(!ctx.done);
+        }
     }
 }
 
@@ -206,7 +224,7 @@ mod imp {
 /// Привязка к каналу TLS — `gss_channel_bindings_struct` с теми же данными приложения, что у SSPI
 /// (`tls-server-end-point:` + хэш сертификата, `auth::channel_binding`): адреса пустые, тип адреса 0
 /// (`GSS_C_AF_UNSPEC`), как у `SEC_CHANNEL_BINDINGS` Windows, — хэш привязки у сервера тот же.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod imp {
     use std::ffi::c_void;
     use std::ptr;
@@ -214,17 +232,17 @@ mod imp {
     use crate::auth::Scheme;
     use crate::{Error, Result};
 
-    /// `gss_OID_desc`. Заголовки GSS упаковывают структуры по 2 байта только на ppc, i386 и x86_64; на arm64 —
-    /// обычное выравнивание C.
-    #[cfg_attr(target_arch = "x86_64", repr(C, packed(2)))]
-    #[cfg_attr(not(target_arch = "x86_64"), repr(C))]
+    /// `gss_OID_desc`. Заголовки GSS.framework упаковывают структуры по 2 байта только на ppc, i386 и x86_64; на
+    /// arm64 и в MIT Kerberos (Linux) — обычное выравнивание C.
+    #[cfg_attr(all(target_os = "macos", target_arch = "x86_64"), repr(C, packed(2)))]
+    #[cfg_attr(not(all(target_os = "macos", target_arch = "x86_64")), repr(C))]
     struct OidDesc {
         length: u32,
         elements: *const c_void,
     }
 
-    #[cfg_attr(target_arch = "x86_64", repr(C, packed(2)))]
-    #[cfg_attr(not(target_arch = "x86_64"), repr(C))]
+    #[cfg_attr(all(target_os = "macos", target_arch = "x86_64"), repr(C, packed(2)))]
+    #[cfg_attr(not(all(target_os = "macos", target_arch = "x86_64")), repr(C))]
     struct BufferDesc {
         length: usize,
         value: *mut c_void,
@@ -240,8 +258,8 @@ mod imp {
     }
 
     /// `gss_channel_bindings_struct`.
-    #[cfg_attr(target_arch = "x86_64", repr(C, packed(2)))]
-    #[cfg_attr(not(target_arch = "x86_64"), repr(C))]
+    #[cfg_attr(all(target_os = "macos", target_arch = "x86_64"), repr(C, packed(2)))]
+    #[cfg_attr(not(all(target_os = "macos", target_arch = "x86_64")), repr(C))]
     struct ChannelBindings {
         initiator_addrtype: u32,
         initiator_address: BufferDesc,
@@ -268,14 +286,15 @@ mod imp {
     /// `GSS_C_NT_HOSTBASED_SERVICE`, 1.2.840.113554.1.2.1.4: `service@host`.
     const NT_HOSTBASED_SERVICE: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x12, 0x01, 0x02, 0x01, 0x04];
     /// `GSS_C_NT_USER_NAME`, 1.2.840.113554.1.2.1.1: `user@DOMAIN`.
-    #[cfg(any(test, feature = "testkit"))]
+    #[cfg(all(target_os = "macos", any(test, feature = "testkit")))]
     const NT_USER_NAME: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x12, 0x01, 0x02, 0x01, 0x01];
 
     fn oid(der: &'static [u8]) -> OidDesc {
         OidDesc { length: der.len() as u32, elements: der.as_ptr().cast() }
     }
 
-    #[link(name = "GSS", kind = "framework")]
+    #[cfg_attr(target_os = "macos", link(name = "GSS", kind = "framework"))]
+    #[cfg_attr(target_os = "linux", link(name = "gssapi_krb5"))]
     unsafe extern "C" {
         fn gss_import_name(minor: *mut u32, input: *const BufferDesc, name_type: *const OidDesc, output: *mut Name) -> u32;
         fn gss_release_name(minor: *mut u32, name: *mut Name) -> u32;
@@ -447,10 +466,10 @@ mod imp {
         }
     }
 
-    #[cfg(any(test, feature = "testkit"))]
+    #[cfg(all(target_os = "macos", any(test, feature = "testkit")))]
     pub use testkit::SystemLogin;
 
-    #[cfg(any(test, feature = "testkit"))]
+    #[cfg(all(target_os = "macos", any(test, feature = "testkit")))]
     mod testkit {
         use std::ffi::c_void;
         use std::ptr;
@@ -557,6 +576,7 @@ mod imp {
 
         /// Без пароля — учётные данные NTLM системы (как после входа в домен): первый токен — NEGOTIATE (`NTLMSSP\0`,
         /// тип 1), с привязкой к каналу; мусор вместо CHALLENGE — ошибка GSS, не паника.
+        #[cfg(target_os = "macos")]
         #[test]
         fn ntlm_from_system_login() {
             let _login = SystemLogin::ntlm("nobody@EXAMPLE", "not-a-password").unwrap();
@@ -566,23 +586,39 @@ mod imp {
             assert!(!ctx.done);
             assert!(ctx.step(Some(b"garbage")).is_err());
         }
+
+        /// Linux без билета Kerberos (пустой кэш): отказ GSS ошибкой входа, не паника и не зависание.
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn negotiate_without_ticket_fails() {
+            let dir = std::env::temp_dir().join(format!("postman-ews-krb5-{}", std::process::id()));
+            // SAFETY (окружение): переменные читает только libkrb5 в этом тесте; nextest запускает тест отдельным
+            // процессом.
+            unsafe {
+                std::env::set_var("KRB5CCNAME", format!("FILE:{}", dir.join("none").display()));
+                std::env::set_var("KRB5_CONFIG", dir.join("none.conf"));
+            }
+            let mut ctx = Context::new(Scheme::Negotiate, "HTTP/mail.example.test", Some(b"tls-server-end-point:x")).unwrap();
+            assert!(matches!(ctx.step(None), Err(crate::Error::Sspi { call: "gss_init_sec_context", .. })));
+            assert!(!ctx.done);
+        }
     }
 }
 
 #[cfg(all(target_os = "macos", feature = "testkit"))]
 pub use imp::SystemLogin;
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 mod imp {
     use crate::auth::Scheme;
     use crate::{Error, Result};
 
-    /// Вход без пароля — Windows (SSPI) и macOS (GSS.framework); на других ОС его нет.
+    /// Вход без пароля — Windows (SSPI), macOS и Linux (GSS-API); на других ОС его нет.
     pub(super) struct Context {
         pub(super) done: bool,
     }
 
-    const NO_OS_SIGN_IN: &str = "sign-in without a password is available on Windows and macOS only; enter the password";
+    const NO_OS_SIGN_IN: &str = "sign-in without a password is not available on this system; enter the password";
 
     impl Context {
         pub(super) fn new(_: Scheme, _: &str, _: Option<&[u8]>) -> Result<Context> {

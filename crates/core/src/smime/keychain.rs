@@ -164,15 +164,18 @@ fn certificates(keychains: Keychains<'_>) -> Vec<Vec<u8>> {
     out
 }
 
-fn random(out: &mut [u8]) {
+/// Случайные байты: `SecRandomCopyBytes`, запасной путь — генератор ядра; оба отказали — ошибка (шифровать нельзя).
+fn random(out: &mut [u8]) -> Result<(), SealError> {
     if security_framework::random::SecRandom::default().copy_bytes(out).is_ok() {
-        return;
+        return Ok(());
     }
-    // `SecRandomCopyBytes` не отказывает на практике; запасной путь — генератор ядра.
     use std::io::Read;
     if std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(out)).is_err() {
-        tracing::error!("no system random source");
+        out.fill(0);
+        tracing::error!("smime: no system random source");
+        return Err(SealError::Failed("no system random source".into()));
     }
+    Ok(())
 }
 
 /// Открытый ключ EC из точки `04‖X‖Y` (свой временный ключ Security.framework).
@@ -231,7 +234,7 @@ pub(crate) fn decrypt_with(key: &SecKey, wrap: &Wrap, data: &[u8], silent: bool,
                     // Заполнение PKCS#1 не снялось: случайный ключ — одна ошибка с неверным ключом содержимого (RFC 3218).
                     KeyError::Failed(_) if matches!(wrap, Wrap::RsaPkcs1) => {
                         let mut cek = Zeroizing::new(vec![0u8; key_len]);
-                        random(&mut cek);
+                        random(&mut cek).map_err(|e| KeyError::Failed(e.to_string()))?;
                         Ok(cek)
                     }
                     e => Err(e),
@@ -402,8 +405,8 @@ pub(crate) fn sign_in(keychains: Keychains<'_>, raw: &[u8], from: &str, silent: 
 pub(crate) struct KeychainOps;
 
 impl Ops for KeychainOps {
-    fn random(&self, out: &mut [u8]) {
-        random(out);
+    fn random(&self, out: &mut [u8]) -> Result<(), SealError> {
+        random(out)
     }
 
     fn ecdh(&self, bits: u16, peer: &[u8]) -> Result<(Vec<u8>, Zeroizing<Vec<u8>>), SealError> {
@@ -597,7 +600,7 @@ mod tests {
         let (own, z) = KeychainOps.ecdh(256, &peer).unwrap();
         assert_eq!(testkit::ecdh_with(&key, &own).unwrap(), z.to_vec());
         let mut a = [0u8; 32];
-        KeychainOps.random(&mut a);
+        KeychainOps.random(&mut a).unwrap();
         assert_ne!(a, [0u8; 32]);
     }
 }

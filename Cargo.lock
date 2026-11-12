@@ -5915,6 +5915,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "p521"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ad64cc32c2dc466317c12ee5853e61f159f9eab1fe7efade0395dc2e7b43449"
+dependencies = [
+ "base16ct",
+ "ecdsa",
+ "elliptic-curve",
+ "primefield",
+ "primeorder",
+]
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6015,7 +6028,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 [[package]]
 name = "pets-commands"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz/pets?rev=04174d541c8c455c5826f30c75b0396067e0ed7d#04174d541c8c455c5826f30c75b0396067e0ed7d"
+source = "git+https://github.com/Dicobraz/pets?rev=159bff7979d6d136d4df155c8b05f3b99a6d0ebb#159bff7979d6d136d4df155c8b05f3b99a6d0ebb"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -6023,7 +6036,7 @@ dependencies = [
 [[package]]
 name = "pets-gpui-macos"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz/pets?rev=04174d541c8c455c5826f30c75b0396067e0ed7d#04174d541c8c455c5826f30c75b0396067e0ed7d"
+source = "git+https://github.com/Dicobraz/pets?rev=159bff7979d6d136d4df155c8b05f3b99a6d0ebb#159bff7979d6d136d4df155c8b05f3b99a6d0ebb"
 dependencies = [
  "block2 0.6.2",
  "objc2 0.6.5",
@@ -6039,7 +6052,7 @@ dependencies = [
 [[package]]
 name = "pets-i18n"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz/pets?rev=04174d541c8c455c5826f30c75b0396067e0ed7d#04174d541c8c455c5826f30c75b0396067e0ed7d"
+source = "git+https://github.com/Dicobraz/pets?rev=159bff7979d6d136d4df155c8b05f3b99a6d0ebb#159bff7979d6d136d4df155c8b05f3b99a6d0ebb"
 dependencies = [
  "fluent-bundle",
  "fluent-syntax",
@@ -6052,7 +6065,7 @@ dependencies = [
 [[package]]
 name = "pets-shell"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz421/pets?rev=44937ec07da8f11f382d4ef7785b57062a9d4e4d#44937ec07da8f11f382d4ef7785b57062a9d4e4d"
+source = "git+https://github.com/Dicobraz421/pets?rev=159bff7979d6d136d4df155c8b05f3b99a6d0ebb#159bff7979d6d136d4df155c8b05f3b99a6d0ebb"
 dependencies = [
  "core-foundation 0.10.1",
  "libc",
@@ -6071,7 +6084,7 @@ dependencies = [
 [[package]]
 name = "pets-ui"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz/pets?rev=04174d541c8c455c5826f30c75b0396067e0ed7d#04174d541c8c455c5826f30c75b0396067e0ed7d"
+source = "git+https://github.com/Dicobraz/pets?rev=159bff7979d6d136d4df155c8b05f3b99a6d0ebb#159bff7979d6d136d4df155c8b05f3b99a6d0ebb"
 dependencies = [
  "futures",
  "gpui-kit",
@@ -6087,7 +6100,7 @@ dependencies = [
 [[package]]
 name = "pets-update"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz421/pets?rev=04174d541c8c455c5826f30c75b0396067e0ed7d#04174d541c8c455c5826f30c75b0396067e0ed7d"
+source = "git+https://github.com/Dicobraz421/pets?rev=159bff7979d6d136d4df155c8b05f3b99a6d0ebb#159bff7979d6d136d4df155c8b05f3b99a6d0ebb"
 dependencies = [
  "minisign-verify",
  "semver",
@@ -6529,6 +6542,8 @@ dependencies = [
  "postman-search",
  "postman-smime",
  "postman-worker",
+ "rustls",
+ "rustls-platform-verifier",
  "security-framework",
  "security-framework-sys",
  "serde",
@@ -6723,9 +6738,11 @@ dependencies = [
  "digest 0.11.3",
  "p256",
  "p384",
+ "p521",
  "postman-smime",
  "postman-worker",
  "rand_core 0.10.1",
+ "rc2",
  "rsa",
  "rustls-pki-types",
  "rustls-webpki",
@@ -7230,6 +7247,15 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
+]
+
+[[package]]
+name = "rc2"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ceda21af1ae61033b63175653a1af86cae399d79cd03ca80ba347eb3a6c4a7fe"
+dependencies = [
+ "cipher 0.5.2",
 ]
 
 [[package]]

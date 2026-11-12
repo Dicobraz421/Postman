@@ -1,13 +1,15 @@
 # MAC-05: корпоративное на macOS — Exchange, LDAP, S/MIME
 
 lane: x
-status: todo
+status: done
 deps: [MAC-02]
 class: B
 files: [crates/ews/src/sys.rs, crates/ews/src/auth.rs, crates/backend-ldap/Cargo.toml, crates/backend-ldap/src/, crates/core/src/smime/]
 read: [docs/EXCHANGE.md, docs/SMIME.md, docs/decisions/2026-11-11-macos.md]
 checks: [clippy, nextest]
 manual: docs/manual-tests/MAC-05.md
+
+> Влиты #585, #593, #588, #587.
 
 ## Цель
 Корпоративный ящик на Mac: вход в Exchange без пароля в домене, сертификаты адресатов из каталога, подпись и
