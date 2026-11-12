@@ -57,6 +57,7 @@ pub(crate) fn choose(records: impl IntoIterator<Item = Srv>) -> Option<String> {
 
 /// Имя DNS в сообщении `msg` с позиции `at` — метками без сжатия (с нулём на конце); указатели сжатия (RFC 1035
 /// §4.1.4) раскрываются, не больше 16 переходов. Второе — позиция после имени в исходном месте.
+#[cfg(any(target_os = "linux", test))]
 fn read_name(msg: &[u8], mut at: usize) -> Option<(Vec<u8>, usize)> {
     let mut out = Vec::new();
     let mut end = None;
@@ -90,7 +91,8 @@ fn read_name(msg: &[u8], mut at: usize) -> Option<(Vec<u8>, usize)> {
 }
 
 /// Данные записей типа `kind` из ответа DNS `msg` (RFC 1035 §4.1) — для SRV с именем узла без сжатия, как ждёт
-/// [`parse`]. Повреждённый ответ — сколько успели разобрать.
+/// [`parse`]. Повреждённый ответ — сколько успели разобрать. Linux (`res_query` отдаёт сообщение DNS целиком).
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn answers(msg: &[u8], kind: u16) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     let Some(head) = msg.first_chunk::<12>() else { return out };

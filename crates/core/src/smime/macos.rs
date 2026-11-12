@@ -132,17 +132,21 @@ fn evaluate(chain: &[SecCertificate], exclusive_root: Option<&SecCertificate>, r
     }
 }
 
+/// Итог первой оценки (ошибка `code`) — общим правилом [`super::chain_verdict`].
 fn verdict(code: i64, denied: bool) -> Revocation {
+    let mut c = super::ChainCheck::default();
     if denied || code == ERR_SEC_TRUST_SETTING_DENY {
-        return Revocation::Rejected(Confirm::Distrusted);
+        c.distrusted = true;
+    } else {
+        match code {
+            ERR_SEC_CERTIFICATE_REVOKED => c.revoked = true,
+            ERR_SEC_CERTIFICATE_EXPIRED | ERR_SEC_CERTIFICATE_NOT_VALID_YET => c.expired = true,
+            ERR_SEC_INVALID_EXTENDED_KEY_USAGE => c.wrong_usage = true,
+            ERR_SEC_NOT_TRUSTED | ERR_SEC_CREATE_CHAIN_FAILED => c.untrusted = true,
+            _ => c.other = true,
+        }
     }
-    match code {
-        ERR_SEC_CERTIFICATE_REVOKED => Revocation::Revoked,
-        ERR_SEC_CERTIFICATE_EXPIRED | ERR_SEC_CERTIFICATE_NOT_VALID_YET => Revocation::Rejected(Confirm::Expired),
-        ERR_SEC_INVALID_EXTENDED_KEY_USAGE => Revocation::Rejected(Confirm::WrongUsage),
-        ERR_SEC_NOT_TRUSTED | ERR_SEC_CREATE_CHAIN_FAILED => Revocation::Rejected(Confirm::Untrusted),
-        _ => Revocation::Rejected(Confirm::Failed),
-    }
+    super::chain_verdict(c)
 }
 
 fn confirm_inner(chain: &[Vec<u8>], exclusive_root: Option<&[u8]>) -> Revocation {
@@ -164,14 +168,15 @@ fn confirm_inner(chain: &[Vec<u8>], exclusive_root: Option<&[u8]>) -> Revocation
         return verdict(code, denied);
     }
     let strict = RevocationPolicy::USE_ANY_METHOD_AVAILABLE | RevocationPolicy::REQUIRE_POSITIVE_RESPONSE;
-    match evaluate(&certs, root.as_ref(), strict) {
-        Ok(()) => Revocation::Good,
-        Err((ERR_SEC_CERTIFICATE_REVOKED, _)) => Revocation::Revoked,
+    let c = match evaluate(&certs, root.as_ref(), strict) {
+        Ok(()) => super::ChainCheck::default(),
+        Err((ERR_SEC_CERTIFICATE_REVOKED, _)) => super::ChainCheck { revoked: true, ..Default::default() },
         Err((code, _)) => {
             tracing::debug!(code, "S/MIME revocation status unknown (macOS)");
-            Revocation::Unknown
+            super::ChainCheck { revocation_unknown: true, ..Default::default() }
         }
-    }
+    };
+    super::chain_verdict(c)
 }
 
 pub(super) fn confirm(chain: &[Vec<u8>], exclusive_root: Option<&[u8]>) -> Revocation {

@@ -6,9 +6,9 @@
 //! (`postman-viewer`, S8-24) — так же, с пределом памяти 512 МиБ.
 //!
 //! Exe воркера должен быть читаем для AppContainer (ALL APPLICATION PACKAGES):
-//! так по умолчанию в Program Files. Если запуск в AppContainer не удался или
-//! воркер в нём не ответил (например, сборка в профиле пользователя), он
-//! запускается без AppContainer с остальными ограничениями, уровень — `Partial`.
+//! так по умолчанию в Program Files. Запуск в AppContainer не удался — отказ
+//! (SBX-02): письмо показывается текстом, причина — в тексте ошибки. Запуска без
+//! AppContainer нет; только отладочная диагностика `POSTMAN_SANDBOX_DROP=appcontainer`.
 
 use std::ffi::c_void;
 use std::fs::File;
@@ -30,12 +30,15 @@ use windows_sys::Win32::System::JobObjects::{
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
     CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DETACHED_PROCESS, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
-    GetExitCodeProcess, InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-    PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION, ProcessSystemCallDisablePolicy,
-    ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, SetProcessMitigationPolicy, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
+    GetCurrentProcess, GetExitCodeProcess, GetProcessMitigationPolicy, InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY,
+    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION,
+    ProcessDynamicCodePolicy, ProcessSystemCallDisablePolicy, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, SetProcessMitigationPolicy,
+    TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
-use windows_sys::Win32::System::SystemServices::{JOB_OBJECT_UILIMIT_ALL, PROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY};
+use windows_sys::Win32::System::SystemServices::{
+    JOB_OBJECT_UILIMIT_ALL, PROCESS_MITIGATION_DYNAMIC_CODE_POLICY, PROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY,
+};
 use windows_sys::Win32::System::WindowsProgramming::PROCESS_CREATION_CHILD_PROCESS_RESTRICTED;
 
 use super::Level;
@@ -130,30 +133,18 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 
-/// `relaxed` — сразу без AppContainer (строгий запуск уже не дал воркеру работать); `memory` — предел памяти процесса
-/// (Job Object).
-pub(crate) fn spawn(exe: &Path, relaxed: bool, memory: usize) -> io::Result<Process> {
-    if relaxed {
-        // Причину (воркер не ответил в AppContainer) знает клиент.
-        return create(exe, None, memory);
-    }
+/// `memory` — предел памяти процесса (Job Object). Без AppContainer воркер не запускается (SBX-02): без него у процесса
+/// были бы файлы профиля и сеть, а закрыть сеть иначе можно только WFP с правами администратора. Клиент показывает
+/// письмо текстом с причиной.
+pub(crate) fn spawn(exe: &Path, memory: usize) -> io::Result<Process> {
     if dropped("appcontainer") {
         return partial(exe, "POSTMAN_SANDBOX_DROP=appcontainer".into(), memory);
     }
-    let sid = match app_container_sid() {
-        Ok(sid) => sid,
-        Err(hr) => return partial(exe, format!("профиль AppContainer: HRESULT 0x{hr:08X}"), memory),
-    };
-    match create_in_container(exe, &sid, memory) {
-        Ok(mut p) => {
-            p.level = Level::Full;
-            Ok(p)
-        }
-        // Любой отказ AppContainer — запуск с остальными ограничениями; причина — в `fallback` и в ошибке, если и он
-        // не удался.
-        Err(strict) => partial(exe, format!("запуск в AppContainer: {strict}"), memory)
-            .map_err(|e| io::Error::new(e.kind(), format!("{e}; в AppContainer: {strict}"))),
-    }
+    let refuse = |why: String| io::Error::other(format!("песочница: {why}"));
+    let sid = app_container_sid().map_err(|hr| refuse(format!("профиль AppContainer: HRESULT 0x{hr:08X}")))?;
+    let mut p = create_in_container(exe, &sid, memory).map_err(|e| refuse(format!("запуск в AppContainer: {e}")))?;
+    p.level = Level::Full;
+    Ok(p)
 }
 
 /// Сколько ждём запуска в AppContainer при «файл не найден» (и ERROR_GEN_FAILURE) и шаг повтора (см. [`create_in_container`]).
@@ -184,19 +175,23 @@ fn create_in_container(exe: &Path, sid: &Sid, memory: usize) -> io::Result<Proce
 }
 
 /// Запуск без AppContainer с остальными ограничениями; `reason` — почему.
+/// Только отладочная диагностика (`POSTMAN_SANDBOX_DROP=appcontainer`): без AppContainer, уровень `Partial`.
 fn partial(exe: &Path, reason: String, memory: usize) -> io::Result<Process> {
     let mut p = create(exe, None, memory)?;
     p.fallback = Some(reason);
     Ok(p)
 }
 
-/// Блок окружения воркера: только системные пути, никаких секретов родителя.
+/// Блок окружения воркера: только системные пути, никаких секретов и путей профиля родителя (SBX-02).
 /// Совсем пустой блок Windows не принимает (ERROR_ENVVAR_NOT_FOUND, 203), а для
-/// AppContainer ей нужны пути профиля: TEMP, TMP и LOCALAPPDATA она подменяет на каталог контейнера.
+/// AppContainer ей нужны TEMP, TMP и LOCALAPPDATA — их она подменяет на каталог контейнера.
+/// `USERPROFILE`, `APPDATA`, `USERNAME` не передаются. Отладочная сборка передаёт `POSTMAN_SANDBOX_DROP`: воркер
+/// не проверяет снятые меры.
 fn environment() -> Vec<u16> {
-    const KEEP: &[&str] = &["SystemRoot", "windir", "SystemDrive", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "TEMP", "TMP"];
+    const KEEP: &[&str] = &["SystemRoot", "windir", "SystemDrive", "LOCALAPPDATA", "TEMP", "TMP"];
+    let debug: &[&str] = if cfg!(debug_assertions) { &["POSTMAN_SANDBOX_DROP"] } else { &[] };
     let mut env = Vec::new();
-    for k in KEEP {
+    for k in KEEP.iter().chain(debug) {
         let Some(v) = std::env::var_os(k) else { continue };
         env.extend(k.encode_utf16());
         env.push(u16::from(b'='));
@@ -434,19 +429,54 @@ fn create(exe: &Path, sid: Option<PSID>, memory: usize) -> io::Result<Process> {
     })
 }
 
-/// Внутри воркера: повторно включить запрет win32k (если родитель не смог
-/// задать его при создании). Остальное уже наложено родителем.
+// kernel32 линкуется всегда; признаки `windows-sys` для них не включены (Cargo.toml — полоса deps).
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn SetErrorMode(mode: u32) -> u32;
+    fn WerSetFlags(flags: u32) -> i32;
+}
+
+/// `SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX`.
+const ERROR_MODE: u32 = 0x0001 | 0x0002 | 0x8000;
+/// `WER_FAULT_REPORTING_FLAG_NOHEAP | WER_FAULT_REPORTING_NO_UI`: в отчёт об ошибке не идёт куча (там чужие данные).
+const WER_FLAGS: u32 = 0x0001 | 0x0020;
+
+/// Внутри воркера: включить запрет win32k (если родитель не смог задать его при создании), проверить, что меры
+/// защиты действуют, и запретить кучу в отчётах WER (аналог `RLIMIT_CORE = 0`). Любая ошибка — отказ (SBX-02).
 pub(crate) fn lockdown() -> Result<(), String> {
+    // SAFETY: простой вызов без указателей.
+    unsafe { SetErrorMode(ERROR_MODE) };
+    // SAFETY: простой вызов без указателей.
+    let hr = unsafe { WerSetFlags(WER_FLAGS) };
+    if hr < 0 {
+        return Err(format!("WerSetFlags: HRESULT 0x{:08X}", hr as u32));
+    }
     // SAFETY: обнулённая политика с одним выставленным битом.
     let mut p: PROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY = unsafe { std::mem::zeroed() };
     // DisallowWin32kSystemCalls — младший бит.
     p.Anonymous.Flags = 1;
-    // SAFETY: указатель на локальную структуру правильного размера.
-    let ok = unsafe {
+    // SAFETY: указатель на локальную структуру правильного размера. Уже включено при создании — повторный вызов может
+    // вернуть ошибку; итог проверяем ниже.
+    unsafe {
         SetProcessMitigationPolicy(ProcessSystemCallDisablePolicy, (&raw const p).cast(), size_of::<PROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY>())
-            != 0
     };
-    // Уже включено при создании процесса — тогда повторный вызов может вернуть ошибку; это не отказ.
-    let _ = ok;
+    if policy_flags::<PROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY>(ProcessSystemCallDisablePolicy)? & 1 == 0 {
+        return Err("запрет win32k не действует".into());
+    }
+    if !dropped("dyncode") && policy_flags::<PROCESS_MITIGATION_DYNAMIC_CODE_POLICY>(ProcessDynamicCodePolicy)? & 1 == 0 {
+        return Err("запрет динамического кода не действует".into());
+    }
     Ok(())
+}
+
+/// Флаги политики защиты текущего процесса (первое поле структуры — `Flags`, u32).
+fn policy_flags<T>(policy: i32) -> Result<u32, String> {
+    let mut flags = 0u32;
+    debug_assert_eq!(size_of::<T>(), size_of::<u32>());
+    // SAFETY: псевдохэндл текущего процесса; буфер — локальная переменная размера структуры политики (u32).
+    let ok = unsafe { GetProcessMitigationPolicy(GetCurrentProcess(), policy, (&raw mut flags).cast(), size_of::<T>()) };
+    if ok == 0 {
+        return Err(format!("GetProcessMitigationPolicy({policy}): {}", io::Error::last_os_error()));
+    }
+    Ok(flags)
 }
