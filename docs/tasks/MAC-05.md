@@ -19,10 +19,12 @@ manual: docs/manual-tests/MAC-05.md
   адреса)» в мастере; вторая попытка `ДОМЕН\имя` из CHALLENGE и попытка без привязки; Basic — запасной по TLS;
   подробности отказа в тексте ошибки. Крейт `sspi` не подошёл: закреплённый `rsa =0.10.0-rc.18` против
   `=0.10.0-rc.19` у `postman-smime`.
-- [ ] EWS без пароля на macOS: Kerberos через GSS.framework (`sys.rs`), `upn`/`in_domain` в `shell_macos.rs`
-  (тексты входа без названий ОС — уже MAC-04).
-- EWS: NTLM / Kerberos вместо SSPI (`crates/ews/src/sys.rs`): крейт `sspi` (Devolutions) или GSS.framework; привязка
-  к каналу TLS (`sec_channel_bindings` — сейчас только Windows и тесты).
+- [x] EWS без пароля на macOS (PR «MAC-05: вход в Exchange без пароля на macOS»): GSS.framework (`sys.rs`) —
+  SPNEGO или NTLM с учётными данными системы по умолчанию (билет Kerberos домена AD, Kerberos SSO, `kinit`),
+  привязка к каналу TLS — `gss_channel_bindings_struct`; `upn` (`klist`, иначе `dsconfigad -show` и имя входа) и
+  `in_domain` (действующий билет, `klist --test`) в `shell_macos.rs`. Тест `windows_sign_in_without_password` — и на
+  macOS: учётные данные NTLM в хранилище системы (`postman_ews::SystemLogin`, `gss_aapl_initial_cred`). Тексты входа
+  без названий ОС — MAC-04.
 - LDAP: GSSAPI-привязка `ldap3`, контроллер домена — DNS SRV вместо `DsGetDcNameW` (без домена — нет).
   Сейчас (MAC-01) на macOS `ldap3` собран без фичи `gssapi`: `libgssapi` 0.9 не собирается с GSS.framework (нет
   `gss_wrap_iov`, `gss_unwrap_iov`, `gss_wrap_iov_length`), поэтому в `crates/backend-ldap/Cargo.toml` фича
