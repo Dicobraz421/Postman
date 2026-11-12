@@ -15,7 +15,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::io;
-use std::os::unix::process::ExitStatusExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::ptr::null_mut;
@@ -40,6 +40,8 @@ const ALLOW: &str = "POSTMAN_SANDBOX_ALLOW";
 
 // <sandbox.h>, <sys/resource.h>, <unistd.h> — libSystem, линкуется всегда.
 unsafe extern "C" {
+    fn getdtablesize() -> c_int;
+    fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
     fn sandbox_init(profile: *const c_char, flags: u64, errorbuf: *mut *mut c_char) -> c_int;
     fn sandbox_free_error(errorbuf: *mut c_char);
     fn setrlimit(resource: c_int, rlp: *const RLimit) -> c_int;
@@ -54,17 +56,31 @@ struct RLimit {
 }
 
 const RLIMIT_CORE: c_int = 4;
+const F_SETFD: c_int = 2;
+const FD_CLOEXEC: c_int = 1;
 const RLIMIT_NOFILE: c_int = 8;
 
-/// `_relaxed` не используется: ослабленного режима нет. `memory` — предел кучи процесса ([`Limited`]): уходит
+/// Ослабленного режима нет. `memory` — предел кучи процесса ([`Limited`]): уходит
 /// аргументом `--memory=…`, окружение очищено.
-pub(crate) fn spawn(exe: &Path, _relaxed: bool, memory: usize) -> io::Result<Process> {
+pub(crate) fn spawn(exe: &Path, memory: usize) -> io::Result<Process> {
     let mut cmd = Command::new(exe);
     cmd.env_clear().current_dir("/").arg(format!("--memory={memory}")).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
     if cfg!(debug_assertions)
         && let Some(allow) = std::env::var_os(ALLOW)
     {
         cmd.env(ALLOW, allow);
+    }
+    // SAFETY: в pre_exec — только async-signal-safe getdtablesize и fcntl.
+    unsafe {
+        cmd.pre_exec(|| {
+            // Дескрипторы родителя сверх stdin/stdout/stderr воркеру не достаются (SBX-02): помечаются закрываемыми
+            // при exec (канал, по которому `Command` узнаёт об ошибке exec, уже такой). Ошибка на свободном номере —
+            // норма.
+            for fd in 3..getdtablesize().min(65_536) {
+                fcntl(fd, F_SETFD, FD_CLOEXEC);
+            }
+            Ok(())
+        });
     }
     let mut child = cmd.spawn()?;
     let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {

@@ -34,7 +34,7 @@ pub(crate) fn lockdown() -> Result<(), String> {
 pub(crate) const MEMORY_LIMIT: usize = 1 << 30;
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-pub(crate) fn spawn(_: &std::path::Path, _relaxed: bool, _memory: usize) -> std::io::Result<crate::Process> {
+pub(crate) fn spawn(_: &std::path::Path, _memory: usize) -> std::io::Result<crate::Process> {
     Err(std::io::Error::other("платформа не поддерживается"))
 }
 
