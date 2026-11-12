@@ -21,6 +21,10 @@ Postman для Mac на странице Releases рядом с Windows: под�
 - `.dmg` с ярлыком «Программы».
 - `pets-update`: режим «zip с .app» — замена бандла целиком.
 - Homebrew cask — по желанию владельца.
+- Текст `update-uac` («Windows спросит разрешение…») — вариант `-mac` через `sys::os_key` (MAC-04), когда будет
+  обновление `.app`.
+- Mac-job в CI pets (`macos-26`: clippy `--target aarch64-apple-darwin` и тесты `pets-shell`, `pets-gpui-macos`,
+  `pets-ui`) — сейчас mac-код pets проверяет только CI `macOS` Postman, тесты pets для macOS не запускаются (MAC-04).
 - `macos.yml` — в обязательную проверку (`gate`), когда MAC-02…MAC-04 закроют расхождения с Windows.
 
 ## Приёмка
