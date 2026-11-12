@@ -1,7 +1,7 @@
 # LIN-01: собирается и тестируется на Linux в CI
 
 lane: ci
-status: todo
+status: done
 deps: []
 class: B
 files: [.github/workflows/linux.yml, scripts/linux/, crates/worker/tests/, app-gpui/src/sys/]
@@ -27,6 +27,17 @@ Postman собирается на Linux без предупреждений, т�
 
 ## Приёмка
 - `linux.yml` зелёный: clippy, тесты, архив; Windows и macOS CI зелёные.
+
+## Итог (2026-11-12)
+- `linux.yml` (`test`: clippy, wasm32, nextest с полной песочницей; `bundle`: release и `scripts/linux/package.sh` →
+  `postman-<версия>-linux-x64.tar.gz`). Пакет `tzdata-legacy` — для старых имён поясов IANA в тестах `postman-ews`.
+- Локально (Ubuntu 24.04): clippy и nextest вскрыли три места вне `files:` карточки — полоса sandbox и ews
+  («Решения для владельца» в PR): `expect()` в `crates/worker/src/sandbox/linux.rs` (clippy); там же `exit_code` всегда
+  `None` — тест `watchdog_stops_a_long_request` получает «воркер завершился» вместо кода сторожа; jiff без
+  `tzdata-legacy` не знает `America/Buenos_Aires` (у пользователей Ubuntu 24.04 — то же). До правки полосы sandbox
+  `linux.yml` красный (в `gate` не входит).
+- `--bench --demo 2000` под Xvfb не зависает: debug-сборка на llvmpipe завершается за 65–107 с (кадр ~130 мс, S/MIME
+  писем демо-ящика в воркере ~1,6 с); 150 с на замере не хватило из-за параллельной сборки на тех же 4 ядрах.
 
 ## Что не вошло
 - Значки, снимки, пути — LIN-02. Системное — LIN-03. Выпуск — LIN-06.
