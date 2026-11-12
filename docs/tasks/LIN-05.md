@@ -1,10 +1,10 @@
 # LIN-05: корпоративное на Linux — Kerberos, LDAP, S/MIME
 
 lane: x
-status: todo
+status: review
 deps: [LIN-03]
 class: B
-files: [crates/ews/src/, crates/backend-ews/, crates/backend-ldap/, crates/core/src/smime/, app-gpui/src/]
+files: [crates/ews/src/, crates/backend-ews/, crates/backend-ldap/, crates/core/src/smime/, crates/smime/src/p12.rs, crates/smime/src/p12/, crates/smime/src/soft.rs, crates/smime/src/lib.rs]
 read: [docs/decisions/2026-11-12-linux.md, docs/tasks/MAC-05.md]
 checks: [clippy, nextest, ci-linux]
 manual: docs/manual-tests/LIN-05.md
@@ -19,6 +19,21 @@ manual: docs/manual-tests/LIN-05.md
   хранилище (`/etc/ssl/certs`). Владелец 2026-11-12: ключи у сотрудников в файлах — токены
   (PKCS#11) и хранилища (OpenBao и др.) не делаем; ГОСТ на Linux — позже, LIN-07.
 - Что недоступно на Linux — скрыто в настройках, а не падает.
+
+## Сделано (ветка `x/lin-05`)
+- EWS без пароля: GSS-API MIT Kerberos (`libgssapi_krb5`, тот же код, что GSS.framework на macOS, `crates/ews/src/sys.rs`)
+  — SPNEGO с билетом из кэша по умолчанию, привязка к каналу TLS; NTLM через GSS — только при gss-ntlmssp. Вход с
+  паролем — NTLMv2 на Rust (`ntlm.rs`), как было. `backend-ews` от ОС не зависит — без правок.
+- LDAP: вход учётной записью — `sasl_gssapi_bind` `ldap3` (привязка к каналу TLS — его), отказ — строкой «Kerberos
+  (GSSAPI) login failed — no valid domain ticket? …»; контроллер домена — SRV `_ldap._tcp.dc._msdcs.<область>` через
+  `res_query` glibc (`sys/linux.rs`), разбор ответа DNS со сжатием — `srv::answers`.
+- S/MIME: PKCS#12 — свой разбор в `postman-smime` (`p12.rs`: MAC SHA-1/SHA-2, PBES2 AES/3DES, старые 3DES и RC2;
+  ключи RSA), без новых зависимостей; подпись и снятие ключа — ключом в памяти (`soft.rs`). Ядро (`smime/linux.rs`):
+  якоря — набор корней дистрибутива (`SSL_CERT_FILE`, `/etc/pki/…/email-ca-bundle.pem`, `/etc/ssl/certs/…`), «корпоративные» —
+  добавленные администратором (`/usr/local/share/ca-certificates`, `…/ca-trust/source/anchors`), запрещённые —
+  `blocklist`; свои ключи — `load_personal_files` (путь + пароль от приложения), `check_personal_file` для настроек;
+  шифрование — получатели RSA (случайные числа — `/dev/urandom`).
+- Что требует UI (выбор файла, пароль в Secret Service, скрытие недоступного, `upn`/`in_domain`) — `LIN-05b`.
 
 ## Приёмка
 - `linux.yml` зелёный; ручная проверка `docs/manual-tests/LIN-05.md` на стенде с доменом — когда появится.
