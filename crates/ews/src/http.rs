@@ -1,5 +1,6 @@
 //! HTTP/1.1 к серверу Exchange одним соединением TLS: NTLM (и Kerberos у IIS) привязан к TCP — всё рукопожатие
-//! и следующие запросы идут по нему. Вход — по ответу 401: схема из `WWW-Authenticate`, токены — SSPI (`sys`),
+//! и следующие запросы идут по нему. Вход — по ответу 401: схема из `WWW-Authenticate`, токены — SSPI (`sys`) или
+//! NTLM с паролем (`ntlm`),
 //! с привязкой к каналу TLS. Соединение закрылось — новое и вход заново.
 //!
 //! Поток (`GetStreamingEvents`, T1-21а) — ответ, который сервер пишет кусками до получаса: [`Http::post_stream`]
@@ -15,7 +16,7 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpStream;
 
 use crate::auth::{self, Scheme};
-use crate::{Auth, Error, MIN_INTERVAL, Result, TIMEOUT};
+use crate::{Auth, CREDENTIALS_REJECTED, Error, MIN_INTERVAL, Result, TIMEOUT};
 
 /// Ответ больше — ошибка (пачка в 20 встреч с описаниями — сотни КБ).
 const MAX_BODY: usize = 16 << 20;
@@ -239,7 +240,7 @@ impl Http {
 
     /// Сервер предлагает Negotiate или NTLM (по ответу 401).
     pub(crate) fn offers_sspi(reply: &Reply) -> bool {
-        reply.status == 401 && auth::choose(&reply.www_authenticate).is_some()
+        reply.status == 401 && auth::choose(&reply.www_authenticate, false).is_some()
     }
 
     async fn post_once(&mut self, url: &url::Url, body: &Bytes, resend: bool) -> Result<hyper::Response<Incoming>> {
@@ -256,21 +257,148 @@ impl Http {
         }
         let offered = www_authenticate(&first);
         drain(first).await;
-        let scheme = auth::choose(&offered).ok_or(Error::AuthScheme)?;
-        // 401 с `Connection: close` — рукопожатие на новом соединении.
-        let auth = self.auth.clone();
-        let conn = self.conn(url).await?;
-        tracing::debug!(scheme = scheme.name(), binding = conn.binding.is_some(), "ews sign-in");
-        let reply = handshake(conn, &auth, scheme, url, body).await?;
-        self.signed_in = Some(scheme.name());
+        let (auth, cbt) = remembered(&self.auth);
+        let password = matches!(auth, Auth::Password { .. });
+        let Some(scheme) = auth::choose(&offered, password) else {
+            return self.basic(url, body, &auth, &offered).await;
+        };
+        let mut diag = Diag { offered: auth::challenges(&offered).into_iter().map(|(n, _)| n).collect(), scheme, binding: false, tries: Vec::new() };
+        // Попытки входа с паролем при отказе сервера — не больше трёх (счётчик неверных входов AD): как введено и с
+        // привязкой к каналу; без привязки (TLS перед Exchange завершает прокси — хэш сертификата не тот, а
+        // Extended Protection в режиме «Allow» принимает вход без привязки); `ДОМЕН\имя` вместо адреса почты (домен
+        // — из CHALLENGE сервера). Удачная — дальше у всех соединений этого входа сразу.
+        let (mut auth, mut cbt) = (auth, cbt);
+        loop {
+            // 401 с `Connection: close` — рукопожатие на новом соединении.
+            let conn = self.conn(url).await?;
+            let with_cbt = cbt && conn.binding.is_some();
+            diag.binding |= conn.binding.is_some();
+            tracing::debug!(scheme = scheme.name(), binding = with_cbt, "ews sign-in");
+            let mut rejected = Rejected::default();
+            match handshake(conn, &auth, scheme, url, body, cbt, &mut rejected).await {
+                Ok(reply) => {
+                    remember(&self.auth, &auth, cbt);
+                    self.signed_in = Some(scheme.name());
+                    return Ok(reply);
+                }
+                Err(Error::Auth(e)) if e == CREDENTIALS_REJECTED => {
+                    diag.tries.push(format!("{}{} → 401 after token {}", login_kind(&auth), if with_cbt { "+CBT" } else { "" }, rejected.round));
+                    let tried_plain = diag.tries.iter().any(|t| !t.contains("+CBT"));
+                    let next = match (&auth, rejected.alternative) {
+                        (Auth::Password { .. }, _) if with_cbt && !tried_plain => Some((auth.clone(), false)),
+                        (Auth::Password { password, .. }, Some(login)) if diag.tries.len() < 3 => {
+                            Some((Auth::Password { user: login, password: password.clone() }, true))
+                        }
+                        _ => None,
+                    };
+                    match next {
+                        Some(n) => (auth, cbt) = n,
+                        None => {
+                            tracing::debug!(diag = %diag, "ews sign-in rejected");
+                            return Err(Error::Auth(format!("{CREDENTIALS_REJECTED} ({diag})")));
+                        }
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Сервер не предлагает ни Negotiate, ни NTLM: запасной Basic — только по TLS и только с паролем; иначе
+    /// [`Error::AuthScheme`].
+    async fn basic(&mut self, url: &url::Url, body: &Bytes, auth: &Auth, offered: &[String]) -> Result<hyper::Response<Incoming>> {
+        let Auth::Password { user, password } = auth else { return Err(Error::AuthScheme) };
+        if url.scheme() != "https" || !auth::offers(offered, "Basic") {
+            return Err(Error::AuthScheme);
+        }
+        let header = auth::basic(user, password);
+        let reply = self.conn(url).await?.request(url, body, Some(&header)).await?;
+        if reply.status().as_u16() == 401 {
+            drain(reply).await;
+            return Err(Error::Auth(CREDENTIALS_REJECTED.into()));
+        }
+        self.signed_in = Some("Basic");
         Ok(reply)
     }
 }
 
-async fn handshake(conn: &mut Conn, auth: &Auth, scheme: Scheme, url: &url::Url, body: &Bytes) -> Result<hyper::Response<Incoming>> {
-    let mut ctx = crate::sys::Context::new(scheme, auth, &format!("HTTP/{}", conn.host), conn.binding.as_deref())?;
+/// Сведения об отказе во входе без секретов и имён — в текст ошибки («Вход не выполнен: …»), чтобы его можно было
+/// прислать: что предложил сервер, чем входили, была ли привязка к каналу TLS, после какого токена пришёл 401.
+struct Diag {
+    offered: Vec<String>,
+    scheme: Scheme,
+    binding: bool,
+    tries: Vec<String>,
+}
+
+impl std::fmt::Display for Diag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "offered: {}; used: {}; TLS channel binding: {}; tries: {}",
+            self.offered.join(", "),
+            self.scheme.name(),
+            if self.binding { "available" } else { "none" },
+            self.tries.join(", ")
+        )
+    }
+}
+
+/// Вид логина для [`Diag`]: сам логин — нет.
+fn login_kind(auth: &Auth) -> &'static str {
+    match auth {
+        Auth::Windows => "Windows account",
+        Auth::Password { user, .. } if user.contains('\\') => "DOMAIN\\user",
+        Auth::Password { user, .. } if user.contains('@') => "UPN",
+        Auth::Password { .. } => "user",
+    }
+}
+
+/// Что принял сервер вместо введённого (`remembered`): введённый логин (без учёта регистра) → принятый и была ли
+/// привязка к каналу. На время работы Postman: у каждого соединения учётки — сразу верный вход, без лишних отказов.
+static ACCEPTED: std::sync::Mutex<Vec<(String, String, bool)>> = std::sync::Mutex::new(Vec::new());
+
+/// Вход для рукопожатия и привязка к каналу (`true` — если есть у соединения).
+fn remembered(auth: &Auth) -> (Auth, bool) {
+    let Auth::Password { user, password } = auth else { return (auth.clone(), true) };
+    let found = ACCEPTED.lock().ok().and_then(|m| m.iter().find(|(from, ..)| from.eq_ignore_ascii_case(user)).map(|(_, to, cbt)| (to.clone(), *cbt)));
+    match found {
+        Some((to, cbt)) => (Auth::Password { user: to, password: password.clone() }, cbt),
+        None => (auth.clone(), true),
+    }
+}
+
+fn remember(from: &Auth, to: &Auth, cbt: bool) {
+    if let (Auth::Password { user: from, .. }, Auth::Password { user: to, .. }) = (from, to)
+        && (from != to || !cbt)
+        && let Ok(mut m) = ACCEPTED.lock()
+    {
+        m.retain(|(f, ..)| !f.eq_ignore_ascii_case(from));
+        m.push((from.clone(), to.clone(), cbt));
+    }
+}
+
+/// Отказ сервера в рукопожатии: после какого нашего токена (0 — первый) и логин на следующую попытку.
+#[derive(Default)]
+struct Rejected {
+    round: usize,
+    alternative: Option<String>,
+}
+
+/// Рукопожатие Negotiate или NTLM; `cbt` — с привязкой к каналу TLS (если она есть у соединения). Сервер отклонил вход —
+/// [`CREDENTIALS_REJECTED`], подробности — в `rejected`.
+async fn handshake(
+    conn: &mut Conn,
+    auth: &Auth,
+    scheme: Scheme,
+    url: &url::Url,
+    body: &Bytes,
+    cbt: bool,
+    rejected: &mut Rejected,
+) -> Result<hyper::Response<Incoming>> {
+    let mut ctx = crate::sys::Context::new(scheme, auth, &format!("HTTP/{}", conn.host), conn.binding.as_deref().filter(|_| cbt))?;
     let mut token = ctx.step(None)?;
-    for _ in 0..MAX_ROUNDS {
+    for round in 0..MAX_ROUNDS {
         let reply = conn.request(url, body, Some(&auth::header(scheme, &token))).await.map_err(|e| match e {
             Error::Closed => Error::Auth("server closed the connection during the handshake".into()),
             e => e,
@@ -288,8 +416,45 @@ async fn handshake(conn: &mut Conn, auth: &Auth, scheme: Scheme, url: &url::Url,
         drain(reply).await;
         match server {
             Some(t) if !ctx.done() => token = ctx.step(Some(&t))?,
-            _ => return Err(Error::Auth("credentials rejected".into())),
+            _ => {
+                *rejected = Rejected { round, alternative: ctx.alternative() };
+                return Err(Error::Auth(CREDENTIALS_REJECTED.into()));
+            }
         }
     }
     Err(Error::Auth("handshake did not finish".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Сведения об отказе — без логина и пароля: схемы, привязка, попытки по видам логина.
+    #[test]
+    fn diagnostics_without_secrets() {
+        let d = Diag {
+            offered: vec!["Negotiate".into(), "NTLM".into()],
+            scheme: Scheme::Ntlm,
+            binding: true,
+            tries: vec![format!("{}+CBT → 401 after token 1", login_kind(&Auth::password("anna@corp.example", "pw")))],
+        };
+        let text = d.to_string();
+        assert_eq!(text, "offered: Negotiate, NTLM; used: NTLM; TLS channel binding: available; tries: UPN+CBT → 401 after token 1");
+        assert_eq!(login_kind(&Auth::password(r"CORP\anna", "pw")), r"DOMAIN\user");
+        assert_eq!(login_kind(&Auth::Windows), "Windows account");
+    }
+
+    /// Принятый сервером логин и режим привязки — сразу у следующих соединений; принятое как введено — не хранится.
+    #[test]
+    fn accepted_login_is_reused() {
+        let typed = Auth::password("boris@corp.example", "pw");
+        assert!(matches!(remembered(&typed), (Auth::Password { ref user, .. }, true) if user == "boris@corp.example"));
+        remember(&typed, &Auth::password(r"EXAMPLE\boris", "pw"), false);
+        let (auth, cbt) = remembered(&Auth::password("Boris@corp.example", "pw"));
+        assert!(matches!(auth, Auth::Password { ref user, ref password } if user == r"EXAMPLE\boris" && password.as_str() == "pw"));
+        assert!(!cbt);
+        let same = Auth::password("vera@corp.example", "pw");
+        remember(&same, &same, true);
+        assert!(ACCEPTED.lock().unwrap().iter().all(|(f, ..)| f != "vera@corp.example"));
+    }
 }

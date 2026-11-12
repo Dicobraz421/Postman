@@ -1,7 +1,8 @@
 # CI Postman по шаблону скилла pets-dev (R-01).
 # PR и merge queue: метки конфликта, полосы, clippy, тесты (nextest) — цель ≤7 мин при тёплом кэше.
-# Docs-PR: сборка пропускается (job `changes`). Release, подпись, архив — только main, теги `v*` и ручной запуск;
-# тег `v*` — ещё и выпуск на GitHub (job `publish`, схема — docs/DEV.md «Выпуск»).
+# Docs-PR: сборка пропускается (job `changes`). Release, подпись, комплекты — main, теги `v*`, ручной запуск и PR,
+# что правят сам выпуск (job `changes`, выход `release`); тег `v*` — ещё и выпуск на GitHub (job `publish`, схема —
+# docs/DEV.md «Выпуск»).
 # Required check в защите main — один: `gate`.
 name: CI
 
@@ -32,6 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       rust: ${{ steps.d.outputs.rust }}
+      release: ${{ steps.d.outputs.release }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -62,6 +64,11 @@ jobs:
             echo rust=true >> "$GITHUB_OUTPUT"
           else
             echo rust=false >> "$GITHUB_OUTPUT"
+          fi
+          # PR правит сам выпуск (этот workflow, сборку комплектов, страницу выпуска) — job `release` собирает
+          # комплекты всех платформ и выкладывает артефакты, без публикации.
+          if grep -qE '^(\.github/workflows/ci\.yml|\.github/release-notes\.md|scripts/|tools/pack/)' changed.txt; then
+            echo release=true >> "$GITHUB_OUTPUT"
           fi
 
   test:
@@ -122,24 +129,37 @@ jobs:
         continue-on-error: true
         run: cargo test -p postman-worker --test windows_probe --locked -- --ignored --nocapture
 
-  # Только main, теги `v*` и ручной запуск: release, подпись, архив. Идёт параллельно с тестами — красные тесты не
-  # лишают архива, но не дают выпуска (`publish` ждёт `test`). Платформа — строка matrix; Linux — ещё одна строка
-  # и свой scripts/<os>/package с теми же выходами (name, dir, assets, version).
+  # main, теги `v*`, ручной запуск и PR, что правят выпуск: release, подпись, комплекты. Идёт параллельно с тестами —
+  # красные тесты не лишают комплектов, но не дают выпуска (`publish` ждёт `test`). Платформа — строка matrix и свой
+  # scripts/<os>/package с теми же выходами (name, dir, assets, version); Linux — ещё одна строка.
+  # macos-arm64 (MAC-06, решение 2026-11-11 «macos»): Apple Silicon, macOS 13+, Postman.app в .zip и .dmg. Подпись
+  # ad-hoc, пока у владельца нет Apple Developer ID; Developer ID и нотаризация — шаги ниже, без секретов выключены.
+  # Тесты macOS — workflow `macOS`: `publish` их не ждёт.
   release:
     needs: changes
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: >-
+      github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && needs.changes.outputs.release == 'true')
     strategy:
+      fail-fast: false
       matrix:
         include:
           - platform: windows-x64
             runner: windows-latest
+          - platform: macos-arm64
+            runner: macos-26
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      # macOS: сборка для 13 и новее (LSMinimumSystemVersion в Info.plist — то же); на Windows не читается.
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
     steps:
       - uses: actions/checkout@v7.0.1
       - run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
+      # Кэш macOS — общий с job `bundle` workflow `macOS` (та же сборка).
       - uses: Swatinem/rust-cache@v2.9.3
         with:
-          shared-key: windows-release
+          shared-key: ${{ runner.os == 'macOS' && 'macos-release' || 'windows-release' }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Признак `viewer` воркера — только для `postman-viewer.exe` (S8-24, ADR 0007): в postman-worker.exe и
@@ -150,6 +170,7 @@ jobs:
       # Подпись (S4-01, решение владельца 1): только если заданы секреты с сертификатом, иначе — уведомление
       # (scripts/windows/sign.ps1). Exe — до архива, MSI — после: хэш winget считается от подписанного MSI.
       - name: Подпись exe
+        if: runner.os == 'Windows'
         shell: pwsh
         env:
           PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
@@ -160,11 +181,13 @@ jobs:
           ./scripts/windows/sign.ps1 @exes
 
       - name: Архив
+        if: runner.os == 'Windows'
         id: package
         shell: pwsh
         run: ./scripts/windows/package.ps1 -TargetDir "$env:CARGO_TARGET_DIR" -Out dist
 
       - name: Подпись MSI
+        if: runner.os == 'Windows'
         shell: pwsh
         env:
           PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
@@ -174,6 +197,7 @@ jobs:
 
       # Раннер — администратор: тихая установка, обновление, отказ ставить старую поверх новой, удаление.
       - name: Проверка MSI
+        if: runner.os == 'Windows'
         shell: pwsh
         run: >-
           ./scripts/windows/msi-check.ps1 -Msi "${{ steps.package.outputs.msi }}" -Kit "${{ steps.package.outputs.dir }}"
@@ -181,50 +205,96 @@ jobs:
 
       # Манифест winget для MSI выпуска; отправка в microsoft/winget-pkgs — PR вручную (docs/DEV.md «Выпуск»).
       - name: Манифест winget
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           & "$env:CARGO_TARGET_DIR/release/postman-pack.exe" winget "${{ steps.package.outputs.msi }}" dist/winget
           if ($LASTEXITCODE) { throw "postman-pack winget failed" }
+
+      # macOS, подпись Developer ID (MAC-06): сертификат `.p12` из секретов — во временную связку ключей (пароль
+      # случайный), имя подписи — в MACOS_SIGN_IDENTITY для scripts/macos/package.sh. Без секрета — подпись ad-hoc.
+      - name: Сертификат Developer ID
+        if: runner.os == 'macOS'
+        env:
+          P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          if [ -z "$P12_BASE64" ]; then
+            echo "::notice::Нет секрета MACOS_CERT_P12_BASE64 — подпись ad-hoc (docs/DEV.md «Выпуск»)"; exit 0
+          fi
+          kc="$RUNNER_TEMP/sign.keychain-db"
+          pw="$(openssl rand -hex 16)"
+          security create-keychain -p "$pw" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$pw" "$kc"
+          p12="$RUNNER_TEMP/cert.p12"
+          (umask 077; printf '%s' "$P12_BASE64" | base64 --decode > "$p12")
+          security import "$p12" -k "$kc" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm -f "$p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$pw" "$kc" > /dev/null
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          id="$(security find-identity -v -p codesigning "$kc" | sed -n 's/.*"\(Developer ID Application: .*\)".*/\1/p' | head -n1)"
+          if [ -z "$id" ]; then echo "::error::В MACOS_CERT_P12_BASE64 нет сертификата Developer ID Application"; exit 1; fi
+          echo "MACOS_SIGN_IDENTITY=$id" >> "$GITHUB_ENV"
+
+      # Postman.app, zip и dmg; файлы выпуска — одна папка (выход assets). Нотаризация — только при подписи Developer ID
+      # и трёх секретах Apple ID (пароль приложения — appleid.apple.com); без них — пропуск.
+      - name: Postman.app, zip и dmg
+        if: runner.os == 'macOS'
+        id: package_macos
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: bash scripts/macos/package.sh --target-dir "$CARGO_TARGET_DIR" --out dist
+
+      - name: Связка ключей — удалить
+        if: always() && runner.os == 'macOS'
+        run: |
+          kc="$RUNNER_TEMP/sign.keychain-db"
+          if [ -f "$kc" ]; then security delete-keychain "$kc"; fi
 
       # Тег выпуска — ровно версия из Cargo.toml: v0.2.0, v0.2.0-beta.1.
       - name: Тег = версия
         if: github.ref_type == 'tag'
         shell: bash
         env:
-          VERSION: ${{ steps.package.outputs.version }}
+          VERSION: ${{ steps.package.outputs.version || steps.package_macos.outputs.version }}
         run: |
           if [ "v$VERSION" != "$GITHUB_REF_NAME" ]; then
             echo "::error::Тег $GITHUB_REF_NAME не совпадает с версией v$VERSION из Cargo.toml"; exit 1
           fi
 
       # Для разработки (Actions → запуск → Artifacts): postman-<версия>-windows-x64 — exe приложения, воркера и
-      # хоста модулей просмотра, README.txt, install.ps1.
+      # хоста модулей просмотра, README.txt, install.ps1; postman-<версия>-macos-arm64 — .zip и .dmg (Postman.app
+      # внутри: бандл в артефакт не кладётся — Actions теряет права на запуск и подпись).
       - name: Артефакт сборки
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: ${{ steps.package.outputs.name }}
-          path: ${{ steps.package.outputs.dir }}
+          name: ${{ steps.package.outputs.name || steps.package_macos.outputs.name }}
+          path: ${{ steps.package.outputs.dir || steps.package_macos.outputs.dir }}
           if-no-files-found: error
 
       - name: Артефакт winget
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'tag' && runner.os == 'Windows'
         uses: actions/upload-artifact@v7.0.2
         with:
           name: winget-${{ steps.package.outputs.version }}
           path: dist/winget
           if-no-files-found: error
 
-      # Файлы выпуска платформы для `publish`: архив, MSI и отдельные компоненты.
+      # Файлы выпуска платформы для `publish`: Windows — архив, MSI и отдельные компоненты; macOS — .zip и .dmg.
       - name: Файлы выпуска
         if: github.ref_type == 'tag'
         uses: actions/upload-artifact@v7.0.2
         with:
           name: release-${{ matrix.platform }}
-          path: ${{ steps.package.outputs.assets }}
+          path: ${{ steps.package.outputs.assets || steps.package_macos.outputs.assets }}
           if-no-files-found: error
 
   # Выпуск на GitHub по тегу `v*`, если тесты и сборки всех платформ зелёные. Файлы — плоско:
-  # postman-<версия>-<os>-<arch>.zip и .msi с подписями .minisig, компоненты под своими именами, SHA256SUMS.txt.
+  # postman-<версия>-<os>-<arch>.zip, .msi (Windows) и .dmg (macOS) с подписями .minisig, компоненты Windows под своими
+  # именами, SHA256SUMS.txt.
   # Версия с дефисом (0.2.0-beta.1) — предварительный выпуск: его видит канал «Предварительный» в настройках.
   # Гейт выпуска (решение 2026-11-12 «release-docs-gate»): тег публикуется, только если в его коммите есть
   # docs/releases/<версия>.md — сверка всей документации (каждый документ отмечен и с итогом). Быстро, до сборки.
@@ -253,7 +323,7 @@ jobs:
           pattern: release-*
           path: assets
           merge-multiple: true
-      # Подпись обновления (решение 2026-11-11 «self-update», pets `crates/pets-update/README.md`): каждый .msi и .zip —
+      # Подпись обновления (решение 2026-11-11 «self-update», pets `crates/pets-update/README.md`): каждый .msi, .zip и .dmg —
       # minisign, рядом `<файл>.minisig`; программа ставит только подписанное вшитым ключом. Подписывается готовый файл
       # (MSI — после Authenticode), до SHA256SUMS.txt. Без секрета выпуск красный, а не «без подписи»: выпуск без
       # .minisig программа не предлагает. Ключ в журнал не попадает: файл во временной папке, удаляется по выходу.
@@ -270,23 +340,28 @@ jobs:
           (umask 077; printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key")
           trap 'rm -f "$key"' EXIT
           cd assets
-          for f in *.msi *.zip; do
+          shopt -s nullglob
+          for f in *.msi *.zip *.dmg; do
             minisign -S -s "$key" -m "$f"            # пишет $f.minisig; в подписи — file:$f
             minisign -V -P "$UPDATE_PUBLIC_KEY" -m "$f"
           done
       # Страница — для пользователей (.github/release-notes.md): готовность и что скачать, без списка PR.
-      # Блоки: pre или stable — по версии; unsigned (подсказка про SmartScreen) — пока нет подписи.
+      # Блоки: pre или stable — по версии; unsigned (подсказка про SmartScreen) — пока нет подписи Windows;
+      # mac-unsigned («Всё равно открыть») — пока нет подписи Developer ID с нотаризацией.
       - name: Выпуск
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           SIGNED: ${{ secrets.WINDOWS_CERT_PFX_BASE64 != '' }}
+          MAC_NOTARIZED: ${{ secrets.MACOS_CERT_P12_BASE64 != '' && secrets.APPLE_ID != '' && secrets.APPLE_TEAM_ID != '' && secrets.APPLE_APP_PASSWORD != '' }}
         run: |
           (cd assets && sha256sum * > SHA256SUMS.txt)
           version="${GITHUB_REF_NAME#v}"
           if [[ "$version" == *-* ]]; then pre=(--prerelease); drop=stable; else pre=(); drop=pre; fi
           if [ "$SIGNED" = true ]; then cut=unsigned; else cut=none; fi
+          if [ "$MAC_NOTARIZED" = true ]; then cutmac=mac-unsigned; else cutmac=none; fi
           sed -e "/^<!-- $drop -->/,/^<!-- \/$drop -->/d" -e "/^<!-- $cut -->/,/^<!-- \/$cut -->/d" \
+            -e "/^<!-- $cutmac -->/,/^<!-- \/$cutmac -->/d" \
             -e '/^<!-- .* -->$/d' -e "s/{version}/$version/g" .github/release-notes.md > notes.md
           gh release create "$GITHUB_REF_NAME" assets/* -R "$GITHUB_REPOSITORY" --verify-tag \
             --title "Postman $version" --notes-file notes.md "${pre[@]}"

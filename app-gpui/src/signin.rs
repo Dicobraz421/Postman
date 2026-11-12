@@ -77,6 +77,8 @@ pub(crate) struct SignIn {
     pub(crate) step: Step,
     pub(crate) url: Entity<InputState>,
     pub(crate) user: Entity<InputState>,
+    /// «Имя пользователя (если отличается от адреса)» у Exchange, как в Outlook: `DOMAIN\user` или UPN.
+    login: Entity<InputState>,
     password: Entity<InputState>,
     /// Пароль — в диспетчер учётных данных Windows (`false` — не хранить, спрашивать при запуске).
     pub(crate) store: bool,
@@ -122,15 +124,23 @@ impl SignIn {
     pub(crate) fn new(prefill: Option<Settings>, welcome: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let prefill = prefill.unwrap_or_default();
         let url = cx.new(|cx| InputState::new(window, cx).placeholder(tr!("signin-url-placeholder")).default_value(prefill.url.clone()));
-        let user = cx.new(|cx| InputState::new(window, cx).placeholder(tr!("signin-user-placeholder")).default_value(prefill.user.clone()));
+        // Сохранённый логин не адрес почты (`DOMAIN\user`) — в поле имени пользователя, адрес — пустой.
+        let (email, login) =
+            if is_mail_address(&prefill.user) { (prefill.user.clone(), String::new()) } else { (String::new(), prefill.user.clone()) };
+        let user = cx.new(|cx| InputState::new(window, cx).placeholder(tr!("signin-user-placeholder")).default_value(email));
+        let login = cx.new(|cx| InputState::new(window, cx).placeholder(tr!("signin-login-placeholder")).default_value(login));
         let password = cx.new(|cx| InputState::new(window, cx).masked(true));
         let enter = |this: &mut Self, _: &Entity<InputState>, ev: &InputEvent, window: &mut Window, cx: &mut Context<Self>| {
             if let InputEvent::PressEnter { .. } = ev {
                 this.next(window, cx);
             }
         };
-        let subscriptions =
-            vec![cx.subscribe_in(&url, window, enter), cx.subscribe_in(&user, window, enter), cx.subscribe_in(&password, window, enter)];
+        let subscriptions = vec![
+            cx.subscribe_in(&url, window, enter),
+            cx.subscribe_in(&user, window, enter),
+            cx.subscribe_in(&login, window, enter),
+            cx.subscribe_in(&password, window, enter),
+        ];
         // Адрес и логин уже есть (сервер отклонил сохранённый вход) — сразу шаг сервера с паролем.
         let step = if prefill.user.is_empty() { Step::Address } else { Step::Server };
         let manual = !prefill.url.is_empty();
@@ -140,6 +150,7 @@ impl SignIn {
             step,
             url,
             user,
+            login,
             password,
             store: true,
             domain,
@@ -286,7 +297,8 @@ impl SignIn {
             Ok(u) => u,
             Err(e) => return self.fail(e, cx),
         };
-        let user = self.user.read(cx).value().trim().to_owned();
+        let ews = postman_backend_ews::is_ews_url(&normalize_url(&self.url.read(cx).value()));
+        let user = login_for(&self.user.read(cx).value(), &self.login.read(cx).value(), ews);
         let windows = self.windows && self.windows_offered(cx);
         // Вход Windows: пустой пароль — путь EWS входит учётными данными текущего входа (T1-02а).
         let password = if windows { String::new() } else { self.password.read(cx).value().to_string() };
@@ -327,11 +339,26 @@ impl SignIn {
             self.windows = false;
             self.focus = true;
             self.error = Some(tr!("signin-windows-failed"));
+        } else if !self.windows && error.contains(postman_backend_ews::CREDENTIALS_REJECTED) {
+            // Логин и пароль отклонены: чаще всего логин не того вида (адрес почты вместо `DOMAIN\user`).
+            self.error = Some(format!("{}\n{}", tr!("signin-failed", error = error.to_owned()), tr!("signin-rejected-hint")));
         } else {
             self.error = Some(tr!("signin-failed", error = error.to_owned()));
         }
         cx.notify();
     }
+}
+
+/// Логин входа: у Exchange — «Имя пользователя», если заполнено (`DOMAIN\user` или UPN, как в Outlook), иначе адрес
+/// почты; у других серверов — адрес (логин). Пробелы по краям — прочь.
+fn login_for(email: &str, login: &str, ews: bool) -> String {
+    let login = login.trim();
+    if ews && !login.is_empty() { login.to_owned() } else { email.trim().to_owned() }
+}
+
+/// Похоже на адрес почты (`user@domain`, не `DOMAIN\user`).
+fn is_mail_address(s: &str) -> bool {
+    s.split_once('@').is_some_and(|(u, d)| !u.is_empty() && d.contains('.') && !s.contains('\\'))
 }
 
 /// Адрес сервера: без пробелов и `/` в конце; без схемы — `https://`. `imaps://` и `imap://` — учётная запись IMAP
@@ -517,6 +544,9 @@ impl SignIn {
                 }
                 if !(self.windows && self.windows_offered(cx)) {
                     let (tls, ok) = security_line();
+                    if postman_backend_ews::is_ews_url(&normalize_url(&self.url.read(cx).value())) {
+                        body = body.child(self.field(l, tr!("signin-login"), &self.login, Some(tr!("signin-login-hint"))));
+                    }
                     body = body
                         .child(self.field(l, tr!("signin-password"), &self.password, None))
                         .child(
@@ -851,7 +881,18 @@ pub(crate) mod scenes {
 
 #[cfg(test)]
 mod tests {
-    use super::{check_url, normalize_url};
+    use super::{check_url, is_mail_address, login_for, normalize_url};
+
+    /// «Имя пользователя» у Exchange: `DOMAIN\user` и UPN — как введены, пустое — адрес почты; у других серверов —
+    /// адрес.
+    #[test]
+    fn exchange_login_field() {
+        assert_eq!(login_for("anna@corp.example", r"  CORP\anna ", true), r"CORP\anna");
+        assert_eq!(login_for("anna@corp.example", "anna.p@ad.corp.example", true), "anna.p@ad.corp.example");
+        assert_eq!(login_for(" anna@corp.example ", "  ", true), "anna@corp.example");
+        assert_eq!(login_for("anna@corp.example", r"CORP\anna", false), "anna@corp.example");
+        assert!(is_mail_address("anna@corp.example") && !is_mail_address(r"CORP\anna") && !is_mail_address(""));
+    }
 
     #[test]
     fn server_url_is_normalized() {
