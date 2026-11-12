@@ -9,7 +9,7 @@ use crate::commands::all;
 const BEGIN: &str = "<!-- keys:begin -->";
 const END: &str = "<!-- keys:end -->";
 
-use crate::keymap::human;
+use crate::keymap::{for_platform, human_on};
 
 /// Где действует: по контексту команды.
 fn place(context: Option<&str>) -> &'static str {
@@ -28,18 +28,21 @@ fn place(context: Option<&str>) -> &'static str {
 
 /// Буквы команды в схеме «Одиночные клавиши» (S5-17).
 fn single(c: &pets_commands::Command) -> Vec<String> {
-    crate::commands::SINGLE.keys.iter().filter(|k| k.command == c.id).flat_map(|k| k.keys).map(|k| human(k)).collect()
+    crate::commands::SINGLE.keys.iter().filter(|k| k.command == c.id).flat_map(|k| k.keys).map(|k| human_on(k, false)).collect()
 }
 
 fn table() -> String {
     let names = crate::commands::parity::ftl_names(crate::commands::parity::RU_FTL);
-    let mut s = String::from("| Действие | Outlook | Одиночные клавиши | Где |\n|---|---|---|---|\n");
+    let mut s = String::from("| Действие | Outlook | macOS | Одиночные клавиши | Где |\n|---|---|---|---|---|\n");
     for c in all().iter().filter(|c| !c.keys.is_empty() || !single(c).is_empty()) {
         let key = c.name_key();
         let name = names.iter().find(|(k, _)| *k == key).map_or(key.as_str(), |(_, v)| v);
-        let keys: Vec<String> = c.keys.iter().map(|k| human(k)).collect();
+        let keys: Vec<String> = c.keys.iter().map(|k| human_on(k, false)).collect();
         let outlook = if keys.is_empty() { "—".to_owned() } else { keys.join(", ") };
-        s.push_str(&format!("| {name} | {outlook} | {} | {} |\n", single(c).join(", "), place(c.context)));
+        // MAC-02: на Mac — ⌘ вместо Ctrl; сочетаний с Option там нет (`keymap::for_platform`).
+        let mac: Vec<String> = c.keys.iter().filter(|k| for_platform(k, true).is_some()).map(|k| human_on(k, true)).collect();
+        let mac = if mac.is_empty() { "—".to_owned() } else { mac.join(", ") };
+        s.push_str(&format!("| {name} | {outlook} | {mac} | {} | {} |\n", single(c).join(", "), place(c.context)));
     }
     s
 }

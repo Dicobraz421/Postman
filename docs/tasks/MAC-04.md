@@ -14,7 +14,10 @@ manual: docs/manual-tests/MAC-04.md
 
 ## Что входит
 - Буфер обмена HTML (вставка из Word/Safari): `NSPasteboardTypeHTML` в `pets_shell::clipboard`.
-- Перетаскивание вложения в Finder и другие приложения: `NSDraggingSource` / `NSFilePromiseProvider`.
+- Перетаскивание вложения: сделано в MAC-02 (`NSDraggingSource`, копия файла); `NSFilePromiseProvider` (без копии
+  заранее) — по замерам.
+- Остатки MAC-02: тексты с «Ctrl+…» и «Windows» — варианты для macOS; ⌘W в главном окне без вкладок — скрыть
+  приложение; запись физического Control в «Клавиатуре»; щелчок по уведомлению — открыть письмо.
 - Автозапуск: `SMAppService.mainApp` (macOS 13+).
 - Снимки окна через ScreenCaptureKit вместо устаревшей `CGWindowListCreateImage` (MAC-01); `--screens` — все сцены
   (в MAC-01 — пять: `list`, `letter`, `attachments`, `preview-pdf`, `calendar`), снимки macOS — артефактом `macos.yml`.
@@ -24,7 +27,7 @@ manual: docs/manual-tests/MAC-04.md
 - `--bench` на macOS: память `task_info` (`phys_footprint`), разовый замер простоя CPU на M1.
 
 ## Приёмка
-- `docs/manual-tests/MAC-04.md` на M1: вставка таблицы из Word, перетаскивание PDF на рабочий стол, автозапуск,
+- `docs/manual-tests/MAC-04.md` на M1: вставка таблицы из Word, автозапуск,
   тёмная тема по системе.
 - Все сцены `--screens` проходят на macOS-раннере.
 

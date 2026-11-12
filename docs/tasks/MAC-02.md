@@ -1,7 +1,7 @@
 # MAC-02: базовый клиент на macOS
 
 lane: x
-status: todo
+status: done
 deps: [MAC-01]
 class: B
 files: [app-gpui/src/sys/, app-gpui/src/keymap.rs, app-gpui/src/chrome.rs, app-gpui/src/icons.rs, pets: crates/pets-shell/, pets: crates/pets-gpui-macos/ (новый)]
@@ -32,6 +32,15 @@ Postman на M1 пригоден для ежедневной почты: вхо�
 - `docs/manual-tests/MAC-02.md` на MacBook Air M1: вход живого ящика переживает перезапуск, Cmd+N / Cmd+R / Cmd+F,
   тост нового письма, ссылка `mailto:` из Safari открывает новое письмо.
 - `macos.yml` зелёный; на Windows снимки затронутых сцен не меняются.
+
+## Что не вошло
+- Тексты интерфейса с «Ctrl+…» и «Windows» (`settings-keys-layout-*`, `settings-mailto-hint`, `bulk-pick`,
+  `signin-demo`, `settings-reading-aside-1`) — версии для macOS: MAC-04.
+- ⌘W в главном окне без закрываемой вкладки ничего не делает (⌘W вкладки глубже системного); скрыть приложение,
+  как красная кнопка, — MAC-04.
+- Запись сочетания с физическим Control в «Настройки → Клавиатура» на Mac: Control записывается как ⌘ (таблица хранит
+  запись Windows) — MAC-04.
+- Щелчок по уведомлению открывает Postman, но не письмо — MAC-04.
 
 ## Зависимости
 MAC-01. Крейт pets — PR в pets, затем ревизия в Postman (полоса deps).

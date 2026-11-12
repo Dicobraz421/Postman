@@ -112,7 +112,9 @@ pub fn bind(cx: &mut App, prefs: &postman_core::prefs::Prefs) {
     for b in crate::keymap::bound(all(), &SINGLE, &set) {
         let Some(c) = pets_commands::find(all(), b.id) else { continue };
         let context = b.context.as_deref().and_then(|s| KeyBindingContextPredicate::parse(s).ok()).map(Rc::new);
-        let keys = b.keys.as_str();
+        // Клавиши ОС (MAC-02): на macOS Ctrl — это ⌘, сочетаний с Option нет (`keymap::for_os`).
+        let Some(os_keys) = crate::keymap::for_os(&b.keys) else { continue };
+        let keys = os_keys.as_str();
         // «Нет у сервера — нет на экране» (S7-03): клавиша команды, которой у сервера нет, — тост, а не тишина.
         let unavailable = (!crate::features::available(c.id, features)).then(|| Box::new(crate::features::Unavailable) as Box<dyn Action>);
         let action = match unavailable.or_else(|| keyed_action(c, keys)) {

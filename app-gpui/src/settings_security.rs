@@ -356,7 +356,7 @@ impl SettingsView {
                         .bg(l.fill_passive())
                         .text_size(px(12.))
                         .child(tr!("settings-sandbox-howto"))
-                        .child(div().font_family("Consolas").text_color(l.text()).child(crate::diagnostics::icacls_command()))
+                        .child(div().font_family(crate::chrome::MONO_FONT).text_color(l.text()).child(crate::diagnostics::icacls_command()))
                         .child(div().text_color(l.text2()).child(tr!("settings-sandbox-howto-after"))),
                 )
             })

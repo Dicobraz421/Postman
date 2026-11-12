@@ -59,11 +59,12 @@ impl SettingsView {
         cx.notify();
     }
 
-    /// «Сделать Postman клиентом по умолчанию»: зарегистрировать и открыть «Приложения по умолчанию» Windows.
+    /// «Сделать Postman клиентом по умолчанию»: зарегистрировать и открыть «Приложения по умолчанию» Windows; на macOS
+    /// (MAC-02) — сразу выбор LaunchServices, система спросит подтверждение.
     fn make_default(&mut self, cx: &mut Context<Self>) {
         let task = cx.background_spawn(async move {
             crate::sys::shell::register_mailto()?;
-            crate::sys::shell::open("ms-settings:defaultapps")
+            crate::sys::shell::show_default_apps()
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;

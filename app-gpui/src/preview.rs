@@ -749,7 +749,7 @@ impl ReadingPane {
                     .flex()
                     .flex_col()
                     .gap(px(8.))
-                    .font_family("Consolas")
+                    .font_family(crate::chrome::MONO_FONT)
                     .text_size(px(13.))
                     .line_height(px(19.));
                 if *truncated {

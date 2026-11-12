@@ -1,13 +1,15 @@
 //! Вложения на диске: безопасные имена, сохранение и открытие по явному
 //! действию пользователя. Исполняемые и «активные» типы не открываются —
 //! только сохраняются. На Windows файлы получают Mark-of-the-Web (зона
-//! Интернет), чтобы SmartScreen и защищённый просмотр Office срабатывали.
+//! Интернет), чтобы SmartScreen и защищённый просмотр Office срабатывали;
+//! на macOS — метку карантина `com.apple.quarantine` (Gatekeeper, MAC-02).
 
 use std::io;
 use std::path::{Path, PathBuf};
 
 /// Типы, которые открывать нельзя (по мотивам списка Level 1 в Outlook), плюс
-/// HTML/SVG (скрипты в браузере с file://) и образы дисков (обход MOTW).
+/// HTML/SVG (скрипты в браузере с file://) и образы дисков (обход MOTW); macOS
+/// (MAC-02) — пакеты приложений и установщиков, скрипты Terminal и AppleScript.
 const BLOCKED: &[&str] = &[
     "ade",
     "adp",
@@ -23,6 +25,7 @@ const BLOCKED: &[&str] = &[
     "cmd",
     "cnt",
     "com",
+    "command",
     "cpl",
     "crt",
     "csh",
@@ -88,6 +91,7 @@ const BLOCKED: &[&str] = &[
     "osd",
     "pcd",
     "pif",
+    "pkg",
     "pl",
     "plg",
     "prf",
@@ -110,6 +114,7 @@ const BLOCKED: &[&str] = &[
     "pyzw",
     "reg",
     "scf",
+    "scpt",
     "scr",
     "sct",
     "settingcontent-ms",
@@ -119,6 +124,7 @@ const BLOCKED: &[&str] = &[
     "svg",
     "svgz",
     "sys",
+    "terminal",
     "theme",
     "tmp",
     "url",
@@ -202,7 +208,16 @@ fn mark_of_the_web(path: &Path) {
     let _ = std::fs::write(ads, "[ZoneTransfer]\r\nZoneId=3\r\n");
 }
 
-#[cfg(not(windows))]
+/// macOS: метка карантина, как у файлов из браузера и «Почты» — Gatekeeper проверит файл при открытии. Флаг 0001 —
+/// «загружено», время — шестнадцатеричные секунды, агент — Postman. `xattr` — системная утилита: без FFI в ядре.
+#[cfg(target_os = "macos")]
+fn mark_of_the_web(path: &Path) {
+    let now = jiff::Timestamp::now().as_second().max(0);
+    let value = format!("0001;{now:08x};Postman;");
+    let _ = std::process::Command::new("/usr/bin/xattr").args(["-w", "com.apple.quarantine", &value]).arg(path).status();
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn mark_of_the_web(_: &Path) {}
 
 /// Сохранить во временный каталог и открыть системным приложением.
@@ -255,6 +270,22 @@ mod tests {
         assert!(!can_open("page.HTML"));
         assert!(!can_open("noext"));
         assert!(can_open("Отчёт.xlsx"));
+        // MAC-02: исполняемое на macOS — только сохранить.
+        for name in ["Postman.app", "run.command", "setup.pkg", "do.scpt", "shell.terminal"] {
+            assert!(!can_open(name), "{name}");
+        }
+    }
+
+    /// MAC-02: сохранённое вложение — с меткой карантина (Gatekeeper спросит при открытии).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn saved_file_is_quarantined() {
+        let dir = tempfile::Builder::new().prefix("postman-").tempdir().unwrap();
+        let path = dir.path().join("Итоги Q3.xlsx");
+        write(&path, b"data").unwrap();
+        let out = std::process::Command::new("/usr/bin/xattr").args(["-p", "com.apple.quarantine"]).arg(&path).output().unwrap();
+        let value = String::from_utf8_lossy(&out.stdout);
+        assert!(value.starts_with("0001;") && value.contains(";Postman;"), "{value}");
     }
 
     /// Ручная проверка 8, шаг 2: сохранённое вложение помечено «из Интернета» (Zone.Identifier, ZoneId=3) —

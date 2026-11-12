@@ -1412,7 +1412,7 @@ impl Render for RulesPanel {
                                 .p_2()
                                 .rounded_md()
                                 .bg(l.fill_passive())
-                                .font_family("Consolas")
+                                .font_family(crate::chrome::MONO_FONT)
                                 .text_size(px(12.))
                                 .whitespace_normal()
                                 .children(f.text.lines().map(|l| div().child(l.to_owned())).collect::<Vec<_>>()),

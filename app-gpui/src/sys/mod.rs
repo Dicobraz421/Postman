@@ -1,7 +1,7 @@
 //! Платформенный код интерфейса — прослойка над нейтральным API pets (решение владельца 2026-10-28): окно —
-//! `gpui_windows::pets` (pets-gpui-windows), без UI — `pets_shell`. Вызовов ОС здесь нет, на других ОС — заглушки.
-//! `unsafe` — только счётчик кучи (`alloc`), `set_var` в начале `main` (`shell::default_env`) и снимок окна на macOS
-//! (`macos`, MAC-01: аналога `gpui_windows::pets` для macOS в pets ещё нет — MAC-04).
+//! `gpui_windows::pets` (pets-gpui-windows) и `pets_gpui_macos` (MAC-02), без UI — `pets_shell`. Вызовов ОС здесь нет,
+//! на других ОС — заглушки. `unsafe` — только счётчик кучи (`alloc`) и `set_var` в начале `main`
+//! (`shell::default_env`).
 
 use gpui_kit::Window;
 #[cfg(windows)]
@@ -51,8 +51,9 @@ pub fn attach_parent_console() {
 }
 
 /// Пароль учётной записи — в диспетчере учётных данных Windows (S3-04), тип «общие учётные данные», для этого
-/// пользователя на этой машине. На диск приложения пароль не попадает; в журнал — тоже (ошибки — только код Win32).
-#[cfg(windows)]
+/// пользователя на этой машине; на macOS — в Связке ключей входа (MAC-02). На диск приложения пароль не попадает;
+/// в журнал — тоже (ошибки — только код ОС).
+#[cfg(any(windows, target_os = "macos"))]
 pub mod credentials {
     use pets_shell::credentials as os;
 
@@ -72,10 +73,10 @@ pub mod credentials {
 }
 
 /// Другие ОС: хранилища секретов нет — вход только из окружения или каждый раз строкой входа.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub mod credentials {
     pub fn write(_target: &str, _user: &str, _secret: &str) -> Result<(), String> {
-        Err("credential store is Windows only".into())
+        Err("credential store is Windows and macOS only".into())
     }
 
     pub fn read(_target: &str) -> Result<Option<String>, String> {
@@ -103,8 +104,13 @@ pub fn clipboard_html(max: usize) -> Option<String> {
 #[cfg(windows)]
 pub mod shell;
 
+/// macOS (MAC-02): клиент `mailto:` (LaunchServices), журнал в файл, Finder, уведомления.
+#[cfg(target_os = "macos")]
+#[path = "shell_macos.rs"]
+pub mod shell;
+
 /// Другие ОС: ничего из этого нет.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub mod shell {
     use std::path::Path;
 
@@ -134,6 +140,10 @@ pub mod shell {
 
     pub fn register_mailto() -> Result<(), String> {
         Err("mailto registration is Windows only".into())
+    }
+
+    pub fn show_default_apps() -> Result<(), String> {
+        Err("default apps are Windows and macOS only".into())
     }
 
     pub fn mailto_is_default() -> bool {
@@ -212,21 +222,61 @@ pub mod drag {
     }
 }
 
+/// Перетаскивание вложения в Finder и другие приложения (MAC-02): `pets_gpui_macos::drag` (`NSDraggingSession`). Копия
+/// файла — в `$TMPDIR/Postman/drag`, с безопасным именем и меткой карантина, как у «Сохранить как». Сеанс не
+/// модальный: начинается в событии мыши и идёт дальше сам.
+#[cfg(target_os = "macos")]
+pub mod drag {
+    use std::path::{Path, PathBuf};
+
+    use pets_gpui_macos::drag as os;
+    pub use pets_gpui_macos::drag::TempCopies;
+
+    /// Каталог копий: `$TMPDIR/Postman/drag`.
+    pub fn copies() -> TempCopies {
+        TempCopies::new("Postman")
+    }
+
+    /// Порог начала перетаскивания в точках окна.
+    pub fn threshold(scale: f32) -> (f32, f32) {
+        os::threshold(scale)
+    }
+
+    /// Копия файла для перетаскивания: свой подкаталог на каждое перетаскивание.
+    pub fn prepare(copies: &TempCopies, name: &str, data: &[u8]) -> std::io::Result<PathBuf> {
+        let path = copies.slot()?.join(postman_core::files::safe_name(name));
+        postman_core::files::write(&path, data)?;
+        Ok(path)
+    }
+
+    /// Удалить копии (старт и выход).
+    pub fn clean(copies: &TempCopies) {
+        if let Err(e) = copies.clean() {
+            tracing::warn!("drag copies {}: {e}", copies.root().display());
+        }
+    }
+
+    /// Начать перетаскивание копии (поток окна, во время движения мыши с нажатой кнопкой).
+    pub fn drag(copy: &Path) -> Result<(), String> {
+        os::drag_out(&[copy.to_path_buf()]).map_err(|e| e.to_string())
+    }
+}
+
 /// Снимок окна: RGBA, 8 бит на канал, строки сверху вниз.
 #[cfg(windows)]
 pub use gpui_windows::pets::window::Image;
 
 /// Снимок окна: RGBA, 8 бит на канал, строки сверху вниз.
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub use pets_gpui_macos::window::Image;
+
+/// Снимок окна: RGBA, 8 бит на канал, строки сверху вниз.
+#[cfg(not(any(windows, target_os = "macos")))]
 pub struct Image {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
 }
-
-/// Снимок окна для `--screens` на macOS (MAC-01): CoreGraphics.
-#[cfg(target_os = "macos")]
-mod macos;
 
 /// Дескриптор окна числом — его можно передать в другой поток (сам `Window` туда не передаётся).
 #[cfg(windows)]
@@ -234,10 +284,10 @@ pub fn window_id(window: &Window) -> Result<isize, String> {
     pets::window::id(window).map_err(|e| e.to_string())
 }
 
-/// macOS: номер окна (`CGWindowID`) — окно этого процесса впереди всех (в прогоне снимков оно одно).
+/// macOS: номер окна (`CGWindowID`, `-[NSWindow windowNumber]`).
 #[cfg(target_os = "macos")]
-pub fn window_id(_window: &Window) -> Result<isize, String> {
-    macos::own_window().map(|id| id as isize)
+pub fn window_id(window: &Window) -> Result<isize, String> {
+    pets_gpui_macos::window::id(window).map_err(|e| e.to_string())
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
@@ -253,8 +303,7 @@ pub fn capture(window: isize) -> Result<Image, String> {
 
 #[cfg(target_os = "macos")]
 pub fn capture(window: isize) -> Result<Image, String> {
-    let id = u32::try_from(window).map_err(|_| format!("window id {window}"))?;
-    macos::capture(id)
+    pets_gpui_macos::window::capture(window).map_err(|e| e.to_string())
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
