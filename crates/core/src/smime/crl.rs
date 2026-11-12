@@ -6,6 +6,9 @@
 //! серийный номер и срок проверяет он (`postman_smime::crl`, CRL — чужие байты). Проверенный CRL держится в памяти
 //! до `nextUpdate`; недоступный адрес не спрашивается [`RETRY_AFTER`] — окно не ждёт его снова.
 //!
+//! На Linux тем же путём проверяется отзыв любой доверенной цепочки (RSA, EC): службы ОС, как CryptoAPI, там нет
+//! (LIN-05).
+//!
 //! Загрузчик и проверка — за трейтами [`CrlFetch`] и [`CrlVerify`]: тесты подменяют сеть и воркер.
 
 use std::collections::HashMap;
@@ -50,7 +53,7 @@ impl CrlVerify for WorkerVerify {
     }
 }
 
-/// Загрузка средствами Windows (`CryptRetrieveObjectByUrlW`, без разбора).
+/// Загрузка средствами ОС: Windows — `CryptRetrieveObjectByUrlW`, Linux — свой HTTP (`linux.rs`); без разбора.
 pub struct SystemFetch;
 
 impl CrlFetch for SystemFetch {
@@ -143,7 +146,7 @@ impl GostCrl {
                     };
                 }
                 Err(e) => {
-                    tracing::warn!(%url, error = %e, "smime: GOST CRL not usable, revocation not checked");
+                    tracing::warn!(%url, error = %e, "smime: CRL not usable, revocation not checked");
                     let mut s = self.state();
                     s.lists.remove(&url);
                     s.failed.insert(url, now);
@@ -175,7 +178,7 @@ impl GostCrl {
                 None
             }
             Err(e) => {
-                tracing::warn!(%url, error = %e, "smime: GOST CRL unreachable, revocation not checked");
+                tracing::warn!(%url, error = %e, "smime: CRL unreachable, revocation not checked");
                 self.state().failed.insert(url.to_owned(), now);
                 None
             }
@@ -340,6 +343,41 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         // Без проверки CRL (демо) — как раньше.
         assert_eq!(finish(&cache, "demo", report(&p.good), &Context::fixed(trust), now).revocation, Revocation::NotCheckedGost);
+    }
+
+    /// Linux: подпись RSA — отзыв тем же CRL по CDP (службы ОС нет); CRL недоступен — «не удалось проверить».
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rsa_letters_use_the_crl_on_linux() {
+        use postman_cache::Cache;
+        use postman_smime::testkit::{Head, Sign};
+        use postman_smime::{Anchor, Trust};
+
+        use crate::smime::{Context, finish};
+
+        const RSA_URL: &str = "http://ca.corp.test/rsa.crl";
+        let key = Key::rsa('a');
+        let root = testkit::issue(&Spec::ca("Corp CA"), &key, None);
+        let user_key = Key::rsa('b');
+        let user = |serial: u64| {
+            testkit::issue(&Spec { serial, crl_url: Some(RSA_URL.into()), ..Spec::user("User", "user@corp.test") }, &user_key, Some((&root, &key)))
+        };
+        let (good, revoked) = (user(0x62), user(0x61));
+        let now = NOW as i64;
+        let crl = testkit::crl(&root, &key, &[0x61], now - 3600, now + 86_400);
+        let trust = Trust { roots: vec![Anchor { der: root.der.clone(), corporate: true }], ..Default::default() };
+        let head = Head { from: "user@corp.test", to: "me@corp.test", subject: "s", date: "Wed, 21 Oct 2026 10:00:00 +0300" };
+        let report = |c: &Issued| {
+            postman_worker::smime::verify(&testkit::signed_letter(&head, "<p>x</p>", c, &user_key, &[&root], &Sign::default()), &trust, NOW)
+        };
+        let cache = Cache::open_in_memory().unwrap();
+        let (e, _) = engine(&[(RSA_URL, Some(crl))], Duration::ZERO);
+        let ctx = Context { crl: Some(Arc::new(e)), ..Context::fixed(trust.clone()) };
+        assert_eq!(finish(&cache, "revoked", report(&revoked), &ctx, now).revocation, Revocation::Revoked);
+        assert_eq!(finish(&cache, "good", report(&good), &ctx, now).revocation, Revocation::Good);
+        let (e, _) = engine(&[(RSA_URL, None)], Duration::ZERO);
+        let ctx = Context { crl: Some(Arc::new(e)), ..Context::fixed(trust.clone()) };
+        assert_eq!(finish(&cache, "offline", report(&good), &ctx, now).revocation, Revocation::Unknown);
     }
 
     #[test]
