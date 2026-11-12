@@ -4,7 +4,7 @@
 > Руками не править. Обновить: `POSTMAN_UPDATE_DOCS=1 cargo test -p postman-gpui parity`.
 > «есть» — у действия команды есть обработчик на экране; доля сделанного только растёт (тест).
 
-Сделано: 137 из 137 (100 %).
+Сделано: 156 из 158 (98 %).
 
 Хоткей — схема «Outlook» (по умолчанию); «Одиночные» — буквы схемы «Одиночные клавиши» (S5-17) поверх неё.
 
@@ -33,6 +33,7 @@
 | Выделить все | `mail.select_all` | `ctrl-a` |  | есть |
 | Снять выделение | `mail.clear_selection` |  |  | есть |
 | Расширить выделение вниз | `mail.select_down` | `shift-down` |  | есть |
+| Выделить письмо | `mail.pick` | `space` |  | есть |
 | Расширить выделение вверх | `mail.select_up` | `shift-up` |  | есть |
 | Контекстное меню | `mail.context_menu` | `shift-f10`, `menu` |  | есть |
 | Переместить в папку… | `mail.move` | `ctrl-shift-v` | `v` | есть |
@@ -60,6 +61,7 @@
 | Предыдущая вкладка | `tab.prev` | `ctrl-shift-tab` |  | есть |
 | Закрыть вкладку | `tab.close` | `ctrl-w` |  | есть |
 | Уведомления | `view.notifications` |  |  | есть |
+| Отправить и получить — все папки | `sync.send_receive` | `f9` |  | есть |
 | Поиск | `search.focus` | `ctrl-e` | `/` | есть |
 | Сбросить поиск | `search.clear` | `escape` |  | есть |
 | Поиск: везде | `search.all` |  |  | есть |
@@ -67,6 +69,7 @@
 | Поиск: только с вложениями | `search.attachments` |  |  | есть |
 | Поиск: только непрочитанные | `search.unread` |  |  | есть |
 | Поиск: за 30 дней | `search.recent` |  |  | есть |
+| Сохранить поиск как быстрый фильтр | `search.save_filter` |  |  | есть |
 | Следующее совпадение в письме | `search.next_match` | `f3` |  | есть |
 | Предыдущее совпадение в письме | `search.prev_match` | `shift-f3` |  | есть |
 | Палитра команд | `palette.open` | `ctrl-k` |  | есть |
@@ -82,6 +85,9 @@
 | Вид «Рабочая неделя» | `calendar.view_work_week` | `2` |  | есть |
 | Вид «Неделя» | `calendar.view_week` | `3` |  | есть |
 | Вид «Месяц» | `calendar.view_month` | `4` |  | есть |
+| Календари рядом или наложением | `calendar.side_by_side` |  |  | есть |
+| Написать участникам встречи | `calendar.write_participants` | `ctrl-shift-r` |  | есть |
+| Открыть событие | `calendar.open_event` | `enter` |  | есть |
 | Отправить письмо | `compose.send` | `ctrl-enter` |  | есть |
 | Вложить файл | `compose.attach` |  |  | есть |
 | Закрыть письмо | `compose.close` | `escape` |  | есть |
@@ -92,8 +98,15 @@
 | Нумерованный список | `compose.numbers` |  |  | есть |
 | Ссылка | `compose.link` |  |  | есть |
 | Цитата | `compose.quote` |  |  | есть |
+| Вставить таблицу | `compose.table` |  |  | есть |
 | Развернуть ответ во вкладку | `compose.expand` |  |  | есть |
 | Удалить черновик | `compose.discard` |  |  | есть |
+| Адресная книга: выбрать адресатов | `compose.address_book` |  |  | есть |
+| Адресная книга: следующий | `recipients.next` | `down` |  | есть |
+| Адресная книга: предыдущий | `recipients.prev` | `up` |  | есть |
+| Адресная книга: отметить | `recipients.toggle` | `space` |  | есть |
+| Адресная книга: ОК | `recipients.apply` | `enter` |  | есть |
+| Адресная книга: закрыть | `recipients.close` | `escape` |  | есть |
 | Отправить приглашения | `meeting.send` | `ctrl-enter` |  | есть |
 | Закрыть вкладку встречи | `meeting.close` | `escape` |  | есть |
 | Удалить черновик встречи | `meeting.discard` | `ctrl-d` |  | есть |
@@ -109,10 +122,12 @@
 | Новый контакт | `contacts.new` | `ctrl-shift-c` |  | есть |
 | Изменить контакт | `contacts.edit` | `f2` |  | есть |
 | Удалить контакт | `contacts.delete` | `delete` |  | есть |
-| Написать контакту | `contacts.write` |  |  | есть |
-| Встреча с контактом | `contacts.meeting` |  |  | есть |
-| Копировать адрес контакта | `contacts.copy_address` |  |  | есть |
+| Написать контакту | `contacts.write` | `ctrl-n` |  | есть |
+| Встреча с контактом | `contacts.meeting` | `ctrl-shift-q` |  | есть |
+| Копировать адрес контакта | `contacts.copy_address` | `ctrl-c` |  | есть |
 | Меню контакта | `contacts.context_menu` | `shift-f10`, `menu` |  | есть |
+| Новая группа контактов | `contacts.new_group` |  |  | есть |
+| Добавить контакт в группу | `contacts.to_group` |  |  | есть |
 | Новая задача | `task.new` | `ctrl-n` |  | есть |
 | Выполнить задачу | `task.complete` | `space` |  | есть |
 | Срок задачи | `task.due` | `insert` |  | есть |
@@ -128,9 +143,13 @@
 | Напомнить исполнителю | `task.remind` |  |  | есть |
 | Напомнить всем, кто не принял поручение | `task.remind_all` |  |  | есть |
 | Забрать поручение | `task.revoke` |  |  | есть |
+| Ответить автору поручения | `task.reply` | `ctrl-r` |  | есть |
+| Задачу — в проект | `task.project` |  |  | есть |
+| Вид списка задач | `task.view` |  |  | есть |
 | Принять приглашение | `invite.accept` |  | `a` | есть |
 | Ответить «Под вопросом» | `invite.tentative` |  | `t` | есть |
 | Отклонить приглашение | `invite.decline` |  | `n` | есть |
+| Отменить ответ на приглашение | `invite.undo` | `ctrl-z` |  | есть |
 | Настройки | `settings.open` | `ctrl-,` |  | есть |
 | Автоматические ответы | `settings.vacation` |  |  | есть |
 | Правила | `settings.rules` |  |  | есть |
@@ -141,6 +160,8 @@
 | Экспорт… | `mail.export` |  |  | есть |
 | Экспорт учётки… | `account.export` |  |  | есть |
 | Экспорт всего… | `export.all` |  |  | есть |
+| Проверить обновления | `update.check` |  |  | нет |
+| Установить обновление | `update.install` |  |  | нет |
 | Фильтры: папки или фильтры слева | `view.filters` |  |  | есть |
 | Быстрые фильтры: показать или скрыть | `view.quick_filters` |  |  | есть |
 | Сортировать по дате | `view.sort_by_date` |  |  | есть |
