@@ -497,28 +497,35 @@ mod tests {
         cache
     }
 
-    /// Задание переноса в каждом состоянии: строка задания, письма в задании и у цели.
+    /// Задание переноса в каждом состоянии: строка задания, письма в задании и у цели. Состояния — каждое в своём
+    /// потоке и своей базе: по 12 480 писем на состояние, подряд в CI выходило 22 с.
     #[test]
     fn jobs_by_state() {
-        for shot in JobShot::ALL {
-            let cache = boxes();
-            let job = migration(&cache, shot).unwrap();
-            let row = cache.job(job).unwrap().unwrap();
-            let done = if shot == JobShot::Asking { 0 } else { JOB_DONE };
-            assert_eq!((row.state, row.total, row.bytes), (shot.state(), JOB_TOTAL as u64, done as u64 * JOB_LETTER_SIZE), "{shot:?}");
-            assert_eq!(row.mode, if shot == JobShot::Asking { MigrationMode::Ask } else { MigrationMode::Upload });
-            let outbound = cache.outbound(job).unwrap();
-            assert_eq!(outbound.len(), JOB_TOTAL - done, "{shot:?}");
-            let target = cache.folder_of("", "archive").unwrap().unwrap();
-            let source = cache.folder_of("@3", "inbox").unwrap().unwrap();
-            assert!(outbound.iter().all(|(_, o)| o.to == target && o.from == [source]));
-            assert_eq!(cache.folder_count(target).unwrap(), JOB_TOTAL);
-            assert_eq!(cache.letter(outbound[0].0).unwrap().unwrap().place, Place::Outbound(job));
-            assert_eq!(cache.check_index().unwrap(), Vec::<String>::new());
-        }
+        std::thread::scope(|s| {
+            for shot in JobShot::ALL {
+                s.spawn(move || job_by_state(shot));
+            }
+        });
         // «Идёт»: 3 120 из 12 480, около 1,2 ГБ.
         assert_eq!((JOB_DONE, JOB_TOTAL), (3_120, 12_480));
         let gb = JOB_DONE as f64 * JOB_LETTER_SIZE as f64 / f64::from(1u32 << 30);
         assert!((gb - 1.2).abs() < 0.01, "{gb}");
+    }
+
+    fn job_by_state(shot: JobShot) {
+        let cache = boxes();
+        let job = migration(&cache, shot).unwrap();
+        let row = cache.job(job).unwrap().unwrap();
+        let done = if shot == JobShot::Asking { 0 } else { JOB_DONE };
+        assert_eq!((row.state, row.total, row.bytes), (shot.state(), JOB_TOTAL as u64, done as u64 * JOB_LETTER_SIZE), "{shot:?}");
+        assert_eq!(row.mode, if shot == JobShot::Asking { MigrationMode::Ask } else { MigrationMode::Upload });
+        let outbound = cache.outbound(job).unwrap();
+        assert_eq!(outbound.len(), JOB_TOTAL - done, "{shot:?}");
+        let target = cache.folder_of("", "archive").unwrap().unwrap();
+        let source = cache.folder_of("@3", "inbox").unwrap().unwrap();
+        assert!(outbound.iter().all(|(_, o)| o.to == target && o.from == [source]));
+        assert_eq!(cache.folder_count(target).unwrap(), JOB_TOTAL);
+        assert_eq!(cache.letter(outbound[0].0).unwrap().unwrap().place, Place::Outbound(job));
+        assert_eq!(cache.check_index().unwrap(), Vec::<String>::new());
     }
 }
