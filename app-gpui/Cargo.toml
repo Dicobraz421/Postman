@@ -47,7 +47,7 @@ pets-shell = { git = "https://github.com/Dicobraz/pets", rev = "04174d541c8c455c
 pets-ui = { git = "https://github.com/Dicobraz/pets", rev = "04174d541c8c455c5826f30c75b0396067e0ed7d" }
 # Обновление программы (решение 2026-11-11 «self-update», Postman#503): проверка GitHub Releases, подпись minisign,
 # установка MSI и portable. Единственная сеть интерфейса по своей инициативе — только модуль `update`.
-pets-update = { git = "https://github.com/Dicobraz421/pets", rev = "c767dfd4489033e2c359e159481f23bd7119646a" }
+pets-update = { git = "https://github.com/Dicobraz421/pets", rev = "04174d541c8c455c5826f30c75b0396067e0ed7d" }
 futures = "0.3"
 tracing = "0.1"
 # Снимки экранов (`--screens`, S2-05): запись PNG.
