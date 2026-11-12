@@ -49,7 +49,8 @@ impl SettingsView {
         }
         self.disk_asked = true;
         if !self.info.live {
-            self.disk = Some(("C:".into(), Some(false)));
+            let demo = if cfg!(target_os = "macos") { "Macintosh HD" } else { "C:" };
+            self.disk = Some((demo.into(), Some(false)));
             return;
         }
         let task = cx.background_spawn(async move { crate::sys::shell::bitlocker(&crate::data_dir()) });
@@ -408,12 +409,12 @@ mod tests {
         use crate::chrome::glyph;
         let _ = pets_i18n::init(&crate::parts::texts(), "ru");
         let (g, t, h) = super::disk_texts("C:", Some(false));
-        assert_eq!((g, t.as_str()), (glyph::WARNING, "Диск C: с данными Postman не зашифрован BitLocker"));
+        assert_eq!((g, t.as_str()), (glyph::WARNING, "Диск C: с данными Postman не зашифрован"));
         assert!(h.is_some());
         assert_eq!(super::disk_texts("C:", Some(true)).0, glyph::CHECK);
         assert!(super::disk_texts("C:", Some(true)).2.is_none());
         assert_eq!(super::disk_texts("D:", None).0, glyph::INFO);
         let _ = pets_i18n::init(&crate::parts::texts(), "en");
-        assert_eq!(super::disk_texts("C:", Some(true)).1, "Drive C: with Postman data is encrypted with BitLocker");
+        assert_eq!(super::disk_texts("C:", Some(true)).1, "Drive C: with Postman data is encrypted");
     }
 }

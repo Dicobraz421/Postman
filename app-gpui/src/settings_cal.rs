@@ -59,7 +59,7 @@ pub(crate) fn zone_name(name: &str) -> String {
     format!("{} {city}", offset(&tz))
 }
 
-/// Пояс календаря в списке: свой или «Как в Windows».
+/// Пояс календаря в списке: свой или «Как в системе».
 fn zone_choice(zone: Option<&str>) -> String {
     match zone {
         Some(z) => zone_name(z),

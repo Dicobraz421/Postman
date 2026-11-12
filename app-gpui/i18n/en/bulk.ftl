@@ -1,5 +1,6 @@
 # Selection and bulk actions (S5-08): checkboxes, the bar above the list, the summary, the context menu, phishing.
 bulk-pick = Select (Ctrl+click; Shift+click — a range)
+bulk-pick-mac = Select (⌘-click; ⇧-click — a range)
 bulk-select-all = Select all
 bulk-selected = Selected: { $n }
 bulk-of = of { $total }

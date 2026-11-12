@@ -226,7 +226,7 @@ impl SettingsView {
             ))
             .child(group(tr!("settings-keytips-group"), l))
             .child(row(
-                tr!("settings-keytips"),
+                tr!(crate::sys::os_key("settings-keytips")),
                 Some(tr!("settings-keytips-hint")),
                 toggle("settings-keytips", p.keytips, l).on_click(cx.listener(|_, _, _, cx| {
                     crate::prefs::update(cx, |p| p.keytips = !p.keytips);

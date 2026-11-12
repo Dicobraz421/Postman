@@ -25,6 +25,11 @@ manual: docs/manual-tests/MAC-05.md
   `cross-krb5`/`libgssapi` с поддержкой macOS), снять `cfg`.
 - S/MIME: доверенные корни — `SecTrust`, подпись и расшифровка — `SecIdentity`/`SecKey` из Связки ключей (сейчас
   `smime/other.rs`); CRL — уже чистый Rust. Проверка подписи в воркере от платформы не зависит.
+- Вход без пароля в Exchange: `sys::shell::upn` и `in_domain` на macOS (`app-gpui/src/sys/shell_macos.rs`) — сейчас
+  «нет» (MAC-04), чтобы не предлагать вход, который не работает; здесь — домен AD (`dsconfigad -show` или Kerberos
+  `klist`) и UPN.
+- Тексты корпоративного уже без названий ОС (MAC-04, решение 2026-11-12 «no-os-names»: «проверяет система»,
+  «учётная запись домена»); если на macOS проверка устроена иначе — поправить смысл, не добавляя названий ОС.
 - ГОСТ при СКЗИ не делается (отложено, `docs/decisions/2026-10-27-smime-gost-skzi-deferred.md`).
 
 ## Приёмка
