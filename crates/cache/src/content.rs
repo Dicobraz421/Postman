@@ -494,22 +494,33 @@ impl Cache {
     /// и их раскодированные байты от воркера; пусто — шифрованное или мелкое, скелет — всё письмо). Одинаковые байты
     /// хранятся один раз; прежнее содержимое письма — `refs − 1`. Одной транзакцией: содержимого без письма не бывает.
     pub fn put_content(&self, letter: LetterId, raw: &[u8], split: &[SplitPart]) -> Result<Hash> {
-        let hash = Hash::of(raw);
+        let [hash] = self.put_contents(&[(letter, raw, split)])?[..] else { return Err(Error("put_content: no hash".into())) };
+        Ok(hash)
+    }
+
+    /// [`Cache::put_content`] для многих писем одной транзакцией (одна фиксация на диск): заливка архива, демо-ящик.
+    /// Хэши — в порядке `items`; нет хоть одного письма — ничего не записано.
+    pub fn put_contents(&self, items: &[(LetterId, &[u8], &[SplitPart])]) -> Result<Vec<Hash>> {
+        let mut hashes = Vec::with_capacity(items.len());
         let tx = self.db.begin_write()?;
         {
             let mut l = Letters::open(&tx)?;
-            let Some(old) = l.get(letter)? else { return Err(Error(format!("no letter {}", letter.0))) };
-            if old.content != Some(hash) {
-                acquire(&tx, hash, raw, split)?;
-                if let Some(prev) = old.content {
-                    release(&tx, prev)?;
+            for &(letter, raw, split) in items {
+                let hash = Hash::of(raw);
+                let Some(old) = l.get(letter)? else { return Err(Error(format!("no letter {}", letter.0))) };
+                if old.content != Some(hash) {
+                    acquire(&tx, hash, raw, split)?;
+                    if let Some(prev) = old.content {
+                        release(&tx, prev)?;
+                    }
+                    l.put(letter, Some(&old), &LetterRow { content: Some(hash), ..old.clone() })?;
                 }
-                l.put(letter, Some(&old), &LetterRow { content: Some(hash), ..old.clone() })?;
+                hashes.push(hash);
             }
             l.finish()?;
         }
         tx.commit()?;
-        Ok(hash)
+        Ok(hashes)
     }
 
     /// Письмо целиком, ровно исходные байты; `None` — такого содержимого нет.
@@ -722,6 +733,29 @@ mod tests {
         c.delete_remote("b", &["x".into()]).unwrap();
         assert_eq!(rows(&c), (0, 0, 0));
         assert_eq!(c.content(h).unwrap(), None);
+        assert_refs(&c);
+    }
+
+    /// Пакет одной транзакцией: общее вложение в двух письмах пакета — одна часть с двумя ссылками; нет одного из
+    /// писем — не записано ничего.
+    #[test]
+    fn contents_in_one_transaction() {
+        let (c, a, b) = setup();
+        let data = noise(200 * 1024, 3);
+        let (raw, part) = letter_with("x", &data, &b64(&data, 76, "\r\n"), "\r\n");
+        let (raw2, part2) = letter_with("Fwd: x", &data, &b64(&data, 76, "\r\n"), "\r\n");
+        let (x, y) = (new_letter(&c, "a", "x", a), new_letter(&c, "b", "y", b));
+        let parts = [part];
+        let hs = c.put_contents(&[(x, &raw, &parts), (y, &raw2, std::slice::from_ref(&part2))]).unwrap();
+        assert_eq!(hs, vec![Hash::of(&raw), Hash::of(&raw2)]);
+        assert_eq!((rows(&c), part_refs(&c, &data)), ((2, 1, 0), 2));
+        assert_eq!(c.letter_content(y).unwrap().unwrap(), raw2);
+        assert_refs(&c);
+
+        let z = new_letter(&c, "a", "z", a);
+        assert!(c.put_contents(&[(z, &raw, &parts), (LetterId(u64::MAX), &raw, &parts)]).is_err());
+        assert_eq!(c.letter_content(z).unwrap(), None);
+        assert_eq!((rows(&c), part_refs(&c, &data)), ((2, 1, 0), 2));
         assert_refs(&c);
     }
 

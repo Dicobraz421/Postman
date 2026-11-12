@@ -93,8 +93,9 @@ const STAGE_FOLDER: &str = "inbox";
 /// Письма `rows` — в локальную папку `folder`, `place = Local`, без связей с сервером. Писем без сервера хранилище
 /// само не заводит (их даёт перенос), поэтому — как после переноса, у которого источник уже удалил письма: письма
 /// учётки → перенос в `folder` (задание) → источник удалил (связей нет) → задание отменено (`Local` в прежней
-/// папке) → снова в `folder` (без связей — сразу `Local`). Шесть транзакций на все письма. Письмо только в базе —
-/// с содержимым (взять его больше негде): оно — по транзакции на письмо.
+/// папке) → снова в `folder` (без связей — сразу `Local`). Письмо только в базе — с содержимым (взять его больше
+/// негде), содержимое всех писем — одной транзакцией: по фиксации на письмо ящик собирался на Windows минуту.
+/// Семь транзакций на все письма.
 fn put_local(cache: &Cache, folder: FolderId, rows: &[LetterRow]) -> postman_cache::Result<()> {
     let stage = cache.folder_of(STAGE, STAGE_FOLDER)?.ok_or_else(|| missing(format!("folder {STAGE_FOLDER} of account '{STAGE}'")))?;
     let mut keyed = Vec::with_capacity(rows.len());
@@ -113,9 +114,8 @@ fn put_local(cache: &Cache, folder: FolderId, rows: &[LetterRow]) -> postman_cac
         cache.drop_job(job)?;
     }
     cache.move_letters(&ids, folder)?;
-    for (id, raw) in ids.into_iter().zip(raws) {
-        cache.put_content(id, &raw, &[])?;
-    }
+    let contents: Vec<_> = ids.into_iter().zip(&raws).map(|(id, raw)| (id, raw.as_slice(), &[][..])).collect();
+    cache.put_contents(&contents)?;
     Ok(())
 }
 
@@ -170,12 +170,15 @@ fn shared_pdf(cache: &Cache, now: i64) -> postman_cache::Result<()> {
             .collect();
         cache.upsert_emails(&rows)?;
         let account = profile.unwrap_or("");
+        let mut letters = Vec::with_capacity(SHARED_PER_ACCOUNT);
         for i in 0..SHARED_PER_ACCOUNT {
             let key = format!("share{i}");
             let id = cache.letter_of(account, &key)?.ok_or_else(|| missing(format!("letter {key} of account '{account}'")))?;
             let (raw, part) = shared_raw(n, i, at(i));
-            cache.put_content(id, &raw, &[part])?;
+            letters.push((id, raw, [part]));
         }
+        let contents: Vec<_> = letters.iter().map(|(id, raw, part)| (*id, raw.as_slice(), &part[..])).collect();
+        cache.put_contents(&contents)?;
     }
     Ok(())
 }
@@ -435,10 +438,13 @@ mod tests {
             for (n, (profile, folder)) in SHARED_IN.into_iter().enumerate() {
                 let account = profile.unwrap_or("");
                 let f = cache.folder_of(account, folder).unwrap().unwrap();
-                for i in 0..SHARED_PER_ACCOUNT {
-                    let id = cache.upsert_remote(account, &format!("share{i}"), &LetterRow { folders: vec![f], ..LetterRow::default() }).unwrap();
-                    cache.put_content(id, &shared_raw(n, i, 1_792_000_000).0, &[]).unwrap();
-                }
+                let letters: Vec<_> = (0..SHARED_PER_ACCOUNT)
+                    .map(|i| {
+                        let id = cache.upsert_remote(account, &format!("share{i}"), &LetterRow { folders: vec![f], ..LetterRow::default() }).unwrap();
+                        (id, shared_raw(n, i, 1_792_000_000).0)
+                    })
+                    .collect();
+                cache.put_contents(&letters.iter().map(|(id, raw)| (*id, raw.as_slice(), &[][..])).collect::<Vec<_>>()).unwrap();
             }
         }
         drop(cache);
