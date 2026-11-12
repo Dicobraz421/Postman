@@ -208,14 +208,14 @@ pub(super) fn own_certs(from: &str) -> Vec<Vec<u8>> {
         .collect()
 }
 
-/// Лучший свой сертификат для подписи `from`: годный, действующий, RSA, самый поздний срок.
+/// Лучший свой сертификат для подписи `from`: годный, действующий, RSA или ECDSA, самый поздний срок.
 fn signing(ids: &[Identity], from: &str, now: i64) -> Option<(usize, Scheme)> {
     let mut best: Option<(usize, Scheme, i64)> = None;
     for (n, id) in ids.iter().enumerate() {
         let Some((info, can, Some(scheme))) = own_certificate(&id.cert) else { continue };
         let mine = info.emails.iter().any(|e| e.eq_ignore_ascii_case(from.trim()));
         let valid = info.not_before <= now && now <= info.not_after;
-        if can && mine && valid && matches!(scheme, Scheme::RsaPkcs1(_)) && best.is_none_or(|b| info.not_after > b.2) {
+        if can && mine && valid && matches!(scheme, Scheme::RsaPkcs1(_) | Scheme::Ecdsa(_)) && best.is_none_or(|b| info.not_after > b.2) {
             best = Some((n, scheme, info.not_after));
         }
     }
@@ -249,7 +249,8 @@ pub(super) fn unwrap_cek(
     }
 }
 
-/// Случайные числа — `/dev/urandom`; ECDH (получатели с ключом EC) — нет: такие письма не шифруются.
+/// Случайные числа — `/dev/urandom`; эфемерный ECDH (получатели с ключом EC P-256/P-384) — `p256`/`p384` с ключом
+/// из тех же случайных чисел.
 pub(super) struct LinuxOps {
     random: std::fs::File,
     failed: std::sync::atomic::AtomicBool,
@@ -277,8 +278,20 @@ impl postman_smime::seal::Ops for LinuxOps {
         }
     }
 
-    fn ecdh(&self, _bits: u16, _peer: &[u8]) -> Result<(Vec<u8>, zeroize::Zeroizing<Vec<u8>>), postman_smime::seal::SealError> {
-        Err(postman_smime::seal::SealError::Failed("EC recipients are not supported on this system yet".into()))
+    fn ecdh(&self, bits: u16, peer: &[u8]) -> Result<(Vec<u8>, zeroize::Zeroizing<Vec<u8>>), postman_smime::seal::SealError> {
+        use postman_smime::seal::Ops;
+        let mut seed = zeroize::Zeroizing::new(vec![0u8; if bits == 384 { 48 } else { 32 }]);
+        // Байты вне порядка кривой — вероятность ~2^-32 и меньше; несколько попыток, затем отказ.
+        for _ in 0..4 {
+            self.random(&mut seed);
+            if self.failed() {
+                break;
+            }
+            if let Some(r) = postman_smime::soft::ecdh_ephemeral(bits, &seed, peer) {
+                return Ok(r);
+            }
+        }
+        Err(postman_smime::seal::SealError::Failed("ECDH".into()))
     }
 }
 

@@ -5,12 +5,15 @@
 //! Поддержано: MAC HMAC-SHA-1/SHA-2 (ключ по PKCS#12 KDF), шифрование PBES2 (PBKDF2 с HMAC-SHA-1/SHA-2, AES-CBC и
 //! 3DES-CBC — так экспортируют OpenSSL 3 и Windows «AES256-SHA256»), старое `pbeWithSHAAnd3-KeyTripleDES-CBC` и
 //! `pbeWithSHAAnd40BitRC2-CBC`/`128BitRC2` (OpenSSL 1.x, Windows «TripleDES-SHA1»); RC2 — крейт `rc2`, только
-//! расшифровка. Ключи — RSA (PKCS#8); EC и ГОСТ — отказ [`P12Error::Unsupported`]. Закрытые операции — `rsa` 0.10
-//! (постоянное время на `crypto-bigint`, RUSTSEC-2023-0071 закрыт в 0.10).
+//! расшифровка. Ключи — RSA и EC P-256/P-384 (PKCS#8), как у Windows (CNG; P-521 — нет); ГОСТ — отказ
+//! [`P12Error::Unsupported`] (LIN-07). Закрытые операции — `rsa` 0.10 (постоянное время на `crypto-bigint`,
+//! RUSTSEC-2023-0071 закрыт в 0.10), `p256`/`p384`.
 
 use der::{Decode, Encode};
 use rsa::PrivateKey as RsaPrivateKey;
 use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
+
+use crate::soft::Private;
 use x509_cert::Certificate;
 use zeroize::Zeroizing;
 
@@ -39,13 +42,13 @@ pub enum P12Error {
     NoKey,
 }
 
-/// Свой сертификат с закрытым ключом RSA и остальные сертификаты файла (промежуточные, корень).
+/// Свой сертификат с закрытым ключом и остальные сертификаты файла (промежуточные, корень).
 pub struct Identity {
     /// Сертификат ключа (DER).
     pub cert: Vec<u8>,
     /// Остальные сертификаты файла (DER), без сертификата ключа.
     pub chain: Vec<Vec<u8>>,
-    pub(crate) key: RsaPrivateKey,
+    pub(crate) key: Private,
 }
 
 impl std::fmt::Debug for Identity {
@@ -60,7 +63,7 @@ impl Identity {
         crate::soft::SoftKey::from_key(&self.cert, self.key.clone())
     }
 
-    /// Подписант схемой `scheme` (RSA PKCS#1 v1.5).
+    /// Подписант схемой `scheme` (RSA PKCS#1 v1.5 или ECDSA).
     pub fn signer(&self, scheme: crate::Scheme) -> crate::soft::SoftSigner {
         crate::soft::SoftSigner { cert: self.cert.clone(), chain: self.chain.clone(), scheme, key: self.key.clone() }
     }
@@ -96,6 +99,10 @@ mod oids {
     pub const SHA256: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01];
     pub const SHA384: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02];
     pub const SHA512: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03];
+    /// id-ecPublicKey, 1.2.840.10045.2.1.
+    pub const EC_PUBLIC_KEY: &[u8] = &[0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01];
+    pub const P256: &[u8] = &[0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07];
+    pub const P384: &[u8] = &[0x2B, 0x81, 0x04, 0x00, 0x22];
 }
 
 const SEQUENCE: u8 = 0x30;
@@ -350,20 +357,57 @@ fn check_mac(mac: &Tlv<'_>, password: &str, content: &[u8]) -> Result<(), P12Err
 #[derive(Default)]
 struct Found {
     certs: Vec<Vec<u8>>,
-    keys: Vec<RsaPrivateKey>,
+    keys: Vec<Private>,
     unsupported_key: Option<P12Error>,
 }
 
+/// Ключ EC из PKCS#8 (RFC 5915 внутри RFC 5208): кривая — из параметров алгоритма.
+fn ec_key(pkcs8: &[u8]) -> Result<Private, P12Error> {
+    let p = kids(&one(pkcs8)?, SEQUENCE)?;
+    let alg = kids(p.get(1).ok_or(BAD)?, SEQUENCE)?;
+    let curve = oid_of(alg.get(1))?;
+    let inner = octets(p.get(2))?;
+    let ec = kids(&one(&inner)?, SEQUENCE)?;
+    let d = ec.get(1).filter(|t| t.tag == OCTETS).map(|t| zeroize::Zeroizing::new(t.value.to_vec())).ok_or(BAD)?;
+    match curve {
+        oids::P256 => p256::SecretKey::from_slice(&d).map(Private::P256).map_err(|_| P12Error::Malformed("EC key")),
+        oids::P384 => p384::SecretKey::from_slice(&d).map(Private::P384).map_err(|_| P12Error::Malformed("EC key")),
+        other => Err(unsupported(other)),
+    }
+}
+
 fn private_key(pkcs8: &[u8], found: &mut Found) {
-    match RsaPrivateKey::from_pkcs8_der(pkcs8) {
+    if let Ok(k) = RsaPrivateKey::from_pkcs8_der(pkcs8) {
+        found.keys.push(Private::Rsa(k));
+        return;
+    }
+    let alg = one(pkcs8)
+        .ok()
+        .and_then(|t| t.children())
+        .and_then(|c| c.get(1).and_then(|a| a.children()).and_then(|a| a.first().map(|o| o.value.to_vec())));
+    let result = match alg.as_deref() {
+        Some(oids::EC_PUBLIC_KEY) => ec_key(pkcs8),
+        Some(o) => Err(unsupported(o)),
+        None => Err(P12Error::Malformed("private key")),
+    };
+    match result {
         Ok(k) => found.keys.push(k),
-        Err(_) => {
-            // Не RSA (или повреждён): назвать алгоритм ключа, если он читается.
-            let alg = one(pkcs8)
-                .ok()
-                .and_then(|t| t.children())
-                .and_then(|c| c.get(1).and_then(|a| a.children()).and_then(|a| a.first().map(|o| o.value.to_vec())));
-            found.unsupported_key.get_or_insert(alg.map_or(P12Error::Malformed("private key"), |o| unsupported(&o)));
+        Err(e) => {
+            found.unsupported_key.get_or_insert(e);
+        }
+    }
+}
+
+/// Открытый ключ сертификата `cert` совпадает с закрытым `key`.
+fn same_key(cert: &Certificate, key: &Private) -> bool {
+    let spki = cert.tbs_certificate().subject_public_key_info();
+    match key {
+        Private::Rsa(k) => spki.to_der().ok().and_then(|der| rsa::PublicKey::from_public_key_der(&der).ok()).is_some_and(|p| p == k.to_public_key()),
+        Private::P256(k) => {
+            spki.subject_public_key.as_bytes().and_then(|b| p256::PublicKey::from_sec1_bytes(b).ok()).is_some_and(|p| p == k.public_key())
+        }
+        Private::P384(k) => {
+            spki.subject_public_key.as_bytes().and_then(|b| p384::PublicKey::from_sec1_bytes(b).ok()).is_some_and(|p| p == k.public_key())
         }
     }
 }
@@ -400,8 +444,7 @@ fn safe_contents(der: &[u8], password: &str, found: &mut Found, depth: u8) -> Re
     Ok(())
 }
 
-/// Открыть файл PKCS#12 паролем: свои сертификаты с ключами (у каждого ключа RSA — его сертификат по открытому
-/// ключу), лучший — по позднему сроку, первым. Ключа нет — [`P12Error::NoKey`].
+/// Открыть файл PKCS#12 паролем: свои сертификаты с ключами (у каждого ключа — его сертификат по открытому ключу), лучший — по позднему сроку, первым. Ключа нет — [`P12Error::NoKey`].
 pub fn parse(pfx: &[u8], password: &str) -> Result<Vec<Identity>, P12Error> {
     if pfx.len() > MAX_FILE {
         return Err(P12Error::Malformed("too large"));
@@ -437,14 +480,7 @@ pub fn parse(pfx: &[u8], password: &str) -> Result<Vec<Identity>, P12Error> {
     }
     let mut out: Vec<(Identity, der::DateTime)> = Vec::new();
     for key in found.keys {
-        let public = key.to_public_key();
-        let matching = found.certs.iter().find(|der| {
-            Certificate::from_der(der)
-                .ok()
-                .and_then(|c| c.tbs_certificate().subject_public_key_info().to_der().ok())
-                .and_then(|spki| rsa::PublicKey::from_public_key_der(&spki).ok())
-                .is_some_and(|p| p == public)
-        });
+        let matching = found.certs.iter().find(|der| Certificate::from_der(der).ok().is_some_and(|c| same_key(&c, &key)));
         let Some(cert) = matching.cloned() else { continue };
         let Ok(c) = Certificate::from_der(&cert) else { continue };
         let until = c.tbs_certificate().validity().not_after.to_date_time();

@@ -66,3 +66,22 @@ fn key_signs_and_matches_certificate() {
     assert!(public.verify(rsa::Pkcs1v15Sign::new::<sha2::Sha256>(), &digest, &sig).is_ok());
     assert!(id.soft_key().is_some());
 }
+
+/// `ec384.p12` — ключ EC P-384 (OpenSSL 3 по умолчанию): подпись ECDSA проверяется ключом сертификата, ECDH с
+/// эфемерным ключом шифрования даёт тот же секрет, что у получателя.
+#[test]
+fn ec_key_signs_and_agrees() {
+    use p384::ecdsa::signature::hazmat::PrehashVerifier;
+    let ids = parse(include_bytes!("ec384.p12"), "secret").unwrap();
+    let id = &ids[0];
+    assert_eq!(hex(&Hash::Sha256.digest(&id.cert)), "bc09bca62442913d32613afeca1a8cbebaa1098435cc4ffe8022c166a4132524");
+    let digest = Hash::Sha384.digest(b"hello");
+    let sig = crate::sign::Signer::sign(&id.signer(crate::Scheme::Ecdsa(Hash::Sha384)), &digest).unwrap();
+    let cert = Certificate::from_der(&id.cert).unwrap();
+    let point = cert.tbs_certificate().subject_public_key_info().subject_public_key.as_bytes().unwrap().to_vec();
+    let vk = p384::ecdsa::VerifyingKey::from_sec1_bytes(&point).unwrap();
+    assert!(vk.verify_prehash(&digest, &p384::ecdsa::Signature::from_der(&sig).unwrap()).is_ok());
+    let (eph, z) = crate::soft::ecdh_ephemeral(384, &[7u8; 48], &point).unwrap();
+    assert_eq!(crate::soft::ecdh(&id.key, &eph).unwrap(), z);
+    assert!(id.soft_key().is_some());
+}
