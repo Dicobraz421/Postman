@@ -1,7 +1,7 @@
 # MAC-04: системные возможности macOS
 
 lane: x
-status: todo
+status: done
 deps: [MAC-02]
 class: B
 files: [app-gpui/src/sys/, app-gpui/src/screens.rs, .github/workflows/macos.yml, pets: crates/pets-gpui-macos/, pets: crates/pets-shell/, pets: crates/pets-ui/]
@@ -33,3 +33,13 @@ manual: docs/manual-tests/MAC-04.md
 
 ## Зависимости
 MAC-02 (крейт `pets-gpui-macos`).
+
+## Что не вошло
+- `NSFilePromiseProvider` (перетаскивание вложения без копии заранее): копия MAC-02 — доли секунды для обычных
+  вложений, замеров против неё нет; вернуться, если владелец заметит задержку на больших файлах.
+- Вход без пароля в домене (`upn`, `in_domain` — пока «нет», вариант не предлагается) — MAC-05. Тексты без названий
+  ОС (решение 2026-11-12 «no-os-names») — здесь, и для корпоративного тоже: «система», «учётная запись домена».
+- Запуск при входе на macOS — обычным окном, не скрытым (`--minimized` у `SMAppService.mainApp` не передать).
+- Папка тем пользователя на macOS не отслеживается: новые файлы тем — со следующего запуска.
+- Тесты pets для macOS (`unique_pasteboard_round_trip` на своём буфере, `footprint_is_reported`, щелчок по
+  уведомлению) в CI не запускаются: mac-job в CI pets нет — MAC-06.

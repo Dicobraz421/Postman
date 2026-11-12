@@ -70,8 +70,11 @@ pub(crate) enum Held {
 }
 
 impl Held {
+    /// `Ctrl` — главный модификатор щелчка: Ctrl, на macOS — ⌘ (`keymap::pick_click`, MAC-04).
     fn modifiers(self) -> Modifiers {
-        Modifiers { control: self == Held::Ctrl, shift: self == Held::Shift, ..Modifiers::default() }
+        let main = self == Held::Ctrl;
+        let mac = crate::keymap::MAC;
+        Modifiers { control: main && !mac, platform: main && mac, shift: self == Held::Shift, ..Modifiers::default() }
     }
 }
 
@@ -164,10 +167,10 @@ pub(crate) fn notify(title: &str, body: &str) -> Result<(), String> {
         HELD_NOTICES.lock().unwrap_or_else(PoisonError::into_inner).push((title.to_owned(), body.to_owned()));
         return Ok(());
     }
-    // Щелчок по уведомлению возвращает окно из трея (T3-13).
-    #[cfg(windows)]
+    // Щелчок по уведомлению возвращает окно из трея (T3-13; macOS — из скрытых, MAC-04).
+    #[cfg(any(windows, target_os = "macos"))]
     return sys::shell::notify_click(title, body, None, || crate::tray::send(crate::tray::Signal::Open));
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     sys::shell::notify(title, body)
 }
 
@@ -182,7 +185,7 @@ pub(crate) fn notify_with(title: &str, body: &str, sound: bool) -> Result<(), St
 
 /// Уведомление о новых письмах (T3-13): щелчок открывает окно и письмо `letter` (`None` — «Входящие»).
 pub(crate) fn notify_new_mail(title: &str, body: &str, sound: bool, letter: Option<String>) -> Result<(), String> {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     if !screening() {
         return sys::shell::notify_click(title, body, Some(sound), move || crate::tray::send(crate::tray::Signal::Letter(letter.clone())));
     }
@@ -640,7 +643,9 @@ fn events(step: Input, m: &Mailer, window: &Window, cx: &App) -> Result<VecDeque
             // Мимо `dispatch_keystroke`: он дописал бы к Enter ввод перевода строки, а поле отвечает на него `Change` — и строка
             // ошибки, поставленная по Enter, сразу снималась бы. Текст — шагом `Input::Text`.
             for k in keys {
-                let keystroke = Keystroke::parse(k).map_err(|e| format!("key {k}: {e}"))?;
+                // Клавиши сцены — в записи таблицы команд (Windows); на macOS — как их привязала ОС (Ctrl → ⌘, MAC-04).
+                let k = crate::keymap::for_os(k).unwrap_or_else(|| (*k).to_owned());
+                let keystroke = Keystroke::parse(&k).map_err(|e| format!("key {k}: {e}"))?;
                 out.push_back(Event::Raw(PlatformInput::KeyDown(KeyDownEvent { keystroke, is_held: false, prefer_character_input: false })));
             }
         }
@@ -953,9 +958,11 @@ pub(crate) fn send_input(window: &Window, cx: &mut Context<Mailer>, event: Platf
     });
 }
 
-/// Нажатые модификаторы: только Ctrl или ничего.
+/// Нажатые модификаторы: только Ctrl (macOS — ⌘, MAC-04) или ничего.
 pub(crate) fn ctrl(on: bool) -> ModifiersChangedEvent {
-    ModifiersChangedEvent { modifiers: Modifiers { control: on, ..Modifiers::default() }, capslock: Capslock::default() }
+    let mac = crate::keymap::MAC;
+    let modifiers = Modifiers { control: on && !mac, platform: on && mac, ..Modifiers::default() };
+    ModifiersChangedEvent { modifiers, capslock: Capslock::default() }
 }
 
 #[cfg(test)]
