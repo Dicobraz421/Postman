@@ -67,6 +67,10 @@ jobs:
 
       # Песочница воркера — полная (seccomp + Landlock), как на Windows и macOS в CI: не ставится — тест падает
       # с диагностикой, песочница не ослабляется.
+      # Ubuntu 24.04 запрещает непривилегированные user namespaces (AppArmor), а песочница воркера без них не стартует
+      # (ADR 0010, LIN-04): снимаем запрет раннера, не песочницы.
+      - name: User namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Тесты
         run: cargo nextest run --workspace --locked --profile ci
         env:
