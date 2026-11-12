@@ -250,7 +250,7 @@ impl Registry {
             }
         });
         if let Err(e) = started {
-            tracing::warn!("viewer modules thread not started: {e}");
+            tracing::error!("viewer: viewer modules thread not started: {e}");
         }
         rx
     }
@@ -268,19 +268,19 @@ impl Registry {
             for path in manifests {
                 let Some(id) = path.file_stem().and_then(|s| s.to_str()).map(str::to_lowercase) else { continue };
                 if modules.iter().any(|m| m.id == id) {
-                    tracing::warn!("viewer module {}: skipped, a system module has the same name", path.display());
+                    tracing::warn!(path = %path.display(), "viewer: module skipped, a system module has the same name");
                     continue;
                 }
                 if modules.len() >= MAX_MODULES {
-                    tracing::warn!("viewer module {}: skipped, more than {MAX_MODULES} modules", path.display());
+                    tracing::warn!(path = %path.display(), "viewer: module skipped, more than {MAX_MODULES} modules");
                     continue;
                 }
                 match load_module(&path) {
                     Ok((description, wasm)) => {
-                        tracing::info!("viewer module {id}: {} {}", description.name, description.version);
+                        tracing::info!("viewer: module {id}: {} {}", description.name, description.version);
                         modules.push(Module { id, description, third_party: dir.third_party, wasm: Arc::new(wasm) });
                     }
-                    Err(e) => tracing::warn!("viewer module {}: skipped: {e}", path.display()),
+                    Err(e) => tracing::error!(path = %path.display(), "viewer: module not loaded: {e}"),
                 }
             }
         }

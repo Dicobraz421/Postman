@@ -339,7 +339,7 @@ impl ReadingPane {
                         r.scans.insert(blob, s);
                     }
                     Err(e) => {
-                        tracing::warn!("office scan failed: {e}");
+                        tracing::error!("preview: Office document scan failed, not shown: {e}");
                         if let Some(p) = waiting {
                             p.state = PvState::Failed(e);
                         }

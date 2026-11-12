@@ -49,7 +49,7 @@ impl SettingsView {
             let result = task.await;
             let _ = this.update(cx, |v, cx| {
                 if let Err(e) = result {
-                    tracing::warn!("autostart: {e}");
+                    tracing::error!("settings: autostart not changed: {e}");
                     v.os.error = Some(tr!("settings-os-failed"));
                 }
                 cx.notify();
@@ -70,7 +70,7 @@ impl SettingsView {
             let result = task.await;
             let _ = this.update(cx, |v, cx| {
                 if let Err(e) = result {
-                    tracing::warn!("mailto: {e}");
+                    tracing::error!("settings: default mail app not set: {e}");
                     v.os.error = Some(tr!("settings-os-failed"));
                 }
                 cx.notify();
@@ -91,7 +91,7 @@ impl SettingsView {
                 match result {
                     Ok(path) => v.os.report = Some(path),
                     Err(e) => {
-                        tracing::warn!("report: {e}");
+                        tracing::error!("settings: system report not created: {e}");
                         v.os.error = Some(tr!("settings-os-failed"));
                     }
                 }
@@ -250,7 +250,7 @@ impl SettingsView {
             .gap_2()
             .child(crate::settings_tab::link("settings-releases", tr!("settings-releases"), l).on_click(cx.listener(move |_, _, _, _| {
                 if let Err(e) = crate::sys::shell::open(&crate::diagnostics::releases(channel)) {
-                    tracing::warn!("updates: {e}");
+                    tracing::error!("settings: releases page not opened: {e}");
                 }
             })))
             .when_some(upd.offer.clone().filter(|_| upd.allowed && !busy), |d, _| {
@@ -285,7 +285,7 @@ impl SettingsView {
             .when_some(self.os.report.clone(), |d, path| {
                 d.child(button("settings-report-show", tr!("settings-report-show"), false, l).on_click(cx.listener(move |_, _, _, _| {
                     if let Err(e) = crate::sys::shell::reveal(&path) {
-                        tracing::warn!("report: {e}");
+                        tracing::error!("settings: system report not shown: {e}");
                     }
                 })))
             })
@@ -341,7 +341,7 @@ impl SettingsView {
                 button("settings-log-open", tr!("settings-log-open"), false, l).on_click(cx.listener(move |_, _, _, _| {
                     let _ = std::fs::create_dir_all(&log_dir);
                     if let Err(e) = crate::sys::shell::open(&log_dir.display().to_string()) {
-                        tracing::warn!("log folder: {e}");
+                        tracing::error!("settings: log folder not opened: {e}");
                     }
                 })),
                 l,

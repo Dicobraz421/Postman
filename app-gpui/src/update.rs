@@ -234,7 +234,7 @@ fn run<T: Send + 'static>(cx: &mut App, work: impl FnOnce() -> T + Send + 'stati
         let _ = tx.send(work());
     });
     if let Err(e) = spawned {
-        tracing::warn!("update: thread: {e}");
+        tracing::error!("update: update thread not started: {e}");
         return;
     }
     cx.spawn(async move |cx| {
@@ -280,7 +280,7 @@ fn installed(r: &UpdateResult, cx: &mut App) {
         toast(cx, Level::Success, tr!("update-done", version = r.version.clone()), None);
     } else {
         let error = r.error.clone().unwrap_or_default();
-        tracing::warn!(version = %r.version, %error, "update: install failed");
+        tracing::error!(version = %r.version, %error, "update: install failed");
         toast(cx, Level::Error, tr!("update-failed", version = r.version.clone(), error = error), None);
     }
 }
@@ -344,10 +344,10 @@ fn checked(reason: CheckReason, res: Result<CheckOutcome, UpdateError>, cx: &mut
         }
         Ok(CheckOutcome::Disabled(_)) if manual => toast(cx, Level::Info, tr!("update-policy"), None),
         Ok(_) => {}
-        Err(e) if !manual => tracing::warn!(error = %e, "update: scheduled check failed"),
+        Err(e) if !manual => tracing::warn!(error = %e, "update: scheduled check failed, retry later"),
         Err(e) => {
             let error = e.to_string();
-            tracing::warn!(%error, "update: check failed");
+            tracing::error!(%error, "update: check failed");
             edit(cx, |m| m.status = Status::Failed(error.clone()));
             toast(cx, Level::Warning, tr!("update-check-failed", error = error), None);
         }
@@ -421,7 +421,7 @@ fn installed_now(version: &str, res: Result<(), UpdateError>, cx: &mut App) {
         Err(UpdateError::Cancelled) => edit(cx, |m| m.status = Status::Available(version.to_owned())),
         Err(e) => {
             let error = e.to_string();
-            tracing::warn!(%version, %error, "update: install failed");
+            tracing::error!(%version, %error, "update: install failed");
             // Предложение остаётся: «Установить» можно нажать снова.
             edit(cx, |m| m.status = Status::Available(version.to_owned()));
             toast(cx, Level::Error, tr!("update-install-failed", error = error), None);

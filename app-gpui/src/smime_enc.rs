@@ -81,6 +81,23 @@ impl Problem {
         }
     }
 
+    /// В журнал по правилу уровней: PIN, карта, отмена — дело человека (INFO); письмо не мне — WARN; остальное —
+    /// ERROR. Без адресов (`NotForYou` несёт адреса получателей).
+    fn log(&self) {
+        match self {
+            Problem::NeedPin | Problem::NoCard | Problem::Cancelled => {
+                tracing::info!("smime: letter not decrypted: PIN or card needed, or cancelled")
+            }
+            Problem::NotForYou(_) => tracing::warn!("smime: letter not encrypted for own certificates"),
+            Problem::NeedSkzi => tracing::error!("smime: GOST letter not decrypted: no SKZI"),
+            Problem::Damaged => tracing::error!("smime: letter not decrypted: damaged"),
+            Problem::Unsupported(a) => tracing::error!("smime: letter not decrypted: algorithm {a} not supported"),
+            Problem::Nested => tracing::error!("smime: letter not decrypted: nested encryption"),
+            Problem::TooLarge => tracing::error!("smime: letter not decrypted: too large"),
+            Problem::Failed(e) => tracing::error!("smime: letter not decrypted: {e}"),
+        }
+    }
+
     /// Текст строки.
     pub(crate) fn text(&self) -> String {
         match self {
@@ -247,7 +264,7 @@ impl ReadingPane {
                         this.ensure_images_pub(cx);
                     }
                     Err(p) => {
-                        tracing::info!("S/MIME message is not opened: {p:?}");
+                        p.log();
                         s.lock = Some(Lock::Failed(p));
                         s.seal = Seal::Unsigned;
                     }

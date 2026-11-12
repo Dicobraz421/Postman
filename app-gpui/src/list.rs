@@ -292,7 +292,7 @@ impl Job {
             true
         });
         if let Err(e) = scanned {
-            tracing::warn!("filters: {e}");
+            tracing::error!("list: letter list not built: {e}");
         }
         (counts, hits, tops, threads, seen)
     }

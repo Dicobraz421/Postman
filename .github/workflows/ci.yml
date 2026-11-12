@@ -1,13 +1,16 @@
 # CI Postman по шаблону скилла pets-dev (R-01).
 # PR и merge queue: метки конфликта, полосы, clippy, тесты (nextest) — цель ≤7 мин при тёплом кэше.
-# Docs-PR: сборка пропускается (job `changes`). Release, подпись, комплекты — main, теги `v*`, ручной запуск и PR,
-# что правят сам выпуск (job `changes`, выход `release`); тег `v*` — ещё и выпуск на GitHub (job `publish`, схема —
+# Docs-PR: сборка пропускается (job `changes`). Черновик PR (draft) не собирается вовсе: CI идёт один раз, когда PR
+# готов (ready_for_review), и на каждый пуш после этого (экономия CI, решение 2026-11-12 «ci-economy»).
+# Release, подпись, комплекты — теги `v*`, ручной запуск и PR, что правят сам выпуск (job `changes`, выход
+# `release`); на пуш в main release не собирается. Тег `v*` — ещё и выпуск на GitHub (job `publish`, схема —
 # docs/DEV.md «Выпуск»).
 # Required check в защите main — один: `gate`.
 name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
   push:
     branches: [main]
@@ -30,6 +33,8 @@ env:
 
 jobs:
   changes:
+    # Черновик PR — без CI; `gate` на черновике зелёный (всё пропущено), слить черновик нельзя.
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     outputs:
       rust: ${{ steps.d.outputs.rust }}
@@ -73,7 +78,8 @@ jobs:
 
   test:
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    # Пуш в main не тестируется: тот же код уже проверила очередь слияния (merge_group). Тег — тестируется.
+    if: needs.changes.outputs.rust == 'true' && !(github.event_name == 'push' && github.ref_type == 'branch')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7.0.1
@@ -156,7 +162,7 @@ jobs:
   release:
     needs: changes
     if: >-
-      github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref_type == 'tag') || github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' && needs.changes.outputs.release == 'true')
     strategy:
       fail-fast: false

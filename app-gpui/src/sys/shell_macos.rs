@@ -2,7 +2,7 @@
 //! в файл (`~/Library/Logs/Postman` — путь даёт `postman_core::paths::log_dir`), Finder («Открыть», «Показать в
 //! Finder»), уведомления центра уведомлений. MAC-04: запуск при входе (`SMAppService`), политики (профиль
 //! конфигурации), FileVault, щелчок по уведомлению. Вызовы ОС — `pets_shell` и `pets_gpui_macos`; здесь — что делает
-//! Postman. Вход без пароля в домене (Kerberos) — MAC-05.
+//! Postman. MAC-05: вход без пароля — UPN и билет Kerberos (`klist`, `dsconfigad`).
 
 use std::path::Path;
 
@@ -60,14 +60,58 @@ pub fn open_bitlocker() -> Result<(), String> {
     open("x-apple.systempreferences:com.apple.preference.security?FileVault")
 }
 
-/// Вход Windows (UPN) на Mac не бывает; Kerberos — MAC-05.
+/// UPN для входа без пароля (MAC-05): принципал билета Kerberos (`klist`: `anna@CORP.EXAMPLE` → `anna@corp.example`);
+/// билета нет — домен AD (`dsconfigad -show`) и имя входа macOS. Звать в фоне.
 pub fn upn() -> Option<String> {
-    None
+    let klist = run("/usr/bin/klist", &[]);
+    if let Some(upn) = klist.as_deref().and_then(kerberos_principal).map(|p| upn_of(&p)) {
+        return Some(upn);
+    }
+    let domain = run("/usr/sbin/dsconfigad", &["-show"]).as_deref().and_then(ad_domain)?;
+    let user = std::env::var("USER").ok().filter(|u| !u.is_empty())?;
+    Some(format!("{user}@{}", domain.to_lowercase()))
 }
 
-/// Вход без пароля в Exchange на macOS (Kerberos, `sspi`/GSS.framework) — MAC-05; до того вариант не предлагается.
+/// Вход без пароля имеет смысл: есть действующий билет Kerberos (`klist --test` — вход учётной записью домена AD,
+/// Kerberos SSO, `kinit`). Один раз за запуск: процесс — единицы миллисекунд.
 pub fn in_domain() -> bool {
-    false
+    static TICKET: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TICKET.get_or_init(|| {
+        std::process::Command::new("/usr/bin/klist")
+            .arg("--test")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    })
+}
+
+/// Вывод команды при успехе.
+fn run(cmd: &str, args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new(cmd).args(args).stderr(std::process::Stdio::null()).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Принципал кэша Kerberos из вывода `klist` (Heimdal): строка `Principal: user@REALM`.
+fn kerberos_principal(klist: &str) -> Option<String> {
+    klist.lines().find_map(|l| l.trim().strip_prefix("Principal:")).map(str::trim).filter(|p| p.contains('@')).map(str::to_owned)
+}
+
+/// `user@REALM` → `user@realm`: область Kerberos AD — домен DNS заглавными.
+fn upn_of(principal: &str) -> String {
+    match principal.rsplit_once('@') {
+        Some((user, realm)) => format!("{user}@{}", realm.to_lowercase()),
+        None => principal.to_owned(),
+    }
+}
+
+/// Домен AD из `dsconfigad -show`: строка `Active Directory Domain = corp.example`; Mac не в домене — пусто.
+fn ad_domain(show: &str) -> Option<String> {
+    show.lines()
+        .find_map(|l| l.trim().strip_prefix("Active Directory Domain"))
+        .and_then(|rest| rest.split_once('='))
+        .map(|(_, d)| d.trim().to_owned())
+        .filter(|d| !d.is_empty())
 }
 
 /// Открывать Postman при входе в систему: `SMAppService.mainApp` (объект входа «Postman»). Выключенный пользователем
@@ -190,5 +234,26 @@ Decryption in progress: Percent completed = 40
             Some("Macintosh HD")
         );
         assert_eq!(super::volume_name(""), None);
+    }
+
+    /// `klist` (Heimdal) и `dsconfigad -show` → UPN и домен AD (MAC-05).
+    #[test]
+    fn kerberos_and_ad_domain() {
+        let klist = "Credentials cache: API:6E3B3A1D-0000-0000-0000-000000000000
+        Principal: anna@CORP.EXAMPLE
+
+  Issued                Expires               Principal
+Nov 12 09:00:00 2026  Nov 12 19:00:00 2026  krbtgt/CORP.EXAMPLE@CORP.EXAMPLE
+";
+        let principal = super::kerberos_principal(klist);
+        assert_eq!(principal.as_deref(), Some("anna@CORP.EXAMPLE"));
+        assert_eq!(super::upn_of("anna@CORP.EXAMPLE"), "anna@corp.example");
+        assert_eq!(super::kerberos_principal("klist: krb5_cc_get_principal: No credentials cache file found"), None);
+        let show = "Active Directory Forest          = corp.example
+Active Directory Domain          = corp.example
+Computer Account                 = mac-anna$
+";
+        assert_eq!(super::ad_domain(show).as_deref(), Some("corp.example"));
+        assert_eq!(super::ad_domain(""), None);
     }
 }

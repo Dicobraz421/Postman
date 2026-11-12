@@ -1,5 +1,11 @@
-//! Контроллер домена компьютера — службой Windows (`DsGetDcNameW`, решение владельца №12). Единственное место
-//! `unsafe` в крейте; у каждого блока — почему он безопасен.
+//! Контроллер домена компьютера — службой Windows (`DsGetDcNameW`, решение владельца №12); на macOS — DNS SRV и
+//! Kerberos GSS.framework (`sys/macos.rs`, MAC-05). Единственное место `unsafe` в крейте; у каждого блока — почему он
+//! безопасен.
+
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub(crate) use macos::{Kerberos, domain_controller};
 
 /// Имя DNS контроллера домена с каталогом (без `\\`); `None` — компьютер не в домене или контроллер не найден.
 #[cfg(windows)]
@@ -21,7 +27,7 @@ pub(crate) fn domain_controller() -> Option<String> {
         )
     };
     if rc != 0 || info.is_null() {
-        tracing::info!("no domain controller: DsGetDcNameW = {rc}");
+        tracing::debug!("ldap: no domain controller, DsGetDcNameW = {rc}");
         return None;
     }
     // SAFETY: успех — `info` указывает на заполненную `DOMAIN_CONTROLLER_INFOW`; имя — строка UTF-16 с нулём на конце
@@ -50,8 +56,8 @@ unsafe fn wide(p: *const u16) -> Option<String> {
     Some(String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(p, len) }))
 }
 
-/// Не Windows: домена нет — только сервер из настроек.
-#[cfg(not(windows))]
+/// Не Windows и не macOS: домена нет — только сервер из настроек.
+#[cfg(not(any(windows, target_os = "macos")))]
 pub(crate) fn domain_controller() -> Option<String> {
     None
 }
