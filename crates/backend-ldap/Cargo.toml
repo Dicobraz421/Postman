@@ -7,15 +7,19 @@ license.workspace = true
 
 [dependencies]
 postman-core.workspace = true
-# LDAP (MIT/Apache-2.0): вход учётной записью Windows — SASL GSSAPI (cross-krb5, на Windows — SSPI Kerberos);
-# TLS — rustls с проверкой сертификата Windows, как у IMAP.
-ldap3 = { version = "0.12", default-features = false, features = ["gssapi", "tls-rustls-aws-lc-rs"] }
+# LDAP (MIT/Apache-2.0); TLS — rustls с проверкой сертификата ОС, как у IMAP.
+ldap3 = { version = "0.12", default-features = false, features = ["tls-rustls-aws-lc-rs"] }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "tls12"] }
 rustls-platform-verifier = "0.7"
 tokio = { version = "1", features = ["rt", "time"] }
 zeroize = "1"
 thiserror.workspace = true
 tracing = "0.1"
+
+# Вход учётной записью — SASL GSSAPI (cross-krb5: на Windows — SSPI Kerberos, на Linux — libgssapi). На macOS
+# libgssapi не собирается (в GSS.framework нет `gss_wrap_iov*`): вход Kerberos там — MAC-05.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+ldap3 = { version = "0.12", default-features = false, features = ["gssapi"] }
 
 # Контроллер домена — службой Windows (`DsGetDcNameW`, решение №12): `sys.rs`, единственное место `unsafe`.
 [target.'cfg(windows)'.dependencies.windows-sys]
