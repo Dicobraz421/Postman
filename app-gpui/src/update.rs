@@ -34,9 +34,9 @@ use crate::Mailer;
 use crate::migration::{link, meter, strip};
 use crate::roles::Look;
 
-/// Открытые ключи minisign выпусков (строка `RW…` из `.pub` владельца; второй — на время смены ключа). Пусто — ключа
-/// ещё нет: ни проверок, ни скачиваний. Ключ вставляет владелец отдельным коммитом (docs/DEV.md «Выпуск»).
-pub(crate) const UPDATE_PUBLIC_KEYS: &[&str] = &[];
+/// Открытые ключи minisign выпусков (строка `RW…` из `.pub`; второй — на время смены ключа). Пусто — ни проверок,
+/// ни скачиваний. Ключ общий с Урфином (id FBEB16F843D809C6, 2026-11-12); тот же — в переменной `UPDATE_PUBLIC_KEY`.
+pub(crate) const UPDATE_PUBLIC_KEYS: &[&str] = &["RWTGCdhD+Bbr+0a0+iypW5+F7ZLUgkBqE3nPPC2N3zSxTkuUPSZ5E3gb"];
 
 /// Файл-флаг portable рядом с exe: кладёт его архив (`package.ps1`) и `install.ps1`, MSI — нет.
 pub(crate) const PORTABLE_FLAG: &str = "postman.portable";
