@@ -51,7 +51,7 @@ const CHECK_EVERY: Duration = Duration::from_secs(60 * 60);
 const PROGRESS_TICK: Duration = Duration::from_millis(250);
 
 /// Значок полосы скачивания (Segoe Fluent Icons «Download»).
-const DOWNLOAD: char = '\u{E896}';
+pub(crate) const DOWNLOAD: char = '\u{E896}';
 
 /// Продукт для крейта: репозиторий выпусков, имена артефактов (`postman-<версия>-windows-x64.msi|zip`), ключи.
 pub(crate) fn product() -> Option<Product> {
@@ -594,7 +594,7 @@ mod tests {
     use std::io::Cursor;
     use std::sync::Mutex;
 
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::sync::Arc;
 
     use pets_update::{ARCH, CheckOutcome, CheckReason, DisabledBy, InstallKind, Policy, Response, Settings, Transport, UpdateError, Updater};
@@ -745,6 +745,7 @@ mod tests {
         let p = product_with(KEY).unwrap();
         assert_eq!((p.name, p.repo, p.asset_prefix), ("Postman", "Dicobraz421/Postman", "postman"));
         assert_eq!(p.current.to_string(), env!("CARGO_PKG_VERSION"));
-        assert_eq!(dir(Path::new(r"C:\Users\u\AppData\Local\Postman")), PathBuf::from(r"C:\Users\u\AppData\Local\Postman\updates"));
+        let data = Path::new("Postman");
+        assert_eq!(dir(data), data.join("updates"));
     }
 }

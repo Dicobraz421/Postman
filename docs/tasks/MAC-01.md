@@ -21,7 +21,7 @@ Postman собирается на macOS без предупреждений, т�
   Job `bundle`: release, `scripts/macos/package.sh` → `Postman.app` (postman, postman-worker, postman-viewer;
   Info.plist: bundle id, версия из `Cargo.toml`, `LSMinimumSystemVersion` 13.0, схема `mailto`; `Postman.icns` из
   `postman.ico`), подпись ad-hoc, `postman-<версия>-macos-arm64.zip`; `--screens` из собранного .app — сцены `list`,
-  `letter`, `preview-pdf`, `calendar`, PNG артефактом.
+  `letter`, `attachments` (его продолжает PDF), `preview-pdf`, `calendar`, PNG артефактом.
 - Ошибки компиляции на macOS: заглушка `notify_with`, `sec_channel_bindings` (только SSPI); блобы КриптоПро
   (`smime/skzi.rs`) — только Windows и тесты; `ldap3` без `gssapi` на macOS (вход Kerberos в каталог — MAC-05).
 - Пути данных — одна функция по ОС `postman_core::paths`: `~/Library/Application Support/Postman`, журнал —

@@ -82,12 +82,12 @@ jobs:
         id: package
         run: bash scripts/macos/package.sh --target-dir "$CARGO_TARGET_DIR" --out dist
 
-      # Снимки из собранного .app (воркер — в Contents/MacOS): список, письмо (HTML в песочнице), PDF (рендер в
-      # песочнице), календарь. Все сцены — MAC-04.
+      # Снимки из собранного .app (воркер — в Contents/MacOS): список, письмо (HTML в песочнице), письмо с вложениями
+      # (сцена PDF его продолжает), PDF (рендер в песочнице), календарь. Все сцены — MAC-04.
       - name: Снимки демо-ящика
         timeout-minutes: 10
         env:
-          POSTMAN_SCREENS_ONLY: list,letter,preview-pdf,calendar
+          POSTMAN_SCREENS_ONLY: list,letter,attachments,preview-pdf,calendar
         run: |
           mkdir -p shots
           "${{ steps.package.outputs.app }}/Contents/MacOS/postman" --screens shots --lang ru
