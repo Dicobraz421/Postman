@@ -1,5 +1,5 @@
 # CI Postman по шаблону скилла pets-dev (R-01).
-# PR и merge queue: метки конфликта, полосы, clippy, тесты (nextest) — цель ≤7 мин при тёплом кэше.
+# PR и merge queue: метки конфликта, полосы, clippy и тесты (nextest) — параллельно, цель ≤7 мин на job при тёплом кэше.
 # Docs-PR: сборка пропускается (job `changes`). Черновик PR (draft) не собирается вовсе: CI идёт один раз, когда PR
 # готов (ready_for_review), и на каждый пуш после этого (экономия CI, решение 2026-11-12 «ci-economy»).
 # Release, подпись, комплекты — теги `v*`, ручной запуск и PR, что правят сам выпуск (job `changes`, выход
@@ -89,8 +89,11 @@ jobs:
     env:
       # Компоновщик rust-lld (идёт с rustc) вместо link.exe — быстрее компонует ~100 тестовых exe. Через переменную,
       # не RUSTFLAGS: +crt-static из .cargo/config.toml остаётся. Компоновщик входит в отпечаток cargo и (как CARGO_*)
-      # в ключ rust-cache — у `test` и `cache` он должен совпадать.
+      # в ключ rust-cache — у `test`, `clippy` и `cache` окружение должно совпадать.
       CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld
+      # Без отладочной информации в CI (в Cargo.toml для своих крейтов — line-tables-only): меньше объём сборки
+      # и кэша, быстрее компоновка. Локальная сборка не меняется.
+      CARGO_PROFILE_DEV_DEBUG: '0'
     steps:
       - uses: actions/checkout@v7.0.1
       # Ускорение тестов (решение владельца 2026-11-12): тесты с демо-ящиком (redb во временной папке) на Windows
@@ -121,13 +124,7 @@ jobs:
         with:
           tool: cargo-nextest
 
-      # Формат — `rustfmt.toml` (решение владельца 2026-10-26); сначала: секунды, без сборки.
-      - name: Формат
-        run: cargo fmt --all --check
-
-      - name: Clippy
-        # Не через RUSTFLAGS: он перекрыл бы +crt-static из .cargo/config.toml.
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # Формат и clippy — job `clippy`, параллельно.
 
       # Модули просмотра WASM (ADR 0007, S8-02): крейты viewers/<имя>, вне рабочей области. Собираются до тестов:
       # хост модулей берёт образец из $CARGO_TARGET_DIR/wasm32-unknown-unknown/release/ (fb2.wasm — только
@@ -164,7 +161,44 @@ jobs:
         continue-on-error: true
         run: cargo test -p postman-worker --test windows_probe --locked -- --ignored --nocapture
 
-  # Тёплый кэш для `test` (решение 2026-11-12 «очень много времени теряется»): пуш в main и ночью. `test` на пуш в main
+  # Формат и clippy — отдельно от `test`, параллельно с ним (цель ≤7 мин на job). Кэш тот же (`windows`, только
+  # чтение): окружение и установка — как у `test` и `cache`, иначе ключ не совпадёт.
+  clippy:
+    needs: changes
+    if: >-
+      needs.changes.outputs.rust == 'true' && github.event_name != 'schedule' &&
+      !(github.event_name == 'push' && github.ref_type == 'branch')
+    runs-on: windows-latest
+    env:
+      # Компоновщик rust-lld (идёт с rustc) вместо link.exe — быстрее компонует ~100 тестовых exe. Через переменную,
+      # не RUSTFLAGS: +crt-static из .cargo/config.toml остаётся. Компоновщик входит в отпечаток cargo и (как CARGO_*)
+      # в ключ rust-cache — у `test`, `clippy` и `cache` окружение должно совпадать.
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld
+      # Без отладочной информации в CI (в Cargo.toml для своих крейтов — line-tables-only): меньше объём сборки
+      # и кэша, быстрее компоновка. Локальная сборка не меняется.
+      CARGO_PROFILE_DEV_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Исключения Defender
+        shell: pwsh
+        run: |
+          $paths = @($env:GITHUB_WORKSPACE, (Join-Path $env:USERPROFILE '.cargo'), (Join-Path $env:USERPROFILE '.rustup'))
+          try { Add-MpPreference -ExclusionPath $paths -ErrorAction Stop } catch { Write-Warning "Исключения Defender не добавлены: $_" }
+      - run: rustup toolchain install stable --profile minimal -c clippy,rustfmt --no-self-update && rustup default stable
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          shared-key: windows
+          save-if: false
+
+      # Формат — `rustfmt.toml` (решение владельца 2026-10-26); сначала: секунды, без сборки.
+      - name: Формат
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        # Не через RUSTFLAGS: он перекрыл бы +crt-static из .cargo/config.toml.
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  # Тёплый кэш для `test` и `clippy` (решение 2026-11-12 «очень много времени теряется»): пуш в main и ночью. `test` на пуш в main
   # не идёт (код проверила очередь), а кэш из очереди слияния или PR другим PR не виден — только кэш ветки main.
   # Смена stable (раз в 6 недель) меняет ключ целиком: без ночного прогона первый PR после выпуска собирался с нуля.
   # Ключ rust-cache — хэш Cargo.lock, всех Cargo.toml, версии rustc и переменных CARGO_*/RUST*: есть такой —
@@ -180,8 +214,11 @@ jobs:
     env:
       # Компоновщик rust-lld (идёт с rustc) вместо link.exe — быстрее компонует ~100 тестовых exe. Через переменную,
       # не RUSTFLAGS: +crt-static из .cargo/config.toml остаётся. Компоновщик входит в отпечаток cargo и (как CARGO_*)
-      # в ключ rust-cache — у `test` и `cache` он должен совпадать.
+      # в ключ rust-cache — у `test`, `clippy` и `cache` окружение должно совпадать.
       CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld
+      # Без отладочной информации в CI (в Cargo.toml для своих крейтов — line-tables-only): меньше объём сборки
+      # и кэша, быстрее компоновка. Локальная сборка не меняется.
+      CARGO_PROFILE_DEV_DEBUG: '0'
     steps:
       - uses: actions/checkout@v7.0.1
       - run: rustup toolchain install stable --profile minimal -c clippy,rustfmt --no-self-update && rustup default stable
@@ -212,6 +249,43 @@ jobs:
           cargo clippy --workspace --all-targets --locked -- -D warnings
           cargo nextest run --workspace --locked --profile ci --no-run
 
+  # Тёплый кэш job `release` — тем же приёмом, что `cache`: пуш в main и ночью, lookup-only; нет ключа — release-сборка
+  # и сохранение. Сам `release` на main не идёт (теги, ручной запуск, PR выпуска), его кэш PR и тегам не виден бы.
+  # Окружение и команда сборки — те же, что в `release`. Кэш macOS — общий с job `bundle` workflow `macOS`.
+  cache-release:
+    needs: changes
+    if: >-
+      github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true' &&
+      (github.event_name == 'push' || github.event_name == 'schedule')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            key: windows-release
+          - runner: macos-26
+            key: macos-release
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
+      - id: look
+        uses: Swatinem/rust-cache@v2.9.3
+        with:
+          shared-key: ${{ matrix.key }}
+          lookup-only: true
+          save-if: false
+      - if: steps.look.outputs.cache-hit != 'true'
+        uses: Swatinem/rust-cache@v2.9.3
+        with:
+          shared-key: ${{ matrix.key }}
+      - name: Release-сборка для кэша
+        if: steps.look.outputs.cache-hit != 'true'
+        run: cargo build --release --workspace --locked --features postman-worker/viewer
+
   # main, теги `v*`, ручной запуск и PR, что правят выпуск: release, подпись, комплекты. Идёт параллельно с тестами —
   # красные тесты не лишают комплектов, но не дают выпуска (`publish` ждёт `test`). Платформа — строка matrix и свой
   # scripts/<os>/package с теми же выходами (name, dir, assets, version); Linux — ещё одна строка.
@@ -239,11 +313,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
-      # Кэш macOS — общий с job `bundle` workflow `macOS` (та же сборка).
+      # Кэш только читается (сохраняет `cache-release`); кэш macOS — общий с job `bundle` workflow `macOS`.
       - uses: Swatinem/rust-cache@v2.9.3
         with:
           shared-key: ${{ runner.os == 'macOS' && 'macos-release' || 'windows-release' }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Сохраняет job `cache-release`.
+          save-if: false
 
       # Признак `viewer` воркера — только для `postman-viewer.exe` (S8-24, ADR 0007): в postman-worker.exe и
       # postman.exe интерпретатора WASM нет (на него ссылается только main хоста модулей).
@@ -451,7 +526,7 @@ jobs:
 
   # Единственный required check: зелёный, если всё нужное прошло или было пропущено.
   gate:
-    needs: [changes, test]
+    needs: [changes, test, clippy]
     if: always()
     runs-on: ubuntu-latest
     steps:
