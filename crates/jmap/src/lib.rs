@@ -116,7 +116,7 @@ fn http_builder() -> reqwest::ClientBuilder {
         reqwest::tls::Version::TLS_1_2
     });
     if insecure_tls() {
-        tracing::warn!("POSTMAN_INSECURE_TLS: server certificate is NOT verified (test stand only)");
+        tracing::warn!("tls: POSTMAN_INSECURE_TLS — сертификат сервера НЕ проверяется (только для стенда)");
         builder = builder.danger_accept_invalid_certs(true);
     }
     builder

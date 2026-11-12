@@ -970,7 +970,7 @@ impl Composer {
                     Ok(md) if !md.is_empty() => md,
                     Ok(_) => plain.unwrap_or_default(),
                     Err(e) => {
-                        tracing::warn!("clipboard HTML is pasted as text: {e}");
+                        tracing::warn!("composer: HTML из буфера вставлен текстом: {e}");
                         plain.unwrap_or_default()
                     }
                 };
@@ -1017,7 +1017,7 @@ impl Composer {
                         c.paint_markdown(cx);
                         cx.notify();
                     }
-                    Err(e) => tracing::warn!("signature image {cid} is not shown: {e}"),
+                    Err(e) => tracing::error!("composer: картинка подписи не показана: {e}"),
                 });
             })
             .detach();

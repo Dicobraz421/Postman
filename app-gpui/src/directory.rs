@@ -86,7 +86,7 @@ pub(crate) fn search(
         match w.smime_prepare(&ders, trust, u64::try_from(now).unwrap_or(0)) {
             Ok(list) => list,
             Err(e) => {
-                tracing::warn!("directory certificates are not checked: {e:?}");
+                tracing::error!("directory: сертификаты из справочника не проверены: {e:?}");
                 return Err(DirectoryError::Unavailable("worker".into()));
             }
         }

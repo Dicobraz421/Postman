@@ -122,14 +122,14 @@ pub fn bind(cx: &mut App, prefs: &postman_core::prefs::Prefs) {
             None => match cx.build_action(&c.action_name(), None) {
                 Ok(a) => a,
                 Err(e) => {
-                    tracing::error!("command {}: no action {} ({e})", c.id, c.action_name());
+                    tracing::error!(command = %c.id, "commands: нет действия {} ({e})", c.action_name());
                     continue;
                 }
             },
         };
         match KeyBinding::load(keys, action, context, false, None, &DummyKeyboardMapper) {
             Ok(b) => bindings.push(b),
-            Err(e) => tracing::error!("command {}: keys {keys}: {e:?}", c.id),
+            Err(e) => tracing::error!(command = %c.id, "commands: клавиши {keys} не назначены: {e:?}"),
         }
     }
     cx.bind_keys(bindings);

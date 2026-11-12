@@ -73,7 +73,7 @@ pub fn lookup(dir: Arc<dyn Directory>, addresses: &[String], timeout: Duration) 
     let mut out: Vec<Vec<u8>> = Vec::new();
     for der in found.into_iter().filter(|d| !d.is_empty() && d.len() <= MAX_CERT_LEN) {
         if out.len() == MAX_CERTS {
-            tracing::warn!("directory answer is cut to {MAX_CERTS} certificates");
+            tracing::warn!("smime: ответ справочника урезан до {MAX_CERTS} сертификатов");
             break;
         }
         if !out.contains(&der) {
@@ -111,7 +111,7 @@ pub fn remember(cache: &Cache, asked: &[String], found: &[Found], now: i64) {
             }
         }
         if let Err(e) = cache.set_certs(&address, &list) {
-            tracing::warn!("directory certificates are not cached: {e}");
+            tracing::warn!("smime: сертификаты справочника не записаны в кэш: {e}");
         }
     }
 }

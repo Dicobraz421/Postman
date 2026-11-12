@@ -1018,7 +1018,7 @@ impl Mailer {
             let stored = task.await;
             let _ = this.update(cx, |m, cx| {
                 if let Err(e) = stored {
-                    tracing::warn!("purge: {e}");
+                    tracing::error!("bulk: письма не удалены из кэша: {e}");
                     return m.toast(Toast::Error, tr!("actions-delete-failed", error = e.to_string()), cx);
                 }
                 if m.backend.is_live() {

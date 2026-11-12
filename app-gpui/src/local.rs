@@ -395,7 +395,7 @@ impl Mailer {
                         }
                     }
                     Err(err) => {
-                        tracing::warn!("local folder {e:?}: {err}");
+                        tracing::error!("local: действие с локальной папкой не выполнено ({e:?}): {err}");
                         m.toast(pets_ui::Level::Error, tr!("folder-failed", error = err), cx);
                     }
                 }

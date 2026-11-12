@@ -277,7 +277,11 @@ impl Dav {
                         out.push(e);
                     }
                 }
-                Err(e) => tracing::warn!("caldav: resource skipped: {e}"),
+                Err(e) => {
+                    // Только имя ресурса: путь коллекции содержит адрес пользователя; текст разбора — в отладку.
+                    tracing::error!(resource = resource_name(&href), "caldav: событие не разобрано и не показано");
+                    tracing::debug!("caldav: {e}");
+                }
             }
         }
         Ok(out)
@@ -573,7 +577,7 @@ impl Dav {
                     card.id = href.clone();
                     state.cards.insert(href, Stored { etag, data, card });
                 }
-                Ok(None) | Err(_) => tracing::warn!("carddav: card skipped"),
+                Ok(None) | Err(_) => tracing::error!(resource = resource_name(&href), "carddav: контакт не разобран и не показан"),
             }
         }
         state.token = Some(ch.token);
@@ -707,7 +711,7 @@ impl TaskStore for DavTasks<'_> {
             }
             if !ch.removed.is_empty() {
                 // Только имена ресурсов: путь коллекции содержит адрес пользователя.
-                let names: Vec<&str> = ch.removed.iter().map(|h| h.trim_end_matches('/').rsplit('/').next().unwrap_or_default()).collect();
+                let names: Vec<&str> = ch.removed.iter().map(|h| resource_name(h)).collect();
                 tracing::debug!("caldav tasks: removed {names:?}");
             }
             // Состояние — токен этого же ответа, а не новый PROPFIND: изменение между двумя запросами (другой клиент
@@ -921,7 +925,7 @@ impl Dav {
             }),
             Command::Tasks(request) => {
                 if let Err(e) = postman_core::tasks::handle(&self.tasks(), ctx.cache, request, &|r| notify(SyncEvent::Tasks(r))).await {
-                    tracing::warn!("caldav tasks: {e}");
+                    tracing::error!("caldav: действие с задачами не выполнено: {e}");
                     notify(SyncEvent::Tasks(postman_core::tasks::Reply::Failed { uid: None, error: e.to_string() }));
                 }
             }
@@ -953,7 +957,7 @@ impl Dav {
             Command::ImportInvite { invite } => match self.import_invite(&invite.event).await {
                 Ok(true) => notify(SyncEvent::CalendarChanged),
                 Ok(false) => {}
-                Err(e) => tracing::info!("caldav: invitation not imported: {e}"),
+                Err(e) => tracing::error!("caldav: приглашение не добавлено в календарь: {e}"),
             },
             Command::DeleteContact { id, ticket } => {
                 notify(match self.delete_contact(&id).await {
@@ -998,6 +1002,11 @@ pub fn fetch_changed(text: &str, max: usize, etag: Option<&str>) -> Result<Optio
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
     let got = rt.block_on(postman_dav::fetch_public_if(text, max, etag)).map_err(|e| e.to_string())?;
     Ok(got.map(|f| (f.body, f.etag)))
+}
+
+/// Имя ресурса без пути коллекции: путь содержит адрес пользователя, в журнал — только имя.
+fn resource_name(href: &str) -> &str {
+    href.trim_end_matches('/').rsplit('/').next().unwrap_or_default()
 }
 
 #[cfg(test)]

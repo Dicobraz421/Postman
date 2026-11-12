@@ -203,7 +203,7 @@ impl Profile {
                     if profile.is_some() =>
                 {
                     if let Event::CalendarFailed(e) = &ev {
-                        tracing::warn!("calendar of {profile:?}: {e}");
+                        tracing::warn!(profile = profile.unwrap_or_default(), "sync: календарь учётной записи недоступен: {e}");
                     }
                 }
                 ev => out.push(ev),
@@ -351,6 +351,25 @@ pub(crate) fn merge(local: &[String], server: &[String]) -> Vec<String> {
 
 /// Ошибки для тостов: тот же род ошибки подряд не показывается (сервер недоступен — один тост, а не на каждый
 /// опрос); отказ во входе — не тостом, а строкой входа.
+/// Узел (и порт) адреса сервера — для журнала: путь, запрос (`?dav=…/адрес/`) и имя входа в адресе бывают личными.
+fn server_of(url: &str) -> &str {
+    let start = url.find("://").map_or(0, |i| i + 3);
+    let end = url[start..].find(['/', '?', '#']).map_or(url.len(), |i| start + i);
+    let host = url[start..end].rsplit('@').next().unwrap_or_default();
+    &url[end - host.len()..end]
+}
+
+/// Сбой синхронизации — в журнал по правилу уровней (pets-shell `LOGGING.md`): нет связи — WARN (повтор сам),
+/// отказ во входе с только что введённым паролем — WARN (ошибся человек), остальное — ERROR.
+fn log_sync_error(profile: Option<&str>, e: &SyncError, signing_in: bool) {
+    let profile = profile.unwrap_or_default();
+    match e.kind {
+        ErrorKind::Network => tracing::warn!(profile, "sync: нет связи с сервером, повтор: {e}"),
+        ErrorKind::Auth if signing_in => tracing::warn!(profile, "sync: сервер отказал во входе: {e}"),
+        _ => tracing::error!(profile, "sync: синхронизация не удалась: {e}"),
+    }
+}
+
 pub(crate) fn fresh_errors(last: &mut Option<String>, errors: Vec<SyncError>) -> Vec<SyncError> {
     errors
         .into_iter()
@@ -410,7 +429,7 @@ fn open_store_with(path: &Path, notify: &dyn Fn(Event)) -> Result<(Cache, Index)
     let index = match postman_search::SearchIndex::open(&path.with_extension("search")) {
         Ok(i) => Some(Arc::new(i)),
         Err(e) => {
-            tracing::warn!("search index: {e}");
+            tracing::warn!("search: индекс не открыт, поиск — перебором: {e}");
             None
         }
     };
@@ -499,7 +518,7 @@ pub(crate) fn local_hits(index: &Index, cache: &Cache, query: &str, mailbox: Opt
         None => None,
     };
     let hits = postman_core::indexer::search_hits(index.as_deref(), cache, query, folder, SEARCH_LIMIT).unwrap_or_else(|e| {
-        tracing::warn!("search: {e}");
+        tracing::error!("search: поиск не выполнен: {e}");
         Vec::new()
     });
     hits.into_iter().map(|h| (crate::local::letter_key(cache, h.id), h.matched_in)).collect()
@@ -512,7 +531,7 @@ fn build_index(index: Arc<postman_search::SearchIndex>, cache: Cache, extractor:
             return;
         }
         if let Err(e) = postman_core::indexer::rebuild(&index, &cache, &|| false) {
-            tracing::warn!("index build: {e}");
+            tracing::warn!("search: индекс не построен, поиск — перебором: {e}");
         }
         let mut offset = 0;
         while let Ok(ids) = cache.body_ids(offset, 5000) {
@@ -524,7 +543,7 @@ fn build_index(index: Arc<postman_search::SearchIndex>, cache: Cache, extractor:
         }
     });
     if let Err(e) = started {
-        tracing::warn!("index build thread: {e}");
+        tracing::warn!("search: поток построения индекса не запущен: {e}");
     }
 }
 
@@ -539,7 +558,7 @@ impl Mailer {
         let repaint = move || {
             let _ = wake.unbounded_send(());
         };
-        tracing::info!("sync start: {}", account.url);
+        tracing::info!("sync: старт, сервер {}", server_of(&account.url));
         self.live.status = status_text(&Status::Connecting { url: account.url.clone() });
         self.live.account = Some(Settings::of(&account));
         // Свой аккаунт — подписью над папками (метка «нет связи» — у неё, S5-08).
@@ -771,7 +790,7 @@ impl Mailer {
         }
         let name = profile.and_then(|p| self.live.profile.names.iter().find(|(q, _)| q == p)).map(|(_, s)| s.user.clone());
         for e in fresh_errors(&mut self.live.last_error, errors) {
-            tracing::warn!("sync {profile:?}: {e}");
+            log_sync_error(profile, &e, false);
             let text = tr!("sync-account-error", account = name.clone().unwrap_or_default(), error = error_text(&e));
             self.toasts.update(cx, |t, cx| t.push(Toast::Error, text, cx));
         }
@@ -816,7 +835,7 @@ impl Mailer {
         let repaint = move || {
             let _ = wake.unbounded_send(());
         };
-        tracing::info!("sync start {profile}: {}", account.url);
+        tracing::info!(%profile, "sync: старт, сервер {}", server_of(&account.url));
         self.live.profile.names.retain(|(p, _)| *p != profile);
         self.live.profile.names.push((profile.clone(), extra.settings.clone()));
         let commands = crate::plugins::registry().spawn(account, Some(profile.clone()), self.cache.clone(), self.live.index.clone(), events, repaint);
@@ -886,7 +905,7 @@ impl Mailer {
                     m.start_extra(extra, account, cx);
                 }
                 Err(e) => {
-                    tracing::warn!("{e}");
+                    tracing::error!("account: учётная запись не добавлена: {e}");
                     if let Some(panel) = &m.settings.add {
                         panel.update(cx, |p, cx| p.failed(&e, cx));
                     }
@@ -899,7 +918,7 @@ impl Mailer {
     /// «Настройки → Аккаунты → Удалить» у дополнительной учётной записи: синхронизация останавливается, её
     /// письма и папки уходят из кэша, адрес и пароль — из профиля.
     pub(crate) fn remove_extra(&mut self, profile: String, cx: &mut Context<Self>) {
-        tracing::info!("account {profile} removed by the user");
+        tracing::info!(%profile, "account: учётная запись удалена пользователем");
         self.backend.remove_extra(&profile);
         self.live.profile.forget(&profile);
         self.backend.set_senders(self.live.profile.sender_routes());
@@ -909,10 +928,10 @@ impl Mailer {
         let task = cx.background_spawn(async move {
             // Демо не трогает профиль на диске: там — настоящие учётные записи.
             if live && let Err(e) = account::remove_extra(&dir, &profile) {
-                tracing::warn!("{e}");
+                tracing::error!(%profile, "account: учётная запись не удалена из профиля: {e}");
             }
             if let Err(e) = cache.forget_profile(&profile) {
-                tracing::warn!("cache: {e}");
+                tracing::error!(%profile, "account: письма учётной записи не удалены из кэша: {e}");
             }
         });
         cx.spawn(async move |this, cx| {
@@ -928,8 +947,9 @@ impl Mailer {
     }
 
     fn sync_errors(&mut self, errors: Vec<SyncError>, auth: bool, cx: &mut Context<Self>) {
+        let signing_in = self.live.pending.is_some();
         for e in &errors {
-            tracing::warn!("sync: {e}");
+            log_sync_error(None, e, signing_in);
         }
         // Вход со строки входа не удался: синхронизация остановилась, строка входа — с причиной.
         if self.live.pending.take().is_some() {
@@ -962,7 +982,7 @@ impl Mailer {
 
     /// Строка входа после отказа сервера: поля — прежней учётной записи, причина — сразу под ними.
     pub(crate) fn show_reauth(&mut self, prefill: Settings, window: &mut Window, cx: &mut Context<Self>) {
-        tracing::info!("sign-in rejected by the server: asking for the password again");
+        tracing::info!("account: сервер отказал во входе, пароль — заново");
         self.set_section(crate::Section::Mail, cx);
         self.show_signin(Some(prefill), window, cx);
         if let Some(panel) = &self.live.signin {
@@ -1032,7 +1052,7 @@ impl Mailer {
             let book = match task.await {
                 Ok(book) => book,
                 Err(e) => {
-                    tracing::warn!("{e}");
+                    tracing::error!("categories: таблица категорий не прочитана: {e}");
                     None
                 }
             };
@@ -1057,7 +1077,7 @@ impl Mailer {
             let prefs = match task.await {
                 Ok(p) => p,
                 Err(e) => {
-                    tracing::warn!("{e}");
+                    tracing::error!("account: настройки учётной записи не прочитаны: {e}");
                     return;
                 }
             };
@@ -1087,20 +1107,20 @@ impl Mailer {
             }
             Reply::Saved { account, table } => book.saved(account.as_deref(), table),
             Reply::Unsupported { account } => {
-                tracing::info!("categories: no FileNode for account {account:?}, local table only");
+                tracing::warn!(account = account.as_deref().unwrap_or_default(), "categories: сервер не хранит таблицу категорий, она только здесь");
                 return;
             }
             Reply::Failed { account, error } => {
-                tracing::warn!("categories: account {account:?}: {error}");
+                tracing::warn!(account = account.as_deref().unwrap_or_default(), "categories: таблица категорий не сверена, правка ждёт: {error}");
                 return;
             }
-            Reply::Purged { keyword, count, .. } => {
-                tracing::info!("categories: {keyword} removed from {count} messages");
+            Reply::Purged { count, .. } => {
+                tracing::info!(count, "categories: категория снята с писем");
                 self.list.update(cx, |l, cx| l.refresh(cx));
                 return;
             }
             Reply::PurgeFailed { error, .. } => {
-                tracing::warn!("categories: purge: {error}");
+                tracing::error!("categories: категория не снята с писем: {error}");
                 return;
             }
         }
@@ -1120,7 +1140,7 @@ impl Mailer {
         let book = book.clone();
         cx.background_spawn(async move {
             if let Err(e) = LocalFile::beside(&path).save(&book) {
-                tracing::warn!("{e}");
+                tracing::error!("categories: таблица категорий не записана: {e}");
             }
         })
         .detach();
@@ -1139,7 +1159,7 @@ impl Mailer {
         let task = cx.background_spawn(async move { account::remember(&crate::data_dir(), &account, store) });
         cx.spawn(async move |this, cx| {
             if let Err(e) = task.await {
-                tracing::warn!("remember account: {e}");
+                tracing::error!("account: учётная запись не записана в профиль: {e}");
                 let _ = this.update(cx, |m, cx| {
                     let text = tr!("account-remember-failed", error = e);
                     m.toasts.update(cx, |t, cx| t.push(Toast::Warning, text, cx));
@@ -1215,9 +1235,12 @@ impl Mailer {
                 Source::Body(b) => Some((*b, false)),
                 Source::Raw(raw) => {
                     let mime = worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).mime(&raw);
-                    let body = postman_core::render::body_of(mime.map_err(|e| tracing::warn!("letter content: {e}")).ok()?, &key);
+                    let body = postman_core::render::body_of(
+                        mime.map_err(|e| tracing::error!("reading: письмо не разобрано, текст не показан: {e}")).ok()?,
+                        &key,
+                    );
                     if let Err(e) = cache.put_body(&key, &body) {
-                        tracing::warn!("letter body: {e}");
+                        tracing::warn!("reading: текст письма не записан в кэш: {e}");
                     }
                     Some((body, true))
                 }
@@ -1318,12 +1341,12 @@ impl Mailer {
     /// Удалить аккаунт («Настройки → Аккаунты»): синхронизация останавливается, адрес и логин — из файла, пароль — из
     /// диспетчера учётных данных (в фоне); кэш на диске остаётся. Экран — первый запуск.
     pub(crate) fn remove_account(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        tracing::info!("account removed by the user");
+        tracing::info!("account: учётная запись удалена пользователем");
         cx.background_spawn(async move { account::forget(&crate::data_dir()) }).detach();
         let cache = match Cache::open_in_memory() {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!("in-memory store: {e}");
+                tracing::error!("account: временный кэш не открыт: {e}");
                 return;
             }
         };
@@ -1353,7 +1376,7 @@ impl Mailer {
             let _ = this.update_in(cx, |m, window, cx| match opened {
                 Ok((cache, index)) => m.switch_account(cache, index, account, window, cx),
                 Err(e) => {
-                    tracing::warn!("account store: {e}");
+                    tracing::error!("account: кэш учётной записи не открыт: {e}");
                     if let Some(panel) = &m.live.signin {
                         panel.update(cx, |p, cx| p.failed(&e.to_string(), cx));
                     }
@@ -1423,8 +1446,20 @@ impl Mailer {
 #[cfg(test)]
 mod tests {
     // Не `super::*`: из `gpui_kit::*` пришёл бы атрибут `test` gpui вместо встроенного.
-    use super::{ErrorKind, Event, MailboxRow, Plan, Status, SyncError, fresh_errors, inbox, merge, plan};
+    use super::{ErrorKind, Event, MailboxRow, Plan, Status, SyncError, fresh_errors, inbox, merge, plan, server_of};
     use postman_core::sync::Stage;
+
+    /// В журнал — только узел сервера: ни пути с адресом, ни запроса, ни имени входа (pets-shell `LOGGING.md`).
+    #[test]
+    fn log_server_is_host_only() {
+        assert_eq!(
+            server_of("imaps://imap.example.test:993?smtp=s.example.test&dav=https://d.example.test/u@example.test/"),
+            "imap.example.test:993"
+        );
+        assert_eq!(server_of("https://mail.example.test/.well-known/jmap"), "mail.example.test");
+        assert_eq!(server_of("https://user@mail.example.test/"), "mail.example.test");
+        assert_eq!(server_of("mail.example.test"), "mail.example.test");
+    }
 
     fn ids(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()

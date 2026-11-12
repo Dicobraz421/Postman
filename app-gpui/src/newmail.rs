@@ -81,7 +81,7 @@ impl Mailer {
                         m.newmail.since = Some(since);
                         m.show_new_mail(found, cx);
                     }
-                    Err(e) => tracing::warn!("new mail check: {e}"),
+                    Err(e) => tracing::warn!("newmail: проверка новых писем не удалась, повтор позже: {e}"),
                 }
                 if std::mem::take(&mut m.newmail.again) {
                     m.check_new_mail(cx);
@@ -125,7 +125,7 @@ impl Mailer {
                         }
                     }
                 }
-                Err(e) => tracing::warn!("open new mail: {e}"),
+                Err(e) => tracing::error!("newmail: новое письмо не открыто: {e}"),
             });
         })
         .detach();
@@ -149,7 +149,7 @@ impl Mailer {
         let letter = crate::tray::target(&list);
         cx.background_spawn(async move {
             if let Err(e) = crate::screens::notify_new_mail(&title, &body, sound, letter) {
-                tracing::warn!("new mail notification: {e}");
+                tracing::error!("newmail: уведомление о новом письме не показано: {e}");
             }
         })
         .detach();

@@ -92,7 +92,7 @@ impl SettingsView {
                 match result {
                     Ok(()) => v.dir.saved = true,
                     Err(e) => {
-                        tracing::warn!("credential manager: {e}");
+                        tracing::error!("directory: пароль справочника не сохранён в хранилище: {e}");
                         v.os.error = Some(tr!("settings-os-failed"));
                     }
                 }

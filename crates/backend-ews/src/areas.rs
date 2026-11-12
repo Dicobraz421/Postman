@@ -391,7 +391,7 @@ impl EwsAreas {
     pub async fn events(&mut self, from: i64, to: i64) -> Result<Vec<Event>, Error> {
         let (refs, all) = self.client.calendar_view(&FolderRef::WellKnown(WellKnown::Calendar), Span::new(from, to), VIEW_LIMIT).await?;
         if !all {
-            tracing::warn!(shown = refs.len(), "exchange: calendar window truncated");
+            tracing::warn!(shown = refs.len(), "ews: встреч в окне больше предела, показана часть");
         }
         let missing: Vec<ItemId> =
             refs.iter().filter(|r| self.items.get(&r.id.id).is_none_or(|k| k.change_key != r.id.change_key)).map(|r| r.id.clone()).collect();
@@ -432,7 +432,7 @@ impl EwsAreas {
         let notify = notify_for(&item);
         let id = match self.client.create(None, &item, notify).await {
             Err(e) if bad_time_zone(&e) && item.time_zone.is_some() => {
-                tracing::warn!("exchange: unknown time zone id, meeting in UTC");
+                tracing::warn!("ews: сервер не знает часовой пояс, встреча в UTC");
                 item.time_zone = None;
                 self.client.create(None, &item, notify).await?
             }
@@ -471,7 +471,7 @@ impl EwsAreas {
     async fn update_item(&mut self, id: &ItemId, changes: &Changes) -> Result<(), Error> {
         match self.client.update(id, changes, Notify::AllAndSaveCopy).await {
             Err(e) if bad_time_zone(&e) && changes.time_zone.is_some() => {
-                tracing::warn!("exchange: unknown time zone id, meeting in UTC");
+                tracing::warn!("ews: сервер не знает часовой пояс, встреча в UTC");
                 let utc = Changes { time_zone: None, ..changes.clone() };
                 self.client.update(id, &utc, Notify::AllAndSaveCopy).await?;
             }
@@ -585,7 +585,7 @@ impl EwsAreas {
                 }
                 // Отказ сервера (нет операции, схема) — не сеть: дальше — `ResolveNames`.
                 Err(e) if e.code().is_some() => {
-                    tracing::info!(code = e.code().unwrap_or(""), "exchange: FindPeople refused, using ResolveNames");
+                    tracing::warn!(code = e.code().unwrap_or(""), "ews: сервер отказал в FindPeople, поиск через ResolveNames");
                     self.find_people = false;
                 }
                 Err(e) => return Err(e),

@@ -343,7 +343,7 @@ async fn run(
         categories::load_all(&client, &own_id, &shared_ids, &|r| notify(Event::Categories(r))).await;
         // Задачи — из кэша сразу, с сервера — дельта; сбой не мешает почте (повтор — по push календаря).
         if let Err(e) = tasks::handle(&JmapStore::new(&client), &cache, tasks::Request::Load, &|r| notify(Event::Tasks(r))).await {
-            tracing::warn!("tasks load failed: {e}");
+            tracing::warn!("jmap: задачи не загружены с сервера, повтор позже: {e}");
         }
     }
 
@@ -362,7 +362,7 @@ async fn run(
             // Открыт только календарь (`read` на него у Stalwart даёт аккаунт в сессии, а почта — `forbidden`): почты здесь нет,
             // это не ошибка, и сверять такой аккаунт незачем. Календарь идёт своим путём (`schedule.rs`).
             Err(e) if no_mail_rights(&e) => {
-                tracing::info!("shared account without mail is skipped");
+                tracing::debug!("jmap: общий ящик без почты пропущен");
                 rows.retain(|r| Some(r.id.as_str()) != acc.scope());
                 cache.replace_accounts_of(p, &rows).map_err(|e| sync_error(Stage::Load, &db_err(e)))?;
                 continue;
@@ -523,7 +523,7 @@ async fn run(
                     if accounts.profile.is_none()
                         && let Err(e) = tasks::handle(&store, &cache, tasks::Request::Refresh, &|r| notify(Event::Tasks(r))).await
                     {
-                        tracing::warn!("tasks refresh failed: {e}");
+                        tracing::warn!("jmap: задачи не сверены, повтор позже: {e}");
                     }
                     notify(Event::CalendarChanged);
                 }
@@ -645,7 +645,7 @@ async fn after_refresh(
             if accounts.profile.is_none()
                 && let Err(e) = tasks::handle(&store, cache, tasks::Request::Reconcile, &|r| notify(Event::Tasks(r))).await
             {
-                tracing::warn!("mail tasks reconcile failed: {e}");
+                tracing::warn!("jmap: задачи по письмам не сверены, повтор позже: {e}");
             }
             let Some(queued) = link.ok() else { return Next::Keep };
             notify(Event::Connection(Connection::Online));
@@ -1066,7 +1066,7 @@ async fn handle(
                 match invite::import(client, &invite, &me, Partstat::NeedsAction).await {
                     Ok(true) => notify(Event::CalendarChanged),
                     Ok(false) => {}
-                    Err(e) => tracing::info!("jmap: invitation not imported: {e}"),
+                    Err(e) => tracing::error!("jmap: приглашение не добавлено в календарь: {e}"),
                 }
             }
         }
@@ -1286,7 +1286,7 @@ async fn handle(
             notify(match import(accounts, cache, letter, folder, &keywords, received_at, known.as_deref()).await {
                 Ok(remote) => Event::Imported { job, letter, remote },
                 Err(error) => {
-                    tracing::info!(job = job.0, letter = letter.0, "jmap import refused: {error}");
+                    tracing::debug!(job = job.0, letter = letter.0, "jmap: письмо не принято: {error}");
                     Event::ImportFailed { job, letter, error }
                 }
             });
@@ -1376,7 +1376,7 @@ async fn import(
         match acc.client.find_by_message_id(&mailbox, message_id, received_at).await {
             Ok(Some(id)) => return Ok(Remote { account, id, data: Vec::new() }),
             Ok(None) => {}
-            Err(e) => tracing::warn!(letter = letter.0, "jmap import check failed: {e}"),
+            Err(e) => tracing::warn!(letter = letter.0, "jmap: проверка, дошло ли письмо, не удалась — выгрузка заново: {e}"),
         }
     }
     let raw = match cache.letter_content(postman_cache::LetterId(letter.0)) {
@@ -1432,7 +1432,7 @@ async fn server_copy(accounts: &Accounts, cache: &Cache, job: JobId, letters: &[
                     if c.original_left
                         && let Err(e) = from.client.destroy_email(&id).await
                     {
-                        tracing::warn!(job = job.0, letter = letter.0, "jmap copy left the original: {e}");
+                        tracing::error!(job = job.0, letter = letter.0, "jmap: письмо скопировано, но оригинал не удалён: {e}");
                     }
                     out.push(Event::Imported { job, letter, remote: Remote { account: account.clone(), id: copy.id, data: Vec::new() } });
                 }
@@ -1504,13 +1504,13 @@ async fn folder_command(accounts: &Accounts, cache: &Cache, cmd: Command, notify
         _ => return,
     };
     if let Err(e) = result {
-        tracing::info!("jmap folder command refused: {e}");
+        tracing::warn!("jmap: сервер отказал в действии с папкой: {e}");
         return notify(Event::FolderFailed { mailbox, error: e.to_string() });
     }
     if let Some(acc) = accounts.by_scope(scope.as_deref())
         && let Err(e) = load_mailboxes(acc, cache).await
     {
-        tracing::warn!("jmap mailboxes after folder command: {e}");
+        tracing::warn!("jmap: папки после действия не перечитаны, повтор при сверке: {e}");
     }
     notify(Event::MailboxesChanged);
 }

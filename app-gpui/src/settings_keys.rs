@@ -191,7 +191,7 @@ impl SettingsView {
             set.store(p);
         });
         if let Err(e) = result {
-            tracing::warn!("keys: {id}: {e}");
+            tracing::warn!(command = %id, "keys: клавиши не назначены: {e}");
         }
         self.keys.recording = None;
         self.keys.clash = None;

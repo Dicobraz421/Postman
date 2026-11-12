@@ -420,7 +420,7 @@ impl Mailer {
             let rows = task.await;
             let _ = this.update(cx, |m, cx| match rows {
                 Ok(rows) => m.patched(rows, cx),
-                Err(e) => tracing::warn!("lifecycle: {e}"),
+                Err(e) => tracing::error!("lifecycle: правки писем не записаны в кэш: {e}"),
             });
         })
         .detach();
@@ -483,7 +483,7 @@ impl Mailer {
         self.lifecycle.running = false;
         let now = jiff::Timestamp::now().as_second();
         match plan {
-            Err(e) => tracing::warn!("lifecycle: {e}"),
+            Err(e) => tracing::error!("lifecycle: правила хранения не применены: {e}"),
             Ok((plan, rows)) => {
                 let changed = !plan.patches.is_empty();
                 if changed && self.backend.is_live() {

@@ -1420,7 +1420,7 @@ impl MeetingView {
                 let mut w = worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let busy = w.free_busy(&bytes, from, to, &tz);
                 if let Some(cut) = w.take_cut() {
-                    tracing::warn!("free/busy link cut: {cut}");
+                    tracing::warn!("meeting: занятость по ссылке урезана: {cut}");
                 }
                 busy
             });
@@ -1443,7 +1443,9 @@ impl MeetingView {
                 self.busy.links.insert(email, Link::Shown);
             }
             Err(e) => {
-                tracing::info!("free/busy link: {e}");
+                // Адрес ссылки и участника — только в отладку: ссылка занятости обычно содержит адрес.
+                tracing::warn!("meeting: занятость участника по ссылке не получена");
+                tracing::debug!("meeting: занятость по ссылке: {e}");
                 self.busy.links.insert(email, Link::Failed);
             }
         }

@@ -87,7 +87,7 @@ mod os {
             Ok(tray) => tray,
             Err(e) => {
                 // Без значка окно закрывается, как раньше: спрятанное было бы не вернуть.
-                tracing::warn!("tray icon: {e}");
+                tracing::warn!("tray: значок в области уведомлений не создан, окно закрывается как обычно: {e}");
                 return;
             }
         };
@@ -129,7 +129,7 @@ mod os {
             result = result.and(icon.tray.set_icon(if unread == 0 { ICON } else { ICON_UNREAD }));
         }
         if let Err(e) = result {
-            tracing::warn!("tray icon update: {e}");
+            tracing::warn!("tray: значок не обновлён: {e}");
         }
     }
 
@@ -138,7 +138,7 @@ mod os {
             return false;
         }
         if let Err(e) = crate::sys::hide_window(window) {
-            tracing::warn!("hide window: {e}");
+            tracing::error!("tray: окно не спрятано: {e}");
             return false;
         }
         if hint && !crate::prefs::get(cx).general.tray_hint_shown {
@@ -147,7 +147,7 @@ mod os {
             // Показ — вызов COM в другой процесс: не в потоке окна.
             cx.background_spawn(async move {
                 if let Err(e) = crate::screens::notify(&title, &body) {
-                    tracing::warn!("tray hint notification: {e}");
+                    tracing::warn!("tray: подсказка о значке не показана: {e}");
                 }
             })
             .detach();
@@ -157,7 +157,7 @@ mod os {
 
     pub(crate) fn show(window: &mut Window) {
         if let Err(e) = crate::sys::show_window(window) {
-            tracing::warn!("show window: {e}");
+            tracing::error!("tray: окно не показано: {e}");
         }
         window.activate_window();
     }

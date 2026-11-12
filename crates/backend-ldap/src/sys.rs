@@ -21,7 +21,7 @@ pub(crate) fn domain_controller() -> Option<String> {
         )
     };
     if rc != 0 || info.is_null() {
-        tracing::info!("no domain controller: DsGetDcNameW = {rc}");
+        tracing::debug!("ldap: контроллер домена не найден, DsGetDcNameW = {rc}");
         return None;
     }
     // SAFETY: успех — `info` указывает на заполненную `DOMAIN_CONTROLLER_INFOW`; имя — строка UTF-16 с нулём на конце

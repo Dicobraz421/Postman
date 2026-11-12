@@ -696,7 +696,7 @@ impl RulesPanel {
                         p.found = Some(rows.len());
                     }
                     Ok((rows, seen)) => p.test = Some(Test { rows, seen, show: p.show_test }),
-                    Err(e) => tracing::warn!("rules: test: {e}"),
+                    Err(e) => tracing::error!("rules: проверка правила не выполнена: {e}"),
                 }
                 cx.notify();
             });

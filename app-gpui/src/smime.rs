@@ -344,7 +344,7 @@ impl ReadingPane {
                     }
                     Err(SmimeFailure::TooLarge) => s.seal = Seal::TooLarge,
                     Err(SmimeFailure::Worker(e)) => {
-                        tracing::warn!("S/MIME check failed: {e}");
+                        tracing::error!("smime: подпись не проверена: {e}");
                         s.seal = Seal::Failed(e);
                     }
                 }

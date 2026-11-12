@@ -42,7 +42,7 @@ pub(crate) fn check_worker() {
     let exe = Worker::default_exe();
     let missing = !exe.exists();
     if missing {
-        tracing::error!("worker not found: {}", exe.display());
+        tracing::error!("reading: воркер не найден: {}", exe.display());
     }
     WORKER_MISSING.store(missing, Ordering::Relaxed);
 }
@@ -533,7 +533,7 @@ impl ReadingPane {
                 let (cache, key) = (self.cache.clone(), invite_card::state_key(uid));
                 cx.background_spawn(async move {
                     if let Err(e) = cache.set_state(&key, &value) {
-                        tracing::warn!("invite answer is not stored: {e}");
+                        tracing::error!("reading: ответ на приглашение не записан: {e}");
                     }
                 })
                 .detach();
@@ -641,7 +641,7 @@ impl ReadingPane {
             return;
         }
         WORKER_MISSING.store(false, Ordering::Relaxed);
-        tracing::info!("worker found");
+        tracing::info!("reading: воркер найден");
         cx.emit(ReadingEvent::WorkerFound);
         if let Some(r) = self.reading.as_mut() {
             r.doc = None;
@@ -916,7 +916,7 @@ impl ReadingPane {
         if user {
             cx.emit(ReadingEvent::Toast(Toast::Error, tr!("reading-blob-failed", error = error)));
         } else {
-            tracing::warn!("attachment {blob_id} is not downloaded: {error}");
+            tracing::warn!(%blob_id, "reading: вложение для фоновой проверки не скачано: {error}");
         }
         cx.notify();
     }
@@ -936,7 +936,7 @@ impl ReadingPane {
                         cx.notify();
                     }
                 }
-                Err(e) => tracing::warn!("inline image {cid} is not shown: {e}"),
+                Err(e) => tracing::error!("reading: картинка в письме не показана: {e}"),
             })
             .ok();
         })

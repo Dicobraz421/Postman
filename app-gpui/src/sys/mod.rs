@@ -94,7 +94,7 @@ pub fn clipboard_html(max: usize) -> Option<String> {
     match pets_shell::clipboard::read_html(max) {
         Ok(html) => html.map(|h| h.fragment),
         Err(e) => {
-            tracing::warn!("clipboard HTML is not read: {e}");
+            tracing::warn!("clipboard: HTML не прочитан, вставка текстом: {e}");
             None
         }
     }
@@ -207,7 +207,7 @@ pub mod drag {
     /// Удалить копии (старт и выход).
     pub fn clean(copies: &TempCopies) {
         if let Err(e) = copies.clean() {
-            tracing::warn!("drag copies {}: {e}", copies.root().display());
+            tracing::warn!(path = %copies.root().display(), "drag: копии перетаскивания не удалены: {e}");
         }
     }
 
@@ -252,7 +252,7 @@ pub mod drag {
     /// Удалить копии (старт и выход).
     pub fn clean(copies: &TempCopies) {
         if let Err(e) = copies.clean() {
-            tracing::warn!("drag copies {}: {e}", copies.root().display());
+            tracing::warn!(path = %copies.root().display(), "drag: копии перетаскивания не удалены: {e}");
         }
     }
 

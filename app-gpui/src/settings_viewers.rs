@@ -256,7 +256,7 @@ impl SettingsView {
         };
         let folder = crate::buttons::button("settings-viewers-open", tr!("settings-viewers-open"), false, l).on_click(cx.listener(|_, _, _, cx| {
             if let Err(e) = open_folder() {
-                tracing::warn!("viewer modules folder: {e}");
+                tracing::error!("viewer: папка модулей просмотра не открыта: {e}");
             }
             cx.notify();
         }));

@@ -270,7 +270,7 @@ impl Exporter {
             match data {
                 Ok(raw) => c.arrived.push_back((*letter, raw.clone())),
                 Err(e) => {
-                    tracing::warn!(letter = letter.0, "export: letter not fetched: {e}");
+                    tracing::error!(letter = letter.0, "export: письмо не получено и не выгружено: {e}");
                     j.not_fetched(home);
                 }
             }
@@ -287,7 +287,7 @@ impl Exporter {
             if j.end.is_none()
                 && let Err(e) = j.pump(cache, &self.tz, &mut self.maildir, &mut self.mapi, &mut self.out, now)
             {
-                tracing::warn!(job = id.0, "export failed: {e}");
+                tracing::error!(job = id.0, "export: выгрузка не удалась: {e}");
                 j.discard();
                 j.finish(State::Failed(e.to_string()));
             }
@@ -360,7 +360,7 @@ impl Job {
             drop(w);
             let path = self.root.join(&c.rel);
             if let Err(e) = fs::remove_file(&path) {
-                tracing::warn!("export: unfinished mbox not removed: {e}");
+                tracing::warn!("export: недописанный mbox не удалён: {e}");
             }
         }
     }
@@ -503,7 +503,7 @@ impl Job {
         let late: Vec<(LetterId, Home)> = c.asked.iter().filter(|(_, (t, _))| now >= *t + FETCH_WAIT).map(|(id, (_, h))| (*id, h.clone())).collect();
         c.asked.retain(|id, _| !late.iter().any(|(l, _)| l == id));
         for (id, home) in late {
-            tracing::warn!(letter = id.0, "export: no answer from the server, letter skipped");
+            tracing::error!(letter = id.0, "export: сервер не ответил, письмо не выгружено");
             if !self.unreachable.contains(&home) {
                 self.unreachable.push(home.clone());
             }
@@ -562,7 +562,7 @@ impl Job {
                 let mut raw = Vec::new();
                 src.read_to_end(&mut raw)?;
                 let m = mapi(&raw, row.seen).unwrap_or_else(|e| {
-                    tracing::warn!(letter = id.0, "export: letter not parsed for PST, stored as attachment: {e}");
+                    tracing::warn!(letter = id.0, "export: письмо не разобрано для PST, сохранено вложением: {e}");
                     unparsed(&row, &raw)
                 });
                 let Some(w) = self.pst.as_mut() else { return Ok(None) };

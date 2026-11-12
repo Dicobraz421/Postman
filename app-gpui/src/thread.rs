@@ -122,7 +122,7 @@ impl ReadingPane {
             let (key, rows) = task.await;
             this.update(cx, |this, cx| match rows {
                 Ok(rows) => this.set_conversation(&key, rows, cx),
-                Err(e) => tracing::warn!("thread {key} is not read from the cache: {e}"),
+                Err(e) => tracing::error!("thread: беседа не прочитана из кэша: {e}"),
             })
             .ok();
         })
