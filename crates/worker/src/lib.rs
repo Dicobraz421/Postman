@@ -258,6 +258,8 @@ pub enum Probe {
     MachLookup(String),
     /// macOS: прочитать sysctl.
     Sysctl(String),
+    /// Переменная окружения задана (пути профиля воркеру не передаются, SBX-02).
+    Env(String),
 }
 
 #[cfg(debug_assertions)]
@@ -291,6 +293,7 @@ fn attempt(p: Probe) -> Result<(), String> {
         Probe::ReadFile(path) => std::fs::read(path).map(|_| ()).map_err(|e| e.to_string()),
         Probe::Connect(addr) => std::net::TcpStream::connect(addr).map(drop).map_err(|e| e.to_string()),
         Probe::Spawn(cmd) => std::process::Command::new(cmd).status().map(drop).map_err(|e| e.to_string()),
+        Probe::Env(name) => std::env::var_os(&name).map(drop).ok_or_else(|| format!("{name} не задана")),
         Probe::Hang => loop {
             std::hint::spin_loop();
         },
@@ -943,8 +946,6 @@ pub struct Client {
     timeout: Duration,
     running: Option<Running>,
     level: Level,
-    /// Строгая песочница не дала воркеру работать — запускаем с ослабленной (Windows: без AppContainer).
-    relaxed: bool,
     /// Почему уровень не `Full` ([`Client::fallback`]).
     fallback: Option<String>,
     /// Предел памяти процесса (Windows: Job Object).
@@ -963,7 +964,6 @@ impl Client {
             timeout,
             running: None,
             level: Level::None,
-            relaxed: false,
             fallback: None,
             memory: sandbox::MEMORY_LIMIT,
             cut: None,
@@ -1005,12 +1005,11 @@ impl Client {
     /// (права на папку программы могли выдать без перезапуска Postman).
     pub fn restart(&mut self) {
         self.running = None;
-        self.relaxed = false;
         self.fallback = None;
         self.level = Level::None;
     }
 
-    /// Почему изоляция не полная: отказ AppContainer при запуске или воркер, не ответивший в полной изоляции.
+    /// Почему изоляция не полная (только отладочная диагностика `POSTMAN_SANDBOX_DROP` на Windows).
     /// `None` — уровень полный (или причина неизвестна).
     pub fn fallback(&self) -> Option<&str> {
         self.fallback.as_deref()
@@ -1366,19 +1365,8 @@ impl Client {
     fn call_for(&mut self, req: &Request, bin: &[u8], timeout: Duration) -> Result<(Response, Vec<u8>), String> {
         let json = serde_json::to_vec(req).map_err(|e| e.to_string())?;
         let max = max_bin(req);
-        let mut result = self.exchange(&json, bin, max, timeout);
-        // Воркер не ответил ни разу в полной изоляции (например, AppContainer не может прочитать
-        // свой exe в профиле пользователя) — одна попытка с ослабленной, уровень станет «частичная».
-        if let Err(strict) = &result
-            && !self.relaxed
-            && self.level == Level::Full
-            && self.running.as_ref().is_some_and(|r| !r.answered)
-        {
-            self.running = None;
-            self.relaxed = true;
-            self.fallback = Some(format!("в полной изоляции воркер не ответил: {strict}"));
-            result = self.exchange(&json, bin, max, timeout).map_err(|e| format!("{e}; в полной изоляции: {strict}"));
-        }
+        // Повтора с ослабленной изоляцией нет (SBX-02): падение или зависание на чужих данных не понижает песочницу.
+        let result = self.exchange(&json, bin, max, timeout);
         if result.is_err() {
             // Таймаут, падение или ошибка песочницы: процесс больше не используем.
             self.running = None;
@@ -1409,9 +1397,9 @@ impl Client {
 
     fn start(&mut self) -> Result<Running, String> {
         #[cfg(target_os = "linux")]
-        let p = sandbox::spawn(&self.exe, self.relaxed, self.memory, self.namespaces);
+        let p = sandbox::spawn(&self.exe, self.memory, self.namespaces);
         #[cfg(not(target_os = "linux"))]
-        let p = sandbox::spawn(&self.exe, self.relaxed, self.memory);
+        let p = sandbox::spawn(&self.exe, self.memory);
         let p = p.map_err(|e| format!("запуск {}: {e}", self.exe.display()))?;
         self.level = p.level;
         match (p.level, p.fallback) {

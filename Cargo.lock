@@ -6655,6 +6655,7 @@ dependencies = [
  "postman-smime",
  "postman-worker",
  "rand_core 0.10.1",
+ "rc2",
  "rsa",
  "rustls-pki-types",
  "rustls-webpki",
@@ -7161,6 +7162,15 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
+]
+
+[[package]]
+name = "rc2"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ceda21af1ae61033b63175653a1af86cae399d79cd03ca80ba347eb3a6c4a7fe"
+dependencies = [
+ "cipher 0.5.2",
 ]
 
 [[package]]

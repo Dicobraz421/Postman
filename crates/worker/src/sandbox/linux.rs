@@ -36,9 +36,9 @@ fn dropped(what: &str) -> bool {
     cfg!(debug_assertions) && std::env::var(DROP).is_ok_and(|v| v.split(',').map(str::trim).any(|d| d == what || d == "all"))
 }
 
-/// `_relaxed` не используется: ослабленного режима нет. `memory` — `RLIMIT_AS` процесса, `namespaces` — режим
+/// Ослабленного режима нет. `memory` — `RLIMIT_AS` процесса, `namespaces` — режим
 /// namespaces: уходят аргументами `--memory=…` и `--namespaces=…`, окружение очищено.
-pub(crate) fn spawn(exe: &Path, _relaxed: bool, memory: usize, namespaces: Namespaces) -> io::Result<Process> {
+pub(crate) fn spawn(exe: &Path, memory: usize, namespaces: Namespaces) -> io::Result<Process> {
     let mut cmd = Command::new(exe);
     cmd.env_clear()
         .current_dir("/")
@@ -52,9 +52,14 @@ pub(crate) fn spawn(exe: &Path, _relaxed: bool, memory: usize, namespaces: Names
     {
         cmd.env(DROP, drop);
     }
-    // SAFETY: в pre_exec — только async-signal-safe prctl.
+    // SAFETY: в pre_exec — только async-signal-safe prctl и close_range.
     unsafe {
         cmd.pre_exec(|| {
+            // Дескрипторы родителя сверх stdin/stdout/stderr воркеру не достаются (SBX-02): закрываются при exec.
+            // `CLOSE_RANGE_CLOEXEC`, а не закрытие: канал, по которому `Command` узнаёт об ошибке exec, должен жить.
+            if libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, libc::CLOSE_RANGE_CLOEXEC) != 0 {
+                return Err(io::Error::last_os_error());
+            }
             // Клиент упал — воркер не переживает его.
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
                 return Err(io::Error::last_os_error());

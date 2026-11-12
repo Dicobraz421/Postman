@@ -149,27 +149,29 @@ fn add_cert(store: HCERTSTORE, der: &[u8]) -> bool {
     unsafe { CertAddEncodedCertificateToStore(store, ENCODING, der.as_ptr(), der.len() as u32, CERT_STORE_ADD_ALWAYS, ptr::null_mut()) != 0 }
 }
 
-/// Итог из флагов ошибок цепочки.
+/// Итог из флагов ошибок цепочки — общим правилом [`super::chain_verdict`]: флаг вне перечисленных (ограничения
+/// имён, неизвестное критическое расширение…) — «отклонено», даже вместе с «отзыв неизвестен».
 fn verdict(error: u32) -> Revocation {
-    if error & CERT_TRUST_IS_EXPLICIT_DISTRUST != 0 {
-        Revocation::Rejected(Confirm::Distrusted)
-    } else if error & CERT_TRUST_IS_REVOKED != 0 {
-        Revocation::Revoked
-    } else if error & CERT_TRUST_IS_NOT_SIGNATURE_VALID != 0 {
-        Revocation::Rejected(Confirm::BadSignature)
-    } else if error & (CERT_TRUST_IS_UNTRUSTED_ROOT | CERT_TRUST_IS_PARTIAL_CHAIN) != 0 {
-        Revocation::Rejected(Confirm::Untrusted)
-    } else if error & CERT_TRUST_IS_NOT_TIME_VALID != 0 {
-        Revocation::Rejected(Confirm::Expired)
-    } else if error & CERT_TRUST_IS_NOT_VALID_FOR_USAGE != 0 {
-        Revocation::Rejected(Confirm::WrongUsage)
-    } else if error & (CERT_TRUST_REVOCATION_STATUS_UNKNOWN | CERT_TRUST_IS_OFFLINE_REVOCATION) != 0 {
-        Revocation::Unknown
-    } else if error != 0 {
-        Revocation::Rejected(Confirm::Failed)
-    } else {
-        Revocation::Good
-    }
+    let any = |mask: u32| error & mask != 0;
+    let untrusted = CERT_TRUST_IS_UNTRUSTED_ROOT | CERT_TRUST_IS_PARTIAL_CHAIN;
+    let revocation = CERT_TRUST_REVOCATION_STATUS_UNKNOWN | CERT_TRUST_IS_OFFLINE_REVOCATION;
+    let known = CERT_TRUST_IS_EXPLICIT_DISTRUST
+        | CERT_TRUST_IS_REVOKED
+        | CERT_TRUST_IS_NOT_SIGNATURE_VALID
+        | untrusted
+        | CERT_TRUST_IS_NOT_TIME_VALID
+        | CERT_TRUST_IS_NOT_VALID_FOR_USAGE
+        | revocation;
+    super::chain_verdict(super::ChainCheck {
+        distrusted: any(CERT_TRUST_IS_EXPLICIT_DISTRUST),
+        revoked: any(CERT_TRUST_IS_REVOKED),
+        bad_signature: any(CERT_TRUST_IS_NOT_SIGNATURE_VALID),
+        untrusted: any(untrusted),
+        expired: any(CERT_TRUST_IS_NOT_TIME_VALID),
+        wrong_usage: any(CERT_TRUST_IS_NOT_VALID_FOR_USAGE),
+        other: any(!known),
+        revocation_unknown: any(revocation),
+    })
 }
 
 /// Подтвердить цепочку `chain` (подписант первым) в Windows с проверкой отзыва. `exclusive_root` — тесты: свой

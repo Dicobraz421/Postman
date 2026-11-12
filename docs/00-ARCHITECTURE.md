@@ -30,7 +30,7 @@ Windows и macOS. Приложение семейства «Pets»: общий �
 
 `worker` — отдельный процесс-песочница для разбора чужих данных (HTML, картинки, .ics, просмотр вложений: PDF,
 ZIP, макросы Office, подпись S/MIME — `postman-smime`). Windows: AppContainer + Job Object + mitigation policies,
-запуск без консоли (`DETACHED_PROCESS`). macOS: Seatbelt `deny default` в самом процессе, пределы памяти, файлов и
+запуск без консоли (`DETACHED_PROCESS`); без AppContainer не запускается — письмо текстом (SBX-02). macOS: Seatbelt `deny default` в самом процессе, пределы памяти, файлов и
 времени (ADR 0009). Linux (dev): seccomp + Landlock. Чужие данные в UI-процессе не
 разбираются никогда; песочницу не ослабляем без диагностики (`docs/DEV.md`) и ADR. Второй исполняемый файл крейта —
 `postman-viewer.exe`: хост модулей просмотра WASM (`wasmi`, признак `viewer`), та же песочница, запуск по

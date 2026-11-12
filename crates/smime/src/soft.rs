@@ -8,6 +8,7 @@
 //! операции — здесь же. `rsa` 0.10 считает на `crypto-bigint` в постоянном времени (RUSTSEC-2023-0071 закрыт в 0.10).
 
 use der::{Decode, Encode};
+use p256::elliptic_curve::sec1::ToSec1Point;
 use rsa::PrivateKey as RsaPrivateKey;
 use rsa::pkcs1::DecodeRsaPrivateKey;
 use x509_cert::Certificate;
@@ -17,12 +18,48 @@ use zeroize::Zeroizing;
 use crate::Hash;
 use crate::envelope::{Cek, Envelope, Rid, Wrap};
 
-/// Свой сертификат и закрытый ключ RSA.
+/// Закрытый ключ в памяти: RSA или EC P-256/P-384 (файл PKCS#12, Linux).
+#[derive(Clone)]
+pub enum Private {
+    Rsa(Box<RsaPrivateKey>),
+    P256(p256::SecretKey),
+    P384(p384::SecretKey),
+}
+
+/// Свой сертификат и закрытый ключ.
 pub struct SoftKey {
     issuer: Vec<u8>,
     serial: Vec<u8>,
     ski: Option<Vec<u8>>,
-    key: RsaPrivateKey,
+    key: Private,
+}
+
+/// Общий секрет ECDH своего ключа `key` и точки `peer` (SEC1); не та кривая или не точка — `None`.
+pub(crate) fn ecdh(key: &Private, peer: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
+    match key {
+        Private::P256(k) => {
+            let p = p256::PublicKey::from_sec1_bytes(peer).ok()?;
+            Some(Zeroizing::new(p256::ecdh::diffie_hellman(k.to_nonzero_scalar(), p.as_affine()).raw_secret_bytes().to_vec()))
+        }
+        Private::P384(k) => {
+            let p = p384::PublicKey::from_sec1_bytes(peer).ok()?;
+            Some(Zeroizing::new(p384::ecdh::diffie_hellman(k.to_nonzero_scalar(), p.as_affine()).raw_secret_bytes().to_vec()))
+        }
+        Private::Rsa(_) => None,
+    }
+}
+
+/// Эфемерный ECDH для шифрования (`seal::Ops::ecdh`): ключ из случайных байтов `seed` (32 — P-256, 48 — P-384) →
+/// своя точка (SEC1 без сжатия) и общий секрет с `peer`. Неподходящие байты (≥ порядка, ноль) или точка — `None`.
+pub fn ecdh_ephemeral(bits: u16, seed: &[u8], peer: &[u8]) -> Option<(Vec<u8>, Zeroizing<Vec<u8>>)> {
+    let key =
+        if bits == 384 { Private::P384(p384::SecretKey::from_slice(seed).ok()?) } else { Private::P256(p256::SecretKey::from_slice(seed).ok()?) };
+    let own = match &key {
+        Private::P256(k) => k.public_key().to_sec1_point(false).as_bytes().to_vec(),
+        Private::P384(k) => k.public_key().to_sec1_point(false).as_bytes().to_vec(),
+        Private::Rsa(_) => return None,
+    };
+    Some((own, ecdh(&key, peer)?))
 }
 
 /// Почему ключ не снят.
@@ -44,12 +81,12 @@ impl SoftKey {
             issuer: tbs.issuer().to_der().ok()?,
             serial: tbs.serial_number().as_bytes().to_vec(),
             ski,
-            key: RsaPrivateKey::from_pkcs1_der(pkcs1).ok()?,
+            key: Private::Rsa(Box::new(RsaPrivateKey::from_pkcs1_der(pkcs1).ok()?)),
         })
     }
 
     /// Сертификат (DER) и готовый ключ (из файла PKCS#12).
-    pub fn from_key(cert: &[u8], key: RsaPrivateKey) -> Option<SoftKey> {
+    pub fn from_key(cert: &[u8], key: Private) -> Option<SoftKey> {
         let c = Certificate::from_der(cert).ok()?;
         let tbs = c.tbs_certificate();
         let ski = tbs.get_extension::<SubjectKeyIdentifier>().ok().flatten().map(|(_, s)| s.0.as_bytes().to_vec());
@@ -67,12 +104,17 @@ impl SoftKey {
     }
 
     fn decrypt(&self, wrap: &Wrap, data: &[u8]) -> Result<Option<Cek>, SoftError> {
+        if let Wrap::Ecdh { ephemeral, .. } = wrap {
+            let z = ecdh(&self.key, ephemeral).ok_or_else(|| SoftError::Unsupported("ECDH: curve".into()))?;
+            return Ok(crate::envelope::ecdh_cek(&z, wrap, data));
+        }
+        let Private::Rsa(key) = &self.key else { return Err(SoftError::Unsupported("EC key: RSA recipient".into())) };
         let r = match wrap {
-            Wrap::RsaPkcs1 => self.key.decrypt(rsa::Pkcs1v15Encrypt, data),
-            Wrap::RsaOaep(Hash::Sha1) => self.key.decrypt(rsa::Oaep::<sha1::Sha1>::new(), data),
-            Wrap::RsaOaep(Hash::Sha256) => self.key.decrypt(rsa::Oaep::<sha2::Sha256>::new(), data),
-            Wrap::RsaOaep(Hash::Sha384) => self.key.decrypt(rsa::Oaep::<sha2::Sha384>::new(), data),
-            Wrap::RsaOaep(Hash::Sha512) => self.key.decrypt(rsa::Oaep::<sha2::Sha512>::new(), data),
+            Wrap::RsaPkcs1 => key.decrypt(rsa::Pkcs1v15Encrypt, data),
+            Wrap::RsaOaep(Hash::Sha1) => key.decrypt(rsa::Oaep::<sha1::Sha1>::new(), data),
+            Wrap::RsaOaep(Hash::Sha256) => key.decrypt(rsa::Oaep::<sha2::Sha256>::new(), data),
+            Wrap::RsaOaep(Hash::Sha384) => key.decrypt(rsa::Oaep::<sha2::Sha384>::new(), data),
+            Wrap::RsaOaep(Hash::Sha512) => key.decrypt(rsa::Oaep::<sha2::Sha512>::new(), data),
             Wrap::RsaOaep(h) => return Err(SoftError::Unsupported(format!("RSA-OAEP {h:?}"))),
             Wrap::Ecdh { .. } => return Err(SoftError::Unsupported("ECDH".into())),
             // Ключи ГОСТ — только в СКЗИ (решение владельца 2026-10-22), в памяти их не бывает.
@@ -100,12 +142,12 @@ pub fn unwrap(keys: &[SoftKey], env: &Envelope) -> Result<Cek, SoftError> {
     Err(unsupported.unwrap_or(SoftError::NotForYou))
 }
 
-/// Подписант ключом в памяти (RSA PKCS#1 v1.5; файл PKCS#12 на Linux).
+/// Подписант ключом в памяти (RSA PKCS#1 v1.5, ECDSA P-256/P-384; файл PKCS#12 на Linux).
 pub struct SoftSigner {
     pub(crate) cert: Vec<u8>,
     pub(crate) chain: Vec<Vec<u8>>,
     pub(crate) scheme: crate::Scheme,
-    pub(crate) key: RsaPrivateKey,
+    pub(crate) key: Private,
 }
 
 impl crate::sign::Signer for SoftSigner {
@@ -122,7 +164,22 @@ impl crate::sign::Signer for SoftSigner {
     }
 
     fn sign(&self, digest: &[u8]) -> Result<Vec<u8>, crate::sign::SignError> {
+        use p256::ecdsa::signature::hazmat::PrehashSigner;
         use rsa::Pkcs1v15Sign;
+        let failed = |e: String| crate::sign::SignError::Failed(e);
+        match (&self.key, self.scheme) {
+            (Private::P256(k), crate::Scheme::Ecdsa(_)) => {
+                let s: p256::ecdsa::Signature = p256::ecdsa::SigningKey::from(k).sign_prehash(digest).map_err(|e| failed(e.to_string()))?;
+                return Ok(s.to_der().as_bytes().to_vec());
+            }
+            (Private::P384(k), crate::Scheme::Ecdsa(_)) => {
+                let s: p384::ecdsa::Signature = p384::ecdsa::SigningKey::from(k).sign_prehash(digest).map_err(|e| failed(e.to_string()))?;
+                return Ok(s.to_der().as_bytes().to_vec());
+            }
+            (Private::Rsa(_), _) => {}
+            (_, s) => return Err(failed(format!("key in memory: {s:?} is not supported"))),
+        }
+        let Private::Rsa(key) = &self.key else { return Err(failed("key in memory".into())) };
         let padding = match self.scheme {
             crate::Scheme::RsaPkcs1(Hash::Sha1) => Pkcs1v15Sign::new::<sha1::Sha1>(),
             crate::Scheme::RsaPkcs1(Hash::Sha256) => Pkcs1v15Sign::new::<sha2::Sha256>(),
@@ -130,7 +187,7 @@ impl crate::sign::Signer for SoftSigner {
             crate::Scheme::RsaPkcs1(Hash::Sha512) => Pkcs1v15Sign::new::<sha2::Sha512>(),
             s => return Err(crate::sign::SignError::Failed(format!("key in memory: {s:?} is not supported"))),
         };
-        self.key.sign(padding, digest).map_err(|e| crate::sign::SignError::Failed(e.to_string()))
+        key.sign(padding, digest).map_err(|e| failed(e.to_string()))
     }
 }
 
