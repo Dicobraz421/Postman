@@ -8,7 +8,7 @@ pub(crate) use linux::{MEMORY_LIMIT, isolate, lockdown, parent, spawn};
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub(crate) use windows::{MEMORY_LIMIT, lockdown, parent, spawn};
+pub(crate) use windows::{MEMORY_LIMIT, lockdown, parent, remove_profile, spawn};
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -18,6 +18,12 @@ pub use macos::Limited;
 pub(crate) use macos::probe;
 #[cfg(target_os = "macos")]
 pub(crate) use macos::{MEMORY_LIMIT, lockdown, parent, spawn};
+
+/// Профиль песочницы на диске есть только на Windows (AppContainer); на остальных платформах удалять нечего.
+#[cfg(not(windows))]
+pub(crate) fn remove_profile() -> Result<(), String> {
+    Ok(())
+}
 
 /// Шаг изоляции, которому нужен однопоточный процесс (Linux: namespaces); на остальных платформах его нет.
 #[cfg(not(target_os = "linux"))]

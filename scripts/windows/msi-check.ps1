@@ -1,5 +1,5 @@
 # CI check of the MSI (job `release`, the runner is elevated): silent install, the result in the system,
-# update to a newer version, refusal to downgrade, removal. Changes the machine - never run it on a workstation.
+# update to a newer version, refusal to downgrade, removal (with the worker's AppContainer profile, PAR-05). Changes the machine - never run it on a workstation.
 # The newer package is the same kit under the next patch version (postman-pack msi ... --as).
 # Usage: pwsh -File scripts\windows\msi-check.ps1 -Msi <file.msi> -Kit <kit dir> -Pack <postman-pack.exe>
 param(
@@ -13,6 +13,8 @@ $lnk = Join-Path ([Environment]::GetFolderPath("CommonPrograms")) "Postman.lnk"
 $eventKey = "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\Postman"
 $files = "postman.exe", "postman-worker.exe", "postman-viewer.exe", "README.txt"
 $logs = Join-Path $env:RUNNER_TEMP "msi-logs"
+$profileName = "Postman.MailWorker"
+$mappings = "HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppContainer\Mappings"
 New-Item -ItemType Directory -Force $logs | Out-Null
 
 function Msiexec([string]$what, [string]$name, [int[]]$ok = @(0, 3010)) {
@@ -59,6 +61,12 @@ function Msi-Version([string]$path) {
   return [string]$r.StringData(1)
 }
 
+# The worker's AppContainer profile is registered for the current user (HKCU mappings, Moniker = name).
+function Test-Profile {
+  if (-not (Test-Path $mappings)) { return $false }
+  [bool](Get-ChildItem $mappings | Where-Object { $_.GetValue("Moniker") -eq $profileName })
+}
+
 $ver = Msi-Version $Msi
 Msiexec "/i `"$Msi`"" "install"
 Assert-Installed $ver
@@ -78,9 +86,20 @@ Assert-Installed $newVer
 Msiexec "/i `"$Msi`"" "downgrade" @(1603)
 Assert-Installed $newVer
 
+# The client creates the profile on the first worker start; here it is created directly (userenv), as the app would.
+Add-Type -Namespace Par05 -Name UserEnv -MemberDefinition @'
+[DllImport("userenv.dll", CharSet = CharSet.Unicode)]
+public static extern int CreateAppContainerProfile(string name, string display, string description, IntPtr caps, uint count, out IntPtr sid);
+'@
+$sid = [IntPtr]::Zero
+$hr = [Par05.UserEnv]::CreateAppContainerProfile($profileName, "Postman", "Postman", [IntPtr]::Zero, 0, [ref]$sid)
+if ($hr -lt 0 -and $hr -ne -2147024713) { throw "CreateAppContainerProfile: $('0x{0:X8}' -f $hr)" }
+if (-not (Test-Profile)) { throw "AppContainer profile $profileName not created" }
+
 Msiexec "/x `"$newer`"" "remove"
+if (Test-Profile) { throw "left after removal: AppContainer profile $profileName" }
 if (Test-Path -LiteralPath $dir) { throw "left after removal: $dir" }
 if (Test-Path -LiteralPath $lnk) { throw "left after removal: $lnk" }
 if (Test-Path $eventKey) { throw "left after removal: $eventKey" }
 if ((Entries).Count) { throw "left after removal: Installed apps entry" }
-"removed: files, shortcut, event source, Installed apps entry"
+"removed: files, shortcut, event source, Installed apps entry, AppContainer profile"
