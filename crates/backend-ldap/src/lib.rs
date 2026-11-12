@@ -1,11 +1,13 @@
 //! Каталог Active Directory — плагин ядра (ADR 0004; S5-12 Ф5, решение владельца №12,
 //! `docs/decisions/2026-11-02-ldap-active-directory.md`): сертификаты адресатов для «Конфиденциально».
 //!
-//! Где каталог: контроллер домена компьютера — службой Windows (`DsGetDcNameW`, `sys.rs`), база поиска —
+//! Где каталог: контроллер домена компьютера — службой Windows (`DsGetDcNameW`, `sys.rs`; на macOS — DNS SRV по
+//! области билета Kerberos, `srv.rs`), база поиска —
 //! `defaultNamingContext` из rootDSE (AD, 389 DS — ALD Pro, FreeIPA), иначе первый раздел данных из `namingContexts`
 //! (OpenLDAP); компьютер вне домена — сервер и база из настроек. Вход — учётной записью Windows (SASL GSSAPI,
 //! Kerberos через SSPI): по `ldap://` — с шифрованием Kerberos, по TLS — с привязкой к каналу. Простой вход (имя и
 //! пароль, в том числе служебная учётная запись LDAP-шлюза authentik) — только по TLS: `ldaps://` или StartTLS.
+//! На macOS вход учётной записью — свой SASL GSSAPI поверх GSS.framework (`kerberos.rs`), остальное — общее.
 //! Без входа — каталог, открытый на чтение (частая настройка OpenLDAP). TLS — с проверкой сертификата Windows.
 //!
 //! Поиск — по `mail` и `proxyAddresses` (`smtp:`), атрибут `userCertificate` (у каталогов по RFC 4523 — с
@@ -13,6 +15,10 @@
 //! его ядро (`postman_core::smime::directory`). `userSMIMECertificate` (PKCS#7) — тоже как есть: сертификаты из него
 //! достаёт воркер.
 
+#[cfg(any(target_os = "macos", test))]
+mod kerberos;
+#[cfg(any(target_os = "macos", test))]
+mod srv;
 mod sys;
 #[cfg(test)]
 mod tests;
@@ -47,7 +53,7 @@ pub struct Settings {
 /// Как входить в каталог.
 #[derive(Clone, Default)]
 pub enum Login {
-    /// Учётная запись Windows (Kerberos), без пароля.
+    /// Учётная запись компьютера в домене (Kerberos; на macOS — билет пользователя), без пароля.
     #[default]
     Windows,
     /// Имя (DN или `user@domain`) и пароль — только по TLS: по открытому каналу пароль ушёл бы как есть.
@@ -85,7 +91,7 @@ impl Directory for LdapDirectory {
     }
 }
 
-/// Контроллер домена компьютера (`DsGetDcNameW`) — для подсказки в настройках; блокирует поток.
+/// Контроллер домена компьютера (`DsGetDcNameW`; на macOS — DNS SRV) — для подсказки в настройках; блокирует поток.
 pub fn domain_controller() -> Option<String> {
     sys::domain_controller()
 }
@@ -121,6 +127,17 @@ impl Target {
         }
         Ok(Target { url: format!("{scheme}://{authority}"), host: host.to_owned(), tls })
     }
+
+    /// `узел:порт` для TCP; порт по умолчанию — 389, у `ldaps://` — 636.
+    #[cfg(any(target_os = "macos", test))]
+    fn socket_addr(&self) -> String {
+        let authority = self.url.split_once("://").map_or(self.url.as_str(), |(_, a)| a);
+        let has_port = match authority.strip_prefix('[') {
+            Some(v6) => v6.split_once(']').is_some_and(|(_, port)| port.starts_with(':')),
+            None => authority.contains(':'),
+        };
+        if has_port { authority.to_owned() } else { format!("{authority}:{}", if self.tls { 636 } else { 389 }) }
+    }
 }
 
 fn unavailable(e: LdapError) -> DirectoryError {
@@ -129,6 +146,20 @@ fn unavailable(e: LdapError) -> DirectoryError {
 
 /// Подключиться, войти, найти сертификаты адресов `addresses` и выйти.
 async fn search(settings: &Settings, target: &Target, addresses: &[String]) -> Result<Vec<Vec<u8>>, DirectoryError> {
+    let mut ldap = connect(settings, target).await?;
+    let found = find(&mut ldap, settings, addresses).await;
+    // Выход — вежливость: соединение закроется и так.
+    let _ = ldap.unbind().await;
+    found
+}
+
+/// Подключиться и войти.
+async fn connect(settings: &Settings, target: &Target) -> Result<Ldap, DirectoryError> {
+    // На macOS ldap3 без GSSAPI (libgssapi не собирается с GSS.framework): вход Kerberos — свой, `kerberos.rs`.
+    #[cfg(target_os = "macos")]
+    if matches!(settings.login, Login::Windows) {
+        return kerberos::connect(settings, target).await;
+    }
     let tls = target.tls || settings.starttls;
     if matches!(settings.login, Login::Simple { .. }) && !tls {
         return Err(DirectoryError::Unavailable("simple bind needs ldaps:// or StartTLS".into()));
@@ -139,29 +170,24 @@ async fn search(settings: &Settings, target: &Target, addresses: &[String]) -> R
     }
     let (conn, mut ldap) = LdapConnAsync::with_settings(conn, &target.url).await.map_err(unavailable)?;
     ldap3::drive!(conn);
-    let found = bound_search(&mut ldap, settings, target, addresses).await;
-    // Выход — вежливость: соединение закроется и так.
-    let _ = ldap.unbind().await;
-    found
+    let bound = match &settings.login {
+        #[cfg(not(target_os = "macos"))]
+        Login::Windows => ldap.sasl_gssapi_bind(&target.host).await.and_then(|r| r.success()).map(drop),
+        // Сюда не попадаем: на macOS вход Kerberos — выше.
+        #[cfg(target_os = "macos")]
+        Login::Windows => Ok(()),
+        Login::Simple { user, password } => ldap.simple_bind(user, password).await.and_then(|r| r.success()).map(drop),
+        Login::Anonymous => Ok(()),
+    };
+    if let Err(e) = bound {
+        let _ = ldap.unbind().await;
+        return Err(unavailable(e));
+    }
+    Ok(ldap)
 }
 
-async fn bound_search(ldap: &mut Ldap, settings: &Settings, target: &Target, addresses: &[String]) -> Result<Vec<Vec<u8>>, DirectoryError> {
-    match &settings.login {
-        #[cfg(not(target_os = "macos"))]
-        Login::Windows => {
-            ldap.sasl_gssapi_bind(&target.host).await.and_then(|r| r.success()).map_err(unavailable)?;
-        }
-        // На macOS ldap3 без GSSAPI (libgssapi не собирается с GSS.framework) — вход Kerberos в MAC-05.
-        #[cfg(target_os = "macos")]
-        Login::Windows => {
-            let spn = &target.host;
-            return Err(DirectoryError::Unavailable(format!("Kerberos (GSSAPI) login to ldap/{spn} is not supported on macOS yet")));
-        }
-        Login::Simple { user, password } => {
-            ldap.simple_bind(user, password).await.and_then(|r| r.success()).map_err(unavailable)?;
-        }
-        Login::Anonymous => {}
-    }
+/// Найти сертификаты адресов `addresses` (вход уже выполнен).
+async fn find(ldap: &mut Ldap, settings: &Settings, addresses: &[String]) -> Result<Vec<Vec<u8>>, DirectoryError> {
     let base = match settings.base_dn.as_deref().map(str::trim).filter(|b| !b.is_empty()) {
         Some(b) => b.to_owned(),
         None => naming_context(ldap).await?,
