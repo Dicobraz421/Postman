@@ -1742,6 +1742,25 @@ pub mod contacts {
 mod tests {
     use super::*;
 
+    /// Пересылка в демо берёт байты вложений сразу (`blob`): у каждого вложения писем демо они есть — переслать можно
+    /// целиком. Кроме подписи и конверта S/MIME образцов (`smime.p7s`, `smime.p7m`): это части самого письма, а не
+    /// файлы, и демо их байты не нужны.
+    #[test]
+    fn every_attachment_has_its_bytes() {
+        let ids = (0..300).map(|n| format!("demo{n}")).chain(CHAIN.iter().map(|m| m.id.to_string())).chain(["share1".to_string(), DRAFT.to_string()]);
+        let mut missing = Vec::new();
+        for id in ids {
+            for a in body(&id).attachments.iter().filter(|a| a.size > 0 && !a.mime.contains("pkcs7")) {
+                match blob(&a.blob_id) {
+                    Some(d) if !d.is_empty() => {}
+                    _ => missing.push(format!("{id}: {} ({})", a.name, a.blob_id)),
+                }
+            }
+        }
+        missing.dedup();
+        assert!(missing.is_empty(), "{missing:#?}");
+    }
+
     #[test]
     fn chart_letter_has_a_large_inline_png() {
         let b = body("demo104");

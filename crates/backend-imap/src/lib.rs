@@ -34,7 +34,7 @@ use postman_cache::{
     AccountRow, Addr, AttachmentRow, BodyRow, Cache, EmailRow, FolderRow, LetterId, MailboxRow, Owner, RemoteRef, Rights, in_profile, scoped,
     unscoped,
 };
-use postman_compose::{Address, Draft};
+use postman_compose::{Address, Attachment, Draft};
 use postman_imap::state::{FolderState, Plan};
 use postman_imap::{AppendError, Config, Header, Role, Security, Session, flags, smtp, uid_set};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -1066,29 +1066,49 @@ impl Imap {
         }
     }
 
-    /// Письмо — в байты (S/MIME «Конфиденциально» — как у JMAP); вложения пересылки — из кэша или с сервера.
-    async fn message_bytes(&mut self, draft: &mut Draft, message_id: &str) -> postman_imap::Result<Vec<u8>> {
-        for a in draft.attachments.iter_mut().filter(|a| a.data.is_empty()) {
-            if let Some(blob) = a.blob_id.clone() {
-                a.data = self.blob(&blob).await?;
+    /// Байты вложений, у которых есть только blob (пересылка, вложения беседы новым участникам) — из кэша или с
+    /// сервера. Не скачалось или пришло пустым — ошибка с кодом `attachment-missing:<имя>`: письмо без вложения не
+    /// уходит.
+    async fn fill(&mut self, list: &mut [Attachment]) -> postman_imap::Result<()> {
+        for a in list.iter_mut().filter(|a| a.data.is_empty()) {
+            let Some(blob) = a.blob_id.clone() else { continue };
+            match self.blob(&blob).await {
+                Ok(d) if !d.is_empty() => a.data = d,
+                Ok(_) => {
+                    tracing::warn!("imap: attachment came empty before sending, the letter is not sent");
+                    return Err(postman_imap::Error::Protocol(postman_compose::missing_code(&a.name)));
+                }
+                Err(e) => {
+                    tracing::warn!("imap: attachment not downloaded before sending, the letter is not sent: {e}");
+                    return Err(postman_imap::Error::Protocol(postman_compose::missing_code(&a.name)));
+                }
             }
         }
-        let now = jiff::Timestamp::now().as_second();
-        let raw = postman_compose::build(draft, now, message_id).map_err(|e| postman_imap::Error::Protocol(format!("building the message: {e}")))?;
-        if draft.encrypt_to.is_empty() {
-            return Ok(raw);
-        }
-        postman_core::smime::seal_outgoing(&raw, &draft.encrypt_to).map_err(|e| postman_imap::Error::Protocol(format!("{e:?}")))
+        Ok(())
     }
 
+    /// Письмо — в байты (S/MIME «Конфиденциально» — как у JMAP); вложения пересылки — из кэша или с сервера.
+    async fn message_bytes(&mut self, draft: &mut Draft, message_id: &str) -> postman_imap::Result<Vec<u8>> {
+        self.fill(&mut draft.attachments).await?;
+        message_bytes(draft, jiff::Timestamp::now().as_second(), message_id)
+    }
+
+    /// Отправить через SMTP, копию — в «Отправленные». В ответе с новыми участниками (решение владельца 2026-11-13) —
+    /// два письма с разными конвертами ([`to_send`]); все вложения скачиваются до первого.
     async fn send(&mut self, mut draft: Draft, replace: Option<String>) -> postman_imap::Result<()> {
-        let now = jiff::Timestamp::now().as_second();
-        let id = postman_compose::new_message_id(&draft.from, now);
-        let raw = self.message_bytes(&mut draft, &id).await?;
-        let rcpt: Vec<String> = draft.to.iter().chain(&draft.cc).chain(&draft.bcc).map(|a| a.email.clone()).collect();
-        smtp::submit(&self.account.smtp, &draft.from.email, &rcpt, &raw).await?;
+        self.fill(&mut draft.attachments).await?;
+        let newcomers = !draft.newcomers().is_empty();
+        if let Some(share) = draft.share.as_mut().filter(|_| newcomers) {
+            self.fill(&mut share.attachments).await?;
+        }
+        let out = to_send(&draft, jiff::Timestamp::now().as_second())?;
+        for l in &out {
+            smtp::submit(&self.account.smtp, &draft.from.email, &l.rcpt, &l.raw).await?;
+        }
         if let Some(sent) = self.folder_by_role(Role::Sent).cloned() {
-            self.session().await?.append(&sent.raw, &["\\Seen"], &raw).await?;
+            for l in out.iter().filter(|l| l.keep) {
+                self.session().await?.append(&sent.raw, &["\\Seen"], &l.raw).await?;
+            }
         }
         if let Some(old) = replace.filter(|k| parse_key(k).is_some()) {
             self.destroy(&[old]).await?;
@@ -1843,6 +1863,38 @@ fn command_name(c: &Command) -> &'static str {
     }
 }
 
+/// Письмо — в байты: сборка и S/MIME «Конфиденциально» (как у JMAP). Вложения — уже с байтами.
+fn message_bytes(draft: &Draft, now: i64, message_id: &str) -> postman_imap::Result<Vec<u8>> {
+    let raw = postman_compose::build(draft, now, message_id).map_err(|e| postman_imap::Error::Protocol(format!("building the message: {e}")))?;
+    if draft.encrypt_to.is_empty() {
+        return Ok(raw);
+    }
+    postman_core::smime::seal_outgoing(&raw, &draft.encrypt_to).map_err(|e| postman_imap::Error::Protocol(format!("{e:?}")))
+}
+
+/// Письмо на отправку SMTP: байты, адреса конверта (RCPT TO), класть ли его в «Отправленные».
+#[derive(Debug)]
+struct Outgoing {
+    raw: Vec<u8>,
+    rcpt: Vec<String>,
+    keep: bool,
+}
+
+/// Копии письма ([`Draft::outgoing`]) в байты, каждая со своим Message-ID. Копия новым участникам — первой: не ушла
+/// она — не уходит и основная. Байты вложений — уже в черновике.
+fn to_send(draft: &Draft, now: i64) -> postman_imap::Result<Vec<Outgoing>> {
+    let mut out = draft
+        .outgoing()
+        .into_iter()
+        .map(|c| {
+            let raw = message_bytes(&c.draft, now, &postman_compose::new_message_id(&c.draft.from, now))?;
+            Ok(Outgoing { raw, rcpt: c.rcpt, keep: c.keep })
+        })
+        .collect::<postman_imap::Result<Vec<_>>>()?;
+    out.sort_by_key(|l| l.keep);
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Folder, ImapAccount, append_flags, email_key, folder_id, import_error, is_imap_url, parse_key, rekey, sync_order};
@@ -1852,6 +1904,58 @@ mod tests {
 
     /// Выгрузка (S8-13): ключевые слова — флаги IMAP, свои — только при `PERMANENTFLAGS \*`; отказы сервера — отказы
     /// задания: больше предела, ящик полон, обрыв — пауза.
+    /// Ответ с новым участником (решение владельца 2026-11-13): два письма SMTP с одинаковыми заголовками и своими
+    /// Message-ID; RCPT TO — прежним участникам у письма без вложений беседы, новым — у письма с ними (первым); в
+    /// «Отправленные» — только первое из них.
+    #[test]
+    fn reply_with_newcomers_goes_as_two_smtp_letters() {
+        use postman_compose::{Address, Attachment, Draft, Share};
+        let pdf: Vec<u8> = (0..=255u8).cycle().take(3000).collect();
+        let draft = Draft {
+            from: Address::new("Я", "me@x.example"),
+            to: vec![Address::new("Иван", "ivan@x.example")],
+            cc: vec![Address::new("Ольга", "olga@x.example")],
+            subject: "RE: Отчёт".into(),
+            markdown: "Добавляю Ольгу.".into(),
+            in_reply_to: Some("m1@x.example".into()),
+            references: vec!["m1@x.example".into()],
+            share: Some(Share {
+                known: vec!["ivan@x.example".into(), "me@x.example".into()],
+                attachments: vec![Attachment {
+                    name: "Отчёт.pdf".into(),
+                    mime: "application/pdf".into(),
+                    data: pdf.clone(),
+                    inline_cid: None,
+                    blob_id: Some("k#0".into()),
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let out = super::to_send(&draft, 1_792_240_200).unwrap();
+        let got: Vec<_> = out.iter().map(|l| (l.rcpt.clone(), l.keep)).collect();
+        assert_eq!(got, [(vec!["olga@x.example".to_owned()], false), (vec!["ivan@x.example".to_owned()], true)]);
+        use postman_worker::mime::{parse, part};
+        let (new, old) = (parse(&out[0].raw).unwrap(), parse(&out[1].raw).unwrap());
+        assert_eq!(new.parts.len(), 1);
+        assert_eq!((new.parts[0].name.as_str(), new.parts[0].mime.as_str()), ("Отчёт.pdf", "application/pdf"));
+        assert_eq!(part(&out[0].raw, 0).unwrap(), pdf);
+        assert!(old.parts.is_empty());
+        for m in [&new, &old] {
+            assert_eq!(m.references, ["m1@x.example"]);
+            assert_eq!(m.to.iter().map(|a| a.email.as_str()).collect::<Vec<_>>(), ["ivan@x.example"]);
+            assert_eq!(m.cc.iter().map(|a| a.email.as_str()).collect::<Vec<_>>(), ["olga@x.example"]);
+        }
+        assert_ne!(new.message_id, old.message_id);
+        // Отключили в черновике — одно письмо всем, как раньше.
+        let mut off = draft.clone();
+        off.share.as_mut().unwrap().off = true;
+        let out = super::to_send(&off, 0).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].rcpt, ["ivan@x.example", "olga@x.example"]);
+        assert!(out[0].keep);
+    }
+
     #[test]
     fn append_flags_and_errors() {
         let kw = ["$seen".to_string(), "$flagged".into(), "pm.due".into(), "$forwarded".into(), "two words".into()];

@@ -146,16 +146,24 @@ pub(crate) fn draft(
         if mode != Mode::Forward && !in_quote {
             continue;
         }
-        d.attachments.push(Attachment {
-            name: a.name.clone(),
-            mime: a.mime.clone(),
-            data: local(&a.blob_id).unwrap_or_default(),
-            // Картинка в тексте — частью письма; остальное — вложением (чипом в окне письма).
-            inline_cid: a.cid.clone().filter(|_| a.inline || in_quote),
-            blob_id: Some(a.blob_id.clone()),
-        });
+        d.attachments.push(attachment(a, in_quote, &local));
     }
     d
+}
+
+/// Вложение оригинала в черновик. Картинка, на которую ссылается текст (`in_text`), — частью письма; остальное —
+/// вложением (чипом в окне письма), и картинка inline без ссылки из текста тоже: окно письма убирает картинки, на
+/// которые текст не ссылается, и при пересылке она бы пропала. Пустой файл — без blob: скачивать нечего, а
+/// синхронизация пустые байты при blob считает несказавшимся вложением и не отправляет письмо.
+pub(crate) fn attachment(a: &postman_cache::AttachmentRow, in_text: bool, local: &impl Fn(&str) -> Option<Vec<u8>>) -> Attachment {
+    let empty = a.size == 0;
+    Attachment {
+        name: a.name.clone(),
+        mime: a.mime.clone(),
+        data: if empty { Vec::new() } else { local(&a.blob_id).unwrap_or_default() },
+        inline_cid: a.cid.clone().filter(|_| in_text),
+        blob_id: (!empty).then(|| a.blob_id.clone()),
+    }
 }
 
 /// Текст ответа без цитаты: пустые строки для своего текста и подпись, как над цитатой у `postman_compose::respond`.
@@ -242,6 +250,11 @@ impl Mailer {
         let local = |blob: &str| if live { None } else { postman_demo::blob(blob) };
         let quote = crate::prefs::with(cx, |p| p.replies.quote);
         let d = draft(mode, &r.row, body, doc, &me, &signature, quote, local);
+        let row = r.row.clone();
+        // Вложения беседы новым участникам (решение владельца 2026-11-13) — ответу; пересылка — стандартная.
+        if mode != Mode::Forward {
+            self.share_for(&row, &d, cx);
+        }
         // Ответ и пересылка — в области чтения над письмом (S5-06б); «Развернуть» — во вкладку.
         self.open_reply(d, id.to_owned(), cx);
         true
@@ -634,7 +647,9 @@ mod tests {
 
     #[test]
     fn forward_carries_the_attachments() {
-        let doc = postman_ir::from_plain("текст");
+        let mut doc = postman_ir::from_plain("текст");
+        let logo = postman_ir::Inline::Image { cid: "logo@corp".into(), alt: String::new(), width: None, height: None };
+        doc.blocks.push(postman_ir::Block::Paragraph { align: Default::default(), content: vec![logo] });
         // Живой ящик: байтов нет — только blob_id, вложения скачает синхронизация перед отправкой.
         let d = draft(Mode::Forward, &row(), &body(), &doc, &me(), "", ReplyQuote::Include, |_| None);
         assert_eq!(d.subject, "FW: Отчёт");
@@ -644,6 +659,59 @@ mod tests {
         // Демо: байты сразу.
         let d = draft(Mode::Forward, &row(), &body(), &doc, &me(), "", ReplyQuote::Include, |b| Some(b.as_bytes().to_vec()));
         assert!(d.attachments.iter().all(|a| Some(a.data.as_slice()) == a.blob_id.as_deref().map(str::as_bytes)));
+    }
+
+    /// Пересылка не теряет вложений: картинка inline, на которую текст не ссылается, — обычным вложением (окно письма
+    /// убирает картинки без ссылки из текста); пустой файл — без blob (скачивать нечего).
+    #[test]
+    fn forward_keeps_unreferenced_inline_and_empty_files() {
+        let doc = postman_ir::from_plain("текст");
+        let mut b = body();
+        let mut empty = attachment("B-empty", "пусто.txt", None);
+        empty.size = 0;
+        b.attachments.push(empty);
+        let d = draft(Mode::Forward, &row(), &b, &doc, &me(), "", ReplyQuote::Include, |_| None);
+        let got: Vec<_> = d.attachments.iter().map(|a| (a.name.as_str(), a.blob_id.as_deref(), a.inline_cid.as_deref())).collect();
+        assert_eq!(got, [("logo.png", Some("B-logo"), None), ("Итоги.xlsx", Some("B-xlsx"), None), ("пусто.txt", None, None)]);
+        // Окно письма отправит все три (картинки без ссылки из текста оно убирает — здесь их нет).
+        let m = crate::compose::Model::new(d, None, "", std::time::Instant::now());
+        assert_eq!(m.draft(false).unwrap().attachments.len(), 3);
+    }
+
+    /// Решение владельца 2026-11-13: в «Ответить всем» добавили человека — ему уходят вложения беседы. Без исходного
+    /// письма («При ответе на сообщение» в `Prefs::replies`) правило то же; строка над текстом — с его именем и числом
+    /// файлов; «Не отправлять» — одно письмо всем, как раньше.
+    #[test]
+    fn reply_all_with_a_newcomer_and_quote_omitted() {
+        use postman_compose::share::{File, Letter, collect};
+        let mut prefs = postman_core::prefs::Prefs::default();
+        prefs.replies.quote = ReplyQuote::Omit;
+        let doc = postman_ir::from_plain("текст");
+        let mut d = draft(Mode::ReplyAll, &row(), &body(), &doc, &me(), "— Я", prefs.replies.quote, |_| None);
+        assert_eq!(d.markdown, "\n\n— Я\n\n", "без цитаты");
+        let people = ["ivan@corp.example", "me@corp.example", "petr@corp.example", "anna@corp.example"];
+        let letters = [Letter {
+            people: people.iter().map(|p| p.to_string()).collect(),
+            files: vec![File { name: "Итоги.xlsx".into(), mime: String::new(), blob_id: "B-xlsx".into(), size: 4, hash: None }],
+        }];
+        d.share = collect(&letters, &d.attachments, "note".into());
+        let mut m = crate::compose::Model::new(d, None, "", std::time::Instant::now());
+        assert!(m.share_line().is_none(), "новых нет — строки нет");
+        m.cc.push_str("Ольга <olga@corp.example>; ");
+        assert_eq!(m.share_line(), Some((vec!["Ольга".to_owned()], 1, false)));
+        let sent = m.draft(true).unwrap();
+        let out = sent.outgoing();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[1].rcpt, ["olga@corp.example"]);
+        assert_eq!(out[1].draft.attachments.iter().map(|a| a.blob_id.as_deref()).collect::<Vec<_>>(), [Some("B-xlsx")]);
+        // «Не отправлять» — только для этого письма.
+        m.toggle_share();
+        assert_eq!(m.share_line(), Some((vec!["Ольга".to_owned()], 1, true)));
+        let out = m.draft(true).unwrap().outgoing();
+        assert_eq!(out.len(), 1);
+        assert!(out[0].draft.attachments.is_empty() && out[0].rcpt.contains(&"olga@corp.example".to_owned()));
+        m.toggle_share();
+        assert_eq!(m.draft(true).unwrap().outgoing().len(), 2);
     }
 
     #[test]

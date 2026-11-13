@@ -11,7 +11,7 @@ use gpui_kit::*;
 use jiff::Zoned;
 use pets_i18n::tr;
 use pets_ui::Level as Toast;
-use postman_compose::{Address, Attachment, Draft};
+use postman_compose::{Address, Draft};
 use postman_core::send_later::{Choice, OfferState, Reject, Scheduled, Undo};
 use postman_core::sync::{Command, Event};
 
@@ -118,19 +118,19 @@ pub(crate) fn draft_of(m: &Mailer, row: postman_cache::EmailRow, body: postman_c
         .map(|(a, _)| a)
         .unwrap_or_else(|| Address::new(&row.from_name, &row.from_addr));
     let addresses = |list: &[postman_cache::Addr]| list.iter().map(|a| Address::new(&a.name, &a.email)).collect();
+    let markdown = body.text.unwrap_or_default();
+    // Картинка, на которую ссылается текст, — частью письма; остальное (и пустые файлы) — как при пересылке.
+    let in_text = |a: &postman_cache::AttachmentRow| a.cid.as_ref().is_some_and(|c| markdown.contains(&format!("cid:{c}")));
+    let attachments = body.attachments.iter().map(|a| crate::actions::attachment(a, in_text(a), &|_| None)).collect();
     Draft {
         from,
         to: addresses(&body.to),
         cc: addresses(&body.cc),
         subject: row.subject,
-        markdown: body.text.unwrap_or_default(),
         in_reply_to: body.references.last().cloned(),
         references: body.references,
-        attachments: body
-            .attachments
-            .into_iter()
-            .map(|a| Attachment { inline_cid: a.cid.filter(|_| a.inline), name: a.name, mime: a.mime, data: Vec::new(), blob_id: Some(a.blob_id) })
-            .collect(),
+        attachments,
+        markdown,
         ..Default::default()
     }
 }

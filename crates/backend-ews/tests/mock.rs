@@ -1686,3 +1686,62 @@ fn send_receive_reports_start_and_end() {
     assert_eq!(end, SendReceive::Finished { error: None });
     assert!(log.lock().unwrap().len() > n, "сверка ушла на сервер");
 }
+
+/// Вложения уходят целиком или письмо не уходит: байты вложения — из кэша; не скачалось — `ComposeFailed` с кодом
+/// `attachment-missing:<имя>`, `CreateItem` нет. Ответ с новым участником (решение владельца 2026-11-13) — два
+/// `CreateItem`: «Вложения из беседы» без копии (`SendOnly`) и основное с копией (`SendAndSaveCopy`).
+#[test]
+fn attachments_are_sent_whole_or_not_at_all() {
+    let (url, log) = server();
+    let live = ready(&url);
+    let att = |blob: &str| postman_compose::Attachment {
+        name: "a.pdf".into(),
+        mime: "application/pdf".into(),
+        data: Vec::new(),
+        inline_cid: None,
+        blob_id: Some(blob.into()),
+    };
+    live.cache.put_blob("cached#0", b"%PDF-1.7 data").unwrap();
+    let letter = |attachments: Vec<postman_compose::Attachment>| postman_compose::Draft {
+        from: postman_compose::Address::new("", "user1@example.test"),
+        to: vec![postman_compose::Address::new("Борис", "boris@example.test")],
+        subject: "FW: Отчёт".into(),
+        markdown: "Тело".into(),
+        attachments,
+        ..Default::default()
+    };
+    let send = |d: postman_compose::Draft, ticket: u64| {
+        live.commands.send(Command::Send { draft: Box::new(d), replace: None, ticket, release: postman_core::model::Release::Now }).unwrap();
+    };
+
+    let n = log.lock().unwrap().len();
+    send(letter(vec![att("nowhere#0")]), 1);
+    let Event::ComposeFailed { error, .. } = live.wait("ComposeFailed", |e| matches!(e, Event::ComposeFailed { ticket: 1, .. })) else {
+        unreachable!()
+    };
+    assert!(error.contains("attachment-missing:a.pdf"), "{error}");
+    assert!(requests(&log, n, "CreateItem").is_empty(), "письмо без вложения не ушло");
+
+    let n = log.lock().unwrap().len();
+    send(letter(vec![att("cached#0")]), 2);
+    live.wait("Sent", |e| matches!(e, Event::Sent { ticket: 2, .. }));
+    assert_eq!(requests(&log, n, "CreateItem").len(), 1);
+
+    let mut reply = letter(Vec::new());
+    reply.subject = "RE: Отчёт".into();
+    reply.in_reply_to = Some("m1@example.test".into());
+    reply.cc = vec![postman_compose::Address::new("Ольга", "olga@example.test")];
+    reply.share = Some(postman_compose::Share {
+        known: vec!["boris@example.test".into(), "user1@example.test".into()],
+        attachments: vec![att("cached#0")],
+        note: "Вложения из беседы".into(),
+        off: false,
+    });
+    let n = log.lock().unwrap().len();
+    send(reply, 3);
+    live.wait("Sent", |e| matches!(e, Event::Sent { ticket: 3, .. }));
+    let created = requests(&log, n, "CreateItem");
+    let how: Vec<bool> = created.iter().map(|b| b.contains(r#"MessageDisposition="SendAndSaveCopy""#)).collect();
+    assert_eq!(how, [false, true], "сначала «Вложения из беседы» без копии, затем основное с копией");
+    assert!(created[0].contains(r#"MessageDisposition="SendOnly""#));
+}

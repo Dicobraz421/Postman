@@ -4,9 +4,11 @@
 
 pub mod display;
 pub mod mailto;
+pub mod share;
 pub mod vcard;
 
 pub use mailto::{Mailto, parse_mailto};
+pub use share::{Outgoing, Share};
 
 use std::borrow::Cow;
 
@@ -72,6 +74,9 @@ pub struct Draft {
     /// Зашифровать S/MIME (S5-12 Ф4, «Конфиденциально»): подготовленные получатели, себя — тоже. Пусто — открыто.
     /// Черновик «Конфиденциально» — только себе (решение владельца №5).
     pub encrypt_to: Vec<postman_smime::seal::To>,
+    /// Вложения беседы новым участникам ответа (решение владельца 2026-11-13): кто уже есть в беседе и её файлы.
+    /// В письмо (RFC 5322) не попадает: копии письма делает [`Draft::outgoing`].
+    pub share: Option<Share>,
 }
 
 /// Объект iCalendar в письме (RFC 6047): метод и текст VCALENDAR.
@@ -86,6 +91,19 @@ impl Draft {
     pub fn recipients(&self) -> impl Iterator<Item = &Address> {
         self.to.iter().chain(&self.cc).chain(&self.bcc)
     }
+}
+
+/// Код ошибки отправки «вложение не скачалось» (`attachment-missing:<имя>`): окно письма показывает его своими словами.
+pub const MISSING: &str = "attachment-missing:";
+
+/// Ошибка отправки с кодом [`MISSING`].
+pub fn missing_code(name: &str) -> String {
+    format!("{MISSING}{name}")
+}
+
+/// Вложение, байты которого должна была скачать синхронизация (есть `blob_id`), а их нет: письмо без него не уходит.
+pub fn missing(list: &[Attachment]) -> Option<&Attachment> {
+    list.iter().find(|a| a.blob_id.is_some() && a.data.is_empty())
 }
 
 /// Метаданные оригинала, нужные для ответа и пересылки.
@@ -149,7 +167,8 @@ pub fn respond(orig: &Original, body: &Document, mode: Mode, me: &Address, signa
             top.push_str(&format!("**Дата:** {}  \n", escape_md(&orig.date)));
             top.push_str(&format!("**Кому:** {}  \n", list(&orig.to)));
             if !orig.cc.is_empty() {
-                top.push_str(&format!("**Копия:** {}  \n", escape_md(&list(&orig.cc))));
+                // `who` уже экранирует, как у «Кому»: второй раз — обратная косая черта видна в тексте.
+                top.push_str(&format!("**Копия:** {}  \n", list(&orig.cc)));
             }
             top.push_str(&format!("**Тема:** {}\n\n", escape_md(&orig.subject)));
             top.push_str(&postman_ir::to_markdown(body));
@@ -270,7 +289,10 @@ pub fn build(d: &Draft, date: i64, message_id: &str) -> std::io::Result<Vec<u8>>
         let mut parts = vec![MimePart::new("text/html", html.as_str())];
         parts.extend(inline.iter().filter_map(|a| {
             let cid = a.inline_cid.as_deref()?;
-            Some(MimePart::new(a.mime.as_str(), a.data.as_slice()).inline().cid(header_safe(cid).into_owned()))
+            // Имя картинки — и у inline: получатель сохраняет её под тем же именем.
+            let disposition = ContentType::new("inline");
+            let disposition = if a.name.is_empty() { disposition } else { disposition.attribute("filename", header_safe(&a.name).into_owned()) };
+            Some(MimePart::new(content_type(a), a.data.as_slice()).header("Content-Disposition", disposition).cid(header_safe(cid).into_owned()))
         }));
         MimePart::new("multipart/related", parts)
     };
@@ -286,10 +308,18 @@ pub fn build(d: &Draft, date: i64, message_id: &str) -> std::io::Result<Vec<u8>>
         alt
     } else {
         let mut parts = vec![alt];
-        parts.extend(files.iter().map(|a| MimePart::new(a.mime.as_str(), a.data.as_slice()).attachment(header_safe(&a.name).into_owned())));
+        parts.extend(files.iter().map(|a| MimePart::new(content_type(a), a.data.as_slice()).attachment(header_safe(&a.name).into_owned())));
         MimePart::new("multipart/mixed", parts)
     };
     m.body(body).write_to_vec()
+}
+
+/// Тип части вложения. Текст без кодировки в типе, но в UTF-8 — с `charset=utf-8`: иначе получатель прочтёт его
+/// как ASCII (байты те же).
+fn content_type(a: &Attachment) -> ContentType<'_> {
+    let ct = ContentType::new(a.mime.as_str());
+    let text = a.mime.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("text/")) && !a.mime.to_ascii_lowercase().contains("charset");
+    if text && !a.data.is_ascii() && std::str::from_utf8(&a.data).is_ok() { ct.attribute("charset", "utf-8") } else { ct }
 }
 
 /// Message-ID в домене отправителя: `<время.случайное@домен>`.
@@ -343,6 +373,65 @@ mod tests {
         assert_eq!(d.subject, "FW: Отчёт");
         assert!(d.to.is_empty() && d.in_reply_to.is_none());
         assert!(d.markdown.contains("**От:** Иван (ivan@corp.example)"));
+    }
+
+    /// «Кому» и «Копия» шапки пересылки экранируются одинаково (один раз, `who`): знаки Markdown в имени и адресе
+    /// видны как есть, без обратной косой черты и без разметки.
+    #[test]
+    fn forward_header_escapes_to_and_cc_alike() {
+        let mut o = original();
+        let odd = Address::new("Иван *Петров* [ИТ]", "i_petrov*x@corp.example");
+        o.to = vec![odd.clone()];
+        o.cc = vec![odd];
+        let d = respond(&o, &postman_ir::from_plain("x"), Mode::Forward, &me(), "");
+        let line = |label: &str| d.markdown.lines().find(|l| l.starts_with(label)).unwrap().trim_start_matches(label).to_owned();
+        assert_eq!(line("**Кому:**"), line("**Копия:**"), "{}", d.markdown);
+        let html = postman_ir::markdown_to_html(&d.markdown);
+        let shown = "Иван *Петров* [ИТ] (i_petrov*x@corp.example)";
+        assert_eq!(html.matches(shown).count(), 2, "{html}");
+        assert!(!html.contains('\\') && !html.contains("<em>"), "{html}");
+    }
+
+    /// Вложения уходят целиком: те же байты, имя и тип; картинка в тексте — inline, с Content-ID и именем;
+    /// текст в UTF-8 — с кодировкой в типе (байты те же).
+    #[test]
+    fn attachments_keep_bytes_name_type_and_cid() {
+        let png = vec![0x89, b'P', b'N', b'G', 0, 1, 2, 255];
+        let pdf: Vec<u8> = (0..=255u8).cycle().take(5000).collect();
+        let txt = "Итоги: 10 из 12\r\n".as_bytes().to_vec();
+        let att = |name: &str, mime: &str, data: &[u8], cid: Option<&str>| Attachment {
+            name: name.into(),
+            mime: mime.into(),
+            data: data.to_vec(),
+            inline_cid: cid.map(Into::into),
+            blob_id: Some(format!("B-{name}")),
+        };
+        let d = Draft {
+            from: me(),
+            to: vec![Address::new("", "ivan@corp.example")],
+            subject: "FW: Отчёт".into(),
+            markdown: "![logo.png](cid:logo@corp)\n\nТекст".into(),
+            attachments: vec![
+                att("logo.png", "image/png", &png, Some("logo@corp")),
+                att("Отчёт.pdf", "application/pdf", &pdf, None),
+                att("Итоги.txt", "text/plain", &txt, None),
+            ],
+            ..Default::default()
+        };
+        let raw = build(&d, 0, "f@corp.example").unwrap();
+        let msg = MessageParser::default().parse(&raw).unwrap();
+        let img = msg.parts.iter().find(|p| p.content_id() == Some("logo@corp")).expect("картинка с Content-ID");
+        assert!(img.is_content_type("image", "png"));
+        assert_eq!(img.contents(), png.as_slice());
+        assert_eq!(img.content_disposition().map(|c| c.ctype()), Some("inline"));
+        assert_eq!(img.attachment_name(), Some("logo.png"));
+        let by_name = |n: &str| msg.parts.iter().find(|p| p.attachment_name() == Some(n)).unwrap_or_else(|| panic!("нет {n}"));
+        let p = by_name("Отчёт.pdf");
+        assert!(p.is_content_type("application", "pdf"));
+        assert_eq!(p.contents(), pdf.as_slice());
+        let t = by_name("Итоги.txt");
+        assert_eq!(t.content_type().and_then(|c| c.attribute("charset")), Some("utf-8"));
+        assert_eq!(t.contents(), txt.as_slice());
     }
 
     #[test]
