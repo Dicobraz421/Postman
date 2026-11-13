@@ -78,12 +78,13 @@ jobs:
           POSTMAN_REQUIRE_FULL_SANDBOX: '1'
 
       # Снимки окна (LIN-02): X11 под Xvfb, отрисовка — llvmpipe (Mesa), шрифт интерфейса — по fontconfig, эмодзи —
-      # Noto Color Emoji. Dev-сборка (картинка та же, DEV.md «Снимки экранов»), воркер — с модулями просмотра (PDF).
+      # Noto Color Emoji. Язык — русский, как в macos.yml: фразы сцен (быстрое добавление задачи) русские, а под Xvfb
+      # язык системы — английский. Dev-сборка (картинка та же, DEV.md «Снимки экранов»), воркер — с модулями просмотра (PDF).
       - name: Снимки (Xvfb)
         run: |
           sudo apt-get install -y -q --no-install-recommends xvfb xauth mesa-vulkan-drivers libgl1-mesa-dri libegl1 fonts-noto-color-emoji
           cargo build -p postman-gpui -p postman-worker --features postman-worker/viewer --locked
-          xvfb-run -a -s "-screen 0 1920x1080x24" target/debug/postman --screens shots
+          xvfb-run -a -s "-screen 0 1920x1080x24" target/debug/postman --screens shots --lang ru
         env:
           POSTMAN_SCREENS_ONLY: list,letter,attachments,preview-pdf,calendar
 
