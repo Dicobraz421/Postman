@@ -211,6 +211,17 @@ struct Folder {
     selectable: bool,
 }
 
+/// Обрывов связи за один проход сверки — не больше: дальше сервер или сеть не держат соединение, проход прекращён.
+const MAX_DROPS: usize = 3;
+
+/// Порядок сверки: «Входящие», затем папки с ролями, затем остальные — в порядке сервера. Раньше «Входящие» Яндекса
+/// шли после папок с русскими именами, и тайм-аут на любой из них оставлял «Входящие» несверенными.
+fn sync_order(folders: &[Folder]) -> Vec<Folder> {
+    let mut order: Vec<Folder> = folders.iter().filter(|f| f.selectable).cloned().collect();
+    order.sort_by_key(|f| role_rank(f.role));
+    order
+}
+
 fn role_rank(role: Option<Role>) -> u32 {
     match role {
         Some(Role::Inbox) => 0,
@@ -549,7 +560,7 @@ async fn run(
                 let Some(cmd) = postman_core::sync::admit(cmd, || me.cache.mailboxes().unwrap_or_default(), notify) else { continue };
                 if let Err(e) = me.handle(cmd, notify).await {
                     tracing::error!("imap: command failed: {e}");
-                    if matches!(e, postman_imap::Error::Io(_) | postman_imap::Error::Timeout | postman_imap::Error::Tls(_)) {
+                    if is_network(&e) {
                         me.session = None;
                     }
                     notify(Event::Error(error(Stage::Command, &e)));
@@ -561,7 +572,13 @@ async fn run(
                     match me.refresh(&inbox).await {
                         Ok(true) => notify(Event::EmailsChanged),
                         Ok(false) => {}
-                        Err(e) => notify(Event::Error(error(Stage::Refresh, &e))),
+                        Err(e) => {
+                            // Обрыв: соединение — заново при следующей команде или опросе, а не мёртвое до перезапуска.
+                            if is_network(&e) {
+                                me.session = None;
+                            }
+                            notify(Event::Error(error(Stage::Refresh, &e)));
+                        }
                     }
                     notify(Event::MailboxesChanged);
                 }
@@ -663,23 +680,46 @@ impl Imap {
     }
 
     /// Папки заново и каждая сверена; итог — событиями.
+    ///
+    /// Обрыв на одной папке не прекращает сверку: соединение — заново, дальше — следующая папка (не больше
+    /// [`MAX_DROPS`] обрывов за проход; не подключиться — проход прекращён). «Входящие» — первыми ([`sync_order`]).
     async fn refresh_all(&mut self, notify: &impl Fn(Event)) -> Result<(), SyncError> {
-        self.load_folders().await.map_err(|e| error(Stage::Load, &e))?;
+        if let Err(e) = self.load_folders().await {
+            if is_network(&e) {
+                self.session = None;
+            }
+            return Err(error(Stage::Load, &e));
+        }
         notify(Event::MailboxesChanged);
         let mut changed = false;
-        for f in self.folders.clone().iter().filter(|f| f.selectable) {
+        let mut drops = 0;
+        for f in sync_order(&self.folders) {
             if !self.loaded {
                 notify(Event::Status(Status::Loading { mailbox: f.name.clone() }));
             }
-            match self.refresh(f).await {
+            if self.session.is_none()
+                && let Err(e) = self.session().await
+            {
+                return Err(error(Stage::Connect, &e));
+            }
+            match self.refresh(&f).await {
                 Ok(c) => changed |= c,
                 Err(e) => {
+                    let lost = is_network(&e);
                     let e = error(Stage::Refresh, &e);
-                    if e.kind == ErrorKind::Auth || e.kind == ErrorKind::Network {
+                    if e.kind == ErrorKind::Auth {
                         self.session = None;
                         return Err(e);
                     }
                     tracing::error!(folder = %f.name, "imap: folder sync failed: {e}");
+                    if lost {
+                        self.session = None;
+                        drops += 1;
+                        if drops > MAX_DROPS {
+                            return Err(e);
+                        }
+                        tracing::warn!(folder = %f.name, drops, "imap: connection lost, reconnecting for the next folder");
+                    }
                 }
             }
         }
@@ -1804,9 +1844,10 @@ fn command_name(c: &Command) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{Folder, ImapAccount, append_flags, email_key, folder_id, import_error, is_imap_url, parse_key, rekey};
+    use super::{Folder, ImapAccount, append_flags, email_key, folder_id, import_error, is_imap_url, parse_key, rekey, sync_order};
     use postman_core::model::ImportError;
     use postman_imap::AppendError;
+    use postman_imap::Role;
 
     /// Выгрузка (S8-13): ключевые слова — флаги IMAP, свои — только при `PERMANENTFLAGS \*`; отказы сервера — отказы
     /// задания: больше предела, ящик полон, обрыв — пауза.
@@ -1954,5 +1995,34 @@ mod tests {
         assert_eq!(parse_key(&email_key(None, &f, 1, 2)), Some((f.as_str(), 1, 2)));
         assert_eq!(parse_key("Mabc123"), None);
         assert_eq!(parse_key("shared/Mabc"), None);
+    }
+
+    /// Ящик Яндекса (порядок LIST записан с примера): свои папки с русскими именами идут раньше «Inbox» — сверка
+    /// начинается с «Входящих», затем папки с ролями; несверяемые (`\Noselect`) — мимо.
+    #[test]
+    fn inbox_is_synced_first() {
+        let f = |raw: &str, role: Option<Role>, selectable: bool| Folder {
+            key: raw.into(),
+            id: folder_id(raw),
+            raw: raw.into(),
+            name: raw.into(),
+            parent: None,
+            role,
+            selectable,
+        };
+        let listed = [
+            f("&BBgEIg-", None, true),
+            f("Archive", Some(Role::Archive), true),
+            f("Deleted Messages", None, true),
+            f("Drafts", Some(Role::Drafts), true),
+            f("INBOX", Some(Role::Inbox), true),
+            f("Sent", Some(Role::Sent), true),
+            f("Spam", Some(Role::Junk), true),
+            f("Trash", Some(Role::Trash), true),
+            f("Shared", None, false),
+            f("jira", None, true),
+        ];
+        let order: Vec<String> = sync_order(&listed).into_iter().map(|f| f.raw).collect();
+        assert_eq!(order, ["INBOX", "Drafts", "Sent", "Archive", "Spam", "Trash", "&BBgEIg-", "Deleted Messages", "jira"]);
     }
 }
