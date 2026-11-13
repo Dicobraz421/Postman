@@ -176,33 +176,31 @@ impl Client {
         release: Release,
         keywords: &[String],
     ) -> Result<Submitted> {
+        self.submit_as(raw, identity, envelope, drafts, Keep::Sent(sent), release, keywords).await
+    }
+
+    /// Отправить копию, которую не хранить (вложения беседы новым участникам, решение владельца 2026-11-13): письмо
+    /// уходит адресам конверта `envelope`, а у себя удаляется (`onSuccessDestroyEmail`) — в «Отправленных» остаётся
+    /// одна запись, копия прежних участников. Сервер отправляет снимок письма на момент создания отправки (RFC 8621
+    /// §7), отложенную — тоже; отменяется она, как обычная, по id отправки.
+    pub async fn submit_unsaved(&self, raw: Vec<u8>, identity: &str, envelope: &Envelope, drafts: &str, release: Release) -> Result<Submitted> {
+        self.submit_as(raw, identity, envelope, drafts, Keep::Destroy, release, &[]).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn submit_as(
+        &self,
+        raw: Vec<u8>,
+        identity: &str,
+        envelope: &Envelope,
+        drafts: &str,
+        keep: Keep<'_>,
+        release: Release,
+        keywords: &[String],
+    ) -> Result<Submitted> {
         let acc = self.mail_account()?.to_string();
         let blob = self.upload(&acc, raw, "message/rfc822").await?;
-        let rcpt: Vec<Value> = envelope.rcpt_to.iter().map(|e| json!({ "email": e })).collect();
-        let mut mail_from = json!({ "email": envelope.mail_from });
-        if let Some(p) = release.parameters() {
-            mail_from["parameters"] = p;
-        }
-        let mut on_success = Map::new();
-        on_success.insert(format!("mailboxIds/{drafts}"), Value::Null);
-        on_success.insert(format!("mailboxIds/{sent}"), Value::Bool(true));
-        on_success.insert("keywords/$draft".into(), Value::Null);
-        let calls = [
-            import_call(&acc, &blob, drafts, keywords),
-            inv(
-                "EmailSubmission/set",
-                json!({
-                    "accountId": acc,
-                    "create": { "sub": {
-                        "identityId": identity,
-                        "emailId": "#draft",
-                        "envelope": { "mailFrom": mail_from, "rcptTo": rcpt },
-                    }},
-                    "onSuccessUpdateEmail": { "#sub": on_success },
-                }),
-                "s",
-            ),
-        ];
+        let calls = submission_calls(&acc, &blob, identity, envelope, drafts, keep, release, keywords);
         let mut r = self.call(&[CORE, MAIL, SUBMISSION], &calls).await?;
         let email_id = imported_id(&mut r)?;
         let v: Value = take(&mut r, "s")?;
@@ -297,6 +295,53 @@ pub fn unix_to_utc(t: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", secs / 3600, secs % 3600 / 60, secs % 60)
 }
 
+/// Что делать с письмом после создания отправки.
+#[derive(Debug, Clone, Copy)]
+enum Keep<'a> {
+    /// В эту папку («Отправленные»), из «Черновиков», без `$draft`.
+    Sent(&'a str),
+    /// Удалить: копия, которую не храним.
+    Destroy,
+}
+
+/// `Email/import` в «Черновики» и `EmailSubmission/set` с конвертом `envelope` (все его адреса — `rcptTo`).
+#[allow(clippy::too_many_arguments)]
+fn submission_calls(
+    acc: &str,
+    blob: &str,
+    identity: &str,
+    envelope: &Envelope,
+    drafts: &str,
+    keep: Keep<'_>,
+    release: Release,
+    keywords: &[String],
+) -> [crate::Invocation; 2] {
+    let rcpt: Vec<Value> = envelope.rcpt_to.iter().map(|e| json!({ "email": e })).collect();
+    let mut mail_from = json!({ "email": envelope.mail_from });
+    if let Some(p) = release.parameters() {
+        mail_from["parameters"] = p;
+    }
+    let mut set = json!({
+        "accountId": acc,
+        "create": { "sub": {
+            "identityId": identity,
+            "emailId": "#draft",
+            "envelope": { "mailFrom": mail_from, "rcptTo": rcpt },
+        }},
+    });
+    match keep {
+        Keep::Sent(sent) => {
+            let mut on_success = Map::new();
+            on_success.insert(format!("mailboxIds/{drafts}"), Value::Null);
+            on_success.insert(format!("mailboxIds/{sent}"), Value::Bool(true));
+            on_success.insert("keywords/$draft".into(), Value::Null);
+            set["onSuccessUpdateEmail"] = json!({ "#sub": on_success });
+        }
+        Keep::Destroy => set["onSuccessDestroyEmail"] = json!(["#sub"]),
+    }
+    [import_call(acc, blob, drafts, keywords), inv("EmailSubmission/set", set, "s")]
+}
+
 /// `Email/import` черновика: `$draft`, `$seen` и свои ключевые слова.
 fn import_call(acc: &str, blob: &str, drafts: &str, keywords: &[String]) -> crate::Invocation {
     let mut all = vec!["$draft".to_owned(), "$seen".to_owned()];
@@ -348,6 +393,25 @@ mod tests {
     use super::{Imported, Release, created_or_existing, import_object, unix_to_utc};
     use crate::utc_to_unix;
     use serde_json::json;
+
+    /// Конверт отправки — ровно адреса копии; копия новым участникам удаляется после отправки, обычная — в
+    /// «Отправленные».
+    #[test]
+    fn submission_envelope_and_what_happens_to_the_copy() {
+        use super::{Envelope, Keep, submission_calls};
+        let env = Envelope { mail_from: "me@x".into(), rcpt_to: vec!["olga@x".into(), "boss@x".into()] };
+        let [import, set] = submission_calls("a", "b1", "id1", &env, "d1", Keep::Destroy, Release::After(10), &[]);
+        assert_eq!(import.0, "Email/import");
+        let sub = &set.1["create"]["sub"];
+        assert_eq!(sub["envelope"]["rcptTo"], json!([{ "email": "olga@x" }, { "email": "boss@x" }]));
+        assert_eq!(sub["envelope"]["mailFrom"]["email"], "me@x");
+        assert!(sub["envelope"]["mailFrom"]["parameters"].is_object(), "окно «Отменить» — как у основной копии");
+        assert_eq!(set.1["onSuccessDestroyEmail"], json!(["#sub"]));
+        assert!(set.1.get("onSuccessUpdateEmail").is_none());
+        let [_, set] = submission_calls("a", "b1", "id1", &env, "d1", Keep::Sent("s1"), Release::Now, &[]);
+        assert_eq!(set.1["onSuccessUpdateEmail"]["#sub"], json!({ "mailboxIds/d1": null, "mailboxIds/s1": true, "keywords/$draft": null }));
+        assert!(set.1.get("onSuccessDestroyEmail").is_none());
+    }
 
     #[test]
     fn utc_round_trip() {

@@ -84,6 +84,7 @@ cmd-compose-table = Insert table
 cmd-compose-expand = Pop the reply out to a tab
 cmd-compose-discard = Delete the draft
 cmd-compose-address-book = Address book: choose recipients
+cmd-compose-share-attachments = Conversation attachments for new participants: send or not
 cmd-recipients-next = Address book: next
 cmd-recipients-prev = Address book: previous
 cmd-recipients-toggle = Address book: select

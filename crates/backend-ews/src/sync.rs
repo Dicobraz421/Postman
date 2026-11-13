@@ -37,7 +37,7 @@ use std::time::Duration;
 use postman_cache::{
     AccountRow, Addr, AttachmentRow, BodyRow, Cache, EmailRow, LetterId, MailboxRow, RemoteRef, Rights, in_profile, scoped, unscoped,
 };
-use postman_compose::{Address, Draft};
+use postman_compose::{Address, Attachment, Draft};
 use postman_core::backend::{AreaCtx, Spawn};
 use postman_core::model::{ImportError, JobId, Remote, Selector};
 use postman_core::sync::{Command, ErrorKind, Event, FOLDER_UNSUPPORTED, SendReceive, Sender, Stage, Status, SyncError};
@@ -1315,27 +1315,45 @@ impl Ews {
         }
     }
 
-    /// Письмо — в байты (S/MIME «Конфиденциально» — как у JMAP); вложения пересылки — из кэша или с сервера.
-    async fn message_bytes(&mut self, draft: &mut Draft, message_id: &str) -> postman_ews::Result<Vec<u8>> {
-        for a in draft.attachments.iter_mut().filter(|a| a.data.is_empty()) {
-            if let Some(blob) = a.blob_id.clone() {
-                a.data = self.blob(&blob).await?;
+    /// Байты вложений, у которых есть только blob (пересылка, вложения беседы новым участникам) — из кэша или с
+    /// сервера. Не скачалось или пришло пустым — ошибка с кодом `attachment-missing:<имя>`: письмо без вложения не
+    /// уходит.
+    async fn fill(&mut self, list: &mut [Attachment]) -> postman_ews::Result<()> {
+        for a in list.iter_mut().filter(|a| a.data.is_empty()) {
+            let Some(blob) = a.blob_id.clone() else { continue };
+            match self.blob(&blob).await {
+                Ok(d) if !d.is_empty() => a.data = d,
+                Ok(_) => {
+                    tracing::warn!("ews: attachment came empty before sending, the letter is not sent");
+                    return Err(postman_ews::Error::Xml(postman_compose::missing_code(&a.name)));
+                }
+                Err(e) => {
+                    tracing::warn!("ews: attachment not downloaded before sending, the letter is not sent: {e}");
+                    return Err(postman_ews::Error::Xml(postman_compose::missing_code(&a.name)));
+                }
             }
         }
-        let now = jiff::Timestamp::now().as_second();
-        let raw = postman_compose::build(draft, now, message_id).map_err(|e| postman_ews::Error::Xml(format!("building the message: {e}")))?;
-        if draft.encrypt_to.is_empty() {
-            return Ok(raw);
-        }
-        postman_core::smime::seal_outgoing(&raw, &draft.encrypt_to).map_err(|e| postman_ews::Error::Xml(format!("{e:?}")))
+        Ok(())
     }
 
+    /// Письмо — в байты (S/MIME «Конфиденциально» — как у JMAP); вложения пересылки — из кэша или с сервера.
+    async fn message_bytes(&mut self, draft: &mut Draft, message_id: &str) -> postman_ews::Result<Vec<u8>> {
+        self.fill(&mut draft.attachments).await?;
+        message_bytes(draft, jiff::Timestamp::now().as_second(), message_id)
+    }
+
+    /// Отправить; копию в «Отправленные» кладёт сервер (`SendAndSaveCopy`). Exchange доставляет всем из заголовков,
+    /// поэтому в ответе с новыми участниками (решение владельца 2026-11-13) основное письмо идёт всем как обычно, а
+    /// новым — отдельное «Вложения из беседы» без копии у себя ([`to_send`]); все вложения скачиваются до первого.
     async fn send(&mut self, mut draft: Draft, replace: Option<String>) -> postman_ews::Result<()> {
-        let now = jiff::Timestamp::now().as_second();
-        let id = postman_compose::new_message_id(&draft.from, now);
-        let raw = self.message_bytes(&mut draft, &id).await?;
-        // Копию в «Отправленные» кладёт сервер (`SendAndSaveCopy`).
-        self.client.send_mail(&raw, true).await?;
+        self.fill(&mut draft.attachments).await?;
+        let newcomers = !draft.newcomers().is_empty();
+        if let Some(share) = draft.share.as_mut().filter(|_| newcomers) {
+            self.fill(&mut share.attachments).await?;
+        }
+        for (raw, save) in to_send(&draft, jiff::Timestamp::now().as_second())? {
+            self.client.send_mail(&raw, save).await?;
+        }
         if let Some(old) = replace.filter(|k| parse_key(k).is_some()) {
             self.destroy(&[old]).await?;
         }
@@ -1834,9 +1852,90 @@ fn name(c: &Command) -> &'static str {
     }
 }
 
+/// Письмо — в байты: сборка и S/MIME «Конфиденциально» (как у JMAP). Вложения — уже с байтами.
+fn message_bytes(draft: &Draft, now: i64, message_id: &str) -> postman_ews::Result<Vec<u8>> {
+    let raw = postman_compose::build(draft, now, message_id).map_err(|e| postman_ews::Error::Xml(format!("building the message: {e}")))?;
+    if draft.encrypt_to.is_empty() {
+        return Ok(raw);
+    }
+    postman_core::smime::seal_outgoing(&raw, &draft.encrypt_to).map_err(|e| postman_ews::Error::Xml(format!("{e:?}")))
+}
+
+/// Письма на отправку и класть ли копию в «Отправленные». Новых участников нет (или прежних среди адресатов нет) —
+/// одно письмо, как его даёт [`Draft::outgoing`]. Есть — основное всем из заголовков (копия у себя) и «Вложения из
+/// беседы» новым ([`Draft::attachments_letter`], без копии): оно первым — не ушло, не уходит и основное.
+fn to_send(draft: &Draft, now: i64) -> postman_ews::Result<Vec<(Vec<u8>, bool)>> {
+    let mut out = Vec::new();
+    if let Some(extra) = draft.attachments_letter() {
+        out.push((message_bytes(&extra, now, &postman_compose::new_message_id(&extra.from, now))?, false));
+    }
+    let main = draft.outgoing().into_iter().next().map(|c| c.draft).unwrap_or_else(|| draft.clone());
+    out.push((message_bytes(&main, now, &postman_compose::new_message_id(&main.from, now))?, true));
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn reply_with_newcomer() -> Draft {
+        let pdf: Vec<u8> = (0..=255u8).cycle().take(3000).collect();
+        Draft {
+            from: Address::new("Я", "me@x.example"),
+            to: vec![Address::new("Иван", "ivan@x.example")],
+            cc: vec![Address::new("Ольга", "olga@x.example")],
+            subject: "RE: Отчёт".into(),
+            markdown: "Добавляю Ольгу.".into(),
+            in_reply_to: Some("m1@x.example".into()),
+            references: vec!["m1@x.example".into()],
+            share: Some(postman_compose::Share {
+                known: vec!["ivan@x.example".into(), "me@x.example".into()],
+                attachments: vec![Attachment {
+                    name: "Отчёт.pdf".into(),
+                    mime: "application/pdf".into(),
+                    data: pdf,
+                    inline_cid: None,
+                    blob_id: Some("k#0".into()),
+                }],
+                note: "Вложения из беседы".into(),
+                off: false,
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Запасной путь EWS (решение владельца 2026-11-13): Exchange доставляет всем из заголовков — основное письмо
+    /// идёт всем как обычно (с копией у себя), новым — отдельное «Вложения из беседы» на их адреса: та же тема и
+    /// место в беседе, короткий текст, вложения, без копии в «Отправленных»; оно — первым.
+    #[test]
+    fn newcomers_get_a_separate_attachments_letter() {
+        use postman_worker::mime::{parse, part};
+        let d = reply_with_newcomer();
+        let out = to_send(&d, 1_792_240_200).unwrap();
+        assert_eq!(out.iter().map(|(_, save)| *save).collect::<Vec<_>>(), [false, true]);
+        let (extra, main) = (parse(&out[0].0).unwrap(), parse(&out[1].0).unwrap());
+        assert_eq!(extra.to.iter().map(|a| a.email.as_str()).collect::<Vec<_>>(), ["olga@x.example"]);
+        assert!(extra.cc.is_empty());
+        assert_eq!(extra.references, ["m1@x.example"]);
+        assert_eq!(extra.text.as_deref().map(str::trim), Some("Вложения из беседы"));
+        assert_eq!((extra.parts.len(), extra.parts[0].name.as_str()), (1, "Отчёт.pdf"));
+        assert_eq!(part(&out[0].0, 0).unwrap(), d.share.as_ref().unwrap().attachments[0].data);
+        assert_eq!(main.to.iter().map(|a| a.email.as_str()).collect::<Vec<_>>(), ["ivan@x.example"]);
+        assert_eq!(main.cc.iter().map(|a| a.email.as_str()).collect::<Vec<_>>(), ["olga@x.example"]);
+        assert!(main.parts.is_empty(), "основное — как написано");
+        assert_eq!(main.references, ["m1@x.example"]);
+        // Отключили в черновике — одно письмо, как раньше.
+        let mut off = d.clone();
+        off.share.as_mut().unwrap().off = true;
+        let out = to_send(&off, 0).unwrap();
+        assert_eq!((out.len(), out[0].1), (1, true));
+        // Прежних среди адресатов нет — одно письмо всем, с вложениями.
+        let mut fresh = d.clone();
+        fresh.to.clear();
+        let out = to_send(&fresh, 0).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(parse(&out[0].0).unwrap().parts.len(), 1);
+    }
 
     /// Опрос (T1-21б): с подпиской — ничего; без неё — письма всех папок, дерево — не чаще раза в 15 мин.
     #[test]

@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 use pets_i18n::tr;
-use postman_compose::{Address, Attachment, Draft, parse_addresses};
+use postman_compose::{Address, Attachment, Draft, Share, parse_addresses};
 use postman_core::checks::{self, Check};
 use postman_core::contacts::AddressBook;
 use postman_core::labels::{self, Keyword};
@@ -288,6 +288,42 @@ impl Model {
     /// Другой отправитель из списка «От» (свой адрес или общий ящик, S4-06). Текст письма не меняется.
     pub(crate) fn set_from(&mut self, from: Address) {
         self.base.from = from;
+    }
+
+    /// Окно ответа на письмо `in_reply_to`, которому ещё не пришли вложения беседы (`Mailer::share_for`).
+    pub(crate) fn wants_share(&self, in_reply_to: &str) -> bool {
+        self.base.share.is_none() && self.base.in_reply_to.as_deref() == Some(in_reply_to)
+    }
+
+    /// Вложения беседы новым участникам (решение владельца 2026-11-13): участники и файлы беседы.
+    pub(crate) fn set_share(&mut self, share: Share) {
+        self.base.share = Some(share);
+    }
+
+    /// Отправлять ли вложения беседы новым участникам этого письма (строка над текстом): переключить.
+    pub(crate) fn toggle_share(&mut self) {
+        if let Some(s) = &mut self.base.share {
+            s.off = !s.off;
+        }
+    }
+
+    /// Строка над текстом: новые участники (имя или адрес) — адресаты полей, которых нет ни в одном письме беседы, —
+    /// сколько файлов беседы им уйдёт и не отключено ли это. Новых нет или файлов нет — `None`.
+    pub(crate) fn share_line(&self) -> Option<(Vec<String>, usize, bool)> {
+        let share = self.base.share.as_ref().filter(|s| !s.attachments.is_empty())?;
+        let mut seen: Vec<String> = Vec::new();
+        let mut names = Vec::new();
+        for text in [&self.to, &self.cc, &self.bcc] {
+            for a in parse_addresses(&self.expanded(text)).0 {
+                let email = a.email.to_lowercase();
+                if email == self.base.from.email.to_lowercase() || share.knows(&email) || seen.contains(&email) {
+                    continue;
+                }
+                seen.push(email);
+                names.push(if a.name.is_empty() { a.email } else { a.name });
+            }
+        }
+        (!names.is_empty()).then_some((names, share.attachments.len(), share.off))
     }
 
     /// Письмо — ответ или пересылка (есть In-Reply-To): в области чтения тема не показывается.
@@ -1839,7 +1875,10 @@ const TEXTS: &[pets_i18n::Resource] = &[
 // Имя — область действий (`compose::…`), как в id команд: так обработчики читаются и их находит `docs/PARITY.md`.
 #[allow(clippy::module_inception)]
 pub(crate) mod compose {
-    gpui_kit::actions!(compose, [Send, Attach, Close, Bold, Italic, Underline, Bullets, Numbers, Link, Quote, Table, Expand, Discard, AddressBook]);
+    gpui_kit::actions!(
+        compose,
+        [Send, Attach, Close, Bold, Italic, Underline, Bullets, Numbers, Link, Quote, Table, Expand, Discard, AddressBook, ShareAttachments]
+    );
 }
 
 /// Команды части (`commands.rs`: контексты и `cmd`).
@@ -1867,6 +1906,9 @@ const COMMANDS: &[pets_commands::Command] = {
         // «Кому…» (T3-03): адресная книга письма панелью — щелчком по «Кому», «Копия», «Скрытая» или отсюда (в «Кому»).
         // Без клавиши: Ctrl+Shift+B Outlook — у встречи (S5-23).
         cmd("compose.address_book", &[], COMPOSER),
+        // Вложения беседы новым участникам ответа (решение владельца 2026-11-13): отключить или вернуть для письма —
+        // кнопкой строки над текстом, без клавиши.
+        cmd("compose.share_attachments", &[], COMPOSER),
     ]
 };
 
@@ -1907,6 +1949,9 @@ pub(crate) mod scenes {
         Scene::new("compose-t306-paste", table_letter, table_pasted).input(PASTE).on_request(),
         // T3-07: новое письмо с подписью по умолчанию с логотипом: картинка под текстом, вложение inline.
         Scene::new("compose-t307-sign-image", sign_letter, sign_image_shown).on_request(),
+        // Ответ всем с новым участником (решение владельца 2026-11-13): над текстом — «Новым участникам (Ольга
+        // Смирнова) уйдут вложения беседы: 2 файла» и «Не отправлять».
+        Scene::new("compose-share", share_letter, share_shown),
     ];
 
     /// Письмо сцен T3-06: адресат есть — курсор в тексте.
@@ -2015,6 +2060,41 @@ pub(crate) mod scenes {
                     && c.graphics().0 == 1
                     && c.graphics().1.is_none()
             })
+    }
+
+    /// Ответ всем с новым участником (решение владельца 2026-11-13): в «Копии» — Ольга, её нет в беседе.
+    fn share_letter(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.cal.update(cx, |c, cx| c.close_details(cx));
+        m.set_section(Section::Mail, cx);
+        screens::remember_composer(m, cx);
+        let file = |name: &str, mime: &str, blob: &str| postman_compose::Attachment {
+            name: name.into(),
+            mime: mime.into(),
+            data: postman_demo::blob(blob).unwrap_or_default(),
+            inline_cid: None,
+            blob_id: Some(blob.into()),
+        };
+        let draft = postman_compose::Draft {
+            to: vec![postman_compose::Address::new("Иван Петров", "i.petrov@corp.example")], // i18n-ok: образец
+            cc: vec![postman_compose::Address::new("Ольга Смирнова", "o.smirnova@corp.example")], // i18n-ok: образец
+            subject: "RE: Итоги квартала".into(),                                            // i18n-ok: образец
+            markdown: "Добавляю Ольгу — ей нужны отчёт и смета.\n\n".into(),                 // i18n-ok: образец
+            in_reply_to: Some("q3@corp.example".into()),
+            references: vec!["q3@corp.example".into()],
+            share: Some(postman_compose::Share {
+                known: vec!["i.petrov@corp.example".into(), postman_demo::ME.into()],
+                attachments: vec![file("Отчёт.pdf", "application/pdf", "pdf"), file("Бюджет.xlsm", "application/vnd.ms-excel", "xlsm")], // i18n-ok: образец
+                note: String::new(),
+                off: false,
+            }),
+            ..Default::default()
+        };
+        m.open_compose(draft, cx);
+        Ok(())
+    }
+
+    fn share_shown(s: &Scene, m: &Mailer, cx: &App) -> bool {
+        letter_drawn(s, m, cx) && screens::compose_tab(m).is_some_and(|c| c.read(cx).model.share_line().is_some_and(|(_, n, off)| n == 2 && !off))
     }
 
     fn drafts(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
