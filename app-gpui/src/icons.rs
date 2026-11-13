@@ -90,12 +90,12 @@ pub(crate) fn icon(ico: Ico, size: f32, color: Hsla) -> Svg {
 // на macOS и Linux нет. Вшиты только эти; путь `icons/…` — тот же, что у компонентов gpui-kit (значки те же).
 #[cfg(not(windows))]
 gpui_kit::assets::icon_assets!(pub(crate) SvgGlyphs, [
-    Archive, ArrowDown, ArrowDownUp, ArrowLeft, ArrowUp, BadgeCheck, Ban, BellRing, Bold, BookOpen, Calendar,
+    Archive, ArrowDown, ArrowDownUp, ArrowLeft, ArrowUp, BadgeCheck, Ban, BellOff, BellRing, Bold, BookOpen, Calendar,
     Calendar1, CalendarCheck, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Circle,
     CircleCheck, CircleQuestionMark, CircleX, Clock, ClockArrowLeft, Copy, Download, Ellipsis, Eraser, ExternalLink,
     Eye, EyeOff, FileOutput, FileText, Flag, Folder, FolderInput, Forward, Globe, Hourglass, Image, ImagePlay, Info,
     Italic, Keyboard, Layers, Link, List, ListChecks, ListFilter, ListTodo, Lock, Mail, MailOpen, MailWarning, MapPin,
-    MessagesSquare, Minus, Monitor, NotebookPen, Palette, Paperclip, Pause, Plane, Play, Plus, Puzzle, Quote,
+    MessagesSquare, Minus, Monitor, NotebookPen, Palette, Paperclip, Pause, Pin, Plane, Play, Plus, Puzzle, Quote,
     RefreshCw, Repeat, Reply, ReplyAll, Save, Search, Send, Settings, Shield, ShieldAlert, Signature,
     SlidersHorizontal, Square, SquarePen, Table, Tag, Timer, Trash, TriangleAlert, Underline, Undo2, Upload, User,
     UserPlus, Users, Video, WifiOff, X, ZoomIn, ZoomOut,
@@ -119,6 +119,7 @@ pub(crate) fn svg_glyph(g: char) -> Option<&'static str> {
         '\u{E714}' => "icons/video.svg",
         '\u{E715}' => "icons/mail.svg",
         '\u{E716}' => "icons/users.svg",
+        '\u{E718}' => "icons/pin.svg",
         '\u{E71B}' => "icons/link.svg",
         '\u{E71C}' => "icons/list-filter.svg",
         '\u{E71F}' => "icons/zoom-out.svg",
@@ -153,6 +154,7 @@ pub(crate) fn svg_glyph(g: char) -> Option<&'static str> {
         '\u{E7BA}' => "icons/triangle-alert.svg",
         '\u{E7C1}' => "icons/flag.svg",
         '\u{E7C4}' => "icons/layers.svg",
+        '\u{E7ED}' => "icons/bell-off.svg",
         '\u{E7F4}' => "icons/monitor.svg",
         '\u{E81C}' => "icons/clock-arrow-left.svg",
         '\u{E823}' => "icons/timer.svg",

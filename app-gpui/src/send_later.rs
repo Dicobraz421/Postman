@@ -1,6 +1,7 @@
 //! «Отправить позже» и отмена отправки в интерфейсе (S5-06): тексты сроков, окно «Отменить» поверх экрана почты,
 //! отмена запланированного письма из области чтения. Сроки и состояние окна — `postman_core::send_later`; держит
-//! письма сервер (FUTURERELEASE), поэтому закрытый Postman ничего не теряет: письмо уходит в свой срок.
+//! письма сервер (FUTURERELEASE), поэтому закрытый Postman ничего не теряет: письмо уходит в свой срок (IMAP и Exchange
+//! держат его сами и при выходе отпускают сразу). Окно — на задержку настройки, с обратным отсчётом (CMF-03).
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -16,6 +17,9 @@ use postman_core::sync::{Command, Event};
 
 use crate::Mailer;
 use crate::compose::SentDraft;
+
+/// Шаг обратного отсчёта окна «Отменить».
+const TICK: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Состояние экрана: окно «Отменить», отложенные отправки с сервера и черновики запланированных писем.
 #[derive(Default)]
@@ -36,6 +40,17 @@ impl SendLater {
     fn next_ticket(&mut self) -> u64 {
         self.ticket += 1;
         self.ticket
+    }
+
+    /// Сцена `comfort-undo-send` (CMF-03): окно «Отменить» письма, ушедшего с задержкой `secs`, — без сервера.
+    pub(crate) fn screen_offer(&mut self, secs: u8) {
+        let scheduled = Scheduled { submission: "screen".into(), email: "screen".into(), send_at: 0 };
+        self.undo.offer(scheduled, Draft::default(), Instant::now(), postman_core::send_later::undo_window(secs));
+    }
+
+    /// Перед сценой: окна «Отменить» прошлых сцен — нет.
+    pub(crate) fn screen_clear(&mut self) {
+        self.undo = Undo::default();
     }
 }
 
@@ -131,7 +146,8 @@ impl Mailer {
                     let text = tr!("send-scheduled-toast", when = when(s.send_at));
                     self.toasts.update(cx, |t, cx| t.push(Toast::Success, text, cx));
                 } else {
-                    self.send_later.undo.offer(s.clone(), sent.draft, Instant::now());
+                    let window = postman_core::send_later::undo_window(sent.undo_secs);
+                    self.send_later.undo.offer(s.clone(), sent.draft, Instant::now(), window);
                     self.arm_undo(cx);
                     cx.notify();
                 }
@@ -174,21 +190,21 @@ impl Mailer {
         }
     }
 
-    /// Таймер скрытия окна «Отменить»: только пока оно на экране (в простое кадров нет).
+    /// Таймер окна «Отменить»: раз в секунду — обратный отсчёт, в срок — скрыть. Только пока окно на экране (в простое
+    /// кадров нет).
     fn arm_undo(&mut self, cx: &mut Context<Self>) {
         if self.send_later.armed {
             return;
         }
         let Some(due) = self.send_later.undo.next_deadline() else { return };
         self.send_later.armed = true;
-        let wait = due.saturating_duration_since(Instant::now());
+        let wait = due.saturating_duration_since(Instant::now()).min(TICK);
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(wait).await;
             let _ = this.update(cx, |m, cx| {
                 m.send_later.armed = false;
-                if m.send_later.undo.expire(Instant::now()) {
-                    cx.notify();
-                }
+                m.send_later.undo.expire(Instant::now());
+                cx.notify();
                 m.arm_undo(cx);
             });
         })
@@ -223,8 +239,10 @@ impl Mailer {
 
     /// Окно «Письмо отправлено · Отменить» внизу экрана почты (тосты `pets-ui` без кнопок действия).
     pub(crate) fn undo_card(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let offer = self.send_later.undo.shown(Instant::now())?;
+        let now = Instant::now();
+        let offer = self.send_later.undo.shown(now)?;
         let id = offer.id;
+        let left = offer.left(now);
         let l = crate::roles::look(cx);
         let action = match offer.state {
             OfferState::Open => div()
@@ -236,7 +254,7 @@ impl Mailer {
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(l.accent_text())
                 .hover(|d| d.bg(l.hover()))
-                .child(tr!("send-undo"))
+                .child(tr!("send-undo-left", s = left))
                 .on_click(cx.listener(move |this, _, _, cx| this.undo_send(id, cx)))
                 .into_any_element(),
             OfferState::Canceling(_) => div().text_color(l.text3()).child(tr!("send-undoing")).into_any_element(),

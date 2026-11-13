@@ -23,7 +23,7 @@ send-scheduled-row = ⏱ { $time }
 send-scheduled-cancel = Cancel sending
 # Undo window after sending.
 send-sent = Message sent
-send-undo = Undo
+send-undo-left = Undo · { $s } s
 send-undoing = Undoing…
 send-unsent = Sending canceled: the message is back in its window.
 send-unsent-drafts = Sending canceled: the message is in Drafts.

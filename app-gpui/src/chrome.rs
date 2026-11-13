@@ -70,6 +70,9 @@ pub(crate) mod glyph {
     pub(crate) const FORWARD: char = '\u{E89C}';
     pub(crate) const DELETE: char = '\u{E74D}';
     pub(crate) const FLAG: char = '\u{E7C1}';
+    /// Беседа без звука (CMF-01) — «RingerSilent»; закреплённое письмо (CMF-02) — «Pin» Segoe Fluent Icons.
+    pub(crate) const MUTED: char = '\u{E7ED}';
+    pub(crate) const PIN: char = '\u{E718}';
     pub(crate) const MORE: char = '\u{E712}';
     pub(crate) const SEARCH: char = '\u{E721}';
     pub(crate) const RULES: char = '\u{E71C}';

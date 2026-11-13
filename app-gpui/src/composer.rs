@@ -223,6 +223,7 @@ impl Composer {
         // «Подписать» — по «Подписывать все письма», если для адреса «От» есть сертификат (решение владельца №7).
         let signable = open.signable.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains(&model.from().email.to_lowercase());
         model.sign = crate::prefs::get(cx).security.sign_all && signable;
+        model.undo_secs = crate::prefs::with(cx, |p| p.replies.undo());
         // Демо: Identity нет — «От» — первый адрес списка.
         if model.from().email.is_empty()
             && let Some(first) = open.senders.first()
@@ -641,6 +642,8 @@ impl Composer {
         if matches!(purpose, Purpose::Send | Purpose::SendLater(_)) {
             self.find_in_directory(false, cx);
         }
+        // Задержка «Отменить» — из настройки на момент отправки (CMF-03).
+        self.model.undo_secs = crate::prefs::with(cx, |p| p.replies.undo());
         let Some(command) = self.model.begin(purpose, next_ticket(), Instant::now()) else {
             cx.notify();
             return;
@@ -668,9 +671,10 @@ impl Composer {
             Event::Sent { ticket, .. } => {
                 let later = self.model.sending_later();
                 let draft = self.model.draft(false).ok();
+                let undo_secs = self.model.undo_secs;
                 if self.model.on_sent(*ticket) {
                     cx.emit(ComposerEvent::Close);
-                    sent = draft.map(|draft| SentDraft { draft, later });
+                    sent = draft.map(|draft| SentDraft { draft, later, undo_secs });
                 }
             }
             Event::Scheduled { max_delay, .. } => self.later.max_delay = *max_delay,
@@ -1393,11 +1397,11 @@ impl Composer {
             Status::Attach { name, error } => (tr!("compose-attach-failed", name = name.clone(), error = error.clone()), true),
             Status::Large(total) => (tr!("compose-large", size = size_text(*total)), true),
         };
-        // Окно «Отменить» после отправки — если сервер держит письма.
-        if error || self.later.max_delay == 0 {
+        // Окно «Отменить» после отправки — если сервер держит письма и задержка не 0 (CMF-03).
+        let secs = self.model.undo_secs;
+        if error || self.later.max_delay == 0 || secs == 0 {
             return (text, error);
         }
-        let secs = send_later::UNDO_WINDOW.as_secs();
         if text.is_empty() {
             (tr!("compose-undo-hint", s = secs), false)
         } else {

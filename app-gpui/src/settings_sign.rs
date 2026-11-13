@@ -756,7 +756,8 @@ impl SettingsView {
     }
 
     /// «Ответы и пересылка» (#655, как «Почта → Ответы и пересылка» Outlook): цитировать ли исходное письмо в
-    /// «Ответить» и «Ответить всем». Общая настройка пользователя (`Prefs::replies`), не учётной записи.
+    /// «Ответить» и «Ответить всем» и сколько ждать отмены отправки (CMF-03). Общая настройка пользователя
+    /// (`Prefs::replies`), не учётной записи.
     fn replies(&self, l: &Look, cx: &mut Context<Self>) -> Div {
         use postman_core::prefs::ReplyQuote;
         let current = crate::prefs::with(cx, |p| p.replies.quote);
@@ -774,12 +775,24 @@ impl SettingsView {
                 }))
             })
             .collect();
-        div().flex().flex_col().child(group(tr!("settings-replies-group"), l)).child(row(
-            tr!("settings-reply-quote"),
-            Some(tr!("settings-reply-quote-hint")),
-            seg_group(items, l),
-            l,
-        ))
+        // «Отмена отправки» (CMF-03): сколько письмо ждёт после «Отправить» — 0 / 5 / 10 / 30 с.
+        let undo = crate::prefs::with(cx, |p| p.replies.undo());
+        let delays: Vec<Stateful<Div>> = postman_core::send_later::UNDO_DELAYS
+            .into_iter()
+            .map(|secs| {
+                let name = if secs == 0 { tr!("settings-undo-send-off") } else { tr!("settings-undo-send-secs", s = secs) };
+                seg(("settings-undo-send", usize::from(secs)), name, undo == secs, true, l).on_click(cx.listener(move |_, _, _, cx| {
+                    crate::prefs::update(cx, |p| p.replies.undo_secs = secs);
+                    cx.notify();
+                }))
+            })
+            .collect();
+        div()
+            .flex()
+            .flex_col()
+            .child(group(tr!("settings-replies-group"), l))
+            .child(row(tr!("settings-reply-quote"), Some(tr!("settings-reply-quote-hint")), seg_group(items, l), l))
+            .child(row(tr!("settings-undo-send"), Some(tr!("settings-undo-send-hint")), seg_group(delays, l), l))
     }
 
     pub(crate) fn signatures(&mut self, l: &Look, window: &mut Window, cx: &mut Context<Self>) -> (Option<Stateful<Div>>, AnyElement, Vec<Div>) {

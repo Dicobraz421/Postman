@@ -1870,7 +1870,7 @@ fn reminder_done(_: &Scene, m: &Mailer, cx: &App) -> bool {
 /// Пункты меню письма (порядок — `menu.rs`).
 const ITEM_FIRST_MANY: usize = 3;
 const ITEM_CATEGORY: usize = 6;
-const ITEM_PHISHING: usize = 16;
+const ITEM_PHISHING: usize = 18;
 
 const MENU_MOUSE: &[Input] = &[
     READY,

@@ -1170,10 +1170,16 @@ impl Mailer {
         cx.notify();
     }
 
-    /// Папки изменились: перечитать в фоне; текущей папки больше нет (или не было) — открыть входящие.
+    /// Папки изменились: перечитать в фоне (непрочитанные — без заглушённых бесед); текущей папки больше нет (или не
+    /// было) — открыть входящие.
     pub(crate) fn reload_folders(&mut self, cx: &mut Context<Self>) {
         let cache = self.cache.clone();
-        let task = cx.background_spawn(async move { (crate::local::mailboxes(&cache), cache.accounts().unwrap_or_default()) });
+        let task = cx.background_spawn(async move {
+            let mut rows = crate::local::mailboxes(&cache);
+            // Непрочитанные — без заглушённых бесед (CMF-01): дерево, трей, Dock и строка меню считают по этим числам.
+            postman_core::mute::without_muted(&cache, &mut rows);
+            (rows, cache.accounts().unwrap_or_default())
+        });
         cx.spawn(async move |this, cx| {
             let (rows, accounts) = task.await;
             let _ = this.update(cx, |m, cx| {
