@@ -83,8 +83,10 @@ pub enum Status {
     Valid,
     /// Подпись верна, но издатель не доверен (цепочка не дошла до якоря); причина — для карточки.
     Untrusted(String),
-    /// Подпись верна, сертификат подписанта (или CA) вне срока действия.
+    /// Подпись верна, срок действия сертификата подписанта (или CA) истёк.
     Expired,
+    /// Подпись верна, срок действия сертификата подписанта (или CA) ещё не начался (PAR-02b: отдельная причина).
+    NotYetValid,
     /// Сертификат не для подписи почты (EKU без «Защиты почты», KeyUsage без `digitalSignature`).
     WrongUsage,
     /// Сертификат цепочки — в «Недоверенных» Windows (`Disallowed`).
@@ -104,7 +106,7 @@ pub enum Status {
 impl Status {
     /// Подпись математически верна (значит, цепочку можно показать и подтвердить в Windows).
     pub fn signature_ok(&self) -> bool {
-        matches!(self, Status::Valid | Status::Untrusted(_) | Status::Expired | Status::WrongUsage | Status::Distrusted)
+        matches!(self, Status::Valid | Status::Untrusted(_) | Status::Expired | Status::NotYetValid | Status::WrongUsage | Status::Distrusted)
     }
 }
 
