@@ -160,3 +160,34 @@ fn gost_crl_through_the_sandbox() {
     assert!(matches!(c.smime_crl(&revoked.der, &root.der, &vec![0u8; postman_smime::crl::MAX_CRL + 1], NOW), Err(SmimeFailure::TooLarge)));
     assert!(c.render(&Request::Text("ok".into())).is_ok(), "воркер жив");
 }
+
+/// OCSP (LIN-05d): ответ ответчика проверяется в песочнице — «отозван», чужая подпись, мусор.
+#[test]
+fn ocsp_through_the_sandbox() {
+    use postman_smime::crl::Verdict;
+    use postman_smime::ocsp::OcspError;
+    use postman_smime::testkit::{OcspReply, OcspStatus};
+    let mut c = client();
+    let key = Key::rsa('a');
+    let root = testkit::issue(&Spec::ca("Corp CA"), &key, None);
+    let user = testkit::issue(&Spec::user("User", "user@corp.test"), &Key::rsa('b'), Some((&root, &key)));
+    let now = NOW as i64;
+    let reply = |signer: &Key, status| {
+        testkit::ocsp_response(&OcspReply {
+            cert: &user,
+            issuer: &root,
+            signer: (&root, signer),
+            status,
+            this_update: now - 60,
+            next_update: Some(now + 3600),
+            nonce: Some(b"nonce"),
+            by_key: false,
+        })
+    };
+    let r = c.smime_ocsp(&user.der, &root.der, b"nonce", &reply(&key, OcspStatus::Revoked(now - 10)), NOW).unwrap();
+    assert_eq!(r.unwrap().verdict, Verdict::Revoked { at: now - 10 });
+    let forged = reply(&Key::rsa('c'), OcspStatus::Good);
+    assert_eq!(c.smime_ocsp(&user.der, &root.der, b"nonce", &forged, NOW).unwrap(), Err(OcspError::BadSignature));
+    assert!(c.smime_ocsp(&user.der, &root.der, b"nonce", b"garbage", NOW).unwrap().is_err());
+    assert!(c.render(&Request::Text("ok".into())).is_ok(), "воркер жив");
+}
