@@ -6,5 +6,16 @@
 static ALLOC: postman_worker::Limited = postman_worker::Limited;
 
 fn main() {
+    // Действие удаления (MSI, `install.ps1 -Uninstall`): снять профиль песочницы и выйти; код 1 — отказ ОС.
+    if std::env::args_os().nth(1).is_some_and(|a| a == "--remove-appcontainer") {
+        let code = match postman_worker::remove_appcontainer() {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        };
+        std::process::exit(code);
+    }
     postman_worker::serve();
 }

@@ -366,3 +366,68 @@ fn mapi_round_trip() {
     assert!(m.attachments[0].props.contains(&(PR_ATTACH_DATA_BIN, Value::Binary(b"%PDF".to_vec()))));
     assert!(c.mapi(b"", true).is_err());
 }
+
+/// Воркер, зависший или упавший на первом запросе, не перезапускается с ослабленной изоляцией (SBX-02): уровень
+/// остаётся полным, причины ослабления нет, следующий запрос — в той же песочнице.
+#[test]
+fn failure_on_first_request_does_not_lower_isolation() {
+    let mut c = Client::new(PathBuf::from(env!("CARGO_BIN_EXE_postman-worker")), Duration::from_secs(20));
+    let e = c.render(&Request::Probe(Probe::Hang)).unwrap_err();
+    assert!(e.contains("превышено время"), "{e}");
+    assert!(!e.contains("в полной изоляции"), "{e}");
+    assert!(c.render(&Request::Text("ok".into())).is_ok());
+    if std::env::var_os("POSTMAN_REQUIRE_FULL_SANDBOX").is_some() || !cfg!(windows) {
+        assert_eq!(c.level(), Level::Full, "{:?}", c.fallback());
+        assert_eq!(c.fallback(), None);
+    }
+}
+
+/// Пути профиля и имя пользователя воркеру не передаются ни на одной ОС (SBX-02).
+#[test]
+fn worker_gets_no_profile_paths() {
+    let mut c = Client::new(PathBuf::from(env!("CARGO_BIN_EXE_postman-worker")), Duration::from_secs(5));
+    for name in ["USERPROFILE", "APPDATA", "USERNAME", "HOME", "USER"] {
+        let e = c.render(&Request::Probe(Probe::Env(name.into()))).unwrap_err();
+        assert_eq!(e, format!("запрещено: {name} не задана"));
+    }
+}
+
+/// stderr процесса песочницы — канал на всех ОС (SBX-01): строка доходит до журнала клиента, поток сверх
+/// `STDERR_RATE` строк в секунду не останавливает процесс и даёт одну строку WARN.
+#[test]
+fn worker_stderr_reaches_the_journal() {
+    use std::sync::{Arc, Mutex};
+    let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sink = Arc::clone(&lines);
+    let mut c = Client::new(PathBuf::from(env!("CARGO_BIN_EXE_postman-worker")), Duration::from_secs(20))
+        .journal(move |l| sink.lock().unwrap().push(l.to_owned()));
+    let line = "postman-worker: stderr probe\n".len() as u32;
+    assert_eq!(c.render(&Request::Probe(Probe::Stderr(line * 3))).unwrap_err(), "stderr: записано");
+    let wait = |pred: &dyn Fn(&[String]) -> bool| {
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        while !pred(&lines.lock().unwrap()) && std::time::Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        lines.lock().unwrap().clone()
+    };
+    let got = wait(&|l| l.len() >= 3);
+    assert_eq!(&got[..3], ["postman-worker: stderr probe"; 3], "{got:?}");
+    // 1 МиБ строк: канал не переполняется, процесс отвечает, лишнее отброшено одной строкой WARN.
+    assert_eq!(c.render(&Request::Probe(Probe::Stderr(1 << 20))).unwrap_err(), "stderr: записано");
+    assert!(c.render(&Request::Text("ещё жив".into())).is_ok());
+    drop(c);
+    let got = wait(&|l| l.iter().any(|s| s.starts_with("WARN stderr rate limit")));
+    // Записано ~36 тыс. строк; в журнал — не больше `STDERR_RATE` в секунду (запись идёт секунды на медленном CI).
+    assert!(got.len() < 36_000 / 10, "{}", got.len());
+    assert!(got.iter().any(|s| s.starts_with("WARN stderr rate limit")), "{:?}", &got[got.len().saturating_sub(3)..]);
+}
+
+/// Предел памяти воркера — 1 ГиБ частной выделенной памяти на всех ОС, исход назван одинаково (SBX-03, аудит №17, №45).
+#[test]
+fn worker_memory_limit_has_one_name_everywhere() {
+    let mut c = Client::new(PathBuf::from(env!("CARGO_BIN_EXE_postman-worker")), Duration::from_secs(20));
+    assert_eq!(c.render(&Request::Probe(Probe::Alloc(256 << 20))).unwrap_err(), "ДОСТУП РАЗРЕШЁН", "под пределом");
+    let e = c.render(&Request::Probe(Probe::Alloc(3 << 29))).unwrap_err();
+    assert!(e.contains("превышен предел памяти"), "{e}");
+    assert!(c.render(&Request::Text("ещё жив".into())).is_ok());
+}

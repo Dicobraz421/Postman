@@ -36,8 +36,6 @@ const TK_CANCELED: isize = -4;
 const TK_AUTH_FAILED: isize = -5;
 const TK_TOKEN_NOT_FOUND: isize = -7;
 const TK_AUTH_NEEDED: isize = -9;
-/// Сертификатов «других пользователей» из Связки ключей — не больше.
-const OTHERS_MAX: usize = 1000;
 
 /// Связки ключей для поиска: `None` — список поиска пользователя и смарт-карты; тесты — временная Связка.
 pub(crate) type Keychains<'a> = Option<&'a [SecKeychain]>;
@@ -81,37 +79,55 @@ fn sign_error(e: &CFError, what: &str) -> SignError {
     }
 }
 
-/// «Молча»: окна Связки ключей запрещены до конца области (флаг процесса — поэтому под замком).
-struct Quiet<'a>(Option<std::sync::MutexGuard<'a, ()>>);
+/// Все вызовы Связки ключей — под одним замком процесса (PAR-AUDIT №25): «молча» на macOS — флаг процесса
+/// (`SecKeychainSetUserInteractionAllowed`), и вызов другого потока в это время потерял бы окно ОС и получил отказ.
+/// Windows и Linux передают «молча» в сам вызов — им замок не нужен; итог для пользователя один.
+// платформа: на macOS нет флага «без окон» на один вызов — только на процесс.
+static LOCK: Mutex<()> = Mutex::new(());
 
-fn quiet(silent: bool) -> Quiet<'static> {
-    static LOCK: Mutex<()> = Mutex::new(());
-    if !silent {
-        return Quiet(None);
-    }
-    let guard = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-    // SAFETY: флаг процесса; возвращается в `Drop`.
-    #[allow(deprecated)]
-    unsafe {
-        security_framework_sys::keychain::SecKeychainSetUserInteractionAllowed(0)
-    };
-    Quiet(Some(guard))
+thread_local! {
+    /// Поток уже держит [`LOCK`] (вложенный вызов) и запрещены ли окна.
+    static HELD: std::cell::Cell<(bool, bool)> = const { std::cell::Cell::new((false, false)) };
 }
 
-impl Drop for Quiet<'_> {
+/// Замок Связки ключей до конца области; `silent` — ещё и без окон. Вложенный вызов того же потока замок не берёт.
+struct Hold {
+    guard: Option<std::sync::MutexGuard<'static, ()>>,
+    quieted: bool,
+}
+
+fn hold(silent: bool) -> Hold {
+    let (held, quiet) = HELD.get();
+    let guard = if held { None } else { Some(LOCK.lock().unwrap_or_else(PoisonError::into_inner)) };
+    let quieted = silent && !quiet;
+    if quieted {
+        // SAFETY: флаг процесса под замком; возвращается в `Drop`.
+        #[allow(deprecated)]
+        unsafe {
+            security_framework_sys::keychain::SecKeychainSetUserInteractionAllowed(0)
+        };
+    }
+    HELD.set((true, quiet || quieted));
+    Hold { guard, quieted }
+}
+
+impl Drop for Hold {
     fn drop(&mut self) {
-        if self.0.is_some() {
-            // SAFETY: см. `quiet`.
+        if self.quieted {
+            // SAFETY: см. `hold`.
             #[allow(deprecated)]
             unsafe {
                 security_framework_sys::keychain::SecKeychainSetUserInteractionAllowed(1)
             };
         }
+        let (_, quiet) = HELD.get();
+        HELD.set((self.guard.is_none(), quiet && !self.quieted));
     }
 }
 
 /// Свои удостоверения (сертификат DER и удостоверение), без повторов.
 pub(crate) fn identities(keychains: Keychains<'_>) -> Vec<(Vec<u8>, SecIdentity)> {
+    let _hold = hold(false);
     let mut found: Vec<SearchResult> = Vec::new();
     let mut search = |token: bool| {
         let mut o = ItemSearchOptions::new();
@@ -146,6 +162,7 @@ pub(crate) fn identities(keychains: Keychains<'_>) -> Vec<(Vec<u8>, SecIdentity)
 
 /// Сертификаты Связки ключей (без закрытых ключей тоже) — DER.
 fn certificates(keychains: Keychains<'_>) -> Vec<Vec<u8>> {
+    let _hold = hold(false);
     let mut o = ItemSearchOptions::new();
     o.class(ItemClass::certificate()).load_refs(true).limit(Limit::All);
     if let Some(k) = keychains {
@@ -164,15 +181,18 @@ fn certificates(keychains: Keychains<'_>) -> Vec<Vec<u8>> {
     out
 }
 
-fn random(out: &mut [u8]) {
+/// Случайные байты: `SecRandomCopyBytes`, запасной путь — генератор ядра; оба отказали — ошибка (шифровать нельзя).
+fn random(out: &mut [u8]) -> Result<(), SealError> {
     if security_framework::random::SecRandom::default().copy_bytes(out).is_ok() {
-        return;
+        return Ok(());
     }
-    // `SecRandomCopyBytes` не отказывает на практике; запасной путь — генератор ядра.
     use std::io::Read;
     if std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(out)).is_err() {
-        tracing::error!("no system random source");
+        out.fill(0);
+        tracing::error!("smime: no system random source");
+        return Err(SealError::Failed("no system random source".into()));
     }
+    Ok(())
 }
 
 /// Открытый ключ EC из точки `04‖X‖Y` (свой временный ключ Security.framework).
@@ -218,7 +238,7 @@ fn oaep(h: Hash) -> Option<Algorithm> {
 
 /// Снять ключ содержимого ключом `key` (тесты зовут с ключом временной Связки).
 pub(crate) fn decrypt_with(key: &SecKey, wrap: &Wrap, data: &[u8], silent: bool, key_len: usize) -> Result<Cek, KeyError> {
-    let _quiet = quiet(silent);
+    let _hold = hold(silent);
     match wrap {
         Wrap::RsaPkcs1 | Wrap::RsaOaep(_) => {
             let alg = match wrap {
@@ -231,7 +251,7 @@ pub(crate) fn decrypt_with(key: &SecKey, wrap: &Wrap, data: &[u8], silent: bool,
                     // Заполнение PKCS#1 не снялось: случайный ключ — одна ошибка с неверным ключом содержимого (RFC 3218).
                     KeyError::Failed(_) if matches!(wrap, Wrap::RsaPkcs1) => {
                         let mut cek = Zeroizing::new(vec![0u8; key_len]);
-                        random(&mut cek);
+                        random(&mut cek).map_err(|e| KeyError::Failed(e.to_string()))?;
                         Ok(cek)
                     }
                     e => Err(e),
@@ -255,7 +275,7 @@ pub(crate) fn decrypt_with(key: &SecKey, wrap: &Wrap, data: &[u8], silent: bool,
             );
             postman_smime::envelope::ecdh_cek(&z, wrap, data).ok_or_else(|| KeyError::Failed("ECDH: key unwrap".into()))
         }
-        Wrap::Gost(_) => Err(KeyError::Unsupported("ГОСТ — через СКЗИ".into())),
+        Wrap::Gost(_) => Err(KeyError::Unsupported("GOST (CSP only)".into())),
         Wrap::Unsupported(n) => Err(KeyError::Unsupported(n.clone())),
     }
 }
@@ -278,6 +298,7 @@ pub(crate) fn unwrap_cek(env: &Envelope, prompt: Prompt) -> Result<Cek, KeyError
 }
 
 pub(crate) fn unwrap_in(keychains: Keychains<'_>, env: &Envelope, prompt: Prompt) -> Result<Cek, KeyError> {
+    let _hold = hold(false);
     let key_len = env.cipher.as_ref().map(|c| c.key_len()).unwrap_or(32);
     let mut result: Option<Result<Cek, KeyError>> = None;
     for (der, id) in identities(keychains) {
@@ -298,7 +319,7 @@ pub(crate) fn unwrap_in(keychains: Keychains<'_>, env: &Envelope, prompt: Prompt
                 // Нужен PIN или карта — это и показать (важнее «не для вас»).
                 Err(e @ (KeyError::NeedPin | KeyError::NoCard | KeyError::Cancelled)) => result = Some(Err(e)),
                 Err(e) => {
-                    tracing::warn!("S/MIME key: {e:?}");
+                    tracing::debug!("smime: certificate key not usable: {e:?}");
                     result.get_or_insert(Err(e));
                 }
             }
@@ -341,7 +362,7 @@ impl Signer for KeychainSigner {
             Scheme::Ecdsa(_) => Algorithm::ECDSASignatureDigestX962SHA256,
             _ => return Err(SignError::Failed("Keychain: scheme is not supported".into())),
         };
-        let _quiet = quiet(self.silent);
+        let _hold = hold(self.silent);
         self.key.create_signature(alg, digest).map_err(|e| sign_error(&e, "SecKeyCreateSignature"))
     }
 }
@@ -388,6 +409,7 @@ pub(crate) fn sign_message(raw: &[u8], from: &str, silent: bool, now: i64) -> Re
 }
 
 pub(crate) fn sign_in(keychains: Keychains<'_>, raw: &[u8], from: &str, silent: bool, now: i64) -> Result<Vec<u8>, SignError> {
+    let _hold = hold(false);
     let Some((cert, id, scheme)) = signing_identity(keychains, from, now) else { return Err(SignError::NoCertificate(from.into())) };
     if matches!(scheme, Scheme::Gost256 | Scheme::Gost512) {
         // СКЗИ на macOS нет (ГОСТ отложен).
@@ -402,8 +424,8 @@ pub(crate) fn sign_in(keychains: Keychains<'_>, raw: &[u8], from: &str, silent: 
 pub(crate) struct KeychainOps;
 
 impl Ops for KeychainOps {
-    fn random(&self, out: &mut [u8]) {
-        random(out);
+    fn random(&self, out: &mut [u8]) -> Result<(), SealError> {
+        random(out)
     }
 
     fn ecdh(&self, bits: u16, peer: &[u8]) -> Result<(Vec<u8>, Zeroizing<Vec<u8>>), SealError> {
@@ -437,15 +459,16 @@ pub(crate) fn own_certs(from: &str) -> Vec<Vec<u8>> {
         .collect()
 }
 
-/// Сертификаты других людей из Связки ключей (аналог «Других пользователей» Windows): с адресом, без своих
-/// удостоверений; адреса и годность узнает воркер.
+/// Сертификаты других людей из Связки ключей (аналог «Других пользователей» Windows): общий отбор
+/// [`super::others`] — с адресом, без своих удостоверений, не больше [`super::OTHERS_MAX`].
 pub(crate) fn address_book() -> Vec<Vec<u8>> {
     let own: Vec<Vec<u8>> = identities(None).into_iter().map(|(d, _)| d).collect();
+    super::others(certificates(None), &own)
+}
+
+/// Все сертификаты Связки ключей пользователя (промежуточные для воркера, `macos.rs`).
+pub(crate) fn all_certificates() -> Vec<Vec<u8>> {
     certificates(None)
-        .into_iter()
-        .filter(|d| !own.contains(d) && own_certificate(d).is_some_and(|(info, _, _)| !info.emails.is_empty()))
-        .take(OTHERS_MAX)
-        .collect()
 }
 
 /// Свои сертификаты с закрытым ключом (для списка в настройках).
@@ -597,7 +620,7 @@ mod tests {
         let (own, z) = KeychainOps.ecdh(256, &peer).unwrap();
         assert_eq!(testkit::ecdh_with(&key, &own).unwrap(), z.to_vec());
         let mut a = [0u8; 32];
-        KeychainOps.random(&mut a);
+        KeychainOps.random(&mut a).unwrap();
         assert_ne!(a, [0u8; 32]);
     }
 }

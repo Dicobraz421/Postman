@@ -56,6 +56,11 @@ fn namespaces_modes() {
     assert!(e.contains("seccomp"), "{e}");
     let e = ok(client("userns-deny").namespaces(Namespaces::Required)).unwrap_err();
     assert!(e.contains("user namespaces недоступны") && e.contains("required"), "{e}");
+    // Отказ в запирании — уровень «нет изоляции» с причиной, а не «полная» (SBX-03, аудит №16).
+    let mut c = client("userns-deny").namespaces(Namespaces::Required);
+    assert!(c.render(&Request::Text("проверка".into())).is_err());
+    assert_eq!(c.level(), postman_worker::Level::None);
+    assert!(c.fallback().is_some_and(|f| f.contains("user namespaces")), "{:?}", c.fallback());
 }
 
 /// Неизвестный режим — отказ до первого запроса (код 3), а не молчаливый `optional`.
@@ -69,6 +74,23 @@ fn unknown_namespaces_mode_is_refused() {
         .unwrap();
     assert_eq!(out.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&out.stdout).contains("неизвестный режим namespaces: maybe"));
+}
+
+/// Дескрипторы клиента сверх stdin/stdout/stderr воркеру не достаются (SBX-05, аудит №10): файл, открытый в клиенте
+/// без `O_CLOEXEC`, у воркера закрыт. Без seccomp — иначе `fcntl` убивает процесс раньше проверки.
+#[test]
+fn parent_descriptors_are_not_inherited() {
+    let _env = ENV.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let file = std::fs::File::open("/proc/self/status").unwrap();
+    // SAFETY: dup — новый номер того же файла, без CLOEXEC; закрывается в конце теста.
+    let fd = unsafe { libc::dup(std::os::fd::AsRawFd::as_raw_fd(&file)) };
+    assert!(fd > 2);
+    let mut c = client("seccomp");
+    let e = c.render(&Request::Probe(Probe::Fd(fd))).unwrap_err();
+    assert!(e.starts_with("запрещено: ") && e.contains("Bad file descriptor"), "{e}");
+    assert_eq!(c.render(&Request::Probe(Probe::Fd(2))).unwrap_err(), "ДОСТУП РАЗРЕШЁН", "stderr открыт");
+    // SAFETY: свой номер из dup выше.
+    unsafe { libc::close(fd) };
 }
 
 #[test]

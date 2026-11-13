@@ -26,6 +26,9 @@ const ERR_SEC_INVALID_EXTENDED_KEY_USAGE: i64 = -67609;
 const ERR_SEC_TRUST_SETTING_DENY: i64 = -67654;
 const ERR_SEC_NOT_TRUSTED: i64 = -67843;
 const ERR_SEC_CREATE_CHAIN_FAILED: i64 = -25318;
+/// `errSecInvalidSignature` и `errSecVerifyFailed` [проверить на macOS: какой из них отдаёт `SecTrust`].
+const ERR_SEC_INVALID_SIGNATURE: i64 = -67688;
+const ERR_SEC_VERIFY_FAILED: i64 = -67808;
 /// `kSecTrustResultDeny`: сертификат цепочки — «Никогда не доверять».
 const TRUST_RESULT_DENY: u32 = 3;
 
@@ -56,12 +59,61 @@ fn sha256_hex(der: &[u8]) -> String {
     })
 }
 
-/// Сертификаты с настройками доверия в домене `domain` и итог настройки.
+/// Настройка доверия сертификата `cert` в домене `domain` для S/MIME (PAR-AUDIT №27): записи без политики (на все
+/// политики) и с политикой «SMIME»; TLS и прочие — мимо. Пустой список настроек — «доверять как корню» (правило
+/// `SecTrustSettingsCopyTrustSettings`). `None` — для S/MIME настройки нет.
+fn smime_setting(cert: &SecCertificate, domain: Domain) -> Option<TrustSettingsForCertificate> {
+    use core_foundation::array::{CFArray, CFArrayRef};
+    use core_foundation::dictionary::CFDictionary;
+    use core_foundation::number::CFNumber;
+    use core_foundation::string::CFString;
+    let mut array: CFArrayRef = std::ptr::null();
+    // SAFETY: сертификат — живой объект; массив по правилу Copy — владеем (обёртка ниже).
+    let st =
+        unsafe { security_framework_sys::trust_settings::SecTrustSettingsCopyTrustSettings(cert.as_concrete_TypeRef(), domain.into(), &mut array) };
+    if st != 0 || array.is_null() {
+        return None;
+    }
+    // SAFETY: массив словарей получен выше по правилу Copy.
+    let settings = unsafe { CFArray::<CFDictionary>::wrap_under_create_rule(array) };
+    if settings.is_empty() {
+        return Some(TrustSettingsForCertificate::TrustRoot);
+    }
+    let name_key = CFString::from_static_string("kSecTrustSettingsPolicyName");
+    let result_key = CFString::from_static_string("kSecTrustSettingsResult");
+    for item in settings.iter() {
+        let name = item.find(name_key.as_CFTypeRef().cast()).map(|n| {
+            // SAFETY: значение ключа имени политики — CFString (документация Trust Settings).
+            unsafe { CFString::wrap_under_get_rule((*n).cast()) }.to_string()
+        });
+        // [проверить на macOS] имя политики S/MIME в настройках доверия — «SMIME».
+        if name.as_deref().is_some_and(|n| n != "SMIME") {
+            continue;
+        }
+        let result = item
+            .find(result_key.as_CFTypeRef().cast())
+            .and_then(|v| {
+                // SAFETY: значение ключа итога — CFNumber.
+                unsafe { CFNumber::wrap_under_get_rule((*v).cast()) }.to_i64()
+            })
+            .unwrap_or(i64::from(security_framework_sys::trust_settings::kSecTrustSettingsResultTrustRoot));
+        // `kSecTrustSettingsResult`: 1 — корень, 2 — как корень, 3 — запрет; 0 и 4 (нет/не задан) — дальше.
+        match result {
+            1 => return Some(TrustSettingsForCertificate::TrustRoot),
+            2 => return Some(TrustSettingsForCertificate::TrustAsRoot),
+            3 => return Some(TrustSettingsForCertificate::Deny),
+            _ => continue,
+        }
+    }
+    None
+}
+
+/// Сертификаты с настройками доверия в домене `domain` и итог настройки для S/MIME.
 fn trust_settings(domain: Domain) -> Vec<(Vec<u8>, Option<TrustSettingsForCertificate>)> {
     let ts = TrustSettings::new(domain);
     let Ok(iter) = ts.iter() else { return Vec::new() };
     iter.map(|c| {
-        let r = ts.tls_trust_settings_for_certificate(&c).ok().flatten();
+        let r = smime_setting(&c, domain);
         (c.to_der(), r)
     })
     .collect()
@@ -96,8 +148,24 @@ pub(super) fn load_trust(corporate_extra: &[String]) -> Trust {
             disallowed.push(der);
         }
     }
-    // Промежуточные: отдельного хранилища CA, как в Windows, у macOS нет — берутся из письма (воркер).
-    Trust { roots, intermediates: Vec::new(), disallowed }
+    // Промежуточные (PAR-AUDIT №26): хранилища CA, как в Windows, у macOS нет — сертификаты Связки ключей без адреса
+    // (CA), не корни, не запрещённые и не свои удостоверения; годность для цепочки решает воркер. Предел размера —
+    // как у Windows.
+    let own: Vec<Vec<u8>> = super::keychain::personal(None);
+    let mut intermediates: Vec<Vec<u8>> = Vec::new();
+    for der in super::keychain::all_certificates() {
+        if roots.iter().any(|a| a.der == der) || disallowed.contains(&der) || own.contains(&der) || intermediates.contains(&der) {
+            continue;
+        }
+        if postman_smime::sign::own_certificate(&der).is_some_and(|(info, _, _)| !info.emails.is_empty()) {
+            continue;
+        }
+        if size + der.len() <= postman_smime::MAX_TRUST * 7 / 8 {
+            size += der.len();
+            intermediates.push(der);
+        }
+    }
+    Trust { roots, intermediates, disallowed }
 }
 
 /// Политика S/MIME (`kSecPolicyAppleSMIME`: EKU «Защита почты», KeyUsage); без адреса — адрес проверил воркер.
@@ -111,8 +179,14 @@ fn smime_policy() -> SecPolicy {
     unsafe { SecPolicy::wrap_under_create_rule(p) }
 }
 
-/// Одна оценка цепочки: `Ok` — доверена; `Err` — код ошибки `SecTrust` и признак «запрещён».
-fn evaluate(chain: &[SecCertificate], exclusive_root: Option<&SecCertificate>, revocation: RevocationPolicy) -> Result<(), (i64, bool)> {
+/// Одна оценка цепочки: `Ok` — доверена; `Err` — код ошибки `SecTrust` и признак «запрещён». `network` — можно ли
+/// спрашивать OCSP/CRL (без сети — только кэш ОС).
+fn evaluate(
+    chain: &[SecCertificate],
+    exclusive_root: Option<&SecCertificate>,
+    revocation: RevocationPolicy,
+    network: bool,
+) -> Result<(), (i64, bool)> {
     let Ok(rev) = SecPolicy::create_revocation(revocation) else { return Err((0, false)) };
     let Ok(mut trust) = SecTrust::create_with_certificates(chain, &[smime_policy(), rev]) else { return Err((0, false)) };
     if let Some(root) = exclusive_root
@@ -120,7 +194,7 @@ fn evaluate(chain: &[SecCertificate], exclusive_root: Option<&SecCertificate>, r
     {
         return Err((0, false));
     }
-    let _ = trust.set_network_fetch_allowed(true);
+    let _ = trust.set_network_fetch_allowed(network);
     match trust.evaluate_with_error() {
         Ok(()) => Ok(()),
         Err(e) => {
@@ -132,16 +206,52 @@ fn evaluate(chain: &[SecCertificate], exclusive_root: Option<&SecCertificate>, r
     }
 }
 
+/// Итог первой оценки (ошибка `code`) — общим правилом [`super::chain_verdict`]: «ещё не действует» — своя причина
+/// `NotYetValid` (PAR-02b), неверная подпись — `BadSignature`, как у Windows (PAR-AUDIT №30).
 fn verdict(code: i64, denied: bool) -> Revocation {
+    let mut c = super::ChainCheck::default();
     if denied || code == ERR_SEC_TRUST_SETTING_DENY {
-        return Revocation::Rejected(Confirm::Distrusted);
+        c.distrusted = true;
+    } else {
+        match code {
+            ERR_SEC_CERTIFICATE_REVOKED => c.revoked = true,
+            ERR_SEC_CERTIFICATE_EXPIRED => c.expired = true,
+            ERR_SEC_CERTIFICATE_NOT_VALID_YET => c.not_yet_valid = true,
+            ERR_SEC_INVALID_EXTENDED_KEY_USAGE => c.wrong_usage = true,
+            ERR_SEC_NOT_TRUSTED | ERR_SEC_CREATE_CHAIN_FAILED => c.untrusted = true,
+            ERR_SEC_INVALID_SIGNATURE | ERR_SEC_VERIFY_FAILED => c.bad_signature = true,
+            _ => c.other = true,
+        }
     }
-    match code {
-        ERR_SEC_CERTIFICATE_REVOKED => Revocation::Revoked,
-        ERR_SEC_CERTIFICATE_EXPIRED | ERR_SEC_CERTIFICATE_NOT_VALID_YET => Revocation::Rejected(Confirm::Expired),
-        ERR_SEC_INVALID_EXTENDED_KEY_USAGE => Revocation::Rejected(Confirm::WrongUsage),
-        ERR_SEC_NOT_TRUSTED | ERR_SEC_CREATE_CHAIN_FAILED => Revocation::Rejected(Confirm::Untrusted),
-        _ => Revocation::Rejected(Confirm::Failed),
+    super::chain_verdict(c)
+}
+
+/// Отзыв с обязательным ответом по сети — в отдельном потоке, не дольше общего предела [`super::crl::BUDGET`]
+/// (тот же, что у Windows `dwUrlRetrievalTimeout` и Linux; PAR-AUDIT №29). Вышло время — «не удалось проверить».
+fn strict_revocation(chain: &[Vec<u8>], exclusive_root: Option<&[u8]>) -> super::ChainCheck {
+    let chain = chain.to_vec();
+    let root = exclusive_root.map(<[u8]>::to_vec);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new().name("smime-revocation".into()).spawn(move || {
+        let certs: Vec<SecCertificate> = chain.iter().filter_map(|d| SecCertificate::from_der(d).ok()).collect();
+        let root = root.and_then(|r| SecCertificate::from_der(&r).ok());
+        let strict = RevocationPolicy::USE_ANY_METHOD_AVAILABLE | RevocationPolicy::REQUIRE_POSITIVE_RESPONSE;
+        let _ = tx.send(evaluate(&certs, root.as_ref(), strict, true));
+    });
+    if spawned.is_err() {
+        return super::ChainCheck { revocation_unknown: true, ..Default::default() };
+    }
+    match rx.recv_timeout(super::crl::BUDGET) {
+        Ok(Ok(())) => super::ChainCheck::default(),
+        Ok(Err((ERR_SEC_CERTIFICATE_REVOKED, _))) => super::ChainCheck { revoked: true, ..Default::default() },
+        Ok(Err((code, _))) => {
+            tracing::debug!(code, "smime: revocation status unknown");
+            super::ChainCheck { revocation_unknown: true, ..Default::default() }
+        }
+        Err(_) => {
+            tracing::debug!("smime: revocation check timed out");
+            super::ChainCheck { revocation_unknown: true, ..Default::default() }
+        }
     }
 }
 
@@ -157,21 +267,14 @@ fn confirm_inner(chain: &[Vec<u8>], exclusive_root: Option<&[u8]>) -> Revocation
         Some(Ok(r)) => Some(r),
         Some(Err(_)) => return Revocation::Rejected(Confirm::Failed),
     };
-    // Сначала «по возможности» (недоступный OCSP/CRL не ошибка): отозван, не доверен, срок, назначение. Затем — с
-    // обязательным ответом: не получен — отзыв «не проверен» (как `REVOCATION_STATUS_UNKNOWN` Windows).
-    if let Err((code, denied)) = evaluate(&certs, root.as_ref(), RevocationPolicy::USE_ANY_METHOD_AVAILABLE) {
-        tracing::debug!(code, denied, "S/MIME chain rejected by macOS");
+    // Сначала цепочка без сети (отзыв — только из кэша ОС): отозван, не доверен, срок, назначение — быстро и без
+    // ожидания. Затем — отзыв с обязательным ответом по сети в пределах общего времени: не получен — «не проверен»
+    // (как `REVOCATION_STATUS_UNKNOWN` Windows).
+    if let Err((code, denied)) = evaluate(&certs, root.as_ref(), RevocationPolicy::USE_ANY_METHOD_AVAILABLE, false) {
+        tracing::debug!(code, denied, "smime: chain rejected by the OS");
         return verdict(code, denied);
     }
-    let strict = RevocationPolicy::USE_ANY_METHOD_AVAILABLE | RevocationPolicy::REQUIRE_POSITIVE_RESPONSE;
-    match evaluate(&certs, root.as_ref(), strict) {
-        Ok(()) => Revocation::Good,
-        Err((ERR_SEC_CERTIFICATE_REVOKED, _)) => Revocation::Revoked,
-        Err((code, _)) => {
-            tracing::debug!(code, "S/MIME revocation status unknown (macOS)");
-            Revocation::Unknown
-        }
-    }
+    super::chain_verdict(strict_revocation(chain, exclusive_root))
 }
 
 pub(super) fn confirm(chain: &[Vec<u8>], exclusive_root: Option<&[u8]>) -> Revocation {
@@ -180,7 +283,7 @@ pub(super) fn confirm(chain: &[Vec<u8>], exclusive_root: Option<&[u8]>) -> Revoc
 
 /// Отзыв ГОСТ своими силами (12.1д) на macOS не нужен: ГОСТ отложен.
 pub(super) fn fetch_crl(_url: &str, _timeout: std::time::Duration) -> Result<Vec<u8>, String> {
-    Err("CRL download is not used on macOS (GOST deferred)".into())
+    Err("CRL download is not available (GOST deferred)".into())
 }
 
 /// СКЗИ на macOS нет (ГОСТ отложен).
@@ -223,5 +326,17 @@ mod tests {
         assert_eq!(confirm(&[], None), Revocation::NotChecked);
         assert_eq!(verdict(ERR_SEC_CERTIFICATE_REVOKED, false), Revocation::Revoked);
         assert_eq!(verdict(ERR_SEC_NOT_TRUSTED, true), Revocation::Rejected(Confirm::Distrusted));
+        // Таблица кодов — те же причины, что у Windows (PAR-AUDIT №30).
+        for (code, want) in [
+            (ERR_SEC_CERTIFICATE_EXPIRED, Confirm::Expired),
+            (ERR_SEC_CERTIFICATE_NOT_VALID_YET, Confirm::NotYetValid),
+            (ERR_SEC_INVALID_EXTENDED_KEY_USAGE, Confirm::WrongUsage),
+            (ERR_SEC_NOT_TRUSTED, Confirm::Untrusted),
+            (ERR_SEC_INVALID_SIGNATURE, Confirm::BadSignature),
+            (ERR_SEC_VERIFY_FAILED, Confirm::BadSignature),
+            (-1, Confirm::Failed),
+        ] {
+            assert_eq!(verdict(code, false), Revocation::Rejected(want), "{code}");
+        }
     }
 }

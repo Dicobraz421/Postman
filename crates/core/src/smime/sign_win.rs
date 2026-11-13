@@ -12,23 +12,16 @@ use postman_smime::sign::{SignError, Signer, ecdsa_der, own_certificate};
 use postman_smime::{Hash, Scheme};
 use windows_sys::Win32::Security::Cryptography::*;
 
-const NTE_SILENT_CONTEXT: i32 = 0x8009_0022u32 as i32;
-const NTE_DEVICE_NOT_READY: i32 = 0x8009_0030u32 as i32;
-const SCARD_W_REMOVED_CARD: i32 = 0x8010_0069u32 as i32;
-const SCARD_E_NO_SMARTCARD: i32 = 0x8010_000Cu32 as i32;
-const SCARD_W_CANCELLED_BY_USER: i32 = 0x8010_006Eu32 as i32;
-const ERROR_CANCELLED_HR: i32 = 0x8007_04C7u32 as i32;
 /// `ALG_ID` хэша «Стрибог» в CryptoAPI КриптоПро [проверить]; `HP_HASHVAL`.
 const CALG_GR3411_2012_256: u32 = 0x8021;
 const CALG_GR3411_2012_512: u32 = 0x8022;
 const HP_HASHVAL: u32 = 2;
 
+/// Код CNG/CryptoAPI → ошибка подписи (общая таблица — [`super::keys::windows_fault`]).
 fn sign_error(hr: i32, what: &str) -> SignError {
-    match hr {
-        NTE_SILENT_CONTEXT => SignError::NeedPin,
-        NTE_DEVICE_NOT_READY | SCARD_W_REMOVED_CARD | SCARD_E_NO_SMARTCARD => SignError::NoCard,
-        SCARD_W_CANCELLED_BY_USER | ERROR_CANCELLED_HR => SignError::Cancelled,
-        _ => SignError::Failed(format!("{what}: 0x{:08X}", hr as u32)),
+    match super::keys::windows_fault(hr) {
+        Some(f) => f.sign_error(),
+        None => SignError::Failed(format!("{what}: 0x{:08X}", hr as u32)),
     }
 }
 
@@ -76,7 +69,7 @@ impl Signer for CngSigner {
         let (padding, flags): (*const core::ffi::c_void, u32) = match self.scheme {
             Scheme::RsaPkcs1(_) => (ptr::from_ref(&pkcs1).cast(), NCRYPT_PAD_PKCS1_FLAG),
             Scheme::Ecdsa(_) => (ptr::null(), 0),
-            _ => return Err(SignError::Failed("CNG: схема не поддерживается".into())),
+            _ => return Err(SignError::Failed("CNG: signature scheme is not supported".into())),
         };
         let silent = if self.silent { NCRYPT_SILENT_FLAG } else { 0 };
         let mut out = vec![0u8; 1024];
@@ -151,12 +144,24 @@ impl Signer for SkziSigner {
     }
 }
 
-/// Промежуточные сертификаты своего сертификата (цепочка Windows без проверки отзыва), без корня.
+/// Промежуточные сертификаты своего сертификата (цепочка Windows без проверки отзыва и без сети — только хранилища и
+/// кэш, как `set_network_fetch_allowed(false)` на macOS; PAR-AUDIT №31), без корня.
 fn intermediates(ctx: *const CERT_CONTEXT) -> Vec<Vec<u8>> {
     let para = CERT_CHAIN_PARA { cbSize: size_of::<CERT_CHAIN_PARA>() as u32, ..Default::default() };
     let mut chain: *mut CERT_CHAIN_CONTEXT = ptr::null_mut();
     // SAFETY: свой сертификат из хранилища; контекст цепочки освобождается ниже.
-    if unsafe { CertGetCertificateChain(ptr::null_mut(), ctx, ptr::null(), ptr::null_mut(), &para, 0, ptr::null(), &mut chain) } == 0
+    if unsafe {
+        CertGetCertificateChain(
+            ptr::null_mut(),
+            ctx,
+            ptr::null(),
+            ptr::null_mut(),
+            &para,
+            CERT_CHAIN_CACHE_ONLY_URL_RETRIEVAL | CERT_CHAIN_DISABLE_AIA,
+            ptr::null(),
+            &mut chain,
+        )
+    } == 0
         || chain.is_null()
     {
         return Vec::new();
@@ -300,14 +305,14 @@ fn sign_with(
     }
     let result = if spec == CERT_NCRYPT_KEY_SPEC {
         if gost {
-            Err(SignError::Failed("ГОСТ через CNG (KSP СКЗИ) [проверить]".into()))
+            Err(SignError::Failed("GOST via CNG KSP is not supported".into()))
         } else {
             postman_smime::sign::sign_message(raw, &CngSigner { cert, chain, scheme, key, silent: hwnd.is_none() }, now)
         }
     } else if gost {
         postman_smime::sign::sign_message(raw, &SkziSigner { cert, chain, scheme, prov: key, spec }, now)
     } else {
-        Err(SignError::Failed("ключ CryptoAPI (не CNG) — не поддерживается".into()))
+        Err(SignError::Failed("CryptoAPI (non-CNG) key is not supported".into()))
     };
     if free != 0 {
         // SAFETY: ключ или провайдер получены выше с признаком освобождения.
@@ -382,7 +387,8 @@ mod tests {
             sign_message(LETTER, "nobody-postman-test@itt.test", None, NOW as i64, None),
             Err(SignError::NoCertificate("nobody-postman-test@itt.test".into()))
         );
-        assert_eq!(sign_error(NTE_SILENT_CONTEXT, "x"), SignError::NeedPin);
-        assert_eq!(sign_error(SCARD_W_REMOVED_CARD, "x"), SignError::NoCard);
+        assert_eq!(sign_error(0x8009_0022u32 as i32, "x"), SignError::NeedPin);
+        assert_eq!(sign_error(0x8010_006Bu32 as i32, "x"), SignError::NeedPin);
+        assert_eq!(sign_error(0x8010_0069u32 as i32, "x"), SignError::NoCard);
     }
 }
