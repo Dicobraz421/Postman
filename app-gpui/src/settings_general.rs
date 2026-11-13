@@ -307,7 +307,7 @@ impl SettingsView {
             .child(group(tr!("settings-mailto-group"), l))
             .child(row(
                 tr!("settings-mailto"),
-                Some(tr!(if is_default { "settings-mailto-done-hint" } else { "settings-mailto-hint" })),
+                Some(tr!(if is_default { "settings-mailto-done-hint" } else { crate::sys::shell::MAILTO_HINT })),
                 mailto_control,
                 l,
             ))

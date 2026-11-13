@@ -12,6 +12,9 @@ use zbus::zvariant::Value;
 
 use super::PolicyValue;
 
+/// Подсказка «сделать клиентом `mailto:`» (PAR-04 №41): `xdg-settings` назначает сразу.
+pub const MAILTO_HINT: &str = "settings-mailto-hint-now";
+
 /// Схема ссылок почты (`MimeType=x-scheme-handler/mailto` в `scripts/linux/data/postman.desktop`, LIN-06).
 const MAILTO: &str = "mailto";
 
@@ -57,20 +60,16 @@ pub fn upn() -> Option<String> {
 /// Вход без пароля имеет смысл: есть действующий билет Kerberos (`klist -s`). Без кэша: билет появляется и
 /// истекает во время работы (PAR-AUDIT №24); процесс — единицы миллисекунд.
 pub fn in_domain() -> bool {
-    std::process::Command::new(KLIST)
-        .arg("-s")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    let Ok(mut klist) = super::system_command(KLIST) else { return false };
+    klist.arg("-s").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success())
 }
 
-/// `klist` MIT — полным путём, не из `PATH`.
-const KLIST: &str = "/usr/bin/klist";
+/// `klist` MIT — `/usr/bin/klist` ([`super::system_command`]), не из `PATH`.
+const KLIST: &str = "klist";
 
-/// Вывод команды при успехе.
+/// Вывод системной утилиты (`/usr/bin/<cmd>`, PAR-04 №36) при успехе.
 fn run(cmd: &str, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new(cmd).args(args).stderr(std::process::Stdio::null()).output().ok()?;
+    let out = super::system_command(cmd).ok()?.args(args).stderr(std::process::Stdio::null()).output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
@@ -200,7 +199,7 @@ pub fn default_env(name: &str, value: &str) {
 
 /// Открыть путь или адрес приложением по умолчанию (`xdg-open`) — по действию пользователя.
 pub fn open(target: &str) -> Result<(), String> {
-    std::process::Command::new("xdg-open").arg(target).spawn().map(|_| ()).map_err(|e| format!("xdg-open: {e}"))
+    super::system_command("xdg-open")?.arg(target).spawn().map(|_| ()).map_err(|e| format!("xdg-open: {e}"))
 }
 
 /// Показать файл в файловом менеджере с выделением (`org.freedesktop.FileManager1.ShowItems`); службы нет —

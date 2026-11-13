@@ -206,9 +206,13 @@ pub fn default_env(name: &str, value: &str) {
     }
 }
 
+/// Подсказка «сделать клиентом `mailto:`» по тому, что делает ОС (PAR-04 №41): Windows открывает «Приложения по
+/// умолчанию», выбор — там.
+pub const MAILTO_HINT: &str = "settings-mailto-hint-choose";
+
 /// Открыть путь, адрес или страницу параметров Windows (`ms-settings:defaultapps`) — по действию пользователя.
 pub fn open(target: &str) -> Result<(), String> {
-    std::process::Command::new("explorer.exe").arg(target).spawn().map(|_| ()).map_err(|e| format!("explorer: {e}"))
+    super::system_command("explorer.exe")?.arg(target).spawn().map(|_| ()).map_err(|e| format!("explorer: {e}"))
 }
 
 /// Шифрование диска с данными (S8-35): буква тома («C:») и BitLocker — `Some(true)` защищён, `Some(false)` нет
@@ -231,7 +235,7 @@ pub fn bitlocker(path: &Path) -> (String, Option<bool>) {
 
 /// «Параметры BitLocker» — панель управления Windows.
 pub fn open_bitlocker() -> Result<(), String> {
-    std::process::Command::new("control.exe")
+    super::system_command("control.exe")?
         .args(["/name", "Microsoft.BitLockerDriveEncryption"])
         .spawn()
         .map(|_| ())
@@ -243,7 +247,7 @@ pub fn open_bitlocker() -> Result<(), String> {
 pub fn upn() -> Option<String> {
     use std::os::windows::process::CommandExt as _;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let out = std::process::Command::new("whoami.exe").arg("/upn").creation_flags(CREATE_NO_WINDOW).output().ok();
+    let out = super::system_command("whoami.exe").ok()?.arg("/upn").creation_flags(CREATE_NO_WINDOW).output().ok();
     let upn = out.filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).filter(|u| u.contains('@'));
     upn.or_else(|| {
         let user = std::env::var("USERNAME").ok()?;
@@ -259,7 +263,7 @@ pub fn in_domain() -> bool {
 
 /// Показать файл в Проводнике.
 pub fn reveal(path: &Path) -> Result<(), String> {
-    std::process::Command::new("explorer.exe").arg(format!("/select,{}", path.display())).spawn().map(|_| ()).map_err(|e| format!("explorer: {e}"))
+    super::system_command("explorer.exe")?.arg(format!("/select,{}", path.display())).spawn().map(|_| ()).map_err(|e| format!("explorer: {e}"))
 }
 
 #[cfg(test)]

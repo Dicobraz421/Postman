@@ -9,16 +9,20 @@ use std::path::{Path, PathBuf};
 
 /// Типы, которые открывать нельзя (по мотивам списка Level 1 в Outlook), плюс
 /// HTML/SVG (скрипты в браузере с file://) и образы дисков (обход MOTW); macOS
-/// (MAC-02) — пакеты приложений и установщиков, скрипты Terminal и AppleScript.
+/// (MAC-02) — пакеты приложений и установщиков, скрипты Terminal и AppleScript; Linux (PAR-04 №20) — ярлыки
+/// `.desktop` (запускают команду), AppImage, самораспаковка `.run`, пакеты deb/rpm/snap/Flatpak, скрипты
+/// оболочек. Один список на все ОС.
 const BLOCKED: &[&str] = &[
     "ade",
     "adp",
     "app",
+    "appimage",
     "application",
     "appref-ms",
     "asp",
     "aspx",
     "bas",
+    "bash",
     "bat",
     "cer",
     "chm",
@@ -29,10 +33,15 @@ const BLOCKED: &[&str] = &[
     "cpl",
     "crt",
     "csh",
+    "deb",
     "der",
+    "desktop",
     "diagcab",
     "dll",
     "exe",
+    "flatpak",
+    "flatpakref",
+    "flatpakrepo",
     "fxp",
     "gadget",
     "grp",
@@ -42,10 +51,10 @@ const BLOCKED: &[&str] = &[
     "htc",
     "htm",
     "html",
+    "img",
     "inf",
     "ins",
     "iso",
-    "img",
     "isp",
     "its",
     "jar",
@@ -77,10 +86,10 @@ const BLOCKED: &[&str] = &[
     "msc",
     "msh",
     "msh1",
-    "msh2",
-    "mshxml",
     "msh1xml",
+    "msh2",
     "msh2xml",
+    "mshxml",
     "msi",
     "msix",
     "msixbundle",
@@ -113,6 +122,8 @@ const BLOCKED: &[&str] = &[
     "pyz",
     "pyzw",
     "reg",
+    "rpm",
+    "run",
     "scf",
     "scpt",
     "scr",
@@ -121,6 +132,7 @@ const BLOCKED: &[&str] = &[
     "sh",
     "shb",
     "shs",
+    "snap",
     "svg",
     "svgz",
     "sys",
@@ -148,6 +160,7 @@ const BLOCKED: &[&str] = &[
     "xhtml",
     "xll",
     "xnk",
+    "zsh",
 ];
 
 const RESERVED: &[&str] = &[
@@ -220,11 +233,25 @@ fn mark_of_the_web(path: &Path) {
 #[cfg(not(any(windows, target_os = "macos")))]
 fn mark_of_the_web(_: &Path) {}
 
+/// Каталог только для владельца (PAR-04 №19, ADR 0011 п. 4): создать вместе с родителями; на Unix — права `0700`
+/// на сам каталог (и уже существующий), чтобы письма, вложения и журнал не читали другие пользователи машины. Windows —
+/// права наследуются от профиля (`%LOCALAPPDATA%` — только владелец).
+pub fn private_dir(path: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
 /// Сохранить во временный каталог и открыть системным приложением.
 pub fn open(dir: &Path, name: &str, data: &[u8]) -> io::Result<PathBuf> {
     if !can_open(name) {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, "этот тип файла можно только сохранить"));
     }
+    private_dir(dir)?;
     let nonce = jiff::Timestamp::now().as_nanosecond();
     let dir = dir.join(format!("{nonce:x}"));
     std::fs::create_dir_all(&dir)?;
@@ -274,6 +301,29 @@ mod tests {
         for name in ["Postman.app", "run.command", "setup.pkg", "do.scpt", "shell.terminal"] {
             assert!(!can_open(name), "{name}");
         }
+    }
+
+    /// PAR-04 №20: исполняемое на Linux — только сохранить, на любой ОС.
+    #[test]
+    fn linux_executables_are_blocked() {
+        for name in ["app.desktop", "Tool.AppImage", "setup.run", "pkg.deb", "pkg.rpm", "app.flatpakref", "a.snap", "x.bash"] {
+            assert!(!can_open(name), "{name}");
+        }
+        assert!(BLOCKED.windows(2).all(|w| w[0] < w[1]), "список по алфавиту, без повторов");
+    }
+
+    /// PAR-04 №19: каталог данных — только владелец, и созданный заново, и уже существующий.
+    #[cfg(unix)]
+    #[test]
+    fn private_dir_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::Builder::new().prefix("postman-").tempdir().unwrap();
+        let dir = root.path().join("a").join("open");
+        private_dir(&dir).unwrap();
+        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        private_dir(&dir).unwrap();
+        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
     }
 
     /// MAC-02: сохранённое вложение — с меткой карантина (Gatekeeper спросит при открытии).

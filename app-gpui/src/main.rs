@@ -275,7 +275,8 @@ fn main() {
             }
         }
     };
-    std::fs::create_dir_all(&dir).unwrap_or_else(|e| fatal("fatal-data-dir", e));
+    // Только владелец (PAR-04 №19): письма и вложения не читают другие пользователи машины.
+    postman_core::files::private_dir(&dir).unwrap_or_else(|e| fatal("fatal-data-dir", e));
     // Linux (LIN-03): namespaces песочницы по политике — до первого воркера.
     #[cfg(target_os = "linux")]
     security::apply_sandbox_policy();
@@ -424,8 +425,10 @@ fn main() {
                 });
                 if let Some(l) = listener {
                     listen_second_instance(l, handle.clone(), cx);
-                    forward_args(url_rx, handle, cx);
                 }
+                // Ссылки события Apple (macOS) — и без единственного экземпляра (сбой проверки, PAR-04 №22): иначе
+                // `mailto:` из Finder молча пропадал.
+                forward_args(url_rx, handle, cx);
                 // Итог прошлой установки и проверки по расписанию — когда тостам уже есть где появиться.
                 if persist {
                     update::start(cx);

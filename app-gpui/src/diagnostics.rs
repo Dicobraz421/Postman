@@ -39,6 +39,10 @@ fn today() -> String {
 /// Перед `init_logging`: старое — удалить, поток ошибок — в файл дня (если консоли нет).
 pub(crate) fn start_log_file(data: &Path) {
     let dir = log_dir(data);
+    // Журнал — только владелец (PAR-04 №19); каталог не создан — поток ошибок останется как есть.
+    if let Err(e) = postman_core::files::private_dir(&dir) {
+        tracing::warn!(path = %dir.display(), "log: log folder not created: {e}");
+    }
     prune(&dir, SystemTime::now());
     crate::sys::shell::log_to_file(&dir.join(format!("postman-{}.log", today())));
 }

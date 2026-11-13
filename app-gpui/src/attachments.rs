@@ -551,13 +551,24 @@ impl ReadingPane {
         use crate::sys::drag;
         let bytes = data.clone();
         let copy_name = name.clone();
-        let copy = cx.background_spawn(async move {
-            drag::prepare(&drag::copies(), &copy_name, &bytes).map_err(|e| tracing::error!("attachments: drag copy not created: {e}")).ok()
-        });
+        let copy = cx.background_spawn(async move { drag::prepare(&drag::copies(), &copy_name, &bytes).map_err(|e| e.to_string()) });
         cx.spawn(async move |this, cx| {
-            let copy = copy.await;
+            // Без копии с меткой «из Интернета» не тащим (PAR-04 №11, как на macOS): закрыто, тост с причиной.
+            let copy = match copy.await {
+                Ok(copy) => copy,
+                Err(e) => {
+                    tracing::error!("attachments: drag copy not created, drag refused: {e}");
+                    this.update(cx, |this, cx| {
+                        this.drag = None;
+                        cx.emit(crate::reading::ReadingEvent::Toast(pets_ui::Level::Error, tr!("att-drag-failed", name = name.clone(), error = e)));
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                }
+            };
             // Модальный цикл OLE — вне `update`: приложение свободно, окно рисуется и отвечает.
-            let result = drag::drag(&name, data, copy);
+            let result = drag::drag(&name, data, Some(copy));
             this.update(cx, |this, cx| {
                 this.drag = None;
                 if let Err(e) = result {
