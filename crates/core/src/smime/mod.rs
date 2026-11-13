@@ -22,6 +22,7 @@ pub mod directory;
 pub mod keys;
 #[cfg(windows)]
 mod seal_win;
+mod seen;
 #[cfg(windows)]
 mod sign_win;
 pub mod skzi;
@@ -82,6 +83,8 @@ pub enum Confirm {
     Untrusted,
     Distrusted,
     Expired,
+    /// Срок действия сертификата цепочки ещё не начался.
+    NotYetValid,
     WrongUsage,
     BadSignature,
     Failed,
@@ -96,6 +99,7 @@ pub(crate) struct ChainCheck {
     pub(crate) bad_signature: bool,
     pub(crate) untrusted: bool,
     pub(crate) expired: bool,
+    pub(crate) not_yet_valid: bool,
     pub(crate) wrong_usage: bool,
     /// Другая ошибка цепочки (ограничения имён, неизвестное критическое расширение, политика…).
     pub(crate) other: bool,
@@ -117,6 +121,8 @@ pub(crate) fn chain_verdict(c: ChainCheck) -> Revocation {
         Revocation::Rejected(Confirm::Untrusted)
     } else if c.expired {
         Revocation::Rejected(Confirm::Expired)
+    } else if c.not_yet_valid {
+        Revocation::Rejected(Confirm::NotYetValid)
     } else if c.wrong_usage {
         Revocation::Rejected(Confirm::WrongUsage)
     } else if c.other {
@@ -219,9 +225,11 @@ pub struct Context {
 }
 
 impl Context {
-    /// Живой ящик: хранилища и провайдеры Windows, CRL ГОСТ — по сети.
+    /// Живой ящик: хранилища и провайдеры ОС; CRL ГОСТ — по сети там, где ядро его скачивает (Windows, Linux).
+    /// macOS (ГОСТ отложен) и прочие — без загрузчика: отзыв ГОСТ без СКЗИ — «не проверен» без попытки сети и без
+    /// WARN «CRL unreachable» на каждую подпись (PAR-AUDIT №33).
     pub fn system() -> Self {
-        Context { anchors: Anchors::Windows, gost: Arc::new(SystemGost), crl: Some(crl::GostCrl::system()) }
+        Context { anchors: Anchors::Windows, gost: Arc::new(SystemGost), crl: CRL_DOWNLOAD.then(crl::GostCrl::system) }
     }
 
     /// Демо и тесты: свои якоря, без Windows, без СКЗИ и без сети.
@@ -230,7 +238,66 @@ impl Context {
     }
 }
 
+/// Скачивает ли ядро CRL на этой ОС ([`crl::SystemFetch`]).
+// платформа: на macOS ГОСТ отложен (решение 2026-10-27), своей загрузки CRL нет.
+const CRL_DOWNLOAD: bool = cfg!(any(windows, target_os = "linux"));
+
 static WINDOWS_TRUST: Mutex<Option<Arc<Trust>>> = Mutex::new(None);
+
+/// Кэш промежуточных из писем ([`seen`]) — там, где у ОС нет хранилища `CA`.
+// платформа: Windows отдаёт промежуточные из хранилищ `CA` пользователя и машины (`windows.rs`) — кэш не нужен.
+const SEEN_INTERMEDIATES: bool = cfg!(not(windows));
+
+/// Промежуточные из писем в памяти процесса (`None` — файл ещё не прочитан).
+static SEEN: Mutex<Option<Vec<Vec<u8>>>> = Mutex::new(None);
+
+/// Кэш промежуточных из писем: из памяти или файла каталога данных.
+fn seen_list(slot: &mut Option<Vec<Vec<u8>>>) -> &mut Vec<Vec<u8>> {
+    slot.get_or_insert_with(|| seen::load(&seen::path()))
+}
+
+/// Добавить к якорям `t` промежуточные `ders` в пределе размера Windows (7/8 `MAX_TRUST`), без повторов.
+fn merge_intermediates(t: &mut Trust, ders: &[Vec<u8>]) {
+    let mut size: usize =
+        t.roots.iter().map(|a| a.der.len()).sum::<usize>() + t.intermediates.iter().chain(&t.disallowed).map(Vec::len).sum::<usize>();
+    for der in ders {
+        if t.intermediates.contains(der) || t.roots.iter().any(|a| a.der == *der) || t.disallowed.contains(der) {
+            continue;
+        }
+        if size + der.len() <= postman_smime::MAX_TRUST * 7 / 8 {
+            size += der.len();
+            t.intermediates.push(der.clone());
+        }
+    }
+}
+
+/// Доверенная цепочка письма: её промежуточные — в кэш (файл и якоря процесса). Только живой ящик.
+fn learn(v: &Verdict, ctx: &Context) {
+    if !SEEN_INTERMEDIATES || !ctx.anchors.windows() || !v.report.trusted() {
+        return;
+    }
+    let mids = seen::middle(&v.chain);
+    if mids.is_empty() {
+        return;
+    }
+    {
+        // Замок кэша отпускается до замка якорей: `Anchors::trust` берёт их в обратном порядке.
+        let mut slot = SEEN.lock().unwrap_or_else(PoisonError::into_inner);
+        let list = seen_list(&mut slot);
+        if !seen::add(list, mids) {
+            return;
+        }
+        if let Err(e) = seen::save(&seen::path(), list) {
+            tracing::warn!("smime: intermediate certificates not saved: {}", e.kind());
+        }
+    }
+    let mut cached = WINDOWS_TRUST.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(t) = cached.as_mut() {
+        let mut next = (**t).clone();
+        merge_intermediates(&mut next, mids);
+        *t = Arc::new(next);
+    }
+}
 
 /// Отпечатки корпоративных CA (SHA-256, hex) сверх хранилищ групповой политики: `POSTMAN_CORPORATE_CA` через `;` —
 /// MDM ставит переменную машины [проверить на стенде MDM].
@@ -253,7 +320,12 @@ impl Anchors {
                 if let Some(t) = cached.as_ref() {
                     return t.clone();
                 }
-                let t = Arc::new(sys::load_trust(&corporate_extra()));
+                let mut t = sys::load_trust(&corporate_extra());
+                if SEEN_INTERMEDIATES {
+                    let mut slot = SEEN.lock().unwrap_or_else(PoisonError::into_inner);
+                    merge_intermediates(&mut t, seen_list(&mut slot));
+                }
+                let t = Arc::new(t);
                 tracing::info!(
                     roots = t.roots.len(),
                     intermediates = t.intermediates.len(),
@@ -340,6 +412,9 @@ pub fn finish(cache: &Cache, id: &str, report: Report, ctx: &Context, now: i64) 
     if v.report.status.signature_ok() || matches!(v.report.status, postman_smime::Status::Invalid) {
         store(cache, id, &v);
     }
+    if v.report.trusted() && !matches!(v.revocation, Revocation::Revoked | Revocation::Rejected(_)) {
+        learn(&v, ctx);
+    }
     if v.report.trusted() && v.report.address_ok && !matches!(v.revocation, Revocation::Revoked | Revocation::Rejected(_)) {
         remember(cache, &v, now);
     }
@@ -353,6 +428,9 @@ pub fn assess(cache: &Cache, report: Report, ctx: &Context, now: i64) -> Verdict
     let chain = report.chain.clone();
     let (revocation, gost) = confirm(&report, &chain, ctx, now);
     let v = Verdict { report, chain, revocation, checked_at: now, gost };
+    if v.report.trusted() && !matches!(v.revocation, Revocation::Revoked | Revocation::Rejected(_)) {
+        learn(&v, ctx);
+    }
     if v.report.trusted() && v.report.address_ok && !matches!(v.revocation, Revocation::Revoked | Revocation::Rejected(_)) {
         remember(cache, &v, now);
     }
@@ -547,6 +625,29 @@ pub fn recipient_candidates(cache: &Cache, addresses: &[String], own: &str, now:
     out
 }
 
+/// Сертификатов других людей из хранилища ОС (Windows `AddressBook`, Связка ключей macOS) — не больше.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+pub(crate) const OTHERS_MAX: usize = 1000;
+
+/// Сертификаты других людей из хранилища ОС — одно правило на все ОС (PAR-AUDIT №32): только с адресом, без своих
+/// (`own`), без повторов, не больше [`OTHERS_MAX`]. Свои байты хранилища ОС, не письма.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+pub(crate) fn others(all: Vec<Vec<u8>>, own: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    let mut out: Vec<Vec<u8>> = Vec::new();
+    for der in all {
+        if out.len() >= OTHERS_MAX {
+            break;
+        }
+        if !own.contains(&der)
+            && !out.contains(&der)
+            && postman_smime::sign::own_certificate(&der).is_some_and(|(info, _, _)| !info.emails.is_empty())
+        {
+            out.push(der);
+        }
+    }
+    out
+}
+
 /// Свой сертификат для списка в настройках «Безопасность» (`docs/SMIME.md` §7): сводка, годится ли для подписи
 /// почты, схема по ключу (`None` — ключ не поддерживается).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -619,6 +720,36 @@ pub fn sign_outgoing(raw: &[u8], from: &str, hwnd: Option<isize>, now: i64) -> R
 mod tests {
     use super::*;
 
+    /// Другие люди из хранилища ОС: с адресом, без своих и повторов, не больше `OTHERS_MAX` — одинаково на Windows и
+    /// macOS (PAR-AUDIT №32).
+    #[test]
+    fn others_rule() {
+        use postman_smime::testkit::{Key, Spec, issue};
+        let key = Key::rsa('a');
+        let root = issue(&Spec::ca("Others Root"), &key, None);
+        let user = |serial: u64, email: &str| issue(&Spec { serial, ..Spec::user("Petrov", email) }, &key, Some((&root, &key))).der;
+        let own = user(1, "me@itt.test");
+        let peer = user(2, "p@itt.test");
+        let got = others(vec![own.clone(), peer.clone(), peer.clone(), root.der.clone()], std::slice::from_ref(&own));
+        assert_eq!(got, vec![peer], "свой, повтор и сертификат без адреса — не в списке");
+        let many: Vec<Vec<u8>> = (10..10 + OTHERS_MAX as u64 + 5).map(|n| user(n, "q@itt.test")).collect();
+        assert_eq!(others(many, &[]).len(), OTHERS_MAX);
+    }
+
+    /// Промежуточные из писем — к якорям без повторов, корней и запретов, в пределе размера.
+    #[test]
+    fn intermediates_are_merged_once() {
+        let mut t = Trust {
+            roots: vec![postman_smime::Anchor { der: vec![1; 8], corporate: false }],
+            intermediates: vec![vec![2; 8]],
+            disallowed: vec![vec![3; 8]],
+        };
+        merge_intermediates(&mut t, &[vec![1; 8], vec![2; 8], vec![3; 8], vec![4; 8], vec![4; 8]]);
+        assert_eq!(t.intermediates, vec![vec![2; 8], vec![4; 8]]);
+        merge_intermediates(&mut t, &[vec![5; postman_smime::MAX_TRUST]]);
+        assert_eq!(t.intermediates.len(), 2, "сверх предела — не берётся");
+    }
+
     /// Таблица итогов цепочки — одна на все ОС (PAR-AUDIT №5): Windows и macOS сводят свои коды к [`ChainCheck`].
     #[test]
     fn chain_verdicts_are_the_same_everywhere() {
@@ -627,7 +758,7 @@ mod tests {
             f(&mut c);
             c
         };
-        let rows: [(ChainCheck, Revocation); 12] = [
+        let rows: [(ChainCheck, Revocation); 14] = [
             (c(|_| {}), Revocation::Good),
             (c(|c| c.revocation_unknown = true), Revocation::Unknown),
             (c(|c| c.revoked = true), Revocation::Revoked),
@@ -636,6 +767,8 @@ mod tests {
             (c(|c| c.bad_signature = true), Revocation::Rejected(Confirm::BadSignature)),
             (c(|c| c.untrusted = true), Revocation::Rejected(Confirm::Untrusted)),
             (c(|c| (c.expired, c.revocation_unknown) = (true, true)), Revocation::Rejected(Confirm::Expired)),
+            (c(|c| c.not_yet_valid = true), Revocation::Rejected(Confirm::NotYetValid)),
+            (c(|c| (c.expired, c.not_yet_valid) = (true, true)), Revocation::Rejected(Confirm::Expired)),
             (c(|c| c.wrong_usage = true), Revocation::Rejected(Confirm::WrongUsage)),
             (c(|c| c.other = true), Revocation::Rejected(Confirm::Failed)),
             // Было на Windows: ошибка цепочки + «отзыв неизвестен» → `Unknown` («подписано»); теперь отклонено, как macOS.

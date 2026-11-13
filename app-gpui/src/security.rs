@@ -1,13 +1,18 @@
 //! «Настройки → Безопасность» (S5-30): что действует — выбор пользователя или политика организации. Выбор — только
 //! строже прежнего (решение владельца 2026-10-22): картинки «никогда» или «спрашивать», TLS 1.2 или 1.3, пароль —
 //! в Диспетчере учётных данных или не хранить; проверка отзыва — всегда. Политика — `Software\Policies\Pets\Postman`
-//! (HKLM, затем HKCU): `ExternalImages` = `never` | `ask`, `MinTls` = `1.2` | `1.3`, `StorePasswords` = `0` | `1` —
-//! закрепляет значение, в настройках оно недоступно. Linux (LIN-03) — файл `/etc/postman/policies.json` (JSON-объект,
-//! те же имена; `sys::shell::POLICY_FILE`); там же `SandboxNamespaces` = `optional` | `required` ([`sandbox_namespaces`]).
+//! (HKLM, затем HKCU) или профиль конфигурации macOS; ключи и типы — одни для всех ОС (POL-01,
+//! `docs/tasks/POL-01.md`): `ExternalImages` = `never` | `ask`, `MinTls` = `1.2` | `1.3` (строка; macOS — и число),
+//! `StorePasswords`, `AllowUpdate` = `0` | `1` (строка, `REG_DWORD`, логическое) — закрепляет значение, в настройках
+//! оно недоступно. Неверный тип или значение — WARN в журнал, не закреплено. Linux (LIN-03) — файл
+//! `/etc/postman/policies.json` (JSON-объект, те же имена и типы; `sys::shell::POLICY_FILE`); там же
+//! `SandboxNamespaces` = `optional` | `required` ([`sandbox_namespaces`]).
 
 use std::sync::OnceLock;
 
 use postman_core::prefs::{Images, Prefs};
+
+use crate::sys::PolicyValue;
 
 /// Закреплённое политикой.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -18,35 +23,72 @@ pub(crate) struct Policy {
 }
 
 impl Policy {
-    /// Значения политики из строк реестра; непонятное — не закреплено.
-    pub(crate) fn parse(images: Option<&str>, tls: Option<&str>, store: Option<&str>) -> Policy {
+    /// Политика из значений `read(имя)`; непонятное — не закреплено, WARN.
+    pub(crate) fn read_with(read: impl Fn(&str) -> Option<PolicyValue>) -> Policy {
         Policy {
-            images: match images.map(str::trim) {
-                Some(v) if v.eq_ignore_ascii_case("never") => Some(Images::Never),
-                Some(v) if v.eq_ignore_ascii_case("ask") => Some(Images::Ask),
-                _ => None,
-            },
-            tls13: match tls.map(str::trim) {
-                Some("1.3") => Some(true),
-                Some("1.2") => Some(false),
-                _ => None,
-            },
-            store_password: match store.map(str::trim) {
-                Some("1") => Some(true),
-                Some("0") => Some(false),
-                _ => None,
-            },
+            images: policy_images("ExternalImages", read("ExternalImages")),
+            tls13: policy_tls13("MinTls", read("MinTls")),
+            store_password: policy_flag("StorePasswords", read("StorePasswords")),
         }
+    }
+}
+
+/// Значение не применяется: в журнал, без молчания.
+fn rejected<T>(name: &str, value: &PolicyValue) -> Option<T> {
+    tracing::warn!(policy = name, value = ?value, "policy: value of unexpected type or range, not applied");
+    None
+}
+
+/// Выключатель: `0`/`1` числом (`REG_DWORD`, `<integer>`), логическое (`<true/>`) или строкой (`0`, `1`, `false`,
+/// `true`, `off`, `on`, `no`, `yes`).
+pub(crate) fn policy_flag(name: &str, value: Option<PolicyValue>) -> Option<bool> {
+    let value = value?;
+    match &value {
+        PolicyValue::Int(0) => Some(false),
+        PolicyValue::Int(1) => Some(true),
+        PolicyValue::Bool(b) => Some(*b),
+        PolicyValue::Text(t) => {
+            let t = t.trim();
+            let is = |words: [&str; 4]| words.iter().any(|w| t.eq_ignore_ascii_case(w));
+            if is(["0", "false", "off", "no"]) {
+                Some(false)
+            } else if is(["1", "true", "on", "yes"]) {
+                Some(true)
+            } else {
+                rejected(name, &value)
+            }
+        }
+        _ => rejected(name, &value),
+    }
+}
+
+/// Минимальный TLS: `1.2` | `1.3` строкой или дробным числом (`<real>1.3</real>`).
+pub(crate) fn policy_tls13(name: &str, value: Option<PolicyValue>) -> Option<bool> {
+    let value = value?;
+    let near = |x: f64, y: f64| (x - y).abs() < 1e-6;
+    match &value {
+        PolicyValue::Text(t) if t.trim() == "1.3" => Some(true),
+        PolicyValue::Text(t) if t.trim() == "1.2" => Some(false),
+        PolicyValue::Real(x) if near(*x, 1.3) => Some(true),
+        PolicyValue::Real(x) if near(*x, 1.2) => Some(false),
+        _ => rejected(name, &value),
+    }
+}
+
+/// Внешние картинки: `never` | `ask` строкой.
+pub(crate) fn policy_images(name: &str, value: Option<PolicyValue>) -> Option<Images> {
+    let value = value?;
+    match &value {
+        PolicyValue::Text(t) if t.trim().eq_ignore_ascii_case("never") => Some(Images::Never),
+        PolicyValue::Text(t) if t.trim().eq_ignore_ascii_case("ask") => Some(Images::Ask),
+        _ => rejected(name, &value),
     }
 }
 
 /// Политика — читается один раз (реестр, микросекунды).
 pub(crate) fn policy() -> Policy {
     static POLICY: OnceLock<Policy> = OnceLock::new();
-    *POLICY.get_or_init(|| {
-        let read = crate::sys::shell::policy;
-        Policy::parse(read("ExternalImages").as_deref(), read("MinTls").as_deref(), read("StorePasswords").as_deref())
-    })
+    *POLICY.get_or_init(|| Policy::read_with(crate::sys::shell::policy))
 }
 
 /// Что действует: политика сильнее выбора.
@@ -78,14 +120,14 @@ pub(crate) fn apply(p: &Prefs) {
 /// работают (письмо — текстом), `optional` или нет политики — по умолчанию. Нераспознанное — WARN и строже
 /// (`required`, ADR 0011 п. 5). Действует на Linux; на других ОС namespaces нет.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code, reason = "namespaces are Linux only; the parser is tested on every OS"))]
-pub(crate) fn sandbox_namespaces(value: Option<&str>) -> postman_worker::Namespaces {
+pub(crate) fn sandbox_namespaces(value: Option<PolicyValue>) -> postman_worker::Namespaces {
     use postman_worker::Namespaces;
-    match value.map(str::trim) {
+    match &value {
         None => Namespaces::Optional,
-        Some(v) if v.eq_ignore_ascii_case("optional") => Namespaces::Optional,
-        Some(v) if v.eq_ignore_ascii_case("required") => Namespaces::Required,
+        Some(PolicyValue::Text(v)) if v.trim().eq_ignore_ascii_case("optional") => Namespaces::Optional,
+        Some(PolicyValue::Text(v)) if v.trim().eq_ignore_ascii_case("required") => Namespaces::Required,
         Some(v) => {
-            tracing::warn!(policy = "SandboxNamespaces", value = v, "policy: unsupported value, using the stricter `required`");
+            tracing::warn!(policy = "SandboxNamespaces", value = ?v, "policy: unsupported value, using the stricter `required`");
             Namespaces::Required
         }
     }
@@ -94,7 +136,7 @@ pub(crate) fn sandbox_namespaces(value: Option<&str>) -> postman_worker::Namespa
 /// Режим namespaces всех воркеров процесса — из политики (до первого воркера).
 #[cfg(target_os = "linux")]
 pub(crate) fn apply_sandbox_policy() {
-    let mode = sandbox_namespaces(crate::sys::shell::policy("SandboxNamespaces").as_deref());
+    let mode = sandbox_namespaces(crate::sys::shell::policy("SandboxNamespaces"));
     if mode == postman_worker::Namespaces::Required {
         tracing::info!("policy: sandbox namespaces are required");
     }
@@ -105,23 +147,37 @@ pub(crate) fn apply_sandbox_policy() {
 mod tests {
     use super::*;
 
+    fn values(images: Option<PolicyValue>, tls: Option<PolicyValue>, store: Option<PolicyValue>) -> Policy {
+        Policy::read_with(|name| match name {
+            "ExternalImages" => images.clone(),
+            "MinTls" => tls.clone(),
+            "StorePasswords" => store.clone(),
+            _ => None,
+        })
+    }
+
+    fn text(s: &str) -> Option<PolicyValue> {
+        Some(PolicyValue::Text(s.to_owned()))
+    }
+
     /// LIN-03: `SandboxNamespaces` — без политики и `optional` — по умолчанию; `required` — обязательны; непонятное —
     /// строже.
     #[test]
     fn sandbox_namespaces_policy() {
         use postman_worker::Namespaces;
         assert_eq!(sandbox_namespaces(None), Namespaces::Optional);
-        assert_eq!(sandbox_namespaces(Some("Optional")), Namespaces::Optional);
-        assert_eq!(sandbox_namespaces(Some(" required ")), Namespaces::Required);
-        assert_eq!(sandbox_namespaces(Some("1")), Namespaces::Required);
+        assert_eq!(sandbox_namespaces(text("Optional")), Namespaces::Optional);
+        assert_eq!(sandbox_namespaces(text(" required ")), Namespaces::Required);
+        assert_eq!(sandbox_namespaces(Some(PolicyValue::Int(1))), Namespaces::Required);
     }
 
-    /// Политика закрепляет значение; непонятное в реестре — не закреплено; без политики — выбор пользователя.
+    /// Политика закрепляет значение; непонятное — не закреплено; без политики — выбор пользователя.
     #[test]
     fn policy_pins_and_choice_follows() {
-        let pol = Policy::parse(Some("Ask"), Some("1.3"), Some("0"));
+        let pol = values(text("Ask"), text("1.3"), text("0"));
         assert_eq!(pol, Policy { images: Some(Images::Ask), tls13: Some(true), store_password: Some(false) });
-        assert_eq!(Policy::parse(Some("always"), Some("1.0"), Some("yes")), Policy::default(), "слабее — не бывает");
+        assert_eq!(values(text("always"), text("1.0"), text("maybe")), Policy::default(), "слабее — не бывает");
+        assert_eq!(values(None, None, None), Policy::default());
         let mut p = Prefs::default();
         let e = effective_with(&p, Policy::default());
         assert_eq!(e, Effective { images: Images::Ask, tls13: false, store_password: true });
@@ -130,5 +186,44 @@ mod tests {
         let e = effective_with(&p, Policy { tls13: Some(false), ..Policy::default() });
         assert!(!e.tls13, "политика сильнее выбора");
         assert!(!e.store_password);
+    }
+
+    /// POL-01: одна семантика для всех типов — `REG_SZ`, `REG_DWORD`, логическое и дробное профиля macOS.
+    #[test]
+    fn policy_all_types() {
+        use PolicyValue::{Bool, Int, Other, Real};
+        for (v, want) in [
+            (text("0"), Some(false)),
+            (text(" 1 "), Some(true)),
+            (text("OFF"), Some(false)),
+            (text("yes"), Some(true)),
+            (Some(Int(0)), Some(false)),
+            (Some(Int(1)), Some(true)),
+            (Some(Bool(false)), Some(false)),
+            (Some(Bool(true)), Some(true)),
+            (Some(Int(2)), None),
+            (Some(Real(0.0)), None),
+            (text("2"), None),
+            (Some(Other("REG_BINARY")), None),
+            (None, None),
+        ] {
+            assert_eq!(policy_flag("StorePasswords", v.clone()), want, "{v:?}");
+        }
+        for (v, want) in [
+            (text("1.3"), Some(true)),
+            (text("1.2"), Some(false)),
+            (Some(Real(1.3)), Some(true)),
+            (Some(Real(1.2)), Some(false)),
+            (Some(Int(1)), None),
+            (Some(Real(1.0)), None),
+            (text("1.1"), None),
+            (Some(Bool(true)), None),
+        ] {
+            assert_eq!(policy_tls13("MinTls", v.clone()), want, "{v:?}");
+        }
+        assert_eq!(policy_images("ExternalImages", text("NEVER")), Some(Images::Never));
+        assert_eq!(policy_images("ExternalImages", Some(Int(0))), None);
+        let dword = values(None, None, Some(Int(0)));
+        assert_eq!(dword.store_password, Some(false), "StorePasswords = DWORD 0 действует");
     }
 }

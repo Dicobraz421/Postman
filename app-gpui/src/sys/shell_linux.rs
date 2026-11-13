@@ -10,6 +10,8 @@ use std::path::Path;
 
 use zbus::zvariant::Value;
 
+use super::PolicyValue;
+
 /// Подсказка «сделать клиентом `mailto:`» (PAR-04 №41): `xdg-settings` назначает сразу.
 pub const MAILTO_HINT: &str = "settings-mailto-hint-now";
 
@@ -145,15 +147,16 @@ pub fn mailto_is_default() -> bool {
     pets_shell::url_scheme::is_default(MAILTO)
 }
 
-/// Политика организации из [`POLICY_FILE`]; нет файла или ключа — `None`.
-pub fn policy(name: &str) -> Option<String> {
-    static FILE: std::sync::OnceLock<HashMap<String, String>> = std::sync::OnceLock::new();
+/// Политика организации из [`POLICY_FILE`] с типом JSON (POL-01: строка, целое, дробное, логическое — как в профиле
+/// macOS); нет файла или ключа — `None`.
+pub fn policy(name: &str) -> Option<PolicyValue> {
+    static FILE: std::sync::OnceLock<HashMap<String, PolicyValue>> = std::sync::OnceLock::new();
     FILE.get_or_init(|| read_policies(Path::new(POLICY_FILE))).get(name).cloned()
 }
 
 /// Файл политик: нет — пусто; не читается, не JSON-объект или его может править не только root — WARN и пусто
 /// (политика только строже, но поддельный файл не должен ничего закреплять).
-fn read_policies(path: &Path) -> HashMap<String, String> {
+fn read_policies(path: &Path) -> HashMap<String, PolicyValue> {
     use std::os::unix::fs::MetadataExt;
     let meta = match std::fs::metadata(path) {
         Ok(m) => m,
@@ -176,9 +179,9 @@ fn read_policies(path: &Path) -> HashMap<String, String> {
     }
 }
 
-/// JSON-объект → значения строками, как из реестра (ADR 0011 п. 5): строка — как есть, целое и дробное — числом
-/// (`1`, `1.3`), логическое — `1`/`0`. Массив, объект, `null` — WARN, ключ пропущен.
-fn parse_policies(text: &str) -> HashMap<String, String> {
+/// JSON-объект → значения с типом (ADR 0011 п. 5, POL-01): строка, целое, дробное, логическое; массив, объект, `null` —
+/// [`PolicyValue::Other`] (разбор `security::policy_*` пишет WARN и не закрепляет).
+fn parse_policies(text: &str) -> HashMap<String, PolicyValue> {
     let map = match serde_json::from_str::<serde_json::Value>(text) {
         Ok(serde_json::Value::Object(map)) => map,
         Ok(_) => {
@@ -191,17 +194,19 @@ fn parse_policies(text: &str) -> HashMap<String, String> {
         }
     };
     map.into_iter()
-        .filter_map(|(name, v)| {
+        .map(|(name, v)| {
             let value = match v {
-                serde_json::Value::String(s) => s,
-                serde_json::Value::Number(n) => n.to_string(),
-                serde_json::Value::Bool(b) => if b { "1" } else { "0" }.to_owned(),
-                _ => {
-                    tracing::warn!(policy = name, "policy: unsupported value type, not applied");
-                    return None;
-                }
+                serde_json::Value::String(s) => PolicyValue::Text(s),
+                serde_json::Value::Number(n) => match n.as_i64() {
+                    Some(i) => PolicyValue::Int(i),
+                    None => n.as_f64().map_or(PolicyValue::Other("number"), PolicyValue::Real),
+                },
+                serde_json::Value::Bool(b) => PolicyValue::Bool(b),
+                serde_json::Value::Array(_) => PolicyValue::Other("array"),
+                serde_json::Value::Object(_) => PolicyValue::Other("object"),
+                serde_json::Value::Null => PolicyValue::Other("null"),
             };
-            Some((name, value))
+            (name, value)
         })
         .collect()
 }
@@ -391,19 +396,20 @@ mod tests {
         assert_eq!(super::mount_source("/dev/nvme0n1p2\n"), "/dev/nvme0n1p2");
     }
 
-    /// ADR 0011 п. 5: строка, целое, дробное, логическое — строкой, как из реестра; массив — пропущен; не объект и не
-    /// JSON — пусто.
+    /// ADR 0011 п. 5, POL-01: строка, целое, дробное, логическое — с типом; массив — `Other`; не объект и не JSON —
+    /// пусто.
     #[test]
     fn policies_json() {
+        use super::PolicyValue as V;
         let p = super::parse_policies(
             r#"{"ExternalImages":"never","StorePasswords":0,"MinTls":1.3,"AllowUpdate":false,"SandboxNamespaces":"required","X":[1]}"#,
         );
-        assert_eq!(p.get("ExternalImages").map(String::as_str), Some("never"));
-        assert_eq!(p.get("StorePasswords").map(String::as_str), Some("0"));
-        assert_eq!(p.get("MinTls").map(String::as_str), Some("1.3"));
-        assert_eq!(p.get("AllowUpdate").map(String::as_str), Some("0"));
-        assert_eq!(p.get("SandboxNamespaces").map(String::as_str), Some("required"));
-        assert!(!p.contains_key("X"));
+        assert_eq!(p.get("ExternalImages"), Some(&V::Text("never".into())));
+        assert_eq!(p.get("StorePasswords"), Some(&V::Int(0)));
+        assert_eq!(p.get("MinTls"), Some(&V::Real(1.3)));
+        assert_eq!(p.get("AllowUpdate"), Some(&V::Bool(false)));
+        assert_eq!(p.get("SandboxNamespaces"), Some(&V::Text("required".into())));
+        assert_eq!(p.get("X"), Some(&V::Other("array")));
         assert!(super::parse_policies("[1]").is_empty());
         assert!(super::parse_policies("{").is_empty());
     }
