@@ -266,3 +266,10 @@ pub(crate) fn parent() -> u32 {
     // SAFETY: простой системный вызов без аргументов.
     unsafe { libc::getppid() as u32 }
 }
+
+/// Открыт ли дескриптор (`fcntl(F_GETFD)`; проверка `Probe::Fd`, отладочная сборка).
+#[cfg(debug_assertions)]
+pub(crate) fn probe_fd(fd: i32) -> Result<(), String> {
+    // SAFETY: fcntl с F_GETFD только читает флаги; номер может быть закрыт — тогда ошибка EBADF.
+    if unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 { Err(io::Error::last_os_error().to_string()) } else { Ok(()) }
+}
