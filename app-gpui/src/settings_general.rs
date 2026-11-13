@@ -273,8 +273,10 @@ impl SettingsView {
                 },
             ))
         });
+        // Файл журнала — только при «Отладке» (решение 2026-11-13, `pets-shell/LOGGING.md`): папку не показываем и не меряем.
+        let debug = g.log == LogLevel::Debug;
         let log_dir = crate::diagnostics::log_dir(&crate::data_dir());
-        let log_size = crate::diagnostics::folder_size(&log_dir);
+        let log_size = if debug { crate::diagnostics::folder_size(&log_dir) } else { 0 };
         let report_hint = match &self.os.report {
             Some(path) => tr!("settings-report-done", file = path.display().to_string()),
             None => tr!("settings-report-hint"),
@@ -335,17 +337,19 @@ impl SettingsView {
             .child(row(tr!("settings-version", version = env!("CARGO_PKG_VERSION")), Some(crate::update::status_text(&upd)), check_control, l))
             .child(group(tr!("settings-log-group"), l))
             .child(row(tr!("settings-log"), Some(tr!("settings-log-hint")), seg_group(logs, l), l))
-            .child(row(
-                tr!("settings-log-folder"),
-                Some(tr!("settings-log-folder-hint", path = log_dir.display().to_string(), mb = log_size.div_ceil(1_048_576))),
-                button("settings-log-open", tr!("settings-log-open"), false, l).on_click(cx.listener(move |_, _, _, _| {
-                    let _ = std::fs::create_dir_all(&log_dir);
-                    if let Err(e) = crate::sys::shell::open(&log_dir.display().to_string()) {
-                        tracing::error!("settings: log folder not opened: {e}");
-                    }
-                })),
-                l,
-            ))
+            .when(debug, |d| {
+                d.child(row(
+                    tr!("settings-log-folder"),
+                    Some(tr!("settings-log-folder-hint", path = log_dir.display().to_string(), mb = log_size.div_ceil(1_048_576))),
+                    button("settings-log-open", tr!("settings-log-open"), false, l).on_click(cx.listener(move |_, _, _, _| {
+                        let _ = std::fs::create_dir_all(&log_dir);
+                        if let Err(e) = crate::sys::shell::open(&log_dir.display().to_string()) {
+                            tracing::error!("settings: log folder not opened: {e}");
+                        }
+                    })),
+                    l,
+                ))
+            })
             .child(row(tr!("settings-report"), Some(report_hint), report_control, l))
     }
 }

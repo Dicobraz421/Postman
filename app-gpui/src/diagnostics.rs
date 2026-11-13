@@ -1,5 +1,7 @@
-//! Журнал в файл и отчёт для поддержки (S5-30, «Настройки → Общие»). Журнал — `<данные>\logs\postman-ДАТА.log`
-//! (процесс без консоли пишет туда поток ошибок, `sys::shell::log_to_file`), старше недели — удаляется при запуске.
+//! Журнал в файл и отчёт для поддержки (S5-30, «Настройки → Общие»). Записи всегда идут в системный журнал
+//! (`pets_shell::init_logging` → `SystemLog`); файл `<данные>\logs\postman-ДАТА.log` — только при уровне «Отладка»
+//! (настройка или `POSTMAN_LOG` с debug/trace; решение 2026-11-13, `pets-shell/LOGGING.md`): процесс без консоли
+//! пишет туда поток ошибок (`sys::shell::log_to_file`). Файлы старше недели удаляются при запуске.
 //! Отчёт — архив: журнал за неделю, версия, настройки без адресов; паролей, токенов и текстов писем в нём нет.
 
 use std::io::Write as _;
@@ -36,15 +38,25 @@ fn today() -> String {
     jiff::Zoned::now().date().to_string()
 }
 
-/// Перед `init_logging`: старое — удалить, поток ошибок — в файл дня (если консоли нет).
-pub(crate) fn start_log_file(data: &Path) {
+/// Фильтр `tracing` (`POSTMAN_LOG`, напр. «info,postman=debug») включает отладку — хоть одно правило debug или trace.
+pub(crate) fn wants_file(filter: &str) -> bool {
+    filter.split(',').map(|d| d.rsplit('=').next().unwrap_or(d).trim()).any(|l| l.eq_ignore_ascii_case("debug") || l.eq_ignore_ascii_case("trace"))
+}
+
+/// Перед `init_logging`: старое — удалить; при отладке (`wants_file`) — поток ошибок в файл дня (если консоли нет).
+/// Без отладки папку и файл не создаёт. `true` — файл журнала включён.
+pub(crate) fn start_log_file(data: &Path, filter: &str) -> bool {
     let dir = log_dir(data);
+    prune(&dir, SystemTime::now());
+    if !wants_file(filter) {
+        return false;
+    }
     // Журнал — только владелец (PAR-04 №19); каталог не создан — поток ошибок останется как есть.
     if let Err(e) = postman_core::files::private_dir(&dir) {
         tracing::warn!(path = %dir.display(), "log: log folder not created: {e}");
     }
-    prune(&dir, SystemTime::now());
     crate::sys::shell::log_to_file(&dir.join(format!("postman-{}.log", today())));
+    true
 }
 
 /// Файлы журнала старше недели.
@@ -157,5 +169,17 @@ mod tests {
         prune(&logs, SystemTime::now() + Duration::from_secs(8 * 86_400));
         assert!(logs.join("notes.txt").exists());
         assert!(!logs.join("postman-2026-10-21.log").exists());
+    }
+
+    /// Без отладки файл журнала не пишется: ни папки, ни файла (решение 2026-11-13).
+    #[test]
+    fn log_file_only_at_debug() {
+        assert!(wants_file("debug") && wants_file("TRACE") && wants_file("info,postman=debug"));
+        assert!(!wants_file("info") && !wants_file("warn,gpui=error") && !wants_file(""));
+        let d = tempfile::Builder::new().prefix("postman-").tempdir().unwrap();
+        for filter in ["error", "warn", "info", "info,gpui=warn"] {
+            assert!(!start_log_file(d.path(), filter));
+        }
+        assert!(!log_dir(d.path()).exists(), "без отладки папка журнала не создаётся");
     }
 }

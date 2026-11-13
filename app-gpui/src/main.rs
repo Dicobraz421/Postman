@@ -190,7 +190,7 @@ Usage: postman [options]
   --help, --version     this text, the version
 
 Live mailbox: POSTMAN_URL and POSTMAN_USER/POSTMAN_PASSWORD (or POSTMAN_TOKEN); otherwise the saved sign-in.
-Log: POSTMAN_LOG (e.g. debug); errors, warnings and info also go to the Windows Application log.
+Log: POSTMAN_LOG (e.g. debug); entries go to the system log, the log file is written only at debug/trace.
 cmd waits for postman.exe only with 'start /wait'; PowerShell - with '| Out-Default'; Git Bash and .cmd files wait.
 ";
 
@@ -232,11 +232,13 @@ fn main() {
     // Сценарии перезапуска (`tests/manual.rs`): настройки — в файле, два прогона подряд в одном каталоге данных.
     let prefs_file = persist || (screening && std::env::var_os("POSTMAN_SCREENS_PREFS").is_some());
     let user_prefs = if prefs_file { prefs::load(&dir) } else { postman_core::prefs::Prefs::default() };
-    // Журнал (S5-30): уровень — из «Настройки → Общие», если `POSTMAN_LOG` не задан; без консоли (release) — в файл
-    // папки журнала, по файлу на день, старше недели — удаляются.
+    // Журнал (S5-30): уровень — из «Настройки → Общие», если `POSTMAN_LOG` не задан. Системный журнал — всегда
+    // (`init_logging`: `SystemLog`, паники и `fatal`); файл папки журнала (без консоли, по файлу на день, старше недели
+    // удаляются) — только при «Отладке» (решение 2026-11-13, `pets-shell/LOGGING.md`).
     if persist {
         sys::shell::default_env("POSTMAN_LOG", user_prefs.general.log.filter());
-        diagnostics::start_log_file(&dir);
+        let filter = std::env::var("POSTMAN_LOG").unwrap_or_default();
+        diagnostics::start_log_file(&dir, &filter);
     }
     pets_shell::init_logging("Postman", "POSTMAN_LOG");
     // Строки stderr процессов песочницы — в журнал приложения с уровнем (SBX-04, `pets-shell/LOGGING.md`).

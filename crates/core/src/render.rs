@@ -67,7 +67,6 @@ impl Renderer {
         let (tx, jobs) = mpsc::channel::<Job>();
         let (done, rx) = mpsc::channel();
         // Поток не запустился — письма показываются без разбора (заглушкой ожидания), без падения.
-        // В журнал — с S2-06 (pets-shell); пока stderr.
         let started = std::thread::Builder::new().name("render".into()).spawn(move || {
             let mut client = Client::new(Client::default_exe(), TIMEOUT);
             // Изоляция не полная — в журнал один раз, с причиной (отказ AppContainer).
@@ -121,7 +120,7 @@ impl Renderer {
             }
         });
         if let Err(e) = started {
-            eprintln!("поток рендера не запустился: {e}");
+            tracing::error!("render: render thread not started: {e}");
         }
         Self { tx, rx }
     }
