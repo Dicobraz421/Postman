@@ -25,7 +25,7 @@ use postman_core::prefs::{AccountPrefs, ImageError, SignImage, Signature, Templa
 
 use crate::buttons::button;
 use crate::roles::Look;
-use crate::settings_tab::{SettingsView, group, link, now_ms, seg, seg_group};
+use crate::settings_tab::{SettingsView, group, link, now_ms, row, seg, seg_group};
 
 /// Правка подписи или шаблона на месте.
 pub(crate) struct SignEdit {
@@ -748,7 +748,35 @@ impl SettingsView {
             p.defaults.insert(addr.clone(), postman_core::prefs::Defaults { new: first.clone(), reply: first });
         }
         self.sign_save(cx);
+        crate::prefs::update(cx, |p| p.replies = Default::default());
         cx.notify();
+    }
+
+    /// «Ответы и пересылка» (#655, как «Почта → Ответы и пересылка» Outlook): цитировать ли исходное письмо в
+    /// «Ответить» и «Ответить всем». Общая настройка пользователя (`Prefs::replies`), не учётной записи.
+    fn replies(&self, l: &Look, cx: &mut Context<Self>) -> Div {
+        use postman_core::prefs::ReplyQuote;
+        let current = crate::prefs::with(cx, |p| p.replies.quote);
+        let items: Vec<Stateful<Div>> = ReplyQuote::ALL
+            .into_iter()
+            .enumerate()
+            .map(|(i, q)| {
+                let name = tr!(match q {
+                    ReplyQuote::Include => "settings-reply-quote-include",
+                    ReplyQuote::Omit => "settings-reply-quote-omit",
+                });
+                seg(("settings-reply-quote", i), name, current == q, true, l).on_click(cx.listener(move |_, _, _, cx| {
+                    crate::prefs::update(cx, |p| p.replies.quote = q);
+                    cx.notify();
+                }))
+            })
+            .collect();
+        div().flex().flex_col().child(group(tr!("settings-replies-group"), l)).child(row(
+            tr!("settings-reply-quote"),
+            Some(tr!("settings-reply-quote-hint")),
+            seg_group(items, l),
+            l,
+        ))
     }
 
     pub(crate) fn signatures(&mut self, l: &Look, window: &mut Window, cx: &mut Context<Self>) -> (Option<Stateful<Div>>, AnyElement, Vec<Div>) {
@@ -908,6 +936,7 @@ impl SettingsView {
             .child(sigs)
             .child(group(tr!("settings-sign-defaults"), l))
             .child(defaults)
+            .child(self.replies(l, cx))
             .child(tpl_head)
             .child(div().text_size(px(12.)).text_color(l.text2()).child(tr!("settings-tpl-hint")))
             .child(tpls)

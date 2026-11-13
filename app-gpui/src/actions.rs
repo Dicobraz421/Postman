@@ -16,6 +16,7 @@ use pets_i18n::tr;
 use pets_ui::Level as Toast;
 use postman_cache::{Addr, BodyRow, EmailRow, MailboxRow};
 use postman_compose::{Address, Attachment, Draft, Mode, Original};
+use postman_core::prefs::ReplyQuote;
 use postman_core::sync::Command;
 use postman_ir::Document;
 
@@ -108,7 +109,9 @@ fn addresses(list: &[Addr]) -> Vec<Address> {
 
 /// Черновик ответа или пересылки письма `row` с телом `body` (разобранным в `doc`). Пересылка берёт все вложения,
 /// ответ — только картинки, на которые ссылается цитата. `local` — байты вложения, если они уже есть (демо);
-/// иначе остаётся `blob_id`, и синхронизация скачивает вложение перед отправкой.
+/// иначе остаётся `blob_id`, и синхронизация скачивает вложение перед отправкой. `quote` — «При ответе на
+/// сообщение» (#655): без исходного письма в ответе только подпись; пересылка цитирует всегда.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draft(
     mode: Mode,
     row: &EmailRow,
@@ -116,6 +119,7 @@ pub(crate) fn draft(
     doc: &Document,
     me: &Address,
     signature: &str,
+    quote: ReplyQuote,
     local: impl Fn(&str) -> Option<Vec<u8>>,
 ) -> Draft {
     let original = Original {
@@ -128,8 +132,15 @@ pub(crate) fn draft(
         subject: row.subject.clone(),
         date: full_date(row.received_at),
     };
-    let mut d = postman_compose::respond(&original, doc, mode, me, signature);
-    let quoted: HashSet<String> = crate::ir_view::cids(doc).into_iter().collect();
+    // Без цитаты — черновик ответа на пустое письмо: адресаты, тема и цепочка те же, текст — подпись.
+    let omit = mode != Mode::Forward && quote == ReplyQuote::Omit;
+    let empty = Document::default();
+    let quoted_doc = if omit { &empty } else { doc };
+    let mut d = postman_compose::respond(&original, quoted_doc, mode, me, signature);
+    if omit {
+        d.markdown = signature_only(signature);
+    }
+    let quoted: HashSet<String> = crate::ir_view::cids(quoted_doc).into_iter().collect();
     for a in &body.attachments {
         let in_quote = a.cid.as_ref().is_some_and(|c| quoted.contains(c));
         if mode != Mode::Forward && !in_quote {
@@ -145,6 +156,16 @@ pub(crate) fn draft(
         });
     }
     d
+}
+
+/// Текст ответа без цитаты: пустые строки для своего текста и подпись, как над цитатой у `postman_compose::respond`.
+fn signature_only(signature: &str) -> String {
+    let mut top = String::from("\n\n");
+    if !signature.trim().is_empty() {
+        top.push_str(signature.trim_end());
+        top.push_str("\n\n");
+    }
+    top
 }
 
 /// Что делает «Удалить» с письмом из папки `from`.
@@ -219,7 +240,8 @@ impl Mailer {
         // Я — Identity сервера; в демо — владелец демо-ящика (его адрес знает область чтения).
         let (me, signature) = identity.unwrap_or_else(|| (Address::new("", reading.me.clone().unwrap_or_default()), String::new()));
         let local = |blob: &str| if live { None } else { postman_demo::blob(blob) };
-        let d = draft(mode, &r.row, body, doc, &me, &signature, local);
+        let quote = crate::prefs::with(cx, |p| p.replies.quote);
+        let d = draft(mode, &r.row, body, doc, &me, &signature, quote, local);
         // Ответ и пересылка — в области чтения над письмом (S5-06б); «Развернуть» — во вкладку.
         self.open_reply(d, id.to_owned(), cx);
         true
@@ -513,7 +535,7 @@ pub(crate) mod scenes {
 #[cfg(test)]
 mod tests {
     // Не `super::*`: из `gpui_kit::*` пришёл бы атрибут `test` gpui вместо встроенного.
-    use super::{Addr, Address, BodyRow, EmailRow, MailboxRow, Mode, Removal, draft, removal};
+    use super::{Addr, Address, BodyRow, EmailRow, MailboxRow, Mode, Removal, ReplyQuote, draft, removal};
     use postman_cache::AttachmentRow;
 
     fn me() -> Address {
@@ -573,7 +595,7 @@ mod tests {
     #[test]
     fn reply_all_goes_to_everyone_but_me() {
         let doc = postman_ir::from_plain("текст");
-        let d = draft(Mode::ReplyAll, &row(), &body(), &doc, &me(), "", |_| None);
+        let d = draft(Mode::ReplyAll, &row(), &body(), &doc, &me(), "", ReplyQuote::Include, |_| None);
         assert_eq!(emails(&d.to), ["ivan@corp.example"]);
         assert_eq!(emails(&d.cc), ["petr@corp.example", "anna@corp.example"]);
         assert!(d.recipients().all(|a| !a.email.eq_ignore_ascii_case("me@corp.example")), "я не в адресатах");
@@ -582,22 +604,45 @@ mod tests {
         assert_eq!(d.references, ["root@corp.example", "orig@corp.example"]);
         assert!(d.markdown.contains("> текст"), "цитата: {}", d.markdown);
         // «Ответить» — только отправителю; картинок в цитате нет — вложений нет.
-        let d = draft(Mode::Reply, &row(), &body(), &doc, &me(), "", |_| None);
+        let d = draft(Mode::Reply, &row(), &body(), &doc, &me(), "", ReplyQuote::Include, |_| None);
         assert_eq!(emails(&d.to), ["ivan@corp.example"]);
         assert!(d.cc.is_empty() && d.attachments.is_empty());
+    }
+
+    /// #655: «При ответе на сообщение» — с исходным письмом или без; пересылка цитирует всегда.
+    #[test]
+    fn reply_quote_setting() {
+        let mut doc = postman_ir::from_plain("текст");
+        let logo = postman_ir::Inline::Image { cid: "logo@corp".into(), alt: String::new(), width: None, height: None };
+        doc.blocks.push(postman_ir::Block::Paragraph { align: Default::default(), content: vec![logo] });
+        for mode in [Mode::Reply, Mode::ReplyAll] {
+            let with = draft(mode, &row(), &body(), &doc, &me(), "— Я", ReplyQuote::Include, |_| None);
+            assert!(with.markdown.contains("> текст") && with.markdown.contains("пишет:"), "{mode:?}: {}", with.markdown);
+            assert_eq!(with.attachments.len(), 1, "картинка цитаты — с ответом");
+            let without = draft(mode, &row(), &body(), &doc, &me(), "— Я", ReplyQuote::Omit, |_| None);
+            assert_eq!(without.markdown, "\n\n— Я\n\n", "{mode:?}: только подпись");
+            assert!(without.attachments.is_empty(), "без цитаты — без её картинок");
+            // Адресаты, тема и цепочка — как у ответа с цитатой.
+            assert_eq!((&without.to, &without.cc, &without.subject), (&with.to, &with.cc, &with.subject));
+            assert_eq!((&without.in_reply_to, &without.references), (&with.in_reply_to, &with.references));
+        }
+        let none = draft(Mode::Reply, &row(), &body(), &doc, &me(), "", ReplyQuote::Omit, |_| None);
+        assert_eq!(none.markdown, "\n\n");
+        let fwd = draft(Mode::Forward, &row(), &body(), &doc, &me(), "", ReplyQuote::Omit, |_| None);
+        assert!(fwd.markdown.contains("текст") && fwd.attachments.len() == 2, "пересылка — всегда с письмом");
     }
 
     #[test]
     fn forward_carries_the_attachments() {
         let doc = postman_ir::from_plain("текст");
         // Живой ящик: байтов нет — только blob_id, вложения скачает синхронизация перед отправкой.
-        let d = draft(Mode::Forward, &row(), &body(), &doc, &me(), "", |_| None);
+        let d = draft(Mode::Forward, &row(), &body(), &doc, &me(), "", ReplyQuote::Include, |_| None);
         assert_eq!(d.subject, "FW: Отчёт");
         assert!(d.to.is_empty() && d.in_reply_to.is_none());
         let got: Vec<_> = d.attachments.iter().map(|a| (a.name.as_str(), a.blob_id.as_deref(), a.inline_cid.as_deref(), a.data.len())).collect();
         assert_eq!(got, [("logo.png", Some("B-logo"), Some("logo@corp"), 0), ("Итоги.xlsx", Some("B-xlsx"), None, 0)]);
         // Демо: байты сразу.
-        let d = draft(Mode::Forward, &row(), &body(), &doc, &me(), "", |b| Some(b.as_bytes().to_vec()));
+        let d = draft(Mode::Forward, &row(), &body(), &doc, &me(), "", ReplyQuote::Include, |b| Some(b.as_bytes().to_vec()));
         assert!(d.attachments.iter().all(|a| Some(a.data.as_slice()) == a.blob_id.as_deref().map(str::as_bytes)));
     }
 

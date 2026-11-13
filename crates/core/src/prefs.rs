@@ -74,6 +74,31 @@ pub struct Prefs {
     pub favorites: Option<Vec<String>>,
     /// Свои быстрые фильтры (T2-38, решение владельца 2026-11-10): сохранённые поиски — закладками после пяти своих.
     pub saved_filters: Vec<SavedFilter>,
+    /// «Ответы и пересылка» (#655): цитировать ли исходное письмо в ответе.
+    pub replies: Replies,
+}
+
+/// «Ответы и пересылка» (#655), как «Почта → Ответы и пересылка» Outlook. Пересылка цитирует всегда.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Replies {
+    /// «При ответе на сообщение» — для «Ответить» и «Ответить всем».
+    pub quote: ReplyQuote,
+}
+
+/// Текст исходного письма в ответе.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplyQuote {
+    /// «Включать исходное сообщение» (по умолчанию).
+    #[default]
+    Include,
+    /// «Не включать исходное сообщение»: в ответе только подпись.
+    Omit,
+}
+
+impl ReplyQuote {
+    pub const ALL: [ReplyQuote; 2] = [ReplyQuote::Include, ReplyQuote::Omit];
 }
 
 /// Свой быстрый фильтр (T2-38): имя закладки и запрос поиска (язык строки поиска).
@@ -116,6 +141,7 @@ impl Default for Prefs {
             session: Session::default(),
             favorites: None,
             saved_filters: Vec::new(),
+            replies: Replies::default(),
         }
     }
 }
@@ -1558,6 +1584,7 @@ mod tests {
         p.keys.insert("mail.reply".into(), vec!["ctrl-shift-y".into()]);
         p.keys.insert("tab.close".into(), vec![]);
         p.key_scheme = KeyScheme::Single;
+        p.replies.quote = ReplyQuote::Omit;
         p.keytips = false;
         p.general.autostart = true;
         p.general.notify = Notify::Important;
