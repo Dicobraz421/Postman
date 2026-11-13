@@ -182,7 +182,6 @@ pub fn domain() -> Option<String> {
     std::env::var("USERDNSDOMAIN").ok().map(|d| d.trim().to_lowercase()).filter(|d| !d.is_empty())
 }
 
-
 /// Показать файл в Проводнике.
 pub fn reveal(path: &Path) -> Result<(), String> {
     super::system_command("explorer.exe")?.arg(format!("/select,{}", path.display())).spawn().map(|_| ()).map_err(|e| format!("explorer: {e}"))

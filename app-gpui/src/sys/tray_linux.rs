@@ -174,12 +174,7 @@ impl Menu {
         Vec::new()
     }
 
-    fn get_layout(
-        &self,
-        _parent_id: i32,
-        _recursion_depth: i32,
-        _property_names: Vec<String>,
-    ) -> (u32, Layout) {
+    fn get_layout(&self, _parent_id: i32, _recursion_depth: i32, _property_names: Vec<String>) -> (u32, Layout) {
         (self.revision, self.layout())
     }
 
