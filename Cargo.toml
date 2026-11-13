@@ -8,6 +8,9 @@ version = "0.1.0-beta.5"
 license = "LicenseRef-Proprietary"
 
 [workspace.dependencies]
+# Часовые пояса — только встроенная база IANA (как на Windows): офлайн и одинаково на всех ОС; системная
+# `/usr/share/zoneinfo` без `tzdata-legacy` (Ubuntu 24.04) не знает старых имён (America/Buenos_Aires).
+jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tz-fat", "perf-inline", "tzdb-bundle-always"] }
 postman-ir = { path = "crates/ir" }
 postman-jmap = { path = "crates/jmap" }
 postman-imap = { path = "crates/imap" }
@@ -106,11 +109,11 @@ panic = "deny"
 
 [patch.crates-io]
 # Патч Windows-платформы gpui (шейдеры в exe, кадры по запросу, живой ресайз) — общий для приложений Pets:
-# github.com/Dicobraz/pets, crates/pets-gpui-windows.
-gpui-pre-windows = { git = "https://github.com/Dicobraz/pets", rev = "78c165ab0533edaac428e8e650dead05e030115a" }
-# Патч gpui-kit (gpui-base 0.7.3): блоки в тексте поля, как в Zed, — таблица сеткой и картинки в письме (T3-06, T3-07):
-# github.com/Dicobraz/pets, crates/pets-gpui-base.
-gpui-base = { git = "https://github.com/Dicobraz/pets", rev = "8c78403360e0963708821a6d5cb0219f50773108" }
+# github.com/Dicobraz421/pets, crates/pets-gpui-windows.
+gpui-pre-windows = { git = "https://github.com/Dicobraz421/pets", rev = "2b387b40d19358d54496515ed69ac3ae95d1a21c" }
+# Патч gpui-kit (gpui-base 0.9.1): блоки в тексте поля, как в Zed, — таблица сеткой и картинки в письме (T3-06, T3-07):
+# github.com/Dicobraz421/pets, crates/pets-gpui-base.
+gpui-base = { git = "https://github.com/Dicobraz421/pets", rev = "2b387b40d19358d54496515ed69ac3ae95d1a21c" }
 
 # Отладочная информация только для своего кода: target/debug не раздувается до десятков ГБ.
 [profile.dev]

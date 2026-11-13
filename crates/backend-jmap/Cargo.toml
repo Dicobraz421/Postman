@@ -16,7 +16,7 @@ postman-search.workspace = true
 postman-smime = { workspace = true, features = ["soft"] }
 serde_json.workspace = true
 thiserror.workspace = true
-jiff = "0.2"
+jiff.workspace = true
 tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
 tracing = "0.1"
 

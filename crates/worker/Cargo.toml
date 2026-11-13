@@ -22,7 +22,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 hayro = { version = "0.8", default-features = false, features = ["embed-fonts"] }
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
-cfb = "0.15"
+cfb = "0.16"
 # Просмотр .docx (T1-13а): потоковый XML без DTD и своих сущностей — тот же крейт, что у `dav` и `ews`.
 quick-xml = { version = "0.41", default-features = false }
 # Просмотр .md (S8): тот же разборщик, что у `compose`.

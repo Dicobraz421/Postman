@@ -645,7 +645,7 @@ fn events(step: Input, m: &Mailer, window: &Window, cx: &App) -> Result<VecDeque
             for k in keys {
                 // Клавиши сцены — в записи таблицы команд (Windows); на macOS — как их привязала ОС (Ctrl → ⌘, MAC-04).
                 let k = crate::keymap::for_os(k).unwrap_or_else(|| (*k).to_owned());
-                let keystroke = Keystroke::parse(&k).map_err(|e| format!("key {k}: {e}"))?;
+                let keystroke = Keystroke::parse_with_os(&k, cx.platform_info().os).map_err(|e| format!("key {k}: {e}"))?;
                 out.push_back(Event::Raw(PlatformInput::KeyDown(KeyDownEvent { keystroke, is_held: false, prefer_character_input: false })));
             }
         }
@@ -673,11 +673,12 @@ fn events(step: Input, m: &Mailer, window: &Window, cx: &App) -> Result<VecDeque
         Input::Wheel(place, by) => {
             let position = at(place)?;
             out.push_back(hover(position, None));
-            out.push_back(Event::Raw(PlatformInput::ScrollWheel(ScrollWheelEvent {
+            out.push_back(Event::Raw(PlatformInput::Scroll(ScrollEvent {
                 position,
                 delta: ScrollDelta::Pixels(point(px(0.), px(-by))),
                 modifiers: Modifiers::default(),
                 touch_phase: TouchPhase::Moved,
+                source: ScrollSource::Pointer,
             })));
             // Отметки рисуются после этого шага: `Input::Press` сразу за прокруткой щёлкнул бы по прежнему месту элемента.
             out.extend([Event::Frame, Event::Frame]);

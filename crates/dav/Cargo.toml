@@ -12,7 +12,7 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "h
 quick-xml = "0.41"
 url.workspace = true
 percent-encoding = "2"
-jiff = "0.2"
+jiff.workspace = true
 # Занятость — типы «Помощника планирования» (`Busy`, `Span`), длительность ISO 8601.
 postman-calendar.workspace = true
 thiserror.workspace = true

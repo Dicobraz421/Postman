@@ -26,7 +26,7 @@ quick-xml = { version = "0.41", default-features = false }
 base64 = "0.22"
 # Привязка к каналу TLS (`tls-server-end-point`, RFC 5929): хэш сертификата сервера.
 sha2 = "0.11.1"
-jiff = "0.2"
+jiff.workspace = true
 url.workspace = true
 zeroize = "1"
 thiserror.workspace = true
