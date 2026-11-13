@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=Postman
+GenericName=Mail Client
+GenericName[ru]=Почтовый клиент
+Comment=Mail, calendar and contacts
+Comment[ru]=Почта, календарь и контакты
+Exec=postman %u
+Icon=postman
+Terminal=false
+StartupNotify=true
+StartupWMClass=postman
+Categories=Office;Email;Calendar;ContactManagement;
+MimeType=x-scheme-handler/mailto;
+Keywords=mail;email;calendar;contacts;exchange;imap;
+Keywords[ru]=почта;календарь;контакты;
