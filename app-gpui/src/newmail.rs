@@ -15,7 +15,6 @@ const SINCE: &str = "newmail-since";
 /// Писем в тексте уведомления — не больше.
 const LINES: usize = 3;
 /// Письмо из уведомления ищется среди стольких верхних писем «Входящих».
-#[cfg_attr(not(windows), allow(dead_code))]
 const LOOK: usize = 200;
 
 /// Состояние проверки: отметка и идёт ли проверка.
@@ -92,7 +91,6 @@ impl Mailer {
     }
 
     /// Щелчок по уведомлению Windows (T3-13): «Почта», «Входящие» и письмо `id`, если оно ещё там.
-    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn open_new_mail(&mut self, id: Option<String>, cx: &mut Context<Self>) {
         let cache = self.cache.clone();
         let task = cx.background_spawn(async move {

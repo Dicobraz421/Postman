@@ -103,7 +103,7 @@ gpui_kit::assets::icon_assets!(pub(crate) SvgGlyphs, [
 
 /// SVG для значка шрифта Segoe Fluent Icons; нет пары — `None` (значок рисуется шрифтом). Таблица собирается на всех
 /// ОС (MAC-04): тест полноты идёт и в обязательном CI Windows, а не только в `macos.yml`.
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg_attr(windows, allow(dead_code, reason = "Windows draws Segoe glyphs; the SVG table is tested on every OS"))]
 pub(crate) fn svg_glyph(g: char) -> Option<&'static str> {
     Some(match g {
         '\u{E121}' => "icons/clock.svg",

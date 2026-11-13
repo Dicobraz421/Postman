@@ -4,7 +4,7 @@
 //! (`menu.rs`) — своё, это его не заменяет.
 
 // Вне macOS таблицу читает только тест.
-#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#![cfg_attr(not(target_os = "macos"), allow(dead_code, reason = "macOS menu bar only; the table is tested on every OS"))]
 
 /// Системное действие macOS — у `mac_app`, в реестре команд его нет.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
