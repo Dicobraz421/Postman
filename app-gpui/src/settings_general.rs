@@ -177,6 +177,18 @@ impl SettingsView {
             }))
         });
         let close_hint = tr!(if g.on_close == OnClose::Tray { "settings-on-close-tray-hint" } else { "settings-on-close-quit-hint" });
+        // Значок в строке меню (macOS, MAC-09) — на месте «Закрытия окна»: на Mac закрытие окна всегда прячет
+        // приложение, а значок можно убрать (`tray::mac` ставит и убирает его сразу).
+        let menu_bar = g.menu_bar_icon;
+        let menu_bar_row = row(
+            tr!("settings-menu-bar-icon"),
+            Some(tr!(if menu_bar { "settings-menu-bar-icon-on-hint" } else { "settings-menu-bar-icon-off-hint" })),
+            toggle("settings-menu-bar-icon", menu_bar, l).on_click(cx.listener(|_, _, _, cx| {
+                crate::prefs::update(cx, |p| p.general.menu_bar_icon = !p.general.menu_bar_icon);
+                cx.notify();
+            })),
+            l,
+        );
         // Уведомления.
         let notifies = [(Notify::All, "settings-notify-all"), (Notify::Important, "settings-notify-important"), (Notify::Off, "settings-notify-off")]
             .map(|(v, key)| {
@@ -303,6 +315,7 @@ impl SettingsView {
                 l,
             ))
             .when(cfg!(windows), |d| d.child(row(tr!("settings-on-close"), Some(close_hint), seg_group(closes, l), l)))
+            .when(cfg!(target_os = "macos"), |d| d.child(menu_bar_row))
             .child(start_row)
             .child(group(tr!("settings-mailto-group"), l))
             .child(row(
