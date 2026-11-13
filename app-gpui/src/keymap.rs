@@ -811,7 +811,7 @@ mod tests {
         // Буква для команды без слоя — вне полей ввода её места.
         assign(crate::commands::all(), &SINGLE, &mut set, "calendar.today", "t", false).unwrap();
         let today = bound(crate::commands::all(), &SINGLE, &set).into_iter().find(|b| b.id == "calendar.today" && b.keys == "t");
-        assert_eq!(today.and_then(|b| b.context).as_deref(), Some("(CalendarView && !Input) && !Input"));
+        assert_eq!(today.and_then(|b| b.context).as_deref(), Some("(CalendarView && !Input && !ContextMenu) && !Input"));
         // Занятая буква: «Заменить» снимает её в столбце, где она была.
         assert_eq!(taken_by(crate::commands::all(), &SINGLE, &set, "mail.delete", "r"), Some("mail.reply"));
         assign(crate::commands::all(), &SINGLE, &mut set, "mail.delete", "r", true).unwrap();

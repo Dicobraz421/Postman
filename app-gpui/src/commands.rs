@@ -21,7 +21,7 @@ pub(crate) const INVITE: Option<&str> = Some("MailView && Invite && !Input && !C
 /// клавиши письма, а не списка.
 pub(crate) const MAIL: Option<&str> = Some("MailView && !Composer && !ContextMenu");
 /// Раздел «Календарь» вне полей ввода: PgUp/PgDn и Home в поле поиска (S5-21) — правка текста.
-pub(crate) const CALENDAR: Option<&str> = Some("CalendarView && !Input");
+pub(crate) const CALENDAR: Option<&str> = Some("CalendarView && !Input && !ContextMenu");
 /// Раздел «Контакты» вне полей ввода (Delete, F2 в поиске — правка текста) и вне меню строки (T1-23).
 pub(crate) const CONTACTS: Option<&str> = Some("ContactsView && !Input && !ContextMenu");
 /// Раздел «Контакты», включая поле поиска.
