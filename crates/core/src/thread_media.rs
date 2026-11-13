@@ -26,7 +26,7 @@ use postman_worker::Client;
 use crate::attach::{self, Viewer};
 use crate::invite::Seen;
 use crate::model::ContactCard;
-use crate::samefile::{FileKey, Groups};
+use crate::samefile::{self, FileKey, Groups};
 use crate::sync::Command;
 
 /// Картинка меньше этого по обеим сторонам — пиксель отслеживания или значок, не медиа.
@@ -687,21 +687,32 @@ pub fn fetch(letters: &[Letter]) -> Vec<Command> {
     missing(letters).into_iter().filter(|id| crate::store::parse_ref(id).is_none()).map(Command::Body).collect()
 }
 
-/// Письма беседы и сведения о вложениях из хранилища и воркера: тела, их IR, хэши байтов вложений из кэша блобов,
-/// кадры маленьких картинок, приглашения и визитки, мои ответы на приглашения. I/O и воркер — вызывать вне потока
-/// интерфейса. Сбой воркера на письме — в IR только заметка об ошибке (ссылок нет), на вложении — нет сведений о нём.
+/// Письма беседы и сведения о вложениях из хранилища и воркера: тела, их IR, хэши вложений (частей хранилища и байтов
+/// из кэша блобов, [`samefile::hash_of`]), кадры маленьких картинок, приглашения и визитки, мои ответы на приглашения.
+/// I/O и воркер — вызывать вне потока интерфейса. Сбой воркера на письме — в IR только заметка об ошибке (ссылок нет), на вложении — нет сведений о нём.
 pub fn gather(cache: &Cache, client: &mut Client, thread_id: &str) -> postman_cache::Result<(Vec<Letter>, Facts)> {
     let mut letters = Vec::new();
     let mut facts = Facts::default();
     for row in cache.thread(thread_id)? {
         let body = cache.body(&row.id)?;
         let doc = body.as_ref().filter(|b| b.html.is_some() || b.text.is_some()).map(|b| crate::render::render(client, b));
+        // Хэши крупных частей письма уже посчитаны хранилищем (ADR 0006): по ним — без чтения байтов.
+        let parts = match body.as_ref().filter(|b| !b.attachments.is_empty()) {
+            Some(_) => {
+                let (scope, id) = postman_cache::unscoped(&row.id);
+                cache.letter_of(scope.unwrap_or(""), id)?.map(|l| cache.letter_parts(l)).transpose()?.unwrap_or_default()
+            }
+            None => Vec::new(),
+        };
         for a in body.iter().flat_map(|b| &b.attachments) {
             if facts.hashes.contains_key(&a.blob_id) {
                 continue;
             }
-            let Some(bytes) = cache.blob(&a.blob_id)? else { continue };
-            facts.hashes.insert(a.blob_id.clone(), Hash::of(&bytes));
+            let bytes = cache.blob(&a.blob_id)?;
+            if let Some(h) = samefile::hash_of(a, &parts, |_| bytes.clone()) {
+                facts.hashes.insert(a.blob_id.clone(), h);
+            }
+            let Some(bytes) = bytes else { continue };
             if is_image(a) && bytes.len() <= PROBE_BYTES {
                 match client.decode_image(&bytes, PROBE_SIDE) {
                     Ok(img) => {

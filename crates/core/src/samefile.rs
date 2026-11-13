@@ -1,13 +1,15 @@
-//! Одинаковые вложения по содержимому (MED-01; общее для «Медиа беседы» и «кто уже получал вложение» в беседе).
+//! Одинаковые вложения по содержимому (MED-01): сводка файлов «Медиа беседы» в строки.
 //!
-//! Главный признак — SHA-256 раскодированных байтов ([`Hash::of`]): тот же ключ, под которым хранилище формата 6
-//! держит части писем (ADR 0006, `postman_cache::content`, таблица `part`), — одинаковые байты под разными блобами
-//! (пересланный файл) сводятся. Байтов нет (не скачаны) — тот же блоб; нет и его — то же имя (без регистра) и
-//! размер. Разные известные хэши не сводятся никогда.
+//! Правило сравнения пары — общее с «Ответить всем» (вложения беседы новым участникам, T3-14):
+//! [`postman_compose::share::File::same`] — оба хэша известны — по ним; иначе тот же блоб или те же имя (без регистра
+//! ASCII) и размер. Хэш — SHA-256 раскодированных байтов: у крупных частей писем его уже посчитало хранилище
+//! (`Cache::letter_parts`, ADR 0006), у остальных — по байтам из кэша ([`hash_of`]). Здесь — то же правило для
+//! многих вложений сразу ([`Groups`]): разные известные хэши не сводятся никогда.
 
 use std::collections::HashMap;
 
-use postman_cache::{AttachmentRow, Hash};
+use postman_cache::{AttachmentRow, Hash, MIN_PART};
+use postman_compose::share::File;
 
 /// По чему вложение признано тем же: для показа и отладки.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -20,10 +22,22 @@ pub enum FileKey {
     NameSize(String, u64),
 }
 
-/// Имя для сравнения: без пробелов по краям, в нижнем регистре; пустое — не признак.
+/// Имя для сравнения: без пробелов по краям, без регистра ASCII (как [`File::same`]); пустое — не признак.
 fn name_of(a: &AttachmentRow) -> Option<String> {
-    let n = a.name.trim().to_lowercase();
+    let n = a.name.trim().to_ascii_lowercase();
     (!n.is_empty()).then_some(n)
+}
+
+/// SHA-256 вложения: часть содержимого письма того же размера (одна такая) — её хэш из хранилища (`parts` —
+/// `Cache::letter_parts`); иначе — байты из кэша (`cached`); байтов нет — `None`.
+pub fn hash_of(a: &AttachmentRow, parts: &[(Hash, u64)], cached: impl FnOnce(&str) -> Option<Vec<u8>>) -> Option<Hash> {
+    if a.size >= MIN_PART as u64 {
+        let mut same = parts.iter().filter(|(_, size)| *size == a.size);
+        if let (Some((h, _)), None) = (same.next(), same.next()) {
+            return Some(*h);
+        }
+    }
+    cached(&a.blob_id).filter(|b| !b.is_empty()).map(|b| Hash::of(&b))
 }
 
 /// Ключ вложения по лучшему из известных признаков; `hashes` — блоб → хэш байтов.
@@ -35,12 +49,20 @@ pub fn file_key(a: &AttachmentRow, hashes: &HashMap<String, Hash>) -> FileKey {
     }
 }
 
-/// Одно ли это вложение: оба хэша известны — по ним; иначе тот же блоб или то же имя с размером.
-pub fn same_file(a: &AttachmentRow, b: &AttachmentRow, hashes: &HashMap<String, Hash>) -> bool {
-    match (hashes.get(&a.blob_id), hashes.get(&b.blob_id)) {
-        (Some(x), Some(y)) => x == y,
-        _ => (!a.blob_id.is_empty() && a.blob_id == b.blob_id) || (name_of(a).is_some() && name_of(a) == name_of(b) && a.size == b.size),
+/// Файл правила [`File::same`] из строки вложения и известного хэша.
+fn file(a: &AttachmentRow, hashes: &HashMap<String, Hash>) -> File {
+    File {
+        name: a.name.trim().to_string(),
+        mime: a.mime.clone(),
+        blob_id: a.blob_id.clone(),
+        size: a.size,
+        hash: hashes.get(&a.blob_id).map(|h| h.0),
     }
+}
+
+/// Одно ли это вложение — по общему правилу [`File::same`].
+pub fn same_file(a: &AttachmentRow, b: &AttachmentRow, hashes: &HashMap<String, Hash>) -> bool {
+    file(a, hashes).same(&file(b, hashes))
 }
 
 /// Сводка вложений в группы одинаковых ([`same_file`] с транзитивностью по порядку добавления): номер группы на
@@ -106,7 +128,7 @@ mod tests {
 
     #[test]
     fn same_by_hash_blob_or_name_and_size() {
-        let (a, b, c) = (att("b1", "ТЗ.pdf", 10), att("b2", "тз.PDF", 10), att("b3", "ТЗ.pdf", 11));
+        let (a, b, c) = (att("b1", "ТЗ.pdf", 10), att("b2", "ТЗ.PDF", 10), att("b3", "ТЗ.pdf", 11));
         let none = HashMap::new();
         assert!(same_file(&a, &b, &none), "имя без регистра и размер");
         assert!(!same_file(&a, &c, &none), "другой размер");
@@ -117,8 +139,7 @@ mod tests {
         assert!(same_file(&a, &c, &hashes), "те же байты под другим блобом и размером");
         assert_eq!(file_key(&a, &hashes), FileKey::Content(x));
         assert_eq!(file_key(&a, &none), FileKey::Blob("b1".into()));
-        assert_eq!(file_key(&att("", " Отчёт ", 5), &none), FileKey::NameSize("отчёт".into(), 5));
-        assert!(!same_file(&att("", "", 5), &att("", "", 5), &none), "без имени и блоба — не признак");
+        assert_eq!(file_key(&att("", " Report ", 5), &none), FileKey::NameSize("report".into(), 5));
     }
 
     #[test]
@@ -131,7 +152,19 @@ mod tests {
         assert_eq!(g.add(&att("b4", "ТЗ.pdf", 10), Some(Hash::of(b"y"))), (1, true), "другие байты");
         assert_eq!(g.add(&att("b3", "x.bin", 1), None), (0, false), "тот же блоб");
         assert_eq!(g.key(0, &att("b1", "ТЗ.pdf", 10)), FileKey::Content(x));
-        assert_eq!(g.add(&att("", "Акт.pdf", 3), None), (2, true));
-        assert_eq!(g.key(2, &att("", "Акт.pdf", 3)), FileKey::NameSize("акт.pdf".into(), 3));
+        assert_eq!(g.add(&att("", "Act.PDF", 3), None), (2, true));
+        assert_eq!(g.key(2, &att("", "Act.PDF", 3)), FileKey::NameSize("act.pdf".into(), 3));
+    }
+
+    /// Хэш крупной части — из хранилища, если часть того же размера одна; иначе — по байтам из кэша.
+    #[test]
+    fn hash_from_stored_parts_or_cached_bytes() {
+        let big = MIN_PART as u64 + 1;
+        let stored = Hash::of(b"stored");
+        let a = att("b1", "big.pdf", big);
+        assert_eq!(hash_of(&a, &[(stored, big)], |_| None), Some(stored));
+        assert_eq!(hash_of(&a, &[(stored, big), (Hash::of(b"2"), big)], |_| Some(b"x".to_vec())), Some(Hash::of(b"x")), "две части того же размера");
+        assert_eq!(hash_of(&att("b1", "small.pdf", 3), &[(stored, 3)], |_| Some(b"abc".to_vec())), Some(Hash::of(b"abc")), "мелкая — в скелете");
+        assert_eq!(hash_of(&a, &[], |_| Some(Vec::new())), None);
     }
 }

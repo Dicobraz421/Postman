@@ -34,7 +34,7 @@ use crate::roles::Look;
 const PAUSE: char = '\u{E769}';
 
 /// Ответа воркера на разбор письма ждать не дольше.
-const WORKER_TIMEOUT: Duration = Duration::from_secs(20);
+pub(crate) const WORKER_TIMEOUT: Duration = Duration::from_secs(20);
 /// Без заданий и событий поток ядра спит до следующей вести.
 const IDLE: Duration = Duration::from_secs(3600);
 

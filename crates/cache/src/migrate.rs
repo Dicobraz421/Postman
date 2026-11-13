@@ -1,4 +1,4 @@
-//! Перенос хранилища формата 5 в формат 6 (ADR 0006 п. 6): рядом новый файл `*.v6`, по готовности — замена
+//! Перенос хранилища формата 5 в формат 6 и сразу 7 (ADR 0006 п. 6): рядом новый файл `*.v6`, по готовности — замена
 //! переименованием, прежний файл — `*.v5.bak` до следующего удачного открытия. Сбой — новый файл удаляется, прежний
 //! откладывается в `*.v5.bak` как есть, база начинается пустой: её наполняет синхронизация (в формате 5 данных «только
 //! в базе» нет).
@@ -10,7 +10,6 @@
 //! так их читает формат 6 до S8-09.
 
 use std::path::Path;
-use std::sync::Arc;
 
 use redb::{Database, Key, ReadOnlyTable, ReadTransaction, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition, Value};
 
@@ -53,7 +52,7 @@ pub(crate) fn run(path: &Path, how: &mut Migration) -> Result<(Cache, Migrated)>
     let (new, backup) = (beside(path, NEW), beside(path, BACKUP));
     match copy(path, &new, how).and_then(|()| swap(path, &new, &backup)) {
         Ok(()) => {
-            let c = Cache { db: Arc::new(Cache::create(path)?) };
+            let c = Cache::wrap(Cache::create(path)?);
             c.init()?;
             Ok((c, Migrated::Done))
         }
@@ -102,13 +101,21 @@ fn as_is<K: Key + 'static, V: Value + 'static>(from: &ReadTransaction, to: &redb
 fn copy(from: &Path, to: &Path, how: &mut Migration) -> Result<()> {
     remove_if_exists(to)?;
     let old = Database::builder().set_cache_size(CACHE_BYTES).open_read_only(from)?;
-    let new = Cache { db: Arc::new(Cache::create(to)?) };
+    let new = Cache::wrap(Cache::create(to)?);
     new.init()?;
     let src = old.begin_read()?;
 
     let tx = new.db.begin_write()?;
-    for t in [MAILBOX, ACCOUNT, BODY, BLOB, SMIME, CERTS, TASK] {
+    for t in [MAILBOX, ACCOUNT, BLOB, SMIME, CERTS, TASK] {
         as_is(&src, &tx, t)?;
+    }
+    // Тела формата 7 — сжатыми.
+    if let Some(t) = optional(&src, BODY)? {
+        let mut dst = tx.open_table(BODY)?;
+        for r in t.iter()? {
+            let (k, v) = r?;
+            dst.insert(k.value(), crate::content::pack_body(&dec::<BodyRow>(v.value())?, new.tuning.level)?.as_slice())?;
+        }
     }
     as_is(&src, &tx, TRUSTED)?;
     as_is(&src, &tx, STATE)?;
@@ -279,7 +286,7 @@ mod tests {
                     Content-Transfer-Encoding: base64\r\n\r\n";
         let body = b64(&data);
         let raw = format!("{head}{body}--b--\r\n").into_bytes();
-        (raw, SplitPart { range: head.len()..head.len() + body.len(), encoding: Encoding::Base64, decoded: data })
+        (raw, SplitPart { range: head.len()..head.len() + body.len(), encoding: Encoding::Base64, decoded: data, mime: "application/pdf".into() })
     }
 
     fn body(blob: Option<&str>) -> BodyRow {
