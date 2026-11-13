@@ -78,6 +78,8 @@ mod job;
 #[cfg(feature = "store6")]
 mod letter;
 #[cfg(feature = "store6")]
+mod local;
+#[cfg(feature = "store6")]
 mod migrate;
 #[cfg(feature = "store6")]
 mod migrate7;
@@ -92,6 +94,8 @@ pub use folder::{FolderId, FolderRow, Owner, Scope};
 pub use job::{JobRow, MigrationMode, MigrationState};
 #[cfg(feature = "store6")]
 pub use letter::{JobId, LetterId, LetterRow, MOVE_BATCH, MoveTicket, Outbound, Place, Refused, Step};
+#[cfg(feature = "store6")]
+pub use local::{LocalDoc, LocalPut};
 #[cfg(feature = "store6")]
 pub use migrate::{Migration, Split};
 #[cfg(feature = "store6")]
@@ -629,6 +633,8 @@ impl Cache {
         tx.open_table(TASK_ID)?;
         #[cfg(feature = "store6")]
         letter::init(&tx)?;
+        #[cfg(feature = "store6")]
+        local::init(&tx)?;
         #[cfg(not(feature = "store6"))]
         {
             let threads_indexed = tx.list_tables()?.any(|t| t.name() == BY_THREAD.name());

@@ -13,8 +13,9 @@
 //! Таблица категорий — у аккаунта на сервере (решение владельца №4): файл JMAP FileNode, у общего ящика — свой
 //! (`crate::categories`). Правки — методами [`Categories`] (настройки, S5-09) с меткой времени; две правки с разных
 //! клиентов сводятся [`Categories::merge`]: у каждой категории побеждает более поздняя. Удалённая категория остаётся
-//! в таблице скрытой: слово у писем не трогается, а другой клиент не вернёт её своей старой копией. Локальный файл
-//! ([`LocalFile`], [`Book`]) — кэш и запас, когда сервер недоступен или FileNode у него нет.
+//! в таблице скрытой: слово у писем не трогается, а другой клиент не вернёт её своей старой копией. Локальная копия
+//! ([`Book`] в базе профиля, `crate::local::Labels`) — кэш и запас, когда сервер недоступен или FileNode у него нет;
+//! файл прежних версий ([`LocalFile`]) переносится в базу (`crate::local::adopt`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -532,6 +533,8 @@ pub enum StoreError {
     Json(#[from] serde_json::Error),
     #[error("labels file version {0} is newer than this Postman")]
     Version(u32),
+    #[error("labels: {0}")]
+    Store(#[from] postman_cache::Error),
 }
 
 /// Где лежит локальная копия таблиц.
@@ -542,8 +545,8 @@ pub trait Store: Send + Sync {
     fn save(&self, book: &Book) -> Result<(), StoreError>;
 }
 
-/// Таблицы в файле JSON рядом с кэшем учётной записи (кэш пересоздаётся при смене формата — таблица в нём бы
-/// пропала, поэтому отдельно).
+/// Таблицы в файле JSON рядом с кэшем учётной записи — так хранили прежние версии (кэш пересоздавался при смене
+/// формата). Теперь копия — в базе профиля (`crate::local::Labels`, решение 2026-11-14), файл только переносится.
 pub struct LocalFile(pub PathBuf);
 
 impl LocalFile {
@@ -561,22 +564,26 @@ struct Version {
     version: u32,
 }
 
+/// Таблицы из JSON копии (файла или записи базы): новее этой версии — ошибка, старый формат — `None` (только копия:
+/// таблицу пришлёт сервер).
+pub fn parse_book(text: &str) -> Result<Option<Book>, StoreError> {
+    let Version { version } = serde_json::from_str(text)?;
+    if version > BOOK_VERSION {
+        return Err(StoreError::Version(version));
+    }
+    if version < BOOK_VERSION {
+        return Ok(None);
+    }
+    Ok(Some(serde_json::from_str(text)?))
+}
+
 impl Store for LocalFile {
     fn load(&self) -> Result<Option<Book>, StoreError> {
-        let text = match std::fs::read_to_string(&self.0) {
-            Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e.into()),
-        };
-        let Version { version } = serde_json::from_str(&text)?;
-        if version > BOOK_VERSION {
-            return Err(StoreError::Version(version));
+        match std::fs::read_to_string(&self.0) {
+            Ok(t) => parse_book(&t),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
         }
-        // Старый формат — только копия: таблицу пришлёт сервер.
-        if version < BOOK_VERSION {
-            return Ok(None);
-        }
-        Ok(Some(serde_json::from_str(&text)?))
     }
 
     /// Запись через временный файл: сбой посреди записи не портит прежнюю таблицу.

@@ -601,23 +601,66 @@ pub(crate) fn release(tx: &WriteTransaction, hash: Hash) -> Result<()> {
     content_refs.remove(hash.0)?;
     let mut content = tx.open_table(t.content)?;
     let Some(row) = content.remove(hash.0)?.map(|v| dec::<ContentRow>(v.value())).transpose()? else { return Ok(()) };
+    drop((content_refs, content));
+    release_parts(tx, row.parts.iter().map(|p| p.hash))
+}
+
+/// Вхождений частей `hashes` на одно меньше каждой; ноль — часть и её куски удаляются.
+pub(crate) fn release_parts(tx: &WriteTransaction, hashes: impl IntoIterator<Item = Hash>) -> Result<()> {
+    let t = &TABLES;
     let mut part_refs = tx.open_table(t.part_refs)?;
     let mut part = tx.open_table(t.part)?;
     let mut chunks = tx.open_table(t.chunks)?;
-    for p in &row.parts {
-        let Some((n, len, stored)) = part_refs.get(p.hash.0)?.map(|v| v.value()) else { continue };
+    for h in hashes {
+        let Some((n, len, stored)) = part_refs.get(h.0)?.map(|v| v.value()) else { continue };
         if n > 1 {
-            part_refs.insert(p.hash.0, (n - 1, len, stored))?;
+            part_refs.insert(h.0, (n - 1, len, stored))?;
             continue;
         }
-        part_refs.remove(p.hash.0)?;
-        if let Some(PartRow { data: PartData::Chunks(n), .. }) = part.remove(p.hash.0)?.map(|v| dec::<PartRow>(v.value())).transpose()? {
+        part_refs.remove(h.0)?;
+        if let Some(PartRow { data: PartData::Chunks(n), .. }) = part.remove(h.0)?.map(|v| dec::<PartRow>(v.value())).transpose()? {
             for i in 0..n {
-                chunks.remove((p.hash.0, i))?;
+                chunks.remove((h.0, i))?;
             }
         }
     }
     Ok(())
+}
+
+/// Отдельные байты (картинка подписи, файл подписки — `crate::local`) частью по хэшу: известная — вхождений + 1,
+/// новая — запись (сжатая, если тип `mime` и байты сжимаются).
+pub(crate) fn acquire_bytes(tx: &WriteTransaction, bytes: &[u8], mime: &str, level: Option<i32>) -> Result<Hash> {
+    let t = &TABLES;
+    let hash = Hash::of(bytes);
+    let known = tx.open_table(t.part_refs)?.get(hash.0)?.map(|v| v.value());
+    let meta = match known {
+        Some((n, len, stored)) => (n.saturating_add(1), len, stored),
+        None => {
+            let p = SplitPart { range: 0..0, encoding: Encoding::Base64, decoded: bytes.to_vec(), mime: mime.to_owned() };
+            (1, bytes.len() as u64, put_part(tx, t, hash, &p, level)?)
+        }
+    };
+    tx.open_table(t.part_refs)?.insert(hash.0, meta)?;
+    Ok(hash)
+}
+
+/// Раскодированные байты части `hash`; `None` — такой части нет.
+pub(crate) fn read_part(tx: &ReadTransaction, hash: Hash) -> Result<Option<Vec<u8>>> {
+    let Some(row) = tx.open_table(TABLES.part)?.get(hash.0)?.map(|v| dec::<PartRow>(v.value())).transpose()? else {
+        return Ok(None);
+    };
+    match row.data {
+        PartData::Bytes(b) => Ok(Some(b.into_bytes()?)),
+        PartData::Chunks(n) => {
+            let chunks = tx.open_table(TABLES.chunks)?;
+            let mut out = Vec::with_capacity(usize::try_from(row.len).unwrap_or(0));
+            for i in 0..n {
+                let Some(c) = chunks.get((hash.0, i))? else { return Err(Error(format!("part {}: no chunk {i}", hex(&hash)))) };
+                out.extend_from_slice(&dec::<Packed>(c.value())?.into_bytes()?);
+            }
+            Ok(Some(out))
+        }
+    }
 }
 
 /// Читатель содержимого `hash` в транзакции `tx`; `None` — такого содержимого нет.
@@ -936,6 +979,8 @@ impl Cache {
         for h in want_content.keys() {
             problems.push(format!("content {}: referenced by letters, missing", hex(h)));
         }
+        // Части данных клиента (`crate::local`) — такие же вхождения.
+        crate::local::count_parts(&tx, &mut want_part)?;
         for h in content_refs.keys() {
             problems.push(format!("content {}: refs without content", hex(h)));
         }

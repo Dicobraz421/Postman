@@ -628,6 +628,18 @@ mod tests {
         assert!(!Me::default().mentioned("@анна"));
     }
 
+    /// Упоминание, как его ставит окно письма (`postman_compose::mention`): `**@Имя**` в text/plain, полужирное `@Имя` —
+    /// в HTML; имя — из адресной книги, в любом порядке слов.
+    #[test]
+    fn mention_from_the_composer_is_caught() {
+        let me = me();
+        assert!(me.mentioned("Коллеги, **@Анна Смирнова** посмотрите раздел 3"));
+        assert!(me.mentioned("**@Смирнова Анна** — к пятнице"));
+        assert!(me.mentioned("Коллеги, @Анна Смирнова посмотрите раздел 3"));
+        assert!(me.mentioned("(**@me**) по задаче"));
+        assert!(!me.mentioned("**@Иван Петров** посмотрите"));
+    }
+
     #[test]
     fn external_is_another_domain() {
         let me = me();

@@ -124,23 +124,24 @@ impl SignState {
             _subscriptions: subs,
         }
     }
-
-    fn file(&self) -> Option<PathBuf> {
-        self.path.as_deref().map(AccountPrefs::beside)
-    }
 }
 
 impl SettingsView {
-    /// Подписи и шаблоны учётной записи — из файла рядом с её кэшем (в фоне). Демо — только в памяти.
+    /// База профиля для подписей и шаблонов; демо — `None` (только в памяти).
+    fn sign_store(&self) -> Option<postman_cache::Cache> {
+        self.sign.path.as_ref().and(self.info.db.clone())
+    }
+
+    /// Подписи и шаблоны учётной записи — из базы профиля (в фоне). Демо — только в памяти.
     pub(crate) fn sign_load(&mut self, cx: &mut Context<Self>) {
         self.sign.loaded = false;
         self.sign.edit = None;
-        let Some(file) = self.sign.file() else {
+        let Some(db) = self.sign_store() else {
             self.sign.prefs = AccountPrefs::default();
             self.sign.loaded = true;
             return;
         };
-        let task = cx.background_spawn(async move { AccountPrefs::load(&file) });
+        let task = cx.background_spawn(async move { postman_core::local::account_prefs(&db) });
         cx.spawn(async move |this, cx| {
             let prefs = match task.await {
                 Ok(p) => p,
@@ -162,11 +163,11 @@ impl SettingsView {
     pub(crate) fn sign_save(&mut self, cx: &mut Context<Self>) {
         self.sign.prefs = std::mem::take(&mut self.sign.prefs).normalized();
         cx.emit(crate::settings_tab::SettingsEvent::AccountPrefs(self.sign.prefs.clone()));
-        let Some(file) = self.sign.file() else { return };
+        let Some(db) = self.sign_store() else { return };
         let (prefs, writer) = (self.sign.prefs.clone(), self.sign.writer.clone());
         let seq = writer.next();
         cx.background_spawn(async move {
-            if let Err(e) = writer.write(seq, || prefs.save(&file)) {
+            if let Err(e) = writer.write(seq, || postman_core::local::save_account_prefs(&db, &prefs)) {
                 tracing::error!("signature: signatures not written: {e}");
             }
         })

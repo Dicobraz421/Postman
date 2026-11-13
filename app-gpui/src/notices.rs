@@ -230,19 +230,9 @@ pub(crate) struct Notices {
     ticking: bool,
     /// Насколько поднять стопку: внизу справа кнопка, её тост не закрывает (`Mailer::render`).
     pub(crate) lift: f32,
-    /// История на диске (T2-34r, макет «Состояния»: «хранится 7 дней»): файл строк JSON; `None` — снимки, бенч.
-    file: Option<std::path::PathBuf>,
-}
-
-/// Сколько хранится история уведомлений.
-const KEEP_SECS: i64 = 7 * 24 * 3600;
-
-/// Запись истории на диске: время, уровень, текст, выполнено ли действие.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct Saved {
-    t: i64,
-    l: char,
-    x: String,
+    /// История в базе профиля (T2-34r, макет «Состояния»: «хранится 7 дней»; решение 2026-11-14 — не файлом);
+    /// `None` — снимки, бенч.
+    store: Option<postman_cache::Cache>,
 }
 
 fn level_char(l: Level) -> char {
@@ -263,11 +253,6 @@ fn char_level(c: char) -> Level {
     }
 }
 
-/// Строки файла истории: за 7 дней до `now`, старые первыми; битые строки — мимо.
-fn read_saved(text: &str, now: i64) -> Vec<Saved> {
-    text.lines().filter_map(|l| serde_json::from_str::<Saved>(l).ok()).filter(|s| now - s.t <= KEEP_SECS).collect()
-}
-
 impl Notices {
     /// На экране есть тост.
     pub(crate) fn toast_shown(&self) -> bool {
@@ -283,16 +268,15 @@ impl Notices {
         Self::default()
     }
 
-    /// История — с диска и на диск (T2-34r): прошлые 7 дней — в начало истории (без тостов), файл — переписан без
-    /// старых; дальше каждое уведомление дописывается в фоне.
-    pub(crate) fn persist_to(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
-        let read = path.clone();
+    /// История — из базы профиля и в неё (T2-34r): прошлые 7 дней — в начало истории (без тостов), старше — из базы
+    /// прочь; дальше каждое уведомление дописывается в фоне.
+    pub(crate) fn persist_to(&mut self, store: postman_cache::Cache, cx: &mut Context<Self>) {
+        let read = store.clone();
         let task = cx.background_spawn(async move {
-            let now = jiff::Timestamp::now().as_second();
-            let saved = std::fs::read_to_string(&read).map(|t| read_saved(&t, now)).unwrap_or_default();
-            let text: String = saved.iter().filter_map(|s| serde_json::to_string(s).ok()).map(|l| l + "\n").collect();
-            let _ = std::fs::write(&read, text);
-            saved
+            postman_core::local::recent_notices(&read, jiff::Timestamp::now().as_second()).unwrap_or_else(|e| {
+                tracing::warn!("notices: history not read: {e}");
+                Vec::new()
+            })
         });
         cx.spawn(async move |this, cx| {
             let saved = task.await;
@@ -300,22 +284,25 @@ impl Notices {
                 for s in saved {
                     n.stack.restore(char_level(s.l), s.x.into(), s.t);
                 }
-                n.file = Some(path);
+                n.store = Some(store);
                 cx.notify();
             });
         })
         .detach();
     }
 
-    /// Новое уведомление — в файл истории (в фоне).
+    /// История пишется в базу ([`Notices::persist_to`]): экран на другой базе продолжит её там.
+    pub(crate) fn persisted(&self) -> bool {
+        self.store.is_some()
+    }
+
+    /// Новое уведомление — в историю в базе (в фоне).
     fn save(&self, level: Level, text: &SharedString, cx: &mut Context<Self>) {
-        let Some(path) = self.file.clone() else { return };
-        let line =
-            serde_json::to_string(&Saved { t: jiff::Timestamp::now().as_second(), l: level_char(level), x: text.to_string() }).unwrap_or_default();
+        let Some(store) = self.store.clone() else { return };
+        let n = postman_core::local::Notice { t: jiff::Timestamp::now().as_second(), l: level_char(level), x: text.to_string() };
         cx.background_spawn(async move {
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-                let _ = writeln!(f, "{line}");
+            if let Err(e) = postman_core::local::push_notice(&store, &n) {
+                tracing::warn!("notices: history entry not written: {e}");
             }
         })
         .detach();
@@ -905,18 +892,11 @@ mod tests {
 
 #[cfg(test)]
 mod saved_tests {
-    /// История на диске (T2-34r): старше 7 дней и битые строки — мимо.
+    /// Уровень записи истории — туда и обратно (срок и битые записи — `postman_core::local::recent_notices`).
     #[test]
-    fn saved_keeps_seven_days() {
-        let now = 1_800_000_000;
-        let lines = [
-            format!(r#"{{"t":{},"l":"e","x":"старое"}}"#, now - 8 * 86_400),
-            format!(r#"{{"t":{},"l":"i","x":"вчера"}}"#, now - 86_400),
-            "мусор".to_owned(),
-        ]
-        .join("\n");
-        let saved = super::read_saved(&lines, now);
-        assert_eq!(saved.iter().map(|s| s.x.as_str()).collect::<Vec<_>>(), ["вчера"]);
-        assert_eq!(super::char_level(super::level_char(pets_ui::Level::Error)), pets_ui::Level::Error);
+    fn saved_level_round_trip() {
+        for l in [pets_ui::Level::Error, pets_ui::Level::Warning, pets_ui::Level::Success, pets_ui::Level::Info] {
+            assert_eq!(super::char_level(super::level_char(l)), l);
+        }
     }
 }

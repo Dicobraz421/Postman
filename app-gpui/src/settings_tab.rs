@@ -149,7 +149,7 @@ pub(crate) struct Info {
     pub(crate) folders: Vec<(String, String)>,
     /// Адреса отправителя (Identity).
     pub(crate) identities: Vec<String>,
-    /// Файл кэша учётной записи: рядом — её подписи и шаблоны.
+    /// Файл базы учётной записи (её подписи и шаблоны — в ней, `db`); демо — `None`.
     pub(crate) cache: Option<std::path::PathBuf>,
     /// Песочница последнего разбора письма («Безопасность», S5-30); `None` — ещё не разбирали.
     pub(crate) sandbox: Option<postman_worker::Level>,

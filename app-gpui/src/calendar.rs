@@ -440,6 +440,8 @@ pub(crate) struct CalendarView {
     /// Подписки `.ics` (S8-44): воркер для разбора, календари, строка «Добавить по ссылке».
     worker: Option<std::sync::Arc<std::sync::Mutex<postman_worker::Client>>>,
     subs: Vec<subscriptions::Sub>,
+    /// База экрана: скачанные подписки (решение 2026-11-14); `None` — до `start_subscriptions`.
+    store: Option<postman_cache::Cache>,
     sub_input: Entity<InputState>,
     sub_open: bool,
     sub_bad: bool,
@@ -652,6 +654,7 @@ impl CalendarView {
             side_scroll: ScrollHandle::new(),
             worker: None,
             subs: Vec::new(),
+            store: None,
             sub_input,
             sub_open: false,
             sub_bad: false,
