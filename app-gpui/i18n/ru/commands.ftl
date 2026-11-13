@@ -84,6 +84,7 @@ cmd-compose-table = Вставить таблицу
 cmd-compose-expand = Развернуть ответ во вкладку
 cmd-compose-discard = Удалить черновик
 cmd-compose-address-book = Адресная книга: выбрать адресатов
+cmd-compose-share-attachments = Вложения беседы новым участникам: отправлять или нет
 cmd-recipients-next = Адресная книга: следующий
 cmd-recipients-prev = Адресная книга: предыдущий
 cmd-recipients-toggle = Адресная книга: отметить

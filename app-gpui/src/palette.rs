@@ -599,7 +599,7 @@ pub(crate) fn command_icon(id: &str) -> Option<char> {
         "search.prev_match" => UP,
         "search.all" => GLOBE,
         "search.folder" => FOLDER,
-        "search.attachments" | "compose.attach" => ATTACH,
+        "search.attachments" | "compose.attach" | "compose.share_attachments" => ATTACH,
         "search.recent" => HISTORY,
         "calendar.today" | "meeting.today" => TODAY,
         "compose.send" | "meeting.send" => SEND,

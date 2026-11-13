@@ -111,6 +111,19 @@ pub fn part(raw: &[u8], index: u32) -> Result<Vec<u8>, String> {
     let msg = mail_parser::MessageParser::default().parse(raw).ok_or("не письмо RFC 5322")?;
     let all = attachments(&msg);
     let a = all.get(index as usize).ok_or("нет такого вложения")?;
+    // Текст разборщик перекодирует в UTF-8 — вложение ушло бы при пересылке другими байтами. Байты как в письме:
+    // тело части, раскодированное из base64 или quoted-printable; не раскодировалось — как разобрал разборщик.
+    if matches!(a.body, PartType::Text(_) | PartType::Html(_)) {
+        let encoded = raw.get(a.offset_body as usize..a.offset_end as usize).unwrap_or_default();
+        let decoded = match a.encoding {
+            mail_parser::Encoding::Base64 => base64_decode(encoded),
+            mail_parser::Encoding::QuotedPrintable => quoted_printable_decode(encoded),
+            mail_parser::Encoding::None => Some(encoded.to_vec()),
+        };
+        if let Some(d) = decoded.filter(|d| !d.is_empty() || a.contents().is_empty()) {
+            return Ok(d);
+        }
+    }
     Ok(a.contents().to_vec())
 }
 
@@ -345,6 +358,25 @@ mod tests {
         assert_eq!(m.parts.len(), 1);
         assert_eq!((m.parts[0].name.as_str(), m.parts[0].mime.as_str(), m.parts[0].size), ("report.pdf", "application/pdf", 5));
         assert_eq!(part(SAMPLE.as_bytes(), 0).unwrap(), b"Hello");
+        // Текстовое вложение — байтами письма, без перекодирования в UTF-8: windows-1251 в quoted-printable, UTF-8
+        // в base64 и 8bit без кодирования.
+        let cp1251: &[u8] = &[0xCF, 0xF0, 0xE8, 0xE2, 0xE5, 0xF2, 0x0D, 0x0A, 0xEC, 0xE8, 0xF0];
+        let utf8 = "Привет, мир".as_bytes();
+        let letter = concat!(
+            "From: a@example.test\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n",
+            "--b\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nтело\r\n",
+            "--b\r\nContent-Type: text/plain; charset=windows-1251\r\nContent-Disposition: attachment; filename=\"a.txt\"\r\n",
+            "Content-Transfer-Encoding: quoted-printable\r\n\r\n=CF=F0=E8=E2=E5=F2=0D=0A=EC=E8=F0\r\n",
+            "--b\r\nContent-Type: text/csv; charset=utf-8\r\nContent-Disposition: attachment; filename=\"b.csv\"\r\n",
+            "Content-Transfer-Encoding: base64\r\n\r\n0J/RgNC40LLQtdGCLCDQvNC40YA=\r\n",
+            "--b\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Disposition: attachment; filename=\"c.txt\"\r\n",
+            "Content-Transfer-Encoding: 8bit\r\n\r\nПривет, мир\r\n--b--\r\n",
+        );
+        let names: Vec<String> = parse(letter.as_bytes()).unwrap().parts.into_iter().map(|p| p.name).collect();
+        assert_eq!(names, ["a.txt", "b.csv", "c.txt"]);
+        assert_eq!(part(letter.as_bytes(), 0).unwrap(), cp1251);
+        assert_eq!(part(letter.as_bytes(), 1).unwrap(), utf8);
+        assert_eq!(part(letter.as_bytes(), 2).unwrap(), utf8);
         assert!(part(SAMPLE.as_bytes(), 1).is_err());
         assert!(parse(b"").is_err() || parse(b"").unwrap().text.is_none());
     }
