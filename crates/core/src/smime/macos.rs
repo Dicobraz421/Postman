@@ -206,9 +206,8 @@ fn evaluate(
     }
 }
 
-/// Итог первой оценки (ошибка `code`) — общим правилом [`super::chain_verdict`]. «Ещё не действует» — `Expired`,
-/// как у Windows (`CERT_TRUST_IS_NOT_TIME_VALID` — один флаг на оба случая); неверная подпись — `BadSignature`,
-/// как у Windows (PAR-AUDIT №30).
+/// Итог первой оценки (ошибка `code`) — общим правилом [`super::chain_verdict`]: «ещё не действует» — своя причина
+/// `NotYetValid` (PAR-02b), неверная подпись — `BadSignature`, как у Windows (PAR-AUDIT №30).
 fn verdict(code: i64, denied: bool) -> Revocation {
     let mut c = super::ChainCheck::default();
     if denied || code == ERR_SEC_TRUST_SETTING_DENY {
@@ -216,7 +215,8 @@ fn verdict(code: i64, denied: bool) -> Revocation {
     } else {
         match code {
             ERR_SEC_CERTIFICATE_REVOKED => c.revoked = true,
-            ERR_SEC_CERTIFICATE_EXPIRED | ERR_SEC_CERTIFICATE_NOT_VALID_YET => c.expired = true,
+            ERR_SEC_CERTIFICATE_EXPIRED => c.expired = true,
+            ERR_SEC_CERTIFICATE_NOT_VALID_YET => c.not_yet_valid = true,
             ERR_SEC_INVALID_EXTENDED_KEY_USAGE => c.wrong_usage = true,
             ERR_SEC_NOT_TRUSTED | ERR_SEC_CREATE_CHAIN_FAILED => c.untrusted = true,
             ERR_SEC_INVALID_SIGNATURE | ERR_SEC_VERIFY_FAILED => c.bad_signature = true,
@@ -329,7 +329,7 @@ mod tests {
         // Таблица кодов — те же причины, что у Windows (PAR-AUDIT №30).
         for (code, want) in [
             (ERR_SEC_CERTIFICATE_EXPIRED, Confirm::Expired),
-            (ERR_SEC_CERTIFICATE_NOT_VALID_YET, Confirm::Expired),
+            (ERR_SEC_CERTIFICATE_NOT_VALID_YET, Confirm::NotYetValid),
             (ERR_SEC_INVALID_EXTENDED_KEY_USAGE, Confirm::WrongUsage),
             (ERR_SEC_NOT_TRUSTED, Confirm::Untrusted),
             (ERR_SEC_INVALID_SIGNATURE, Confirm::BadSignature),

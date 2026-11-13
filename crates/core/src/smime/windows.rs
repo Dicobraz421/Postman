@@ -151,8 +151,10 @@ fn add_cert(store: HCERTSTORE, der: &[u8]) -> bool {
 }
 
 /// Итог из флагов ошибок цепочки — общим правилом [`super::chain_verdict`]: флаг вне перечисленных (ограничения
-/// имён, неизвестное критическое расширение…) — «отклонено», даже вместе с «отзыв неизвестен».
-fn verdict(error: u32) -> Revocation {
+/// имён, неизвестное критическое расширение…) — «отклонено», даже вместе с «отзыв неизвестен». `not_yet` — срок
+/// сертификатов цепочки ещё не начался (а не истёк): у CryptoAPI один флаг на оба случая, различает
+/// [`time_validity`].
+fn verdict(error: u32, not_yet: bool) -> Revocation {
     let any = |mask: u32| error & mask != 0;
     let untrusted = CERT_TRUST_IS_UNTRUSTED_ROOT | CERT_TRUST_IS_PARTIAL_CHAIN;
     let revocation = CERT_TRUST_REVOCATION_STATUS_UNKNOWN | CERT_TRUST_IS_OFFLINE_REVOCATION;
@@ -168,7 +170,8 @@ fn verdict(error: u32) -> Revocation {
         revoked: any(CERT_TRUST_IS_REVOKED),
         bad_signature: any(CERT_TRUST_IS_NOT_SIGNATURE_VALID),
         untrusted: any(untrusted),
-        expired: any(CERT_TRUST_IS_NOT_TIME_VALID),
+        expired: any(CERT_TRUST_IS_NOT_TIME_VALID) && !not_yet,
+        not_yet_valid: any(CERT_TRUST_IS_NOT_TIME_VALID) && not_yet,
         wrong_usage: any(CERT_TRUST_IS_NOT_VALID_FOR_USAGE),
         other: any(!known),
         revocation_unknown: any(revocation),
@@ -228,8 +231,45 @@ pub(super) fn confirm_inner(chain: &[Vec<u8>], exclusive_root: Option<&[u8]>, cr
     }
     // SAFETY: контекст цепочки получен выше.
     let error = unsafe { (*ctx).TrustStatus.dwErrorStatus };
-    tracing::debug!(error = format_args!("{error:#x}"), "S/MIME chain confirmed by Windows");
-    verdict(error)
+    tracing::debug!(error = format_args!("{error:#x}"), "smime: chain checked by the OS");
+    // SAFETY: контекст цепочки получен выше и жив до `Guard`.
+    let not_yet = error & CERT_TRUST_IS_NOT_TIME_VALID != 0 && unsafe { time_validity(ctx) } == Some(false);
+    verdict(error, not_yet)
+}
+
+/// Срок сертификатов простой цепочки 0 с флагом `CERT_TRUST_IS_NOT_TIME_VALID`: `Some(true)` — хотя бы один истёк,
+/// `Some(false)` — только «ещё не действует», `None` — не определить.
+///
+/// # Safety
+/// `ctx` — живой контекст цепочки от `CertGetCertificateChain`.
+unsafe fn time_validity(ctx: *const CERT_CHAIN_CONTEXT) -> Option<bool> {
+    let (mut expired, mut early) = (false, false);
+    // SAFETY: по договору функции контекст жив; простая цепочка 0 и её элементы действительны до его освобождения.
+    unsafe {
+        if (*ctx).cChain == 0 {
+            return None;
+        }
+        let simple = *(*ctx).rgpChain;
+        for i in 0..(*simple).cElement as usize {
+            let el = *(*simple).rgpElement.add(i);
+            if (*el).TrustStatus.dwErrorStatus & CERT_TRUST_IS_NOT_TIME_VALID == 0 {
+                continue;
+            }
+            // Текущее время (NULL): -1 — ещё не действует, 1 — истёк.
+            match CertVerifyTimeValidity(ptr::null(), (*(*el).pCertContext).pCertInfo) {
+                n if n < 0 => early = true,
+                n if n > 0 => expired = true,
+                _ => {}
+            }
+        }
+    }
+    if expired {
+        Some(true)
+    } else if early {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 pub(super) fn confirm(chain: &[Vec<u8>], exclusive_root: Option<&[u8]>) -> Revocation {
@@ -336,8 +376,10 @@ mod tests {
         assert_eq!(r, Revocation::Unknown, "в тестовом сертификате нет CDP — отзыв не проверен");
         let other = issue(&Spec::ca("Other Root"), &Key::rsa('c'), None);
         assert_eq!(confirm_with_root(&chain, &other.der, &[]), Revocation::Rejected(Confirm::Untrusted));
-        assert_eq!(verdict(0), Revocation::Good);
-        assert_eq!(verdict(CERT_TRUST_IS_REVOKED | CERT_TRUST_REVOCATION_STATUS_UNKNOWN), Revocation::Revoked);
+        assert_eq!(verdict(0, false), Revocation::Good);
+        assert_eq!(verdict(CERT_TRUST_IS_REVOKED | CERT_TRUST_REVOCATION_STATUS_UNKNOWN, false), Revocation::Revoked);
+        assert_eq!(verdict(CERT_TRUST_IS_NOT_TIME_VALID, false), Revocation::Rejected(Confirm::Expired));
+        assert_eq!(verdict(CERT_TRUST_IS_NOT_TIME_VALID, true), Revocation::Rejected(Confirm::NotYetValid));
     }
 
     /// Отзыв по CRL: CRL корня в дополнительном хранилище — отозванный сертификат «отозван», другой — «не отозван».

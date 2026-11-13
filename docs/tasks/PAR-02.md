@@ -7,7 +7,7 @@ class: B
 files: [crates/core/src/smime/, crates/backend-ldap/src/sys.rs, crates/backend-ldap/src/sys/, docs/tasks/PAR-02.md]
 read: [docs/adr/0011-platform-contract.md, docs/tasks/PAR-AUDIT.md]
 checks: [clippy, nextest, clippy-windows, clippy-macos, ci-windows, ci-macos]
-manual: no
+manual: docs/manual-tests/PAR-02.md
 
 ## Цель
 Закрыть строки №18, 25–35 аудита `PAR-AUDIT` по договору ADR 0011: одно правило отказа, один уровень и язык журнала,
@@ -50,12 +50,8 @@ manual: no
 | Контроллер домена (№35) | не найден/вышло время — `None` («не в домене») | DEBUG `ldap: …` | `DC_TIMEOUT` 5 с | — | — | — | Windows — служба `DsGetDcNameW`, macOS/Linux — DNS SRV по области билета |
 
 ## Решения для владельца
-1. №26, Linux: системного хранилища промежуточных нет. Предложение (класс B, полоса core): общий для всех ОС кэш
-   промежуточных из уже проверенных писем — тогда письмо без промежуточных одинаково на трёх ОС.
-2. №30: «ещё не действует» показывается как «истёк» на Windows и macOS (у CryptoAPI один флаг). Отдельная причина —
-   новый ключ Fluent в `app-gpui` (другая полоса) и разбор срока в общем коде.
-3. №25: замок сериализует и окна PIN — второй запрос ждёт, пока пользователь введёт PIN в первом. Согласиться или
-   держать замок только на «молча».
+Приняты 2026-11-13 (оркестратор, владелец передал решение): «ещё не действует» — своя причина, промежуточные из
+писем на Linux и macOS — волна PAR-02b; замок Связки ключей, сериализующий окна PIN, — как есть.
 
 ## Приёмка
 clippy (Linux, `x86_64-pc-windows-msvc`, `aarch64-apple-darwin` — C-зависимости заглушкой), nextest затронутых на
