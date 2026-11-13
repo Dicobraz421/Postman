@@ -155,6 +155,8 @@ fn day_key(d: Day) -> &'static str {
 /// Подпись группы: дата или имя папки.
 pub(crate) fn group_label(g: &Group, names: &HashMap<String, String>) -> String {
     match g {
+        Group::Pinned => tr!("comfort-group-pinned"),
+        Group::Rest => tr!("comfort-group-rest"),
         Group::Top => tr!("lifecycle-group-top"),
         Group::Day(d) => tr!(day_key(*d)),
         Group::Folder(id) => names.get(id).cloned().unwrap_or_else(|| id.clone()),

@@ -80,11 +80,26 @@ pub struct Prefs {
 }
 
 /// «Ответы и пересылка» (#655), как «Почта → Ответы и пересылка» Outlook. Пересылка цитирует всегда.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Replies {
     /// «При ответе на сообщение» — для «Ответить» и «Ответить всем».
     pub quote: ReplyQuote,
+    /// «Отмена отправки» (CMF-03): сколько секунд письмо ждёт после «Отправить» (`send_later::UNDO_DELAYS`); 0 — сразу.
+    pub undo_secs: u8,
+}
+
+impl Default for Replies {
+    fn default() -> Self {
+        Self { quote: ReplyQuote::default(), undo_secs: crate::send_later::UNDO_DEFAULT }
+    }
+}
+
+impl Replies {
+    /// Задержка «Отменить» из настройки (чужое число — по умолчанию).
+    pub fn undo(&self) -> u8 {
+        crate::send_later::undo_delay(self.undo_secs)
+    }
 }
 
 /// Текст исходного письма в ответе.
@@ -1562,6 +1577,18 @@ mod tests {
         assert_eq!(old.session, Session::default());
     }
 
+    /// CMF-03: «Отмена отправки» — 10 с по умолчанию и в старом файле (поля нет); чужое число — по умолчанию.
+    #[test]
+    fn undo_delay_defaults_to_ten_seconds() {
+        assert_eq!(Prefs::default().replies.undo(), 10);
+        let old: Replies = serde_json::from_str(r#"{"quote":"omit"}"#).unwrap();
+        assert_eq!((old.quote, old.undo()), (ReplyQuote::Omit, 10));
+        let off: Replies = serde_json::from_str(r#"{"undo_secs":0}"#).unwrap();
+        assert_eq!(off.undo(), 0);
+        let odd: Replies = serde_json::from_str(r#"{"undo_secs":12}"#).unwrap();
+        assert_eq!(odd.undo(), 10);
+    }
+
     #[test]
     fn prefs_round_trip() {
         let d = dir();
@@ -1590,6 +1617,7 @@ mod tests {
         p.keys.insert("tab.close".into(), vec![]);
         p.key_scheme = KeyScheme::Single;
         p.replies.quote = ReplyQuote::Omit;
+        p.replies.undo_secs = 30;
         p.keytips = false;
         p.general.autostart = true;
         p.general.notify = Notify::Important;

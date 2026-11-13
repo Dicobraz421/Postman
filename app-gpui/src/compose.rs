@@ -55,7 +55,7 @@ impl Field {
 /// Зачем черновик уходит на сервер.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Purpose {
-    /// Отправить с окном «Отменить» (сервер держит письмо `send_later::UNDO_HOLD_SECS`).
+    /// Отправить с окном «Отменить» (сервер держит письмо задержку настройки и запас, `send_later::undo_release`).
     Send,
     /// «Отправить позже»: сервер выпустит письмо в этот момент (Unix-секунды).
     SendLater(i64),
@@ -156,6 +156,9 @@ pub(crate) struct Model {
     dismissed: HashSet<String>,
     /// Личные группы письма (T2-47): чип группы в поле — `"Имя" <group:N>`, N — номер здесь ([`Model::add_group`]).
     groups: Vec<Group>,
+    /// «Отмена отправки» (CMF-03): сколько секунд письмо ждёт после «Отправить»; 0 — сразу. Ставит окно письма из
+    /// настройки перед отправкой (`Prefs::replies`).
+    pub(crate) undo_secs: u8,
     /// Ответ на фрагменты (`fragments.rs`): реплики «цитата → мой ответ» между своим текстом и подписью.
     pub(crate) fragments: crate::fragments::Pairs,
 }
@@ -260,6 +263,7 @@ impl Model {
             recipient_checks: Vec::new(),
             cert_checks: Vec::new(),
             encrypt_to: Vec::new(),
+            undo_secs: send_later::UNDO_DEFAULT,
             dismissed: HashSet::new(),
             groups: Vec::new(),
             fragments: Default::default(),
@@ -525,7 +529,7 @@ impl Model {
                 self.status = Status::Busy(purpose);
                 let (draft, replace) = (Box::new(d), self.server_id.clone());
                 Some(match purpose {
-                    Purpose::Send => Command::Send { draft, replace, ticket, release: Release::After(send_later::UNDO_HOLD_SECS) },
+                    Purpose::Send => Command::Send { draft, replace, ticket, release: send_later::undo_release(self.undo_secs) },
                     Purpose::SendLater(at) => Command::Send { draft, replace, ticket, release: Release::At(at) },
                     Purpose::Save | Purpose::Autosave => Command::SaveDraft { draft, replace, ticket },
                 })
@@ -1374,6 +1378,8 @@ pub(crate) struct SentDraft {
     pub(crate) draft: Draft,
     /// «Отправить позже», а не обычная отправка с окном «Отменить».
     pub(crate) later: bool,
+    /// Окно «Отменить» — задержка, с которой письмо ушло (CMF-03).
+    pub(crate) undo_secs: u8,
 }
 
 impl Composers {
@@ -2383,6 +2389,17 @@ mod tests {
         let Some(Command::Send { release, .. }) = m.begin(Purpose::Send, 1, Instant::now()) else { panic!("send") };
         assert_eq!(release, Release::After(send_later::UNDO_HOLD_SECS));
         assert!(!m.sending_later());
+        // CMF-03: задержка 0 — письмо уходит сразу, без окна «Отменить»; 30 — сервер держит 30 с и запас.
+        let mut now = model();
+        fill(&mut now);
+        now.undo_secs = 0;
+        let Some(Command::Send { release, .. }) = now.begin(Purpose::Send, 9, Instant::now()) else { panic!("send") };
+        assert_eq!(release, Release::Now);
+        let mut long = model();
+        fill(&mut long);
+        long.undo_secs = 30;
+        let Some(Command::Send { release, .. }) = long.begin(Purpose::Send, 10, Instant::now()) else { panic!("send") };
+        assert_eq!(release, Release::After(33));
         assert!(m.on_sent(1));
         m.set_server_id("draft-1".into());
         let Some(Command::Send { release, replace, .. }) = m.begin(Purpose::SendLater(1_792_562_400), 2, Instant::now()) else {

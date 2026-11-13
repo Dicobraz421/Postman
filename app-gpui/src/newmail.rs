@@ -1,7 +1,8 @@
 //! Уведомления о новых письмах в окне (T2-10, «Настройки → Общие»): после каждого обновления писем с сервера — новые
 //! непрочитанные во «Входящих» (`postman_core::newmail`, в фоне: читает кэш). Найденное — в историю уведомлений
 //! (🔔); окно не активно и не тихие часы — ещё и уведомление Windows, со звуком «Новое письмо» или молча. Отметка
-//! «что уже видели» — в кэше: после перезапуска старые письма не всплывают; первый запуск — с этой минуты.
+//! «что уже видели» — в кэше: после перезапуска старые письма не всплывают; первый запуск — с этой минуты. Заглушённые
+//! беседы (CMF-01) не уведомляют, новое письмо такой беседы получает признак.
 
 use gpui_kit::*;
 use pets_i18n::tr;
@@ -62,10 +63,10 @@ impl Mailer {
             let Some(since) = known.or(stored) else {
                 // Первый запуск: всё, что уже лежит, — не новое.
                 let _ = cache.set_state(SINCE, &now.to_string());
-                return Ok::<_, postman_cache::Error>((Vec::new(), now));
+                return Ok::<_, postman_cache::Error>((newmail::Found::default(), now));
             };
             let found = newmail::scan(&cache, since, &me)?;
-            let next = found.iter().map(|f| f.received_at).max().unwrap_or(since).max(since);
+            let next = found.latest.max(since);
             if next != since {
                 cache.set_state(SINCE, &next.to_string())?;
             }
@@ -78,7 +79,18 @@ impl Mailer {
                 match result {
                     Ok((found, since)) => {
                         m.newmail.since = Some(since);
-                        m.show_new_mail(found, cx);
+                        // Новое письмо заглушённой беседы (CMF-01) наследует признак — и на сервере.
+                        let inherit: Vec<postman_cache::Patch> = found
+                            .inherit
+                            .iter()
+                            .map(|id| postman_cache::Patch {
+                                id: id.clone(),
+                                keywords: vec![(postman_core::mute::MUTED.into(), true)],
+                                ..Default::default()
+                            })
+                            .collect();
+                        m.apply_patches(inherit, cx);
+                        m.show_new_mail(found.fresh, cx);
                     }
                     Err(e) => tracing::warn!("newmail: new mail check failed, retry later: {e}"),
                 }

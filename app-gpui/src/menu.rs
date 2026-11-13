@@ -98,6 +98,9 @@ enum Item {
     /// Правила из письма (T2-50, макет `Bulk`): «Всегда перемещать от этого отправителя ▸», «Заблокировать отправителя».
     AlwaysMove,
     Block,
+    /// «Закрепить / открепить» (CMF-02) и «Заглушить беседу / вернуть звук» (CMF-01).
+    Pin,
+    Mute,
 }
 
 /// Пункты группами (разделитель между группами), порядок — S5-08.
@@ -106,6 +109,7 @@ const GROUPS: &[&[Item]] = &[
     &[Item::Seen, Item::Flag, Item::Category],
     &[Item::Due, Item::Remind, Item::Wait, Item::Expire],
     &[Item::Move, Item::Archive, Item::Delete],
+    &[Item::Pin, Item::Mute],
     &[Item::Export],
     &[Item::View],
     &[Item::AlwaysMove, Item::Block, Item::Phishing],
@@ -166,6 +170,8 @@ impl Item {
             Item::Export => crate::export::EXPORT,
             Item::AlwaysMove => glyph::RULES,
             Item::Block => BLOCK,
+            Item::Pin => glyph::PIN,
+            Item::Mute => glyph::MUTED,
         }
     }
 
@@ -188,6 +194,8 @@ impl Item {
             Item::Delete => "mail.delete",
             Item::Phishing => "mail.report_phishing",
             Item::Export => "mail.export",
+            Item::Pin => "mail.pin",
+            Item::Mute => "mail.mute",
             // Правила из письма — там, где у сервера есть правила.
             Item::AlwaysMove | Item::Block => "settings.rules",
             Item::Category | Item::View => return None,
@@ -433,6 +441,8 @@ impl Mailer {
             Item::Delete => self.ask(ids, Ask::Trash, cx),
             Item::Phishing => self.ask(ids, Ask::Phishing, cx),
             Item::Export => self.export_ask(crate::export::What::Letters(ids), cx),
+            Item::Pin => self.pin_ids(ids, cx),
+            Item::Mute => self.mute_ids(ids, cx),
             Item::Block => {
                 if let Some((_, r)) = row {
                     self.block_sender(r, cx);
@@ -614,6 +624,17 @@ impl Mailer {
                     Item::Export => tr!("export-menu"),
                     Item::AlwaysMove => tr!("menu-always-move"),
                     Item::Block => tr!("menu-block"),
+                    // Одна строка — по её признаку; выделение — оба действия в названии.
+                    Item::Pin => match &m.row {
+                        Some((_, r)) if postman_core::pin::is_pinned(r) => tr!("comfort-menu-unpin"),
+                        Some(_) => tr!("comfort-menu-pin"),
+                        None => tr!("cmd-mail-pin"),
+                    },
+                    Item::Mute => match &m.row {
+                        Some((_, r)) if postman_core::mute::is_muted(r) => tr!("comfort-menu-unmute"),
+                        Some(_) => tr!("comfort-menu-mute"),
+                        None => tr!("cmd-mail-mute"),
+                    },
                 };
                 let key = it.command(m.unread).map(|c| key_hint(c, cx)).unwrap_or_default();
                 let glyph_el = if it == Item::Phishing {

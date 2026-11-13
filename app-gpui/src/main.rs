@@ -20,6 +20,7 @@ mod buttons;
 mod cal_model;
 mod calendar;
 mod chrome;
+mod comfort;
 mod commands;
 mod compose;
 mod composer;

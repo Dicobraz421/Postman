@@ -1240,7 +1240,8 @@ impl Imap {
     /// Отправить удержанные письма, срок которых вышел (`all` — все).
     async fn release_held(&mut self, all: bool, notify: &impl Fn(Event)) {
         let now = tokio::time::Instant::now();
-        let (due, keep): (Vec<Held>, Vec<Held>) = std::mem::take(&mut self.held).into_iter().partition(|h| all || h.at <= now);
+        let (due, keep): (Vec<Held>, Vec<Held>) =
+            std::mem::take(&mut self.held).into_iter().partition(|h| postman_core::send_later::release_now(h.at, now, all));
         self.held = keep;
         if due.is_empty() {
             return;

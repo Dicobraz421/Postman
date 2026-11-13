@@ -547,6 +547,8 @@ pub(crate) fn command_icon(id: &str) -> Option<char> {
         "mail.mark_read" => READ,
         "mail.mark_unread" | "search.unread" | "view.mail" | "contacts.write" | "tab.new" => MAIL,
         "mail.toggle_flag" => FLAG,
+        "mail.pin" => crate::chrome::glyph::PIN,
+        "mail.mute" => crate::chrome::glyph::MUTED,
         "mail.categorize" => TAG,
         "mail.new" => NEW_MAIL,
         "mail.reply" => REPLY,

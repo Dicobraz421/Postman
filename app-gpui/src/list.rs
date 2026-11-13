@@ -230,7 +230,8 @@ impl Job {
         let now = jiff::Zoned::now();
         let days = Days::at(&now);
         let folders = matches!(self.scan, Scan::Account(_));
-        // Папка по дате без фильтров — страницы из кэша; есть «Срочное» (S5-04) — свой набор с ним наверху.
+        // Папка по дате без фильтров — страницы из кэша; есть «Срочное» (S5-04) или закреплённые (CMF-02) — свой набор
+        // с ними наверху.
         let pins = !folders && self.query.sort == Sort::Date;
         let mut own = self.own || self.outlook;
         loop {
@@ -273,11 +274,13 @@ impl Job {
                 counts.shown += 1;
             }
             let top = pass && pins && postman_core::lifecycle::on_top(&row, now, self.overdue_first);
-            tops += usize::from(top);
+            // Закреплённые (CMF-02) — вверху одной папки в любой сортировке: для них нужен свой набор, как для «Срочного».
+            let pinned = pass && !folders && postman_core::pin::is_pinned(&row);
+            tops += usize::from(top || pinned);
             if own && pass {
                 let folder = if folders { row.mailbox_ids.iter().filter_map(|m| index.get(m.as_str())).min().copied() } else { Some(0) };
                 if let Some(folder) = folder {
-                    let mut hit = Hit { top, ..Hit::of(&row, folder) };
+                    let mut hit = Hit { top, pinned, ..Hit::of(&row, folder) };
                     // Отправитель нужен только для сортировки по нему — без неё строка на каждое письмо лишняя (S8-37).
                     if self.query.sort != Sort::Sender {
                         hit.sender = String::new();
@@ -1706,6 +1709,9 @@ pub(crate) fn list_row(
         .when(encrypted, |d| d.child(crate::chrome::icon(crate::smime_enc::LOCK, 13.).text_color(l.text3())))
         .when(r.has_attachment && !encrypted, |d| d.child(crate::chrome::icon(crate::chrome::glyph::ATTACH, 13.).text_color(l.text3())))
         .when(r.flagged, |d| d.child(crate::chrome::icon(crate::chrome::glyph::FLAG, 13.).text_color(l.pm(Pm::Flag))))
+        // Беседа без звука (CMF-01) и закреплённое (CMF-02) — значками цветом подписей, как вложение.
+        .when(postman_core::mute::is_muted(r), |d| d.child(crate::chrome::icon(crate::chrome::glyph::MUTED, 13.).text_color(l.text3())))
+        .when(postman_core::pin::is_pinned(r), |d| d.child(crate::chrome::icon(crate::chrome::glyph::PIN, 13.).text_color(l.text3())))
         // Перенос (S8-16, макет S8-D п. 3): перед временем, цветом подписей, с подсказкой.
         .children(labels.migration.map(|(g, hint)| {
             div()
