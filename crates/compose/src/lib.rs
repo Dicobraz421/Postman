@@ -383,6 +383,27 @@ mod tests {
         assert!(msg.body_text(0).unwrap().contains("| Омск | 10 |"));
     }
 
+    /// Подпись тестера (#654), как её вставляет композер: в HTML строки — строками (`<br />`), курсив через перенос —
+    /// курсивом, `**…**` с пробелом перед `**` — жирным; text/plain — как набрана, со всеми переносами и знаками.
+    #[test]
+    fn signature_keeps_lines_and_markup() {
+        let sig = "*Какой то текст\nКакой то текст*\n**Ссылка | Почта **\n\n*ООО Компания | Сайт компании*";
+        let d =
+            Draft {
+                from: me(), to: vec![Address::new("", "ivan@corp.example")], markdown: format!("Добрый день!\n\n{sig}"), ..Default::default()
+            };
+        let raw = build(&d, 0, "s@corp.example").unwrap();
+        let msg = MessageParser::default().parse(&raw).unwrap();
+        let html = msg.body_html(0).unwrap();
+        assert!(
+            html.contains(
+                "<p><em>Какой то текст<br />\nКакой то текст</em><br />\n<strong>Ссылка | Почта</strong></p>\n<p><em>ООО Компания | Сайт компании</em></p>"
+            ),
+            "{html}"
+        );
+        assert_eq!(msg.body_text(0).unwrap().replace("\r\n", "\n").trim_end(), d.markdown);
+    }
+
     /// Картинка подписи (T3-07): вложение inline с Content-ID в `multipart/related` рядом с HTML, `<img src="cid:…">`
     /// ссылается на тот же Content-ID; обычное вложение — отдельно.
     #[test]
