@@ -42,8 +42,11 @@ pub struct Span {
     pub look: Look,
 }
 
-/// Разметка письма для отображения в поле ввода.
-pub fn display(md: &str) -> Vec<Span> {
+/// Разметка письма для отображения в поле ввода. Маркер после пробела (`**текст **`) понимается, как при отправке
+/// (`postman_ir::tidy_markers`): разбирается переставленный текст, признаки возвращаются на места исходного.
+pub fn display(text: &str) -> Vec<Span> {
+    let (tidy, moves) = postman_ir::tidy_markers(text);
+    let md = tidy.as_ref();
     let mut looks = vec![Look::default(); md.len()];
     let mut set = |r: Range<usize>, f: &dyn Fn(&mut Look)| {
         for l in &mut looks[r.start.min(md.len())..r.end.min(md.len())] {
@@ -178,7 +181,10 @@ pub fn display(md: &str) -> Vec<Span> {
             i += 1;
         }
     }
-    spans(md, &looks)
+    for m in &moves {
+        looks[m.at..m.at + m.space + m.marker].rotate_right(m.space);
+    }
+    spans(text, &looks)
 }
 
 /// Знаки по краям `r` шириной `n` — разметка.
@@ -283,6 +289,15 @@ mod tests {
     }
 
     /// Незакрытые маркеры — обычный текст (как при отправке).
+    /// Подпись #654: `**` после пробела закрывает жирный — знаки приглушены, текст жирный, пробел — обычный.
+    #[test]
+    fn loose_closing_marker() {
+        let md = "**Ссылка | Почта **";
+        assert_eq!(of(md, |l| l.strong && !l.markup), ["Ссылка | Почта"]);
+        assert_eq!(markup(md), ["**", "**"]);
+        assert!(display(md).iter().all(|s| md.is_char_boundary(s.range.start) && md.is_char_boundary(s.range.end)));
+    }
+
     #[test]
     fn unclosed_markers_stay_plain() {
         for md in ["**жирный без конца", "*курсив", "`код", "[ссылка](без конца", "~~"] {
