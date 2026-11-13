@@ -158,7 +158,8 @@ impl Renderer {
     }
 }
 
-fn render(client: &mut Client, body: &BodyRow) -> Document {
+/// Тело → IR в воркере: HTML, при сбое — текст; ни то, ни другое — заметка об ошибке.
+pub(crate) fn render(client: &mut Client, body: &BodyRow) -> Document {
     let html_err = match &body.html {
         Some(h) => match client.render(&Request::Html(h.clone())) {
             Ok(doc) => return doc,

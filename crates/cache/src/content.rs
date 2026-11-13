@@ -599,6 +599,33 @@ impl Cache {
         }
     }
 
+    /// Части, вынутые из содержимого письма `letter` (листовые от [`MIN_PART`], раскодированные): SHA-256 и размер,
+    /// по порядку в письме. Хэш уже посчитан при записи — по нему одинаковые вложения разных писем сравниваются без
+    /// чтения байтов (вложения беседы новым участникам). Содержимого нет — пусто.
+    pub fn letter_parts(&self, letter: LetterId) -> Result<Vec<(Hash, u64)>> {
+        let tx = self.db.begin_read()?;
+        let row: Option<LetterRow> = tx.open_table(LETTER)?.get(letter.0)?.map(|v| dec(v.value())).transpose()?;
+        let Some(hash) = row.and_then(|r| r.content) else { return Ok(Vec::new()) };
+        let Some(content) = tx.open_table(CONTENT)?.get(hash.0)?.map(|v| dec::<ContentRow>(v.value())).transpose()? else {
+            return Ok(Vec::new());
+        };
+        let (part, chunks) = (tx.open_table(PART)?, tx.open_table(CHUNKS)?);
+        let mut out = Vec::with_capacity(content.parts.len());
+        for p in &content.parts {
+            let Some(pr) = part.get(p.hash.0)?.map(|v| dec::<PartRow>(v.value())).transpose()? else { continue };
+            let size = match pr.data {
+                PartData::Bytes(b) => b.len() as u64,
+                PartData::Chunks(0) => 0,
+                PartData::Chunks(n) => {
+                    let last = chunks.get((p.hash.0, n - 1))?.map_or(0, |c| c.value().len() as u64);
+                    u64::from(n - 1) * CHUNK as u64 + last
+                }
+            };
+            out.push((p.hash, size));
+        }
+        Ok(out)
+    }
+
     /// Пересчёт ссылок на содержимое и части с нуля по письмам и сверка с `refs` (и кусками частей) — для тестов и
     /// диагностики. Ответ — расхождения по-английски (для журнала); пусто — сходится.
     pub fn check_refs(&self) -> Result<Vec<String>> {
@@ -783,6 +810,22 @@ mod tests {
 
     /// Одно вложение в двух учётках и в другом письме — одна запись части; сборка — исходные байты; удаление
     /// последнего письма убирает содержимое и части.
+    /// Хэши вынутых частей письма — те, что посчитаны при записи: и одним значением, и кусками.
+    #[test]
+    fn letter_parts_report_stored_hashes_and_sizes() {
+        let (c, a, _) = setup();
+        let small = noise(200 * 1024, 7);
+        let big = noise(CHUNK + 300 * 1024, 8);
+        let (x, y, z) = (new_letter(&c, "a", "x", a), new_letter(&c, "a", "y", a), new_letter(&c, "a", "z", a));
+        let (raw, part) = letter_with("x", &small, &b64(&small, 76, "\r\n"), "\r\n");
+        c.put_content(x, &raw, std::slice::from_ref(&part)).unwrap();
+        let (raw, part) = letter_with("y", &big, &b64(&big, 76, "\r\n"), "\r\n");
+        c.put_content(y, &raw, std::slice::from_ref(&part)).unwrap();
+        assert_eq!(c.letter_parts(x).unwrap(), [(Hash::of(&small), small.len() as u64)]);
+        assert_eq!(c.letter_parts(y).unwrap(), [(Hash::of(&big), big.len() as u64)]);
+        assert!(c.letter_parts(z).unwrap().is_empty(), "содержимого нет");
+    }
+
     #[test]
     fn one_attachment_is_stored_once() {
         let (c, a, b) = setup();

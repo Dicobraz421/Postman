@@ -1885,6 +1885,37 @@ impl Composer {
     }
 
     /// Строка полей шаблона над текстом письма.
+    /// Строка над текстом (решение владельца 2026-11-13): новым участникам ответа уйдут вложения беседы — или нет,
+    /// если это отключили для письма. Команда `compose.share_attachments` — то же переключение.
+    fn share_row(&self, l: &Look, cx: &mut Context<Self>) -> Option<Div> {
+        let (names, count, off) = self.model.share_line()?;
+        let names = names.join(", ");
+        let (text, button) = if off {
+            (tr!("compose-share-off", names = names), tr!("compose-share-enable"))
+        } else {
+            (tr!("compose-share-on", names = names, n = count), tr!("compose-share-disable"))
+        };
+        Some(
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_3()
+                .px(px(16.))
+                .py(px(6.))
+                .bg(l.fill_passive())
+                .border_b_1()
+                .border_color(l.border())
+                .child(div().flex_1().min_w_0().text_color(if off { l.text2() } else { l.text() }).child(text))
+                .child(crate::buttons::button("share-toggle", button, false, l).on_click(cx.listener(|this, _, _, cx| this.toggle_share(cx)))),
+        )
+    }
+
+    fn toggle_share(&mut self, cx: &mut Context<Self>) {
+        self.model.toggle_share();
+        cx.notify();
+    }
+
     fn template_ask_row(&self, l: &Look, cx: &mut Context<Self>) -> Option<Div> {
         let a = self.tpl_ask.as_ref()?;
         let fields = a.fields.iter().enumerate().map(|(i, (name, input))| {
@@ -2701,6 +2732,7 @@ impl Render for Composer {
             .children(self.later_picker(&l, cx))
             .when(inline, |d| d.children(self.attachment_chips(&l, cx)))
             .children(self.template_ask_row(&l, cx))
+            .children(self.share_row(&l, cx))
             .child(self.content(window, cx))
             .when(inline, |d| d.children(self.inline_checks(&l, cx)))
             // Ответ на письмо общего ящика (S5-28): «От» — свой адрес или письмо у коллеги.
@@ -2727,6 +2759,7 @@ impl Render for Composer {
                 }
             }))
             .on_action(cx.listener(|this, _: &compose::AddressBook, window, cx| this.open_recipients(Field::To, window, cx)))
+            .on_action(cx.listener(|this, _: &compose::ShareAttachments, _, cx| this.toggle_share(cx)))
             .on_action(cx.listener(|this, _: &compose::Discard, _, cx| {
                 this.model.confirm_close = false;
                 this.model.confirm_delete = true;
@@ -2998,6 +3031,10 @@ pub(crate) fn md_style(m: &postman_compose::display::Look, l: &Look) -> Highligh
 
 /// Строка ошибки отправки; подпись S/MIME (код `smime-sign:…` от ядра) — своими словами.
 fn failed_text(e: &str) -> String {
+    // Вложение не скачалось перед отправкой (код синхронизации): письмо без него не ушло.
+    if let Some(at) = e.find(postman_compose::MISSING) {
+        return tr!("compose-attachment-missing", name = e[at + postman_compose::MISSING.len()..].to_owned());
+    }
     if let Some(at) = e.find("smime-seal:") {
         let rest = &e[at + "smime-seal:".len()..];
         let (code, detail) = rest.split_once(':').unwrap_or((rest, ""));

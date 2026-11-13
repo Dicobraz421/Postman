@@ -1,7 +1,7 @@
 # MSGR-01: ответ на фрагменты — реплики «цитата → ответ»
 
 lane: x/fragments           # app-gpui, formats (crates/compose)
-status: in-progress
+status: done
 deps: []
 class: A
 files: [app-gpui/src/fragments.rs, app-gpui/src/ir_view.rs, app-gpui/src/reading.rs, app-gpui/src/thread.rs, app-gpui/src/composer.rs, app-gpui/src/compose.rs, app-gpui/src/actions.rs, app-gpui/src/mailer.rs, app-gpui/src/main.rs, app-gpui/src/parts.rs, app-gpui/i18n/*/fragments.ftl, app-gpui/i18n/*/commands.ftl, crates/compose/src/fragments.rs, crates/compose/src/lib.rs, docs/PARITY.md]

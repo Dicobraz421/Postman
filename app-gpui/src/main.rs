@@ -93,6 +93,7 @@ mod settings_security;
 mod settings_sign;
 mod settings_tab;
 mod settings_viewers;
+mod share;
 mod shared;
 mod signin;
 mod smime;
