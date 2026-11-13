@@ -4,8 +4,8 @@
 сборка, выпуск, замеры. Правила для Claude Code — [CLAUDE.md](../CLAUDE.md).
 
 Клиент почты, календаря и контактов: чистый Rust, интерфейс на gpui (DirectX 11 на Windows, Metal на macOS),
-раскладка и клавиши classic Outlook. Windows 10/11 x64 — основа, macOS 13+ arm64 — вторая платформа, Linux — в
-работе (tier 2). Основной сервер — The Post (JMAP); с Stalwart, IMAP + SMTP + CalDAV/CardDAV и
+раскладка и клавиши classic Outlook. Windows 10/11 x64 — основа, macOS 13+ arm64 — вторая платформа, Linux x86_64 —
+tier 2, предварительный выпуск (AppImage, deb, rpm). Основной сервер — The Post (JMAP); с Stalwart, IMAP + SMTP + CalDAV/CardDAV и
 Exchange (EWS) — совместимость по стандартам, через плагины.
 
 ## Куда смотреть
@@ -71,11 +71,12 @@ cargo test --workspace
 (все пользователи, `Program Files`, нужны права администратора; он же — пакет winget `Pets.Postman`), архив
 `postman-<версия>-windows-x64.zip` (`postman.exe`, `postman-worker.exe`, `postman-viewer.exe`, `README.txt`,
 `install.ps1` — установка для себя без прав администратора), отдельные компоненты; для macOS — образ
-`postman-<версия>-macos-arm64.dmg` и архив `.zip` с `Postman.app` (`scripts/macos/package.sh`, MAC-06); подписи
+`postman-<версия>-macos-arm64.dmg` и архив `.zip` с `Postman.app` (`scripts/macos/package.sh`, MAC-06); для Linux x86_64 —
+`postman-<версия>-linux-x64.AppImage`, `.deb` и `.rpm` (`scripts/linux/package.sh`, LIN-06); подписи
 minisign `.minisig` для самообновления (T3-12) и `SHA256SUMS.txt`. Решение —
 [decisions/2026-11-07-installer-msi-winget.md](decisions/2026-11-07-installer-msi-winget.md); как выпустить —
-[DEV.md](DEV.md) «Выпуск». Текст страницы выпуска — `.github/release-notes.md`. Сборка каждого `main` — артефакт CI
-(Actions → запуск → Artifacts). Локально — `scripts/windows/package.ps1` после `cargo build --release --workspace`
+[DEV.md](DEV.md) «Выпуск». Текст страницы выпуска — `.github/release-notes.md`. Пробная сборка — ручной запуск CI или PR, что правит
+выпуск (Actions → запуск → Artifacts). Локально — `scripts/windows/package.ps1` после `cargo build --release --workspace`
 (в `dist/`; MSI собирает `tools/pack`). Инструкция пользователя — [USER-GUIDE.md](USER-GUIDE.md) «Установка» и
 `scripts/windows/README.txt`. Версия exe — из `version` в `Cargo.toml`; значок — `app-gpui/res/postman.ico`
 (`scripts/windows/make-icon.ps1`), манифест — `app-gpui/res/postman.manifest`.

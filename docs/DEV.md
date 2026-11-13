@@ -109,8 +109,8 @@ Actions — для разработки. Схема общая для Pets (ск
   Ubuntu 23.10+ запрещает воркеру user namespaces и песочница идёт без них (ADR 0010, режим `optional`); у AppImage
   профиля нет — это видно в диагностике песочницы. Job `linux-install` ставит deb (Ubuntu 24.04, Debian 12), rpm
   (Fedora, AlmaLinux 9) и AppImage (Ubuntu 22.04) в чистых контейнерах, запускает `postman --version` и удаляет; `publish` ждёт и
-  его. Самообновления на Linux пока нет: в `pets-update` нет вида установки AppImage и пакетов (проверка находит только
-  чужие файлы и молчит) — отдельная задача pets, затем подъём ревизии полосой deps. Локально: `bash scripts/linux/package.sh --profile debug` (нужны `dpkg-deb`, `rpmbuild`, `mksquashfs`).
+  его. Самообновление на Linux (INT-01, pets UPD-LIN): вид установки — `InstallKind::current_linux()`; AppImage заменяется
+  рядом, как portable; deb и rpm без root не ставятся — «Скачать» открывает файл выпуска; сборка из исходников — без обновления. Локально: `bash scripts/linux/package.sh --profile debug` (нужны `dpkg-deb`, `rpmbuild`, `mksquashfs`).
 - MSI: `package.ps1` вызывает `postman-pack msi` той же сборки. Версия MSI для бет — `a.b.(c·1000 + r)`
   (`0.1.0-beta.2` → `0.1.302`, `tools/pack/src/ids.rs`). `UpgradeCode` постоянный, `ProductCode` выводится из версии.
   Коды компонентов меняются, только если меняется ключевой файл компонента. Новый файл комплекта — строка в `ITEMS`
