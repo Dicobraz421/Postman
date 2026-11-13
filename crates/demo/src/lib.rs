@@ -1,5 +1,6 @@
 //! Синтетический ящик для замеров памяти/FPS без сервера.
 
+pub mod media;
 pub mod smime;
 pub mod store;
 
@@ -145,6 +146,10 @@ pub fn ensure(path: &Path, n: usize) -> postman_cache::Result<()> {
         if cache.rows_by_ids(&[CHAIN[0].id.to_string()])?.is_empty() {
             chain(&cache, jiff::Timestamp::now().as_second())?;
         }
+        // …и беседы для «Медиа беседы» (MED-01).
+        if cache.rows_by_ids(&[media::LETTERS[0].to_string()])?.is_empty() {
+            media::fill(&cache, jiff::Timestamp::now().as_second())?;
+        }
         // …и черновика (T2-11).
         if cache.rows_by_ids(&[DRAFT.to_string()])?.is_empty() {
             draft(&cache, jiff::Timestamp::now().as_second())?;
@@ -235,6 +240,7 @@ pub fn ensure(path: &Path, n: usize) -> postman_cache::Result<()> {
     shared(&cache, now)?;
     extra_accounts(&cache, now)?;
     chain(&cache, now)?;
+    media::fill(&cache, now)?;
     draft(&cache, now)?;
     delegations::letters(&cache, now)?;
     store::fill(&cache, now)
@@ -663,7 +669,7 @@ const SHARED_SUBJECTS: &[&str] = &["Заявка клиента №", "Комм�
 pub fn body(id: &str) -> BodyRow {
     // Письма общих ящиков демо — с префиксом аккаунта, тела — те же.
     let (account, id) = postman_cache::unscoped(id);
-    if let Some(b) = chain_body(id) {
+    if let Some(b) = chain_body(id).or_else(|| media::body(id)) {
         return b;
     }
     // Общее вложение (S8-14): одна и та же сводка в письмах трёх учёток.
@@ -903,7 +909,7 @@ pub fn blob(blob_id: &str) -> Option<Vec<u8>> {
         "photo" => Some(PHOTO.to_vec()),
         "xlsx" | "exe" | "rtlo" => Some(b"demo".to_vec()),
         store::SHARED_PDF_BLOB => Some(store::pdf().to_vec()),
-        other => other.strip_prefix("smime-").and_then(smime::raw).map(<[u8]>::to_vec),
+        other => other.strip_prefix("smime-").and_then(smime::raw).map(<[u8]>::to_vec).or_else(|| media::blob(other)),
     }
 }
 
