@@ -5,7 +5,7 @@
 
 Клиент почты, календаря и контактов: чистый Rust, интерфейс на gpui (DirectX 11 на Windows, Metal на macOS),
 раскладка и клавиши classic Outlook. Windows 10/11 x64 — основа, macOS 13+ arm64 — вторая платформа, Linux x86_64 —
-tier 2, предварительный выпуск (AppImage, deb, rpm). Основной сервер — The Post (JMAP); с Stalwart, IMAP + SMTP + CalDAV/CardDAV и
+третья (AppImage, deb, rpm). Основной сервер — The Post (JMAP); с Stalwart, IMAP + SMTP + CalDAV/CardDAV и
 Exchange (EWS) — совместимость по стандартам, через плагины.
 
 ## Куда смотреть
