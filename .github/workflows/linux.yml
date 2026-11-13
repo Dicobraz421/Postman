@@ -1,9 +1,9 @@
 # CI Postman для Linux (LIN-01, docs/decisions/2026-11-12-linux.md): tier 2, x86_64, Ubuntu 24.04.
 # Отдельно от ci.yml: required check `gate` его не ждёт (Linux — tier 2 до конца этапа «Запускается», LIN-01…LIN-03).
 # `test` — clippy, модули просмотра wasm32, тесты с полной песочницей (seccomp + Landlock) и снимки `--screens` под Xvfb
-# (LIN-02, артефакт `screens-linux`); `bundle` — release и архив
-# tar.gz (артефакт Actions, не выпуск — выпуск в LIN-06) — только на PR (не черновик) и вручную; на пуш в main — один
-# `test` (решение 2026-11-12 «ci-economy»).
+# (LIN-02, артефакт `screens-linux`); `bundle` — release и AppImage, deb, rpm на раннере (артефакт Actions для
+# разработки, не выпуск: выпуск собирает ci.yml на старом glibc, LIN-06) — только на PR (не черновик) и вручную; на
+# пуш в main — один `test` (решение 2026-11-12 «ci-economy»).
 name: Linux
 
 on:
@@ -101,7 +101,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Системные пакеты
-        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends $APT_PACKAGES
+        run: >-
+          sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends $APT_PACKAGES
+          rpm squashfs-tools desktop-file-utils
       - run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
       - uses: Swatinem/rust-cache@v2.9.3
         with:
@@ -111,7 +113,7 @@ jobs:
       - name: Release-сборка
         run: cargo build --release --workspace --locked --features postman-worker/viewer
 
-      - name: Архив tar.gz
+      - name: AppImage, deb и rpm
         id: package
         run: bash scripts/linux/package.sh --target-dir "$CARGO_TARGET_DIR" --out dist
 
@@ -119,5 +121,5 @@ jobs:
         uses: actions/upload-artifact@v7.0.2
         with:
           name: ${{ steps.package.outputs.name }}
-          path: ${{ steps.package.outputs.tar }}
+          path: ${{ steps.package.outputs.dir }}
           if-no-files-found: error
