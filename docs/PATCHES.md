@@ -1,11 +1,11 @@
 # Наши патчи gpui
 
 С 2026-10-19 (S2-07) патч живёт в репозитории `pets` — `crates/pets-gpui-windows` (пакет `gpui-pre-windows`
-0.3.9), Postman подключает его `[patch]` на ревизию `pets`. Таблица ниже — история и состав; актуальный список —
+0.3.12 с GKIT-02), Postman подключает его `[patch]` на ревизию `pets`. Таблица ниже — история и состав; актуальный список —
 `pets/crates/pets-gpui-windows/README.md`.
 Каждый патч в коде помечен «Postman patch». При обновлении gpui-kit переносим непринятые патчи.
 
-С T3-06 и T3-07 (2026-11-11) — второй патч там же: `crates/pets-gpui-base` (пакет `gpui-base` 0.7.3 gpui-kit,
+С T3-06 и T3-07 (2026-11-11) — второй патч там же: `crates/pets-gpui-base` (пакет `gpui-base` gpui-kit, с GKIT-02 — 0.9.1,
 `[patch.crates-io]` в `Cargo.toml`) — блоки в тексте поля, как в Zed: таблица сеткой и картинка в письме; выделение,
 отмена, IME и вставка — прежние. Состав и upstream — `pets/crates/pets-gpui-base/README.md`.
 

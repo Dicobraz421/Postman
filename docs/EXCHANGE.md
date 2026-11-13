@@ -4,8 +4,9 @@ Exchange on-prem по EWS, best effort (ADR 0003, ADR 0004, `docs/specs/S7.md`).
 занятость и справочник — всё по EWS (решение владельца 2026-10-23 вечер, `S0-decisions.md`): у Exchange компании
 IMAP4 и приём SMTP от клиентов выключены. Плагин — `postman-backend-ews` (`MailPlugin` — почта, `AreaPlugin` с ключом
 `ews` — календарь, занятость, GAL), протокол — крейт `postman-ews`. Вход без пароля — Negotiate (Kerberos) через SSPI
-Windows, на macOS — GSS.framework (билет Kerberos системы, MAC-05); с паролем — NTLMv2 на чистом Rust (`crates/ews/src/ntlm.rs`, одинаково на Windows и macOS, MAC-05), пароль — в
-диспетчере учётных данных Windows или Связке ключей. Оба — с привязкой к каналу TLS (Extended Protection). Basic —
+Windows, на macOS — GSS.framework (билет Kerberos системы, MAC-05), на Linux — GSS-API из MIT Kerberos `libgssapi_krb5`
+(билет из кэша, LIN-05); без пароля — только если домен учётки совпадает с доменом входа (PAR-06); с паролем — NTLMv2 на чистом Rust (`crates/ews/src/ntlm.rs`, одинаково на всех ОС, MAC-05), пароль — в
+диспетчере учётных данных Windows, Связке ключей или Secret Service (Linux). Оба — с привязкой к каналу TLS (Extended Protection). Basic —
 только запасной: по TLS и если сервер не предлагает ни Negotiate, ни NTLM. OAuth нет.
 
 Логин с паролем — как в Outlook: адрес почты (UPN) или «Имя пользователя (если отличается от адреса)» в мастере —
