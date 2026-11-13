@@ -1,0 +1,212 @@
+# CI-LIN: Linux-job в `gate`
+
+lane: ci
+status: todo
+deps: []
+class: B
+files: [.github/workflows/ci.yml, .github/workflows/linux.yml]
+read: [docs/decisions/2026-11-13-linux-tier1.md]
+checks: [ci, ci-linux]
+manual: no
+
+> Решение владельца 2026-11-13 «linux-tier1». Сессии `.github/` не правят (CLAUDE.md) — применяет владелец или
+> сессия с его разрешением.
+
+## Сделать
+- Job `test` из `linux.yml` — в `ci.yml` как `linux` (`needs: changes`; идёт и на пуш в main — там сохраняется кэш
+  `linux`); `gate.needs` += `linux`. В `linux.yml` остаётся `bundle`. Патч ниже: YAML разобран,
+  `git apply --check` на main b1e7380 чистый.
+
+## Приёмка
+- В PR с правкой Rust `gate` ждёт `linux`; красный `linux` — красный `gate`; docs-PR — `linux` пропущен, `gate` зелёный.
+
+## Патч
+```diff
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -161,6 +161,76 @@
+         continue-on-error: true
+         run: cargo test -p postman-worker --test windows_probe --locked -- --ignored --nocapture
+ 
++  # Linux (решение 2026-11-13 «linux-tier1»; перенесён из linux.yml): clippy, модули просмотра wasm32, тесты с полной
++  # песочницей (seccomp + Landlock) и снимки `--screens` под Xvfb (артефакт `screens-linux`). В отличие от `test`,
++  # идёт и на пуш в main: только там сохраняется кэш `linux` для PR.
++  linux:
++    needs: changes
++    if: needs.changes.outputs.rust == 'true' && github.event_name != 'schedule'
++    runs-on: ubuntu-24.04
++    timeout-minutes: 50
++    env:
++      # Системные пакеты сборки (замер 2026-11-12): Kerberos (EWS), окно gpui (xkbcommon, Wayland, xcb), шрифты.
++      APT_PACKAGES: libkrb5-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libxcb1-dev libfontconfig1-dev
++    steps:
++      - uses: actions/checkout@v7.0.1
++      # tzdata-legacy: старые имена поясов IANA (America/Buenos_Aires …) — с Ubuntu 24.04 отдельным пакетом, а таблица
++      # CLDR Windows ↔ IANA (crates/ews, tz.rs) ссылается на них.
++      - name: Системные пакеты
++        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends $APT_PACKAGES tzdata-legacy
++      - run: rustup toolchain install stable --profile minimal -c clippy --no-self-update && rustup default stable
++      - uses: Swatinem/rust-cache@v2.9.3
++        with:
++          shared-key: linux
++          save-if: ${{ github.ref == 'refs/heads/main' }}
++      - uses: taiki-e/install-action@v2.90.3
++        with:
++          tool: cargo-nextest
++
++      # Clippy — это и `cargo check` всех целей, с предупреждениями как ошибками.
++      - name: Clippy
++        run: cargo clippy --workspace --all-targets --locked -- -D warnings
++
++      # Образец модуля просмотра для тестов хоста модулей (как в ci.yml).
++      - name: Модули просмотра (wasm32)
++        shell: bash
++        run: |
++          shopt -s nullglob
++          manifests=(viewers/*/Cargo.toml)
++          if [ ${#manifests[@]} -eq 0 ]; then echo "Крейтов viewers/*/ нет — пропуск"; exit 0; fi
++          rustup target add wasm32-unknown-unknown
++          for m in "${manifests[@]}"; do
++            cargo build --manifest-path "$m" --release --target wasm32-unknown-unknown --locked
++          done
++
++      # Песочница воркера — полная (seccomp + Landlock), как на Windows и macOS в CI: не ставится — тест падает
++      # с диагностикой, песочница не ослабляется.
++      # Ubuntu 24.04 запрещает непривилегированные user namespaces (AppArmor), а песочница воркера без них не стартует
++      # (ADR 0010, LIN-04): снимаем запрет раннера, не песочницы.
++      - name: User namespaces
++        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
++      - name: Тесты
++        run: cargo nextest run --workspace --locked --profile ci
++        env:
++          POSTMAN_REQUIRE_FULL_SANDBOX: '1'
++
++      # Снимки окна (LIN-02; все сцены — LIN-03): X11 под Xvfb, отрисовка — llvmpipe (Mesa), шрифт интерфейса — по fontconfig, эмодзи —
++      # Noto Color Emoji. Язык — русский, как в macos.yml: фразы сцен (быстрое добавление задачи) русские, а под Xvfb
++      # язык системы — английский. Dev-сборка (картинка та же, DEV.md «Снимки экранов»), воркер — с модулями просмотра (PDF).
++      - name: Снимки (Xvfb)
++        run: |
++          sudo apt-get install -y -q --no-install-recommends xvfb xauth mesa-vulkan-drivers libgl1-mesa-dri libegl1 fonts-noto-color-emoji
++          cargo build -p postman-gpui -p postman-worker --features postman-worker/viewer --locked
++          xvfb-run -a -s "-screen 0 1920x1080x24" target/debug/postman --screens shots --lang ru
++
++      - name: Артефакт снимков
++        if: always()
++        uses: actions/upload-artifact@v7.0.2
++        with:
++          name: screens-linux
++          path: shots
++          if-no-files-found: warn
++
+   # Формат и clippy — отдельно от `test`, параллельно с ним (цель ≤7 мин на job). Кэш тот же (`windows`, только
+   # чтение): окружение и установка — как у `test` и `cache`, иначе ключ не совпадёт.
+   clippy:
+@@ -663,7 +733,8 @@
+ 
+   # Единственный required check: зелёный, если всё нужное прошло или было пропущено.
+   gate:
+-    needs: [changes, test, clippy]
++    # Linux — в gate (решение 2026-11-13 «linux-tier1»); macOS — workflow `macOS`, пока вне gate (MAC-06).
++    needs: [changes, test, clippy, linux]
+     if: always()
+     runs-on: ubuntu-latest
+     steps:
+--- a/.github/workflows/linux.yml
++++ b/.github/workflows/linux.yml
+@@ -1,18 +1,13 @@
+-# CI Postman для Linux (LIN-01, docs/decisions/2026-11-12-linux.md): tier 2, x86_64, Ubuntu 24.04.
+-# Отдельно от ci.yml: required check `gate` его не ждёт (Linux — tier 2 до конца этапа «Запускается», LIN-01…LIN-03).
+-# `test` — clippy, модули просмотра wasm32, тесты с полной песочницей (seccomp + Landlock) и снимки `--screens` под Xvfb
+-# (LIN-02, артефакт `screens-linux`); `bundle` — release и AppImage, deb, rpm на раннере (артефакт Actions для
+-# разработки, не выпуск: выпуск собирает ci.yml на старом glibc, LIN-06) — только на PR (не черновик) и вручную; на
+-# пуш в main — один `test` (решение 2026-11-12 «ci-economy»).
++# Сборка Postman для Linux (LIN-01, docs/decisions/2026-11-12-linux.md): x86_64, Ubuntu 24.04.
++# Проверки Linux (clippy, wasm32, тесты, снимки) — job `linux` в ci.yml, в `gate` (решение 2026-11-13 «linux-tier1»).
++# Здесь — только `bundle`: release и AppImage, deb, rpm на раннере (артефакт Actions для разработки, не выпуск: выпуск
++# собирает ci.yml на старом glibc, LIN-06) — на PR (не черновик) и вручную.
+ name: Linux
+ 
+ on:
+   pull_request:
+     types: [opened, synchronize, reopened, ready_for_review]
+     paths-ignore: ['docs/**', '**/*.md']
+-  push:
+-    branches: [main]
+-    paths-ignore: ['docs/**', '**/*.md']
+   workflow_dispatch:
+ 
+ concurrency:
+@@ -31,71 +26,8 @@
+   APT_PACKAGES: libkrb5-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libxcb1-dev libfontconfig1-dev
+ 
+ jobs:
+-  test:
+-    if: github.event.pull_request.draft != true
+-    runs-on: ubuntu-24.04
+-    timeout-minutes: 50
+-    steps:
+-      - uses: actions/checkout@v7.0.1
+-      # tzdata-legacy: старые имена поясов IANA (America/Buenos_Aires …) — с Ubuntu 24.04 отдельным пакетом, а таблица
+-      # CLDR Windows ↔ IANA (crates/ews, tz.rs) ссылается на них.
+-      - name: Системные пакеты
+-        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends $APT_PACKAGES tzdata-legacy
+-      - run: rustup toolchain install stable --profile minimal -c clippy --no-self-update && rustup default stable
+-      - uses: Swatinem/rust-cache@v2.9.3
+-        with:
+-          shared-key: linux
+-          save-if: ${{ github.ref == 'refs/heads/main' }}
+-      - uses: taiki-e/install-action@v2.90.3
+-        with:
+-          tool: cargo-nextest
+-
+-      # Clippy — это и `cargo check` всех целей, с предупреждениями как ошибками.
+-      - name: Clippy
+-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+-
+-      # Образец модуля просмотра для тестов хоста модулей (как в ci.yml).
+-      - name: Модули просмотра (wasm32)
+-        shell: bash
+-        run: |
+-          shopt -s nullglob
+-          manifests=(viewers/*/Cargo.toml)
+-          if [ ${#manifests[@]} -eq 0 ]; then echo "Крейтов viewers/*/ нет — пропуск"; exit 0; fi
+-          rustup target add wasm32-unknown-unknown
+-          for m in "${manifests[@]}"; do
+-            cargo build --manifest-path "$m" --release --target wasm32-unknown-unknown --locked
+-          done
+-
+-      # Песочница воркера — полная (seccomp + Landlock), как на Windows и macOS в CI: не ставится — тест падает
+-      # с диагностикой, песочница не ослабляется.
+-      # Ubuntu 24.04 запрещает непривилегированные user namespaces (AppArmor), а песочница воркера без них не стартует
+-      # (ADR 0010, LIN-04): снимаем запрет раннера, не песочницы.
+-      - name: User namespaces
+-        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+-      - name: Тесты
+-        run: cargo nextest run --workspace --locked --profile ci
+-        env:
+-          POSTMAN_REQUIRE_FULL_SANDBOX: '1'
+-
+-      # Снимки окна (LIN-02; все сцены — LIN-03): X11 под Xvfb, отрисовка — llvmpipe (Mesa), шрифт интерфейса — по fontconfig, эмодзи —
+-      # Noto Color Emoji. Язык — русский, как в macos.yml: фразы сцен (быстрое добавление задачи) русские, а под Xvfb
+-      # язык системы — английский. Dev-сборка (картинка та же, DEV.md «Снимки экранов»), воркер — с модулями просмотра (PDF).
+-      - name: Снимки (Xvfb)
+-        run: |
+-          sudo apt-get install -y -q --no-install-recommends xvfb xauth mesa-vulkan-drivers libgl1-mesa-dri libegl1 fonts-noto-color-emoji
+-          cargo build -p postman-gpui -p postman-worker --features postman-worker/viewer --locked
+-          xvfb-run -a -s "-screen 0 1920x1080x24" target/debug/postman --screens shots --lang ru
+-
+-      - name: Артефакт снимков
+-        if: always()
+-        uses: actions/upload-artifact@v7.0.2
+-        with:
+-          name: screens-linux
+-          path: shots
+-          if-no-files-found: warn
+-
+   bundle:
+-    if: github.event_name != 'push' && github.event.pull_request.draft != true
++    if: github.event.pull_request.draft != true
+     runs-on: ubuntu-24.04
+     timeout-minutes: 60
+     steps:
+```
