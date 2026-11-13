@@ -13,8 +13,9 @@ use super::{Confirm, Revocation};
 pub(super) use super::cng::{gost_decrypt, unwrap_cek};
 
 const ENCODING: CERT_QUERY_ENCODING_TYPE = X509_ASN_ENCODING | PKCS_7_ASN_ENCODING;
-/// Сколько ждать CRL/OCSP по сети (все запросы цепочки вместе).
-const URL_TIMEOUT_MS: u32 = 10_000;
+/// Сколько ждать CRL/OCSP по сети (все запросы цепочки вместе) — общий предел проверки отзыва на всех ОС
+/// ([`super::crl::BUDGET`], PAR-AUDIT №29).
+const URL_TIMEOUT_MS: u32 = super::crl::BUDGET.as_millis() as u32;
 /// Типы провайдеров ГОСТ CryptoAPI: ГОСТ Р 34.10-2001 DH, 2012-256, 2012-512 (КриптоПро CSP, ViPNet CSP) [проверить].
 const GOST_PROVIDER_TYPES: [u32; 3] = [80, 81, 75];
 /// Хранилища групповой политики и предприятия — «корпоративные» корни (без AD они пусты, это не мешает).

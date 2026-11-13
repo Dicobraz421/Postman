@@ -219,9 +219,11 @@ pub struct Context {
 }
 
 impl Context {
-    /// Живой ящик: хранилища и провайдеры Windows, CRL ГОСТ — по сети.
+    /// Живой ящик: хранилища и провайдеры ОС; CRL ГОСТ — по сети там, где ядро его скачивает (Windows, Linux).
+    /// macOS (ГОСТ отложен) и прочие — без загрузчика: отзыв ГОСТ без СКЗИ — «не проверен» без попытки сети и без
+    /// WARN «CRL unreachable» на каждую подпись (PAR-AUDIT №33).
     pub fn system() -> Self {
-        Context { anchors: Anchors::Windows, gost: Arc::new(SystemGost), crl: Some(crl::GostCrl::system()) }
+        Context { anchors: Anchors::Windows, gost: Arc::new(SystemGost), crl: CRL_DOWNLOAD.then(crl::GostCrl::system) }
     }
 
     /// Демо и тесты: свои якоря, без Windows, без СКЗИ и без сети.
@@ -229,6 +231,10 @@ impl Context {
         Context { anchors: Anchors::Fixed(Arc::new(trust)), gost: Arc::new(FixedGost(None)), crl: None }
     }
 }
+
+/// Скачивает ли ядро CRL на этой ОС ([`crl::SystemFetch`]).
+// платформа: на macOS ГОСТ отложен (решение 2026-10-27), своей загрузки CRL нет.
+const CRL_DOWNLOAD: bool = cfg!(any(windows, target_os = "linux"));
 
 static WINDOWS_TRUST: Mutex<Option<Arc<Trust>>> = Mutex::new(None);
 
@@ -547,6 +553,29 @@ pub fn recipient_candidates(cache: &Cache, addresses: &[String], own: &str, now:
     out
 }
 
+/// Сертификатов других людей из хранилища ОС (Windows `AddressBook`, Связка ключей macOS) — не больше.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+pub(crate) const OTHERS_MAX: usize = 1000;
+
+/// Сертификаты других людей из хранилища ОС — одно правило на все ОС (PAR-AUDIT №32): только с адресом, без своих
+/// (`own`), без повторов, не больше [`OTHERS_MAX`]. Свои байты хранилища ОС, не письма.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+pub(crate) fn others(all: Vec<Vec<u8>>, own: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    let mut out: Vec<Vec<u8>> = Vec::new();
+    for der in all {
+        if out.len() >= OTHERS_MAX {
+            break;
+        }
+        if !own.contains(&der)
+            && !out.contains(&der)
+            && postman_smime::sign::own_certificate(&der).is_some_and(|(info, _, _)| !info.emails.is_empty())
+        {
+            out.push(der);
+        }
+    }
+    out
+}
+
 /// Свой сертификат для списка в настройках «Безопасность» (`docs/SMIME.md` §7): сводка, годится ли для подписи
 /// почты, схема по ключу (`None` — ключ не поддерживается).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -618,6 +647,22 @@ pub fn sign_outgoing(raw: &[u8], from: &str, hwnd: Option<isize>, now: i64) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Другие люди из хранилища ОС: с адресом, без своих и повторов, не больше `OTHERS_MAX` — одинаково на Windows и
+    /// macOS (PAR-AUDIT №32).
+    #[test]
+    fn others_rule() {
+        use postman_smime::testkit::{Key, Spec, issue};
+        let key = Key::rsa('a');
+        let root = issue(&Spec::ca("Others Root"), &key, None);
+        let user = |serial: u64, email: &str| issue(&Spec { serial, ..Spec::user("Petrov", email) }, &key, Some((&root, &key))).der;
+        let own = user(1, "me@itt.test");
+        let peer = user(2, "p@itt.test");
+        let got = others(vec![own.clone(), peer.clone(), peer.clone(), root.der.clone()], std::slice::from_ref(&own));
+        assert_eq!(got, vec![peer], "свой, повтор и сертификат без адреса — не в списке");
+        let many: Vec<Vec<u8>> = (10..10 + OTHERS_MAX as u64 + 5).map(|n| user(n, "q@itt.test")).collect();
+        assert_eq!(others(many, &[]).len(), OTHERS_MAX);
+    }
 
     /// Таблица итогов цепочки — одна на все ОС (PAR-AUDIT №5): Windows и macOS сводят свои коды к [`ChainCheck`].
     #[test]

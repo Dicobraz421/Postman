@@ -11,9 +11,39 @@ mod macos;
 #[cfg(target_os = "macos")]
 pub(crate) use macos::{Kerberos, domain_controller};
 
+/// Поиск контроллера домена — не дольше на всех ОС (PAR-AUDIT №35, ADR 0011): служба Windows, DNS SRV macOS и Linux.
+#[cfg_attr(not(any(windows, target_os = "macos", target_os = "linux")), allow(dead_code))]
+pub(crate) const DC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Блокирующий поиск `find` в отдельном потоке, не дольше [`DC_TIMEOUT`]: вышло время — `None` (как «не в домене»),
+/// поток доживает сам. События — DEBUG: детали ОС, без имён.
+#[cfg_attr(not(any(windows, target_os = "macos", target_os = "linux")), allow(dead_code))]
+pub(crate) fn bounded<T: Send + 'static>(find: impl FnOnce() -> Option<T> + Send + 'static) -> Option<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new().name("ldap-dc".into()).spawn(move || {
+        let _ = tx.send(find());
+    });
+    if spawned.is_err() {
+        tracing::debug!("ldap: domain controller lookup thread not started");
+        return None;
+    }
+    match rx.recv_timeout(DC_TIMEOUT) {
+        Ok(found) => found,
+        Err(_) => {
+            tracing::debug!("ldap: domain controller lookup timed out");
+            None
+        }
+    }
+}
+
 /// Имя DNS контроллера домена с каталогом (без `\\`); `None` — компьютер не в домене или контроллер не найден.
 #[cfg(windows)]
 pub(crate) fn domain_controller() -> Option<String> {
+    bounded(dc_service)
+}
+
+#[cfg(windows)]
+fn dc_service() -> Option<String> {
     use windows_sys::Win32::NetworkManagement::NetManagement::NetApiBufferFree;
     use windows_sys::Win32::Networking::ActiveDirectory::{DOMAIN_CONTROLLER_INFOW, DS_DIRECTORY_SERVICE_REQUIRED, DS_RETURN_DNS_NAME, DsGetDcNameW};
 
@@ -31,7 +61,7 @@ pub(crate) fn domain_controller() -> Option<String> {
         )
     };
     if rc != 0 || info.is_null() {
-        tracing::debug!("ldap: no domain controller, DsGetDcNameW = {rc}");
+        tracing::debug!(rc, "ldap: no domain controller (DsGetDcNameW)");
         return None;
     }
     // SAFETY: успех — `info` указывает на заполненную `DOMAIN_CONTROLLER_INFOW`; имя — строка UTF-16 с нулём на конце
