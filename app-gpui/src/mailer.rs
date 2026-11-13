@@ -719,9 +719,14 @@ impl Render for Mailer {
             Section::Contacts => "Mailer ContactsView",
             Section::Tasks => "Mailer TasksView",
         };
+        // Linux (LIN-02): своя рамка окна — изменение размера у края.
+        #[cfg(target_os = "linux")]
+        let base = crate::chrome::resize_edges(div(), window);
+        #[cfg(not(target_os = "linux"))]
+        let base = div();
         let root = crate::parts::PARTS
             .iter()
-            .fold(div(), |root, p| (p.handlers)(root, cx))
+            .fold(base, |root, p| (p.handlers)(root, cx))
             .key_context(context)
             .track_focus(&self.focus)
             // Разделители панелей (T1-05б): движение и отпускание — по всему окну.

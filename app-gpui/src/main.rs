@@ -329,6 +329,11 @@ fn main() {
         mac_app::init(cx);
         // Тема (S5-01): «как в ОС» или `--theme`, на лету; до первого окна — чтение реестра, микросекунды.
         roles::init(&theme, density, user_prefs.look.accent, cx);
+        // Linux (LIN-02): шрифт интерфейса — `sans-serif` fontconfig, не запасной список gpui.
+        #[cfg(target_os = "linux")]
+        if let Some(family) = sys::ui_font(&cx.text_system().all_font_names()) {
+            cx.global_mut::<gpui_kit::component::Theme>().font_family = family.into();
+        }
         security::apply(&user_prefs);
         // Клавиши — из реестра команд (S2-02) и свои из настроек (S5-09); в поле ввода клавиши без модификаторов — текст.
         commands::bind(cx, &user_prefs);
@@ -352,6 +357,9 @@ fn main() {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(TitlebarOptions { title: Some("Postman".into()), appears_transparent: true, traffic_light_position }),
+            // Linux (LIN-02): заголовок и рамка — свои, как на Windows; без композитора X11 gpui вернёт системные.
+            #[cfg(target_os = "linux")]
+            window_decorations: Some(WindowDecorations::Client),
             ..Default::default()
         };
         let opened = gpui_kit::open_window(options, cx, |window, cx| {

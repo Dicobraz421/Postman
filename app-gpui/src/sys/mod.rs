@@ -122,6 +122,31 @@ pub mod credentials {
     }
 }
 
+/// Linux (LIN-02): шрифт интерфейса по fontconfig — семейство `sans-serif` среды (`fc-match`; GNOME — Cantarell или
+/// Adwaita Sans, KDE — Noto Sans, Ubuntu — Ubuntu), а не первое из запасного списка gpui. Семейства нет среди шрифтов
+/// gpui или `fc-match` не ответил — `None` (gpui выберет сам). Один раз при старте, единицы миллисекунд.
+#[cfg(target_os = "linux")]
+pub fn ui_font(installed: &[String]) -> Option<String> {
+    let out = match std::process::Command::new("fc-match").args(["-f", "%{family[0]}", "sans-serif"]).output() {
+        Ok(o) if o.status.success() => o.stdout,
+        Ok(o) => {
+            tracing::warn!("fonts: fc-match failed ({}), UI font is chosen by gpui", o.status);
+            return None;
+        }
+        Err(e) => {
+            tracing::warn!("fonts: fc-match not run, UI font is chosen by gpui: {e}");
+            return None;
+        }
+    };
+    let family = String::from_utf8_lossy(&out).trim().to_owned();
+    if !installed.contains(&family) {
+        tracing::warn!(family, "fonts: fontconfig sans-serif is not among gpui fonts, UI font is chosen by gpui");
+        return None;
+    }
+    tracing::debug!(family, "fonts: UI font from fontconfig");
+    Some(family)
+}
+
 /// HTML из буфера обмена (Word, браузер, T3-06): фрагмент `CF_HTML` — `pets_shell::clipboard`. Нет HTML, он больше
 /// `max` байт или буфер занят — `None` (вставится текст).
 pub fn clipboard_html(max: usize) -> Option<String> {
@@ -329,6 +354,10 @@ pub use gpui_windows::pets::window::Image;
 #[cfg(target_os = "macos")]
 pub use pets_gpui_macos::window::Image;
 
+/// Linux (LIN-02): снимок окна X11.
+#[cfg(target_os = "linux")]
+mod x11;
+
 /// Снимок окна: RGBA, 8 бит на канал, строки сверху вниз.
 #[cfg(not(any(windows, target_os = "macos")))]
 pub struct Image {
@@ -349,9 +378,13 @@ pub fn window_id(window: &Window) -> Result<isize, String> {
     pets_gpui_macos::window::id(window).map_err(|e| e.to_string())
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+/// Linux: номер окна X11 (LIN-02); окно Wayland — отказ.
+#[cfg(target_os = "linux")]
+pub use x11::window_id;
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub fn window_id(_window: &Window) -> Result<isize, String> {
-    Err("window id is Windows only".into())
+    Err("window id is not supported on this OS".into())
 }
 
 /// Снимок клиентской области окна. Вызывать не из потока окна.
@@ -365,9 +398,13 @@ pub fn capture(window: isize) -> Result<Image, String> {
     pets_gpui_macos::window::capture(window).map_err(|e| e.to_string())
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+/// Linux: X11 `GetImage` (LIN-02).
+#[cfg(target_os = "linux")]
+pub use x11::capture;
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub fn capture(_window: isize) -> Result<Image, String> {
-    Err("window capture is Windows only".into())
+    Err("window capture is not supported on this OS".into())
 }
 
 /// Значок приложения в ресурсах exe (`build.rs`: `1 ICON res/postman.ico`).

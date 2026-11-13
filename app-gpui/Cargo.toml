@@ -67,6 +67,12 @@ gpui-pre-windows = "=0.3.12"
 [target.'cfg(target_os = "macos")'.dependencies]
 pets-gpui-macos = { git = "https://github.com/Dicobraz421/pets", rev = "2b387b40d19358d54496515ed69ac3ae95d1a21c" }
 
+# Linux (LIN-02): снимок окна для `--screens` — X11 `GetImage` своим соединением (`sys/x11.rs`); номер окна — из
+# `raw-window-handle`. Те же копии, что у gpui-pre-linux, своего `unsafe` нет.
+[target.'cfg(target_os = "linux")'.dependencies]
+raw-window-handle = "0.6"
+x11rb = { version = "0.13.1", default-features = false }
+
 # Значок, версия и манифест exe (build.rs, rc.exe из Windows SDK).
 [build-dependencies]
 embed-resource = "3"
