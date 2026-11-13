@@ -9,6 +9,10 @@
 `[patch.crates-io]` в `Cargo.toml`) — блоки в тексте поля, как в Zed: таблица сеткой и картинка в письме; выделение,
 отмена, IME и вставка — прежние. Состав и upstream — `pets/crates/pets-gpui-base/README.md`.
 
+С INT-01 (2026-11-13, GLIN-01 pets) — патчи Linux-платформы там же: `gpui-pre-linux` (`crates/pets-gpui-linux` —
+перетаскивание файлов наружу, X11 XDND) и `gpui-pre-wgpu` (`crates/pets-gpui-wgpu` — эмодзи цветным шрифтом); все
+четыре — одна ревизия `pets` в `[patch.crates-io]`.
+
 | Патч | Файлы | Зачем | Upstream |
 |---|---|---|---|
 | Шейдеры в exe | `build.rs`, `directx_renderer.rs` | кросс-сборка из Linux без fxc.exe, в бинаре нет путей машины сборки | не предлагаем; уйдёт, когда сборка будет только на Windows |
