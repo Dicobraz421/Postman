@@ -161,4 +161,4 @@ x86_64; с 2026-11-13 — обычная платформа (`docs/decisions/202
 | [LIN-05b](LIN-05b.md) | Корпоративное на Linux: файл PKCS#12 в настройках, скрытие недоступного, вход без пароля | app-gpui | B | todo | LIN-05, GKIT-02 |
 | [LIN-06](LIN-06.md) | Выпуск: AppImage, deb, rpm, строка в `release`, обновление | ci | B | todo | LIN-03, LIN-04 |
 | [LIN-07](LIN-07.md) | ГОСТ в S/MIME на Linux: СКЗИ, подпись и расшифровка | x | B | deferred | LIN-05 |
-| [CI-LIN](CI-LIN.md) | Linux-job в `gate` (решение «linux-tier1») | ci | B | todo | — |
+| [CI-LIN](CI-LIN.md) | Linux-job в `gate` (решение «linux-tier1») | ci | B | done | — |
