@@ -8,19 +8,27 @@ use std::path::Path;
 
 use pets_gpui_macos::toast;
 
+/// Подсказка «сделать клиентом `mailto:`» (PAR-04 №41): macOS спрашивает подтверждение.
+pub const MAILTO_HINT: &str = "settings-mailto-hint-confirm";
+
 /// Схема ссылок почты (объявлена в `Info.plist`, `scripts/macos/package.sh`).
 const MAILTO: &str = "mailto";
 
-/// Шифрование диска с данными (S8-35): FileVault — `fdesetup status` (без прав администратора; шифруется весь
-/// загрузочный том с домашней папкой, где данные Postman); имя диска — имя загрузочного тома (`diskutil info /`).
-/// `Some(true)` — включён, `Some(false)` — выключен, `None` — не ответил. Звать в фоне.
-pub fn bitlocker(_path: &Path) -> (String, Option<bool>) {
-    let drive = std::process::Command::new("/usr/sbin/diskutil")
-        .args(["info", "/"])
-        .output()
-        .ok()
-        .and_then(|o| volume_name(&String::from_utf8_lossy(&o.stdout)))
-        .unwrap_or_else(|| "/".to_owned());
+/// Шифрование диска с данными (S8-35, PAR-04 №23): том, на котором лежат данные (`df` → точка монтирования,
+/// `diskutil info` — строка «FileVault»), а не загрузочный: данные на внешнем томе без шифрования — «не зашифрован».
+/// Нет строки (старая ФС) — для системного тома данных FileVault (`fdesetup status`), иначе `None`. `Some(true)` —
+/// включён, `Some(false)` — выключен, `None` — не ответил. Звать в фоне.
+pub fn bitlocker(path: &Path) -> (String, Option<bool>) {
+    let mount = run("/bin/df", &["-P", &path.to_string_lossy()]).as_deref().and_then(df_mount).unwrap_or_else(|| "/".to_owned());
+    let info = run("/usr/sbin/diskutil", &["info", &mount]);
+    let drive = info.as_deref().and_then(volume_name).unwrap_or_else(|| mount.clone());
+    if let Some(state) = info.as_deref().and_then(volume_filevault) {
+        return (drive, Some(state));
+    }
+    if mount != "/" && mount != "/System/Volumes/Data" {
+        tracing::warn!("disk encryption: diskutil did not report FileVault for the data volume");
+        return (drive, None);
+    }
     let out = std::process::Command::new("/usr/bin/fdesetup").arg("status").output();
     let state = match out {
         Ok(o) if o.status.success() => filevault(&String::from_utf8_lossy(&o.stdout)),
@@ -34,6 +42,25 @@ pub fn bitlocker(_path: &Path) -> (String, Option<bool>) {
         }
     };
     (drive, state)
+}
+
+/// Точка монтирования из `df -P <путь>`: последний столбец второй строки.
+fn df_mount(out: &str) -> Option<String> {
+    let line = out.lines().nth(1)?;
+    let at = line.find(" /")?;
+    Some(line[at + 1..].trim().to_owned())
+}
+
+/// Строка `FileVault: Yes|No` из `diskutil info` (APFS).
+fn volume_filevault(info: &str) -> Option<bool> {
+    let v = info.lines().find_map(|l| l.trim().strip_prefix("FileVault:"))?.trim();
+    if v.starts_with("Yes") {
+        Some(true)
+    } else if v.starts_with("No") {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 /// Имя тома из `diskutil info`: строка «Volume Name: Macintosh HD».
@@ -75,15 +102,13 @@ pub fn upn() -> Option<String> {
 /// Вход без пароля имеет смысл: есть действующий билет Kerberos (`klist --test` — вход учётной записью домена AD,
 /// Kerberos SSO, `kinit`). Один раз за запуск: процесс — единицы миллисекунд.
 pub fn in_domain() -> bool {
-    static TICKET: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *TICKET.get_or_init(|| {
-        std::process::Command::new("/usr/bin/klist")
-            .arg("--test")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
-    })
+    // Без кэша (PAR-04 №24): билет появляется (`kinit`) и истекает во время работы — как на Windows и Linux.
+    std::process::Command::new("/usr/bin/klist")
+        .arg("--test")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 /// Вывод команды при успехе.
@@ -234,6 +259,16 @@ Decryption in progress: Percent completed = 40
             Some("Macintosh HD")
         );
         assert_eq!(super::volume_name(""), None);
+    }
+
+    /// PAR-04 №23: том данных из `df -P` и его FileVault из `diskutil info`.
+    #[test]
+    fn data_volume_filevault() {
+        let df = "Filesystem 512-blocks Used Available Capacity Mounted on\n/dev/disk4s1 1000 10 990 2% /Volumes/My Data\n";
+        assert_eq!(super::df_mount(df).as_deref(), Some("/Volumes/My Data"));
+        assert_eq!(super::volume_filevault("   FileVault:                 Yes (Unlocked)\n"), Some(true));
+        assert_eq!(super::volume_filevault("   FileVault:                 No\n"), Some(false));
+        assert_eq!(super::volume_filevault("   Volume Name: X\n"), None);
     }
 
     /// `klist` (Heimdal) и `dsconfigad -show` → UPN и домен AD (MAC-05).

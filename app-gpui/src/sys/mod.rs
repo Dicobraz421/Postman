@@ -100,18 +100,32 @@ pub fn os_key_on(key: &str, mac: bool) -> &str {
 pub mod credentials {
     use pets_shell::credentials as os;
 
+    /// Имя записи без учёта регистра на всех ОС (PAR-04 №43): диспетчер Windows регистр не различает, Связка ключей и
+    /// Secret Service — различают; адрес сервера в другом регистре — та же запись.
+    fn key(target: &str) -> String {
+        target.to_lowercase()
+    }
+
     pub fn write(target: &str, user: &str, secret: &str) -> Result<(), String> {
-        os::write(target, user, secret).map_err(|e| e.to_string())
+        os::write(&key(target), user, secret).map_err(|e| e.to_string())
     }
 
-    /// `Ok(None)` — такой записи нет.
+    /// `Ok(None)` — такой записи нет. Запись прежнего имени (до PAR-04, в исходном регистре) — тоже читается.
     pub fn read(target: &str) -> Result<Option<String>, String> {
-        os::read(target).map_err(|e| e.to_string())
+        let k = key(target);
+        match os::read(&k).map_err(|e| e.to_string())? {
+            None if k != target => os::read(target).map_err(|e| e.to_string()),
+            found => Ok(found),
+        }
     }
 
-    /// Нет записи — не ошибка.
+    /// Нет записи — не ошибка. Удаляет и запись прежнего имени.
     pub fn delete(target: &str) -> Result<(), String> {
-        os::delete(target).map_err(|e| e.to_string())
+        let k = key(target);
+        if k != target {
+            os::delete(target).map_err(|e| e.to_string())?;
+        }
+        os::delete(&k).map_err(|e| e.to_string())
     }
 }
 
@@ -136,7 +150,7 @@ pub mod credentials {
 /// gpui или `fc-match` не ответил — `None` (gpui выберет сам). Один раз при старте, единицы миллисекунд.
 #[cfg(target_os = "linux")]
 pub fn ui_font(installed: &[String]) -> Option<String> {
-    let out = match std::process::Command::new("fc-match").args(["-f", "%{family[0]}", "sans-serif"]).output() {
+    let out = match system_command("fc-match").and_then(|mut c| c.args(["-f", "%{family[0]}", "sans-serif"]).output().map_err(|e| e.to_string())) {
         Ok(o) if o.status.success() => o.stdout,
         Ok(o) => {
             tracing::warn!("fonts: fc-match failed ({}), UI font is chosen by gpui", o.status);
@@ -154,6 +168,13 @@ pub fn ui_font(installed: &[String]) -> Option<String> {
     }
     tracing::debug!(family, "fonts: UI font from fontconfig");
     Some(family)
+}
+
+/// Системная утилита полным путём (PAR-04 №36, `postman_core::paths::system_tool`): Windows — `System32`/`Windows`,
+/// Unix — `/usr/bin`; подмена утилиты из `PATH` или каталога программы не срабатывает.
+#[cfg_attr(target_os = "macos", allow(dead_code, reason = "macOS shell spells absolute paths itself"))]
+pub fn system_command(name: &str) -> Result<std::process::Command, String> {
+    postman_core::paths::system_tool(name).map(std::process::Command::new).ok_or_else(|| format!("{name}: system folder not found"))
 }
 
 /// HTML из буфера обмена (Word, браузер, T3-06): фрагмент `CF_HTML` — `pets_shell::clipboard`. Нет HTML, он больше
@@ -191,6 +212,8 @@ pub mod appearance;
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub mod shell {
     use std::path::Path;
+
+    pub const MAILTO_HINT: &str = "settings-mailto-hint-confirm";
 
     pub fn bitlocker(_path: &Path) -> (String, Option<bool>) {
         (String::new(), None)
