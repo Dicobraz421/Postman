@@ -302,10 +302,12 @@ pub mod drag {
         os::threshold(scale)
     }
 
-    /// Копия файла для `CF_HDROP` (в фоне, до начала перетаскивания): свой подкаталог на каждое перетаскивание.
+    /// Копия файла для `CF_HDROP` (в фоне, до начала перетаскивания): свой подкаталог на каждое перетаскивание. Метка
+    /// «из Интернета» — `mark_from_internet` (pets PAR-07): не записалась — ошибка, перетаскивания нет (PAR-04 №11).
     pub fn prepare(copies: &TempCopies, name: &str, data: &[u8]) -> std::io::Result<PathBuf> {
         let path = copies.slot()?.join(postman_core::files::safe_name(name));
         postman_core::files::write(&path, data)?;
+        os::mark_from_internet(&path)?;
         Ok(path)
     }
 

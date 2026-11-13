@@ -11,7 +11,7 @@ manual: no
 
 ## Что сделано
 - Все pets-крейты и `[patch.crates-io]` (`gpui-base`, `gpui-pre-windows`, `gpui-pre-linux`, `gpui-pre-wgpu`) — один
-  коммит main pets `75b2371` (#74 GLIN-01, #75 PAR-03, #77 UPD-LIN). pets #76 (PAR-07) на момент волны не слит.
+  коммит main pets `4034604` (#74 GLIN-01, #75 PAR-03, #77 UPD-LIN, #76 PAR-07). Windows: копия для перетаскивания — `mark_from_internet`, не записалась — не тащим.
 - Эмодзи на Linux — цветным шрифтом (форк `pets-gpui-wgpu`): снимок `preview-pdf`, тема «Обновление регламента 📋».
 - Перетаскивание вложения из окна на Linux — `gpui_linux::pets::drag` (`on_drag` + `external_drag_payload`; X11 XDND,
   Wayland — upstream): копия в `$TMPDIR/Postman/drag` готовится заранее, как на macOS; копии нет — не тащим (PAR-04 №11).
