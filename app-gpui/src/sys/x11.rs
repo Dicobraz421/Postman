@@ -38,6 +38,14 @@ pub fn capture(window: isize) -> Result<Image, String> {
     Ok(Image { width, height, rgba })
 }
 
+/// Показать (`MapWindow`) или спрятать (`UnmapWindow`) окно `window` своим соединением (трей, PAR-06).
+pub fn set_mapped(window: isize, mapped: bool) -> Result<(), String> {
+    let window = u32::try_from(window).map_err(|e| format!("window id: {e}"))?;
+    let (conn, _) = x11rb::connect(None).map_err(|e| format!("X11 connect: {e}"))?;
+    let cookie = if mapped { conn.map_window(window) } else { conn.unmap_window(window) };
+    cookie.map_err(|e| e.to_string())?.check().map_err(|e| format!("map window: {e}"))
+}
+
 /// Пиксели `ZPixmap` 32 бита (`0x00RRGGBB` в порядке байтов сервера) → RGBA с непрозрачной альфой.
 fn to_rgba(data: &[u8], width: u32, height: u32, msb: bool) -> Result<Vec<u8>, String> {
     let n = width as usize * height as usize;

@@ -168,9 +168,9 @@ pub(crate) fn notify(title: &str, body: &str) -> Result<(), String> {
         return Ok(());
     }
     // Щелчок по уведомлению возвращает окно из трея (T3-13; macOS — из скрытых, MAC-04).
-    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
     return sys::shell::notify_click(title, body, None, || crate::tray::send(crate::tray::Signal::Open));
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     sys::shell::notify(title, body)
 }
 
@@ -185,7 +185,7 @@ pub(crate) fn notify_with(title: &str, body: &str, sound: bool) -> Result<(), St
 
 /// Уведомление о новых письмах (T3-13): щелчок открывает окно и письмо `letter` (`None` — «Входящие»).
 pub(crate) fn notify_new_mail(title: &str, body: &str, sound: bool, letter: Option<String>) -> Result<(), String> {
-    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
     if !screening() {
         return sys::shell::notify_click(title, body, Some(sound), move || crate::tray::send(crate::tray::Signal::Letter(letter.clone())));
     }

@@ -2,7 +2,7 @@
 //! уведомлений; закрытие окна прячет его в трей, синхронизация и уведомления живут. Щелчок по значку или уведомлению
 //! Windows возвращает окно. Значок — только Windows: на macOS окно прячет система (`mac_app`), а щелчок по уведомлению
 //! возвращает окно и открывает письмо ([`mac`], MAC-04); непрочитанные «Входящих» там — бейдж на значке в Dock
-//! (MAC-07, [`badge`]); на остальных ОС значка нет.
+//! (MAC-07, [`badge`]). Linux (PAR-06) — значок StatusNotifierItem, как на Windows; нет хоста значков — значка нет.
 //!
 //! Значок и уведомление сообщают о щелчке не из задачи интерфейса (оконная процедура значка, поток Windows) —
 //! событие уходит каналом ([`send`]) в задачу интерфейса.
@@ -15,7 +15,7 @@ use pets_i18n::tr;
 use postman_core::newmail::Fresh;
 
 use crate::Mailer;
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 use crate::folders::Folders;
 
 /// Что просит значок или уведомление.
@@ -30,11 +30,11 @@ pub(crate) enum Signal {
     Letter(Option<String>),
 }
 
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 static TX: OnceLock<UnboundedSender<Signal>> = OnceLock::new();
 
 /// Передать событие задаче интерфейса; значка нет — никуда.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub(crate) fn send(signal: Signal) {
     if let Some(tx) = TX.get() {
         let _ = tx.unbounded_send(signal);
@@ -42,7 +42,7 @@ pub(crate) fn send(signal: Signal) {
 }
 
 /// Подсказка значка: непрочитанные «Входящих».
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub(crate) fn tip(unread: u32) -> String {
     if unread == 0 { "Postman".to_owned() } else { tr!("tray-tip-unread", n = unread) }
 }
@@ -59,7 +59,7 @@ pub(crate) fn badge(unread: u32) -> Option<String> {
 }
 
 /// Непрочитанные «Входящих» всех учётных записей — подсказка значка в трее и бейдж в Dock.
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 fn inbox_unread(folders: &Entity<Folders>, cx: &App) -> u32 {
     folders.read(cx).of(None).filter(|m| m.role.as_deref() == Some("inbox")).map(|m| m.unread).sum()
 }
@@ -72,17 +72,30 @@ pub(crate) fn target(list: &[Fresh]) -> Option<String> {
     }
 }
 
-#[cfg(windows)]
+/// Windows — `gpui_windows::pets::tray` (область уведомлений); Linux (PAR-06) — StatusNotifierItem
+/// (`sys::tray`, тот же API): значок, подсказка с непрочитанными, меню «Открыть»/«Выход», закрытие окна — в трей.
+#[cfg(any(windows, target_os = "linux"))]
 mod os {
     use futures::StreamExt as _;
+    #[cfg(windows)]
     use gpui_windows::pets::tray::{Event, Item, Tray};
     use postman_core::prefs::OnClose;
+
+    #[cfg(target_os = "linux")]
+    use crate::sys::tray::{Event, Item, Tray};
 
     use super::*;
 
     /// Значки в ресурсах exe (`build.rs`): обычный и с отметкой «есть непрочитанные».
+    #[cfg(windows)]
     const ICON: u16 = 1;
+    #[cfg(windows)]
     const ICON_UNREAD: u16 = 2;
+    /// Linux: номер значка `sys::tray` (те же `.ico`).
+    #[cfg(target_os = "linux")]
+    const ICON: u16 = 0;
+    #[cfg(target_os = "linux")]
+    const ICON_UNREAD: u16 = 1;
     const OPEN: u32 = 1;
     const QUIT: u32 = 2;
 
@@ -98,6 +111,22 @@ mod os {
         if TX.set(tx).is_err() {
             return;
         }
+        // Сигналы — и без значка (PAR-06): щелчок по уведомлению открывает письмо, даже если хоста значков нет.
+        let handle = window.window_handle();
+        let events_mailer = mailer.clone();
+        cx.spawn(async move |cx| {
+            while let Some(signal) = rx.next().await {
+                let _ = handle.update(cx, |_, window, cx| match signal {
+                    Signal::Quit => cx.quit(),
+                    Signal::Open => show(window),
+                    Signal::Letter(id) => {
+                        show(window);
+                        events_mailer.update(cx, |m, cx| m.open_new_mail(id, cx));
+                    }
+                });
+            }
+        })
+        .detach();
         let on_event = |e| {
             send(match e {
                 Event::Menu(QUIT) => Signal::Quit,
@@ -119,21 +148,6 @@ mod os {
         cx.observe(&folders, |folders, cx| {
             let unread = inbox_unread(&folders, cx);
             set_unread(unread, cx);
-        })
-        .detach();
-        let handle = window.window_handle();
-        let mailer = mailer.clone();
-        cx.spawn(async move |cx| {
-            while let Some(signal) = rx.next().await {
-                let _ = handle.update(cx, |_, window, cx| match signal {
-                    Signal::Quit => cx.quit(),
-                    Signal::Open => show(window),
-                    Signal::Letter(id) => {
-                        show(window);
-                        mailer.update(cx, |m, cx| m.open_new_mail(id, cx));
-                    }
-                });
-            }
         })
         .detach();
     }
@@ -234,20 +248,27 @@ mod mac {
 /// Поставить значок и прятать окно при закрытии («Настройки → Общие → Закрытие окна»). Не удалось — окно
 /// закрывается, как раньше. macOS — только щелчок по уведомлению.
 pub(crate) fn init(window: &mut Window, mailer: &Entity<Mailer>, cx: &mut App) {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     os::init(window, mailer, cx);
     #[cfg(target_os = "macos")]
     mac::init(window, mailer, cx);
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     let _ = (window, mailer, cx);
+}
+
+/// Linux (PAR-06): своя кнопка «✕» — как закрытие окна системой (`on_window_should_close` её не видит): по настройке
+/// «Закрытие окна» спрятать в трей; `true` — спрятано, окно не закрывать.
+#[cfg(target_os = "linux")]
+pub(crate) fn close_to_tray(window: &mut Window, cx: &mut App) -> bool {
+    crate::prefs::get(cx).general.on_close == postman_core::prefs::OnClose::Tray && hide(window, true, cx)
 }
 
 /// Спрятать окно в трей; `hint` — при первом разе сказать об этом уведомлением Windows. `false` — значка нет, окно
 /// осталось.
 pub(crate) fn hide(window: &mut Window, hint: bool, cx: &mut App) -> bool {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     return os::hide(window, hint, cx);
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = (window, hint, cx);
         false
@@ -256,9 +277,9 @@ pub(crate) fn hide(window: &mut Window, hint: bool, cx: &mut App) -> bool {
 
 /// Показать спрятанное или свёрнутое окно и вывести вперёд.
 pub(crate) fn show(window: &mut Window) {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     os::show(window);
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     window.activate_window();
 }
 

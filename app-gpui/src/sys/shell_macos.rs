@@ -99,6 +99,16 @@ pub fn upn() -> Option<String> {
     Some(format!("{user}@{}", domain.to_lowercase()))
 }
 
+/// Домен входа без пароля (PAR-06 №24): область действующего билета Kerberos (`klist --test`, принципал `klist`)
+/// строчными; нет билета — `None`. Без кэша.
+pub fn domain() -> Option<String> {
+    if !in_domain() {
+        return None;
+    }
+    let principal = run("/usr/bin/klist", &[]).as_deref().and_then(kerberos_principal)?;
+    principal.rsplit_once('@').map(|(_, realm)| realm.to_lowercase())
+}
+
 /// Вход без пароля имеет смысл: есть действующий билет Kerberos (`klist --test` — вход учётной записью домена AD,
 /// Kerberos SSO, `kinit`). Один раз за запуск: процесс — единицы миллисекунд.
 pub fn in_domain() -> bool {

@@ -177,10 +177,11 @@ pub fn upn() -> Option<String> {
     })
 }
 
-/// Машина в домене (вход Windows в Exchange имеет смысл): у пользователя домена есть `USERDNSDOMAIN`.
-pub fn in_domain() -> bool {
-    std::env::var_os("USERDNSDOMAIN").is_some_and(|d| !d.is_empty())
+/// Домен входа без пароля (PAR-06 №24): DNS-домен пользователя (`USERDNSDOMAIN`), при каждом вызове.
+pub fn domain() -> Option<String> {
+    std::env::var("USERDNSDOMAIN").ok().map(|d| d.trim().to_lowercase()).filter(|d| !d.is_empty())
 }
+
 
 /// Показать файл в Проводнике.
 pub fn reveal(path: &Path) -> Result<(), String> {

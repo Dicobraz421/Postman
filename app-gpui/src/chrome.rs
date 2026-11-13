@@ -480,9 +480,10 @@ impl Mailer {
                 .child(icon(g, 10.));
             // Linux (LIN-02): кнопки окна свои, как на Windows, но система их не разбирает — щелчок делает действие.
             #[cfg(target_os = "linux")]
-            let d = d.on_click(move |_, window, _| match area {
+            let d = d.on_click(move |_, window, cx| match area {
                 WindowControlArea::Min => window.minimize_window(),
                 WindowControlArea::Max => window.zoom_window(),
+                _ if crate::tray::close_to_tray(window, cx) => {}
                 _ => window.remove_window(),
             });
             d

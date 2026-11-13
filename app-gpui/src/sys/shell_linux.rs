@@ -55,6 +55,16 @@ pub fn upn() -> Option<String> {
     kerberos_principal(&klist).map(|p| upn_of(&p))
 }
 
+/// Домен входа без пароля (PAR-06 №24): область действующего билета Kerberos (`klist -s`, принципал `klist`)
+/// строчными; нет билета — `None`. Без кэша.
+pub fn domain() -> Option<String> {
+    if !in_domain() {
+        return None;
+    }
+    let principal = kerberos_principal(&run(KLIST, &[])?)?;
+    principal.rsplit_once('@').map(|(_, realm)| realm.to_lowercase())
+}
+
 /// Вход без пароля имеет смысл: есть действующий билет Kerberos (`klist -s`). Без кэша: билет появляется и
 /// истекает во время работы (PAR-AUDIT №24); процесс — единицы миллисекунд.
 pub fn in_domain() -> bool {
@@ -86,8 +96,32 @@ fn upn_of(principal: &str) -> String {
 
 /// Открывать Postman при входе: `~/.config/autostart/postman.desktop`. Выключенный пользователем в настройках среды —
 /// `set(true)` включает его снова.
+///
+/// Запуск при входе — сразу в трей, как на Windows (PAR-06, №40): в строку `Exec` записи добавляется `--minimized`.
 pub fn set_autostart(on: bool) -> Result<(), String> {
-    pets_shell::login_item::set(on).map_err(|e| e.to_string())
+    pets_shell::login_item::set(on).map_err(|e| e.to_string())?;
+    if !on {
+        return Ok(());
+    }
+    let id = pets_shell::url_scheme::bundle_id().unwrap_or_else(|| "postman.desktop".to_owned());
+    let Some(path) = postman_core::paths::config_home().map(|c| c.join("autostart").join(id)) else { return Ok(()) };
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("autostart read: {e}"))?;
+    let minimized = with_minimized(&text);
+    if minimized != text {
+        std::fs::write(&path, minimized).map_err(|e| format!("autostart write: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Строка `Exec=` записи автозапуска с `--minimized` в конце (уже есть — без изменений).
+fn with_minimized(text: &str) -> String {
+    text.lines()
+        .map(|l| match l.strip_prefix("Exec=") {
+            Some(cmd) if !cmd.split_whitespace().any(|a| a == "--minimized") => format!("Exec={cmd} --minimized"),
+            _ => l.to_owned(),
+        })
+        .map(|l| l + "\n")
+        .collect()
 }
 
 /// Postman открывается при входе.
@@ -235,21 +269,10 @@ fn file_uri(path: &Path) -> String {
     uri
 }
 
-/// Уведомление (`org.freedesktop.Notifications.Notify`).
-pub fn notify(title: &str, body: &str) -> Result<(), String> {
-    notify_with(title, body, true)
-}
-
 /// Уведомление о новом письме: со звуком (`sound-name` `message-new-email` темы звуков freedesktop) или молча
 /// (`suppress-sound`).
 pub fn notify_with(title: &str, body: &str, sound: bool) -> Result<(), String> {
-    let mut hints: HashMap<&str, Value<'_>> = HashMap::new();
-    hints.insert("desktop-entry", Value::from("postman"));
-    if sound {
-        hints.insert("sound-name", Value::from("message-new-email"));
-    } else {
-        hints.insert("suppress-sound", Value::from(true));
-    }
+    let hints = hints(sound);
     zbus::block_on(async {
         let conn = zbus::Connection::session().await?;
         conn.call_method(
@@ -265,8 +288,93 @@ pub fn notify_with(title: &str, body: &str, sound: bool) -> Result<(), String> {
     .map_err(|e| format!("notification: {e}"))
 }
 
+/// Уведомление со щелчком (PAR-06, как T3-13 на Windows и MAC-04): действие `default` — щелчок по уведомлению;
+/// `on_click` — из своего потока, пока уведомление не закрыто. `sound`: `None` и `Some(true)` — со звуком,
+/// `Some(false)` — молча. Служба без действий (`actions` нет в `GetCapabilities`) — уведомление без щелчка.
+pub fn notify_click(title: &str, body: &str, sound: Option<bool>, on_click: impl Fn() + Send + 'static) -> Result<(), String> {
+    let (title, body, label) = (title.to_owned(), body.to_owned(), pets_i18n::tr!("tray-open"));
+    let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+    let spawned = std::thread::Builder::new().name("notification".into()).spawn(move || {
+        zbus::block_on(async move {
+            use futures::StreamExt as _;
+            let shown: zbus::Result<_> = async {
+                let conn = zbus::Connection::session().await?;
+                let proxy =
+                    zbus::Proxy::new(&conn, "org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.freedesktop.Notifications")
+                        .await?;
+                // Подписка — до показа: щелчок сразу после показа не теряется.
+                let actions = proxy.receive_signal("ActionInvoked").await?;
+                let closed = proxy.receive_signal("NotificationClosed").await?;
+                let hints = hints(sound != Some(false));
+                let reply = proxy
+                    .call_method(
+                        "Notify",
+                        &("Postman", 0u32, "postman", title.as_str(), body.as_str(), vec!["default", label.as_str()], hints, -1i32),
+                    )
+                    .await?;
+                let id: u32 = reply.body().deserialize()?;
+                Ok((conn, id, actions, closed))
+            }
+            .await;
+            let (_conn, id, actions, closed) = match shown {
+                Ok(v) => {
+                    let _ = tx.send(Ok(()));
+                    v
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(format!("notification: {e}")));
+                    return;
+                }
+            };
+            enum Got {
+                Click(u32),
+                Closed(u32),
+            }
+            let clicks = actions.filter_map(|m| async move {
+                let (nid, action): (u32, String) = m.body().deserialize().ok()?;
+                (action == "default").then_some(Got::Click(nid))
+            });
+            let closes = closed.filter_map(|m| async move { m.body().deserialize::<(u32, u32)>().ok().map(|(nid, _)| Got::Closed(nid)) });
+            let mut events = futures::stream::select(Box::pin(clicks), Box::pin(closes));
+            while let Some(got) = events.next().await {
+                match got {
+                    Got::Click(nid) if nid == id => {
+                        on_click();
+                        return;
+                    }
+                    Got::Closed(nid) if nid == id => return,
+                    _ => {}
+                }
+            }
+        });
+    });
+    spawned.map_err(|e| format!("notification thread: {e}"))?;
+    rx.recv().map_err(|e| format!("notification: {e}"))?
+}
+
+/// Подсказки уведомления: файл `.desktop`, звук или тишина.
+fn hints(sound: bool) -> HashMap<&'static str, Value<'static>> {
+    let mut hints: HashMap<&str, Value<'_>> = HashMap::new();
+    hints.insert("desktop-entry", Value::from("postman"));
+    if sound {
+        hints.insert("sound-name", Value::from("message-new-email"));
+    } else {
+        hints.insert("suppress-sound", Value::from(true));
+    }
+    hints
+}
+
 #[cfg(test)]
 mod tests {
+    /// PAR-06: автозапуск — с `--minimized`, один раз.
+    #[test]
+    fn autostart_minimized() {
+        let t = "[Desktop Entry]\nExec=\"/opt/postman/postman\"\nTerminal=false\n";
+        let once = super::with_minimized(t);
+        assert!(once.contains("Exec=\"/opt/postman/postman\" --minimized\n"));
+        assert_eq!(super::with_minimized(&once), once);
+    }
+
     /// `klist` (MIT) → UPN; нет кэша — `None`.
     #[test]
     fn kerberos_principal_mit() {
