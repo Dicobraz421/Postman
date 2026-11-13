@@ -563,21 +563,45 @@ pub(crate) fn preview_card(body: impl IntoElement, title: String, note: String, 
         )
 }
 
-/// Схема окна: список и панель чтения — справа, снизу или вместо списка (предпросмотр «Чтения» и «Внешнего вида»).
-pub(crate) fn pane_scheme(pane: Pane, l: &Look) -> Div {
-    let block = |w: Length, h: Length, strong: bool| div().w(w).h(h).rounded_sm().bg(if strong { l.picked() } else { l.fill() });
+/// Схема окна «Чтения»: раскладка панели и вид беседы (BUG-conv-preview) — лента писем подряд, стопка свёрнутых
+/// заголовков над открытым письмом, беседа деревом в списке («как Outlook»).
+pub(crate) fn reading_scheme(pane: Pane, conv: Conversation, l: &Look) -> Div {
+    let bar = |h: Option<f32>| {
+        let d = div().w_full().rounded_sm().bg(l.panel());
+        match h {
+            Some(h) => d.h(px(h)).flex_none(),
+            None => d.flex_1().min_h_0(),
+        }
+    };
+    let row = |indent: bool| div().h(px(5.)).flex_none().rounded_sm().bg(l.panel()).when(indent, |d| d.ml(px(8.)));
+    let rows: Vec<Div> = match conv {
+        Conversation::Outlook => vec![row(false), row(true), row(true), row(false), row(false)],
+        _ => vec![row(false), row(false), row(false), row(false), row(false)],
+    };
+    let letters: Vec<Div> = match conv {
+        Conversation::Feed => vec![bar(None), bar(None), bar(None)],
+        Conversation::Stack => vec![bar(Some(5.)), bar(Some(5.)), bar(None)],
+        Conversation::Outlook => vec![bar(None)],
+    };
+    let list = move |w: Length, h: Length| {
+        div().w(w).h(h).p(px(3.)).flex().flex_col().gap(px(3.)).overflow_hidden().rounded_sm().bg(l.fill()).children(rows)
+    };
+    let reading = move |w: Length, h: Length| div().w(w).h(h).p(px(3.)).flex().flex_col().gap(px(3.)).rounded_sm().bg(l.picked()).children(letters);
     let inner = match pane {
-        Pane::Right => div().flex().gap_1().size_full().child(block(relative(0.38).into(), relative(1.).into(), false)).child(block(
-            relative(0.6).into(),
-            relative(1.).into(),
-            true,
-        )),
-        Pane::Bottom => div().flex().flex_col().gap_1().size_full().child(block(relative(1.).into(), relative(0.45).into(), false)).child(block(
-            relative(1.).into(),
-            relative(0.52).into(),
-            true,
-        )),
-        Pane::Hidden => div().flex().size_full().child(block(relative(1.).into(), relative(1.).into(), false)),
+        Pane::Right => div()
+            .flex()
+            .gap_1()
+            .size_full()
+            .child(list(relative(0.38).into(), relative(1.).into()))
+            .child(reading(relative(0.6).into(), relative(1.).into())),
+        Pane::Bottom => div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .size_full()
+            .child(list(relative(1.).into(), relative(0.45).into()))
+            .child(reading(relative(1.).into(), relative(0.52).into())),
+        Pane::Hidden => div().flex().size_full().child(list(relative(1.).into(), relative(1.).into())),
     };
     div().h(px(96.)).p_1p5().rounded(l.px(Metric::RadiusControl)).bg(l.fill_passive()).border_1().border_color(l.border()).child(inner)
 }
@@ -1022,7 +1046,7 @@ impl SettingsView {
                 let p = crate::prefs::get(cx).reading;
                 let note = tr!("settings-reading-preview-note", view = conversation_hint(p.conversation), pane = pane_name(p.pane).to_lowercase()); // i18n-ok: строчные
                 let aside = vec![
-                    preview_card(pane_scheme(p.pane, l), conversation_name(p.conversation), note, l),
+                    preview_card(reading_scheme(p.pane, p.conversation, l), conversation_name(p.conversation), note, l),
                     aside_card(
                         tr!("settings-reading-aside"),
                         vec![tr!(crate::sys::os_key("settings-reading-aside-1")), tr!("settings-reading-aside-2")],
