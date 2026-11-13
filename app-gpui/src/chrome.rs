@@ -560,7 +560,17 @@ impl Mailer {
             .when(!bar_sections, |d| d.children(self.sections(l, cx)))
             .when(bar_sections, |d| d.child(drag_gap("nav-tabs", TABS_START)))
             // Обрезка только по ширине: плашка KeyTips «×» активной вкладки выходит за низ строки.
-            .child(div().h_full().flex().when(!mac, |d| d.items_end()).when(mac, |d| d.items_center()).gap(px(2.)).min_w_0().overflow_x_hidden().children(tabs))
+            .child(
+                div()
+                    .h_full()
+                    .flex()
+                    .when(!mac, |d| d.items_end())
+                    .when(mac, |d| d.items_center())
+                    .gap(px(2.))
+                    .min_w_0()
+                    .overflow_x_hidden()
+                    .children(tabs),
+            )
             // «+» — новая вкладка почты (T2-24, макет `Main`, Ctrl+T).
             .child({
                 let tip = crate::keytips::tip("tab.new", cx);
