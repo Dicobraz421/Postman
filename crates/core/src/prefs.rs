@@ -176,6 +176,8 @@ pub struct General {
     pub on_close: OnClose,
     /// Уведомление «Postman работает в фоне» при первом сворачивании в трей уже показано.
     pub tray_hint_shown: bool,
+    /// Значок в строке меню (macOS, MAC-09): число непрочитанных и меню «Открыть / Новое письмо / Выйти».
+    pub menu_bar_icon: bool,
     /// Канал обновлений.
     pub channel: Channel,
     /// Проверять обновления раз в сутки в фоне (решение 2026-11-11 «self-update»). Выключено — сетевых запросов по
@@ -201,6 +203,7 @@ impl Default for General {
             sound: false,
             on_close: OnClose::Tray,
             tray_hint_shown: false,
+            menu_bar_icon: true,
             channel: Channel::for_build(env!("CARGO_PKG_VERSION")),
             auto_update: true,
             log: LogLevel::Info,
@@ -1620,6 +1623,16 @@ mod tests {
         let g = General { on_close: OnClose::Quit, tray_hint_shown: true, ..General::default() };
         let back: General = serde_json::from_str(&serde_json::to_string(&g).unwrap()).unwrap();
         assert_eq!((back.on_close, back.tray_hint_shown), (OnClose::Quit, true));
+    }
+
+    /// Значок в строке меню (MAC-09): включён по умолчанию и в старом файле без поля; «выключен» сохраняется.
+    #[test]
+    fn menu_bar_icon_defaults_on_and_round_trips() {
+        let old: General = serde_json::from_str(r#"{"sound":true}"#).unwrap();
+        assert!(old.menu_bar_icon);
+        let g = General { menu_bar_icon: false, ..General::default() };
+        let back: General = serde_json::from_str(&serde_json::to_string(&g).unwrap()).unwrap();
+        assert!(!back.menu_bar_icon);
     }
 
     #[test]

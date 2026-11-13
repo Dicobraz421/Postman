@@ -36,6 +36,8 @@ tray-quit = Quit
 tray-tip-unread = Postman — unread: { $n }
 tray-hint-title = Postman is running in the background
 tray-hint-body = The window is closed, mail keeps syncing. The icon is in the notification area; use its menu to quit.
+# Menu bar icon (MAC-09): "Open Postman" is tray-open, "New mail" is frame-new.
+menubar-quit = Quit
 
 # Startup failure (Windows event log and stderr).
 fatal-data-dir = data directory

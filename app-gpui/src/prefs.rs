@@ -69,6 +69,12 @@ pub(crate) fn observe_with<T: 'static>(
     cx.observe_global::<Store>(move |this, cx| f(this, cx))
 }
 
+/// Настройки изменились — `f` вне view (значок в строке меню macOS, MAC-09).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code, reason = "only the macOS menu bar icon watches prefs outside a view"))]
+pub(crate) fn observe_app(cx: &mut App, f: impl FnMut(&mut App) + 'static) -> gpui_kit::Subscription {
+    cx.observe_global::<Store>(f)
+}
+
 /// Изменить настройки: запись — в фоне; изменились свои клавиши — привязки заново.
 pub(crate) fn update(cx: &mut App, f: impl FnOnce(&mut Prefs)) {
     if !cx.has_global::<Store>() {
