@@ -6,7 +6,6 @@
 
 | Файл | Куда | Суть | Статус |
 |---|---|---|---|
-| [zed-macos-metal-display-link.md](zed-macos-metal-display-link.md) | zed-industries/zed, issue | macOS: `CAMetalDisplayLink` встаёт на паузу, `request_animation_frame` её не снимает | не отправлено |
 | [zed-linux-emoji-xdnd.md](zed-linux-emoji-xdnd.md) | zed-industries/zed, 2 issue / PR | Linux: цветные эмодзи (порядок fallback); X11 XDND drag-out | не отправлено |
 | [zed-windows-patches.md](zed-windows-patches.md) | zed-industries/zed, 7 PR | Windows: шейдеры при сборке, кадры по запросу, живой ресайз, фон, без чёрного кадра, WARP, тихое закрытие | не отправлено |
 | [gpui-kit-html5ever.md](gpui-kit-html5ever.md) | longbridge/gpui-kit, PR | `gpui-base`: html5ever 0.39 | не отправлено |

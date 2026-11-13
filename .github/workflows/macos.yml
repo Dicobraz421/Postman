@@ -13,6 +13,12 @@ on:
     branches: [main]
     paths-ignore: ['docs/**', '**/*.md']
   workflow_dispatch:
+    inputs:
+      # GMAC-01: снимки 3 раза со сторожем кадров (pets-gpui-macos-platform), журналы — артефакт `frames-logs`.
+      frames_diag:
+        description: 'Снимки ×3 с диагностикой кадров (GMAC-01)'
+        type: boolean
+        default: false
 
 concurrency:
   # Новый пуш в PR отменяет устаревший прогон.
@@ -70,7 +76,7 @@ jobs:
   bundle:
     if: github.event_name != 'push' && github.event.pull_request.draft != true
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: ${{ inputs.frames_diag && 120 || 60 }}
     steps:
       - uses: actions/checkout@v7.0.1
       - run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
@@ -89,10 +95,51 @@ jobs:
       # Снимки всех сцен из собранного .app (MAC-04; воркер — в Contents/MacOS, HTML и PDF — в песочнице): снимок окна
       # — ScreenCaptureKit (macOS 14.4+), без разрешения «Запись экрана».
       - name: Снимки демо-ящика
+        if: ${{ !inputs.frames_diag }}
         timeout-minutes: 30
         run: |
           mkdir -p shots
           "${{ steps.package.outputs.app }}/Contents/MacOS/postman" --screens shots --lang ru
+
+      # GMAC-01: те же снимки 3 раза со сторожем кадров; stderr прогона — frames-logs/run-N.log. Прогон с ошибкой не
+      # останавливает остальные и сборку; шаг падает в конце, если прогон упал или был `frame stall` (при видимом окне).
+      - name: Снимки демо-ящика ×3 (диагностика кадров)
+        if: ${{ inputs.frames_diag }}
+        timeout-minutes: 75
+        env:
+          GPUI_FRAMES_WATCHDOG: '1'
+          POSTMAN_LOG: info,gpui_macos::frames=trace
+        run: |
+          mkdir -p shots frames-logs
+          bad=0
+          for i in 1 2 3; do
+            mkdir -p "shots/run-$i"
+            start=$(date +%s)
+            code=0
+            "${{ steps.package.outputs.app }}/Contents/MacOS/postman" --screens "shots/run-$i" --lang ru \
+              2> "frames-logs/run-$i.log" || code=$?
+            stalls=$(grep -c 'frame stall:' "frames-logs/run-$i.log" || true)
+            shots=$(find "shots/run-$i" -name '*.png' | wc -l | tr -d ' ')
+            echo "run $i: exit $code, $(( $(date +%s) - start )) s, shots $shots, frame stall: $stalls" \
+              | tee -a frames-logs/summary.txt
+            if [ "$code" != 0 ] || [ "$stalls" != 0 ]; then bad=1; fi
+          done
+          {
+            echo '### GMAC-01: снимки со сторожем кадров'
+            echo '```'
+            cat frames-logs/summary.txt
+            grep -h 'frame stall' frames-logs/run-*.log | head -40 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "frames_bad=$bad" >> "$GITHUB_ENV"
+
+      - name: Артефакт журналов кадров
+        if: ${{ always() && inputs.frames_diag }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: frames-logs
+          path: frames-logs
+          if-no-files-found: warn
 
       - name: Артефакт снимков
         if: always()
@@ -108,3 +155,9 @@ jobs:
           name: ${{ steps.package.outputs.name }}
           path: ${{ steps.package.outputs.zip }}
           if-no-files-found: error
+
+      - name: Итог снимков ×3
+        if: ${{ inputs.frames_diag && env.frames_bad == '1' }}
+        run: |
+          cat frames-logs/summary.txt
+          exit 1
