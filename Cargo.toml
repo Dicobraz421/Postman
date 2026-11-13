@@ -4,7 +4,7 @@ members = ["crates/ir", "crates/smime", "crates/jmap", "crates/imap", "crates/da
 
 [workspace.package]
 edition = "2024"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 license = "LicenseRef-Proprietary"
 
 [workspace.dependencies]

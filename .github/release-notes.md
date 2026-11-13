@@ -2,7 +2,7 @@
 <!-- pre -->
 **Бета-версия.** Основное работает, но возможны ошибки. Нашли ошибку — «Настройки» → «Общие» → «Отчёт для поддержки» и приложите файл к сообщению.
 
-**Бета-тестерам.** Версия 0.1.0-beta.5 предложит эту версию сама (канал «Предварительный»). Версии 0.1.0-beta.4 и старше обновить себя не умеют: один раз установите эту версию вручную (файлы ниже) — письма и вход сохранятся, — затем «Настройки» → «Общие» → «Обновления» → канал **«Предварительный»**.
+**Бета-тестерам.** Версии 0.1.0-beta.5 и новее предложат эту версию сами (канал «Предварительный»). Версии 0.1.0-beta.4 и старше обновить себя не умеют: один раз установите эту версию вручную (файлы ниже) — письма и вход сохранятся, — затем «Настройки» → «Общие» → «Обновления» → канал **«Предварительный»**.
 <!-- /pre -->
 
 ## Что нового
@@ -14,7 +14,7 @@
 - **Подпись S/MIME**: сертификат, срок которого ещё не начался, отмечается «ещё не действует»; промежуточные сертификаты Postman берёт из самих писем.
 - **Политики организации** — одни и те же ключи и значения на всех системах.
 - **Песочница строже**: письма и вложения разбираются в более закрытом процессе на всех системах.
-- **Исправлено**: почта по IMAP (например, Яндекс) после обрыва связи сама подключается заново и продолжает проверку остальных папок, «Входящие» — первыми; на Mac окно иногда замирало на десятки секунд — теперь обновляется сразу; на Windows закрытие окна и выход больше не пишут ложные «Ошибки» в системный журнал.
+- **Исправлено**: в «Настройки» → «Чтение» предпросмотр показывает выбранный вид беседы; «Вид беседы» в меню письма выбирается мышью, даже когда рядом уведомление; «+ категория» в письме открывает список категорий, а не меню письма; адрес ссылки внизу письма пропадает, когда курсор уходит со ссылки, и сам через несколько секунд.
 <!-- stable -->
 **Стабильная версия** для повседневной работы.
 <!-- /stable -->
@@ -68,7 +68,7 @@
 
 Пакеты .deb и .rpm лучше AppImage на Ubuntu 23.10 и новее: с ними вложения открываются в более строгой изоляции. Обновления: AppImage Postman обновляет сам; с пакетами .deb и .rpm он сообщит о новой версии и даст ссылку «Скачать» — поставьте её так же, как при установке, письма и вход сохранятся.
 
-*English:* New: a Linux version (preview), S/MIME and passwordless Kerberos sign-in on Mac. Postman updates itself (Settings → General → Updates; from 0.1.0-beta.4 and older, install this version manually once and pick the "Preview" channel). Windows — the **.msi** installs Postman for all users (administrator rights required); the **.zip** installs it for you only, no administrator rights needed. macOS (Apple Silicon, 13+) — open the **.dmg** and drag Postman onto Applications. Linux (x86_64, preview) — the **.deb** (Ubuntu, Debian) or **.rpm** (Fedora, RHEL 9, openSUSE) package, or the **.AppImage** for any distribution; the AppImage updates itself; with .deb and .rpm Postman offers a download link for the new version.
+*English:* New: a Linux version (preview), S/MIME and passwordless Kerberos sign-in on Mac. Fixed: the conversation view preview and menu, the "+ category" button, the link address line. Postman updates itself (Settings → General → Updates; from 0.1.0-beta.4 and older, install this version manually once and pick the "Preview" channel). Windows — the **.msi** installs Postman for all users (administrator rights required); the **.zip** installs it for you only, no administrator rights needed. macOS (Apple Silicon, 13+) — open the **.dmg** and drag Postman onto Applications. Linux (x86_64, preview) — the **.deb** (Ubuntu, Debian) or **.rpm** (Fedora, RHEL 9, openSUSE) package, or the **.AppImage** for any distribution; the AppImage updates itself; with .deb and .rpm Postman offers a download link for the new version.
 <!-- mac-unsigned -->
 The app is not signed by Apple yet: on first launch go to System Settings → Privacy & Security → "Open Anyway", or run `xattr -dr com.apple.quarantine /Applications/Postman.app`.
 <!-- /mac-unsigned -->
