@@ -20,7 +20,7 @@ use std::ptr::{null, null_mut};
 use std::sync::Arc;
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation, WAIT_OBJECT_0};
-use windows_sys::Win32::Security::Isolation::{CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName};
+use windows_sys::Win32::Security::Isolation::{CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName};
 use windows_sys::Win32::Security::{FreeSid, PSID, SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION,
@@ -229,6 +229,16 @@ fn app_container_sid() -> Result<Sid, u32> {
     // SAFETY: см. выше.
     let hr = unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) };
     if hr >= 0 { Ok(Sid(sid)) } else { Err(hr as u32) }
+}
+
+/// Удалить профиль AppContainer воркера (PAR-05: при удалении Postman); профиля нет — успех.
+pub(crate) fn remove_profile() -> Result<(), String> {
+    // HRESULT_FROM_WIN32: ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_NOT_FOUND — профиля нет.
+    const ABSENT: [u32; 3] = [0x8007_0002, 0x8007_0003, 0x8007_0490];
+    let name = wide(PROFILE);
+    // SAFETY: строка нуль-терминирована и живёт до конца вызова.
+    let hr = unsafe { DeleteAppContainerProfile(name.as_ptr()) };
+    if hr >= 0 || ABSENT.contains(&(hr as u32)) { Ok(()) } else { Err(format!("DeleteAppContainerProfile: 0x{:08X}", hr as u32)) }
 }
 
 /// Пара анонимных каналов; конец для дочернего процесса наследуемый.

@@ -742,6 +742,12 @@ fn read_frame(r: &mut impl Read, max: usize) -> io::Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// Удалить след песочницы на диске (Windows: профиль AppContainer; ADR 0011, PAR-05) — действие
+/// `postman-worker --remove-appcontainer` при удалении Postman. Следа нет — успех.
+pub fn remove_appcontainer() -> Result<(), String> {
+    sandbox::remove_profile()
+}
+
 /// Точка входа процесса-воркера.
 pub fn serve() -> ! {
     run(TIME_LIMIT, handle)
