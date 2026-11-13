@@ -229,7 +229,8 @@ fn shared_raw(n: usize, i: usize, at: i64) -> (Vec<u8>, SplitPart) {
     .join("\r\n");
     let body = base64(pdf(), 76);
     let raw = format!("{head}{body}--{BOUNDARY}--\r\n").into_bytes();
-    let part = SplitPart { range: head.len()..head.len() + body.len(), encoding: Encoding::Base64, decoded: pdf().to_vec() };
+    let part =
+        SplitPart { range: head.len()..head.len() + body.len(), encoding: Encoding::Base64, decoded: pdf().to_vec(), mime: "application/pdf".into() };
     (raw, part)
 }
 
