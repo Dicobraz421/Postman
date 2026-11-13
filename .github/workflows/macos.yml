@@ -90,6 +90,11 @@ jobs:
       # — ScreenCaptureKit (macOS 14.4+), без разрешения «Запись экрана».
       - name: Снимки демо-ящика
         timeout-minutes: 30
+        # Диагностика GMAC-01 (не для main): прежний источник кадров и журнал кадров.
+        env:
+          GPUI_METAL_DISPLAY_LINK: "1"
+          RUST_LOG: info,gpui_macos::frames=debug
+          POSTMAN_LOG: info,gpui_macos::frames=debug
         run: |
           mkdir -p shots
           "${{ steps.package.outputs.app }}/Contents/MacOS/postman" --screens shots --lang ru
