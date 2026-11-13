@@ -13,6 +13,7 @@
 //! inline. Предпросмотр показывает картинку (раскодирует воркер, как картинки писем).
 
 use std::collections::HashMap;
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::{Arc, PoisonError};
 
@@ -21,6 +22,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use pets_i18n::tr;
 use pets_ui::theme::Metric;
+use postman_compose::display::{Look as Marks, Span};
 use postman_core::prefs::{AccountPrefs, ImageError, SignImage, Signature, Template, Writer};
 
 use crate::buttons::button;
@@ -663,6 +665,7 @@ impl SettingsView {
             profile.name = tr!("settings-sign-preview-me");
         }
         let signature = postman_core::fill::signature(text.trim_end(), &profile);
+        let marks = postman_compose::display::display(&signature);
         let modes: Vec<Stateful<Div>> = [(PreviewMode::New, "settings-sign-preview-new"), (PreviewMode::Reply, "settings-sign-preview-reply")]
             .into_iter()
             .enumerate()
@@ -699,7 +702,7 @@ impl SettingsView {
                     .flex_col()
                     .text_size(px(12.))
                     .text_color(l.text2())
-                    .children(signature.lines().map(|line| preview_line(line, images)).collect::<Vec<_>>()),
+                    .children(line_ranges(&signature).map(|r| preview_line(&signature, r, &marks, images)).collect::<Vec<_>>()),
             )
             .when(reply, |d| {
                 d.child(
@@ -1008,18 +1011,29 @@ fn path_name(name: &str) -> String {
     if name.is_empty() { "?".into() } else { name.to_owned() }
 }
 
-/// Строка предпросмотра подписи: картинки `![…](cid:…)` — кадром (не раскодирована — её подписью), остальное —
+/// Строки подписи — байтовые отрезки без перевода строки.
+fn line_ranges(s: &str) -> impl Iterator<Item = Range<usize>> + '_ {
+    let mut at = 0;
+    s.split_inclusive('\n').map(move |line| {
+        let r = at..at + line.trim_end_matches(['\n', '\r']).len();
+        at += line.len();
+        r
+    })
+}
+
+/// Строка `r` предпросмотра подписи: картинки `![…](cid:…)` — кадром (не раскодирована — её подписью), остальное —
 /// разметкой письма.
-fn preview_line(line: &str, images: &HashMap<String, Option<Arc<RenderImage>>>) -> Div {
-    let Some(at) = line.find("![") else { return md_line(line) };
+fn preview_line(sig: &str, r: Range<usize>, marks: &[Span], images: &HashMap<String, Option<Arc<RenderImage>>>) -> Div {
+    let line = &sig[r.clone()];
+    let Some(at) = line.find("![") else { return md_line(sig, r, marks) };
     let rest = &line[at..];
     let parsed = rest.find("](cid:").and_then(|m| {
         let alt = &rest[2..m];
         let tail = &rest[m + "](cid:".len()..];
         let close = tail.find(')')?;
-        Some((alt, &tail[..close], &rest[m + "](cid:".len() + close + 1..]))
+        Some((alt, &tail[..close], r.start + at + m + "](cid:".len() + close + 1))
     });
-    let Some((alt, cid, after)) = parsed else { return md_line(line) };
+    let Some((alt, cid, after)) = parsed else { return md_line(sig, r, marks) };
     let picture = match images.get(cid).cloned().flatten() {
         Some(image) => {
             let size = image.size(0);
@@ -1029,27 +1043,41 @@ fn preview_line(line: &str, images: &HashMap<String, Option<Arc<RenderImage>>>) 
         }
         None => div().italic().child(format!("[{alt}]")),
     };
-    div().flex().flex_wrap().items_center().gap_1().child(md_line(&line[..at])).child(picture).child(preview_line(after, images))
+    div().flex().flex_wrap().items_center().gap_1().child(md_line(sig, r.start..r.start + at, marks)).child(picture).child(preview_line(
+        sig,
+        after..r.end,
+        marks,
+        images,
+    ))
 }
 
-/// Строка подписи с разметкой письма: `**жирный**`, `*курсив*` (предпросмотр).
-fn md_line(s: &str) -> Div {
+/// Строка подписи с разметкой письма (#654): признаки — те же, что у поля письма и при отправке
+/// (`postman_compose::display`), знаки разметки скрыты.
+fn md_line(sig: &str, r: Range<usize>, marks: &[Span]) -> Div {
+    let run = |text: &str, m: Option<Marks>| {
+        let m = m.unwrap_or_default();
+        div()
+            .whitespace_nowrap()
+            .when(m.strong, |d| d.font_weight(FontWeight::BOLD))
+            .when(m.emphasis, |d| d.italic())
+            .when(m.strike, |d| d.line_through())
+            .when(m.underline, |d| d.underline())
+            .child(text.to_owned())
+    };
     let mut d = div().flex().flex_wrap().min_h(px(16.));
-    for (i, part) in s.split("**").enumerate() {
-        let bold = i % 2 == 1;
-        for (j, run) in part.split('*').enumerate() {
-            if run.is_empty() {
-                continue;
-            }
-            let mut span = div().whitespace_nowrap().child(run.to_owned());
-            if bold {
-                span = span.font_weight(FontWeight::BOLD);
-            }
-            if j % 2 == 1 {
-                span = span.italic();
-            }
-            d = d.child(span);
+    let mut at = r.start;
+    for s in marks.iter().filter(|s| s.range.end > r.start && s.range.start < r.end) {
+        let (a, b) = (s.range.start.max(r.start), s.range.end.min(r.end));
+        if a > at {
+            d = d.child(run(&sig[at..a], None));
         }
+        if !s.look.markup {
+            d = d.child(run(&sig[a..b], Some(s.look)));
+        }
+        at = b;
+    }
+    if at < r.end {
+        d = d.child(run(&sig[at..r.end], None));
     }
     d
 }

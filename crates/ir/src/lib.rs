@@ -16,7 +16,7 @@ mod style;
 pub use autolink::{autolink, find_links};
 pub use html::from_html;
 pub use link::{LinkCheck, check_link};
-pub use markdown::{markdown_to_html, quote, to_markdown};
+pub use markdown::{Move, markdown_to_html, quote, tidy_markers, to_markdown};
 pub use plain::from_plain;
 pub use style::MAX_IMAGE_SIDE;
 
