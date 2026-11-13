@@ -644,6 +644,22 @@ jobs:
             -e '/^<!-- .* -->$/d' -e "s/{version}/$version/g" .github/release-notes.md > notes.md
           gh release create "$GITHUB_REF_NAME" assets/* -R "$GITHUB_REPOSITORY" --verify-tag \
             --title "Postman $version" --notes-file notes.md "${pre[@]}"
+      # На выдаче — не больше двух выпусков (решение 2026-11-13 «releases-keep-two»): старше двух последних
+      # страницы выпусков удаляются вместе с файлами, git-теги остаются. Пробный запуск — только список.
+      - name: Старые выпуски
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          old=$(gh release list -R "$GITHUB_REPOSITORY" --limit 200 --json tagName,createdAt \
+            --jq 'sort_by(.createdAt) | reverse | .[2:] | .[].tagName')
+          for tag in $old; do
+            if [ "$GITHUB_REF_TYPE" = tag ]; then
+              gh release delete "$tag" -R "$GITHUB_REPOSITORY" --yes
+            else
+              echo "удалился бы выпуск $tag"
+            fi
+          done
 
   # Единственный required check: зелёный, если всё нужное прошло или было пропущено.
   gate:
