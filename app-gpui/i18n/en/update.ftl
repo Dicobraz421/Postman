@@ -1,6 +1,7 @@
 # Postman updates (decision 2026-11-11 "self-update"): toasts, download bar, "Settings → General" rows.
 update-available = Version { $version } is available
 update-install = Install
+update-download = Download
 update-done = Postman is updated to version { $version }
 update-failed = Could not update to version { $version }: { $error }
 update-idle = Click “Check for updates” to see whether a new version is out.

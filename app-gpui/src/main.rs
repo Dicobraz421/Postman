@@ -262,10 +262,8 @@ fn main() {
         match pets_shell::single_instance("Postman", &args) {
             Ok(pets_shell::Instance::First(l)) => Some(l),
             Ok(pets_shell::Instance::Second) => return,
-            Err(e) => {
-                tracing::warn!("shell: single instance check failed, the window may open twice: {e}");
-                None
-            }
+            // pets PAR-03 (решение 2026-11-13): без проверки экземпляра второе окно не открываем — ошибка и выход, на всех ОС.
+            Err(e) => fatal("fatal-single-instance", e),
         }
     };
     // Только владелец (PAR-04 №19): письма и вложения не читают другие пользователи машины.
@@ -274,7 +272,7 @@ fn main() {
     #[cfg(target_os = "linux")]
     security::apply_sandbox_policy();
     // Копии перетащенных вложений (T1-18) прошлого запуска — в фоне; замеры и снимки не трогают копии работающего окна.
-    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
     if persist {
         std::thread::spawn(|| sys::drag::clean(&sys::drag::copies()));
     }
@@ -429,7 +427,7 @@ fn main() {
     // Выход: письма в окне «Отменить» не должны пропасть вместе с потоком синхронизации (S7-04, шаг 9).
     plugins::finish_sends();
     // Выход: копии перетащенных вложений (T1-18) больше не нужны.
-    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
     if persist {
         sys::drag::clean(&sys::drag::copies());
     }

@@ -367,6 +367,46 @@ pub mod drag {
     }
 }
 
+/// Перетаскивание вложения в файловый менеджер на Linux (INT-01): `gpui_linux::pets::drag` — gpui сам ведёт сеанс
+/// (`on_drag` + `external_drag_payload`: X11 XDND, Wayland `wl_data_device`), отдаёт получателю пути копий. Копия — в
+/// `$TMPDIR/Postman/drag`, с безопасным именем, готовится заранее (как на macOS); без копии — не тащим (PAR-04 №11).
+#[cfg(target_os = "linux")]
+pub mod drag {
+    use std::path::{Path, PathBuf};
+
+    use gpui_linux::pets::drag as os;
+    pub use gpui_linux::pets::drag::TempCopies;
+
+    /// Каталог копий: `$TMPDIR/Postman/drag`.
+    pub fn copies() -> TempCopies {
+        TempCopies::new("Postman")
+    }
+
+    /// Порог начала перетаскивания в точках окна.
+    pub fn threshold(scale: f32) -> (f32, f32) {
+        os::threshold(scale)
+    }
+
+    /// Копия файла для перетаскивания: свой подкаталог на каждое перетаскивание.
+    pub fn prepare(copies: &TempCopies, name: &str, data: &[u8]) -> std::io::Result<PathBuf> {
+        let path = copies.slot()?.join(postman_core::files::safe_name(name));
+        postman_core::files::write(&path, data)?;
+        Ok(path)
+    }
+
+    /// Удалить копии (старт и выход).
+    pub fn clean(copies: &TempCopies) {
+        if let Err(e) = copies.clean() {
+            tracing::warn!(path = %copies.root().display(), "drag: drag copies not removed: {e}");
+        }
+    }
+
+    /// Содержимое для получателя за окном: путь копии.
+    pub fn payload(copy: &Path) -> gpui_kit::ExternalDragPayload {
+        os::payload(&[copy.to_path_buf()])
+    }
+}
+
 /// Спрятать окно в трей (T3-13): с экрана и с панели задач.
 #[cfg(windows)]
 pub fn hide_window(window: &Window) -> Result<(), String> {

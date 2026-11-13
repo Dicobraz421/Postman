@@ -254,7 +254,7 @@ impl SettingsView {
                 }
             })))
             .when_some(upd.offer.clone().filter(|_| upd.allowed && !busy), |d, _| {
-                d.child(button("settings-update-install", tr!("update-install"), true, l).on_click(cx.listener(|_, _, _, cx| {
+                d.child(button("settings-update-install", tr!(crate::update::install_label(cx)), true, l).on_click(cx.listener(|_, _, _, cx| {
                     crate::update::install(cx);
                     cx.notify();
                 })))
