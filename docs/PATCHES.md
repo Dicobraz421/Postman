@@ -13,6 +13,10 @@
 перетаскивание файлов наружу, X11 XDND) и `gpui-pre-wgpu` (`crates/pets-gpui-wgpu` — эмодзи цветным шрифтом); все
 четыре — одна ревизия `pets` в `[patch.crates-io]`.
 
+С GMAC-01 (#642, pets #79) — патч macOS-платформы там же: `gpui-pre-macos` (`crates/pets-gpui-macos-platform` —
+кадры от CVDisplayLink вместо CAMetalDisplayLink: на macOS 14+ окно переставало получать кадры на 7–44 с; Metal —
+`GPUI_METAL_DISPLAY_LINK=1`). pets #80 — закрытие окна Windows без ложных ERROR в журнале.
+
 | Патч | Файлы | Зачем | Upstream |
 |---|---|---|---|
 | Шейдеры в exe | `build.rs`, `directx_renderer.rs` | кросс-сборка из Linux без fxc.exe, в бинаре нет путей машины сборки | не предлагаем; уйдёт, когда сборка будет только на Windows |
