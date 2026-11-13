@@ -334,6 +334,7 @@ impl SettingsView {
             _subscriptions: subscriptions,
         };
         v.read_os(cx);
+        v.read_store(cx);
         if v.section == Section::Categories {
             v.count_categories(cx);
         }
@@ -380,6 +381,8 @@ impl SettingsView {
             self.sign.path = self.info.cache.clone();
             self.sign_load(cx);
             self.check_password(cx);
+            self.os.store = None;
+            self.read_store(cx);
         }
         cx.notify();
     }

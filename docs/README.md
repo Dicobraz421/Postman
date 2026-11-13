@@ -105,5 +105,5 @@ and variables → Actions):
 `scroll_cpu_pct` и `scroll_ui_thread_cpu_pct`, то же для листания списка без открытия писем (`list_*`), `ui_cpu_p50/p99`,
 `rss_peak_mb`, `private_peak_mb`, затем простой: `idle_cpu_pct`, `idle_rss_mb`, `idle_private_mb` (private bytes).
 `POSTMAN_BENCH_SCROLL_FRAMES=N`, `POSTMAN_BENCH_LIST_FRAMES=N` — длиннее фазы, например для профилировщика. Бенч
-работает на свежей копии ящика (`bench.redb` из шаблона `bench-template-<n>.redb`). Это общий сценарий для сравнения
+работает на свежей копии ящика (`bench.redb` из шаблона `bench-template-<n>-f<формат>.redb`). Это общий сценарий для сравнения
 машин и версий; бюджеты — [SIZE.md](SIZE.md), [MEMORY.md](MEMORY.md).

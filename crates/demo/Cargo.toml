@@ -18,6 +18,8 @@ png = "0.17"
 postman-smime = { workspace = true, features = ["testkit"] }
 # Проверка образцов письмами целиком: MIME S/MIME разбирает воркер (S8-36).
 postman-worker.workspace = true
+# Замер хранилища (`tests/store_size.rs`): размер файла после уплотнения — та же redb, что у `postman-cache`.
+redb = "4"
 
 [lints]
 workspace = true

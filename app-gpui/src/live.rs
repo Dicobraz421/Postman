@@ -423,9 +423,12 @@ pub(crate) fn open_store(path: &Path) -> Result<(Cache, Index), postman_cache::E
     open_store_with(path, &|_| {})
 }
 
-/// То же с ходом переноса формата 5 в 6 (`Event::StoreUpgrade`, ADR 0006 п. 6) в `notify`.
+/// То же с ходом переноса прежнего формата (`Event::StoreUpgrade`, ADR 0006 п. 6) в `notify`. Письма целиком при
+/// переносе режет воркер (мелкие части и картинки — по хэшу, дополнение ADR 2026-11-14); он запускается только
+/// если перенос нужен.
 fn open_store_with(path: &Path, notify: &dyn Fn(Event)) -> Result<(Cache, Index), postman_cache::Error> {
-    let (cache, _) = postman_core::store::open(path, None, notify)?;
+    let client = postman_worker::Client::new(postman_worker::Client::default_exe(), crate::migration::WORKER_TIMEOUT);
+    let (cache, _) = postman_core::store::open(path, Some(postman_core::store::worker_splitter(client)), notify)?;
     let index = match postman_search::SearchIndex::open(&path.with_extension("search")) {
         Ok(i) => Some(Arc::new(i)),
         Err(e) => {
