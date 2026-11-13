@@ -148,7 +148,7 @@ pub(crate) struct Composer {
     /// Украшения текста письма и тема, в которой они посчитаны (сменилась — заново).
     marks: Option<TextDecorationCollection>,
     marks_look: Option<Rc<crate::roles::Look>>,
-    focus: FocusHandle,
+    pub(crate) focus: FocusHandle,
     mailer: WeakEntity<Mailer>,
     book: Book,
     lists: std::collections::HashSet<String>,
@@ -187,6 +187,8 @@ pub(crate) struct Composer {
     line_h: Rc<std::cell::Cell<f32>>,
     /// `--screens`: сколько раз письмо нарисовано.
     screens: Option<u32>,
+    /// Ответ на фрагменты (`fragments.rs`): поля ответов реплик.
+    pub(crate) board: crate::fragments::Board,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -333,6 +335,7 @@ impl Composer {
             block_zones: Vec::new(),
             block_zone: None,
             line_h: Rc::new(std::cell::Cell::new(13.0 * 1.5)),
+            board: Default::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -612,7 +615,7 @@ impl Composer {
     }
 
     /// Таймер автосохранения — только при изменениях: в простое письмо не просыпается.
-    fn schedule_autosave(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn schedule_autosave(&mut self, cx: &mut Context<Self>) {
         if self.autosave_armed {
             return;
         }
@@ -2018,30 +2021,28 @@ impl Composer {
                 let plain = item.text();
                 weak.update(cx, |c, cx| c.paste_html(html, plain, window, cx)).is_ok()
             });
-        div()
+        let head = div()
             .flex_1()
             .min_h_0()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .px(px(16.))
-                    .py(px(8.))
-                    .child(editor)
-                    .capture_action(cx.listener(|this, _: &IndentInline, window, cx| {
-                        if this.table_tab(false, window, cx) {
-                            cx.stop_propagation();
-                        }
-                    }))
-                    .capture_action(cx.listener(|this, _: &OutdentInline, window, cx| {
-                        if this.table_tab(true, window, cx) {
-                            cx.stop_propagation();
-                        }
-                    })),
-            )
-            .into_any_element()
+            .px(px(16.))
+            .py(px(8.))
+            .child(editor)
+            .capture_action(cx.listener(|this, _: &IndentInline, window, cx| {
+                if this.table_tab(false, window, cx) {
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &OutdentInline, window, cx| {
+                if this.table_tab(true, window, cx) {
+                    cx.stop_propagation();
+                }
+            }))
+            .into_any_element();
+        // Ответ на фрагменты: свой текст — невысоким полем, под ним реплики и подпись.
+        match crate::fragments::split_view(self, head, cx) {
+            Ok(split) => split,
+            Err(head) => div().flex_1().min_h_0().flex().flex_col().child(head).into_any_element(),
+        }
     }
 
     /// Строки вопросов в письме: «Сохранить черновик?» и «Удалить черновик?».
@@ -2695,6 +2696,7 @@ impl Render for Composer {
             self.show_cc |= !self.model.cc.trim().is_empty();
             self.show_bcc |= !self.model.bcc.trim().is_empty();
         }
+        crate::fragments::prepare(self, window, cx);
         self.refresh_recipient_checks();
         self.decode_inline_images(cx);
         self.refresh_zone(cx);
@@ -2776,6 +2778,7 @@ impl Render for Composer {
             .flex()
             .text_color(l.text())
             .text_size(px(13.));
+        let root = crate::fragments::actions(root, cx);
         if inline {
             return root.bg(l.panel()).border_b_1().border_color(l.c(Role::StrokeCard)).child(editor);
         }

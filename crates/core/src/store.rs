@@ -76,7 +76,7 @@ pub fn parts(split: mime::Split, decoded: &[u8]) -> std::result::Result<Vec<Spli
             mime::Encoding::Base64 => Encoding::Base64,
             mime::Encoding::QuotedPrintable => Encoding::QuotedPrintable,
         };
-        out.push(SplitPart { range, encoding, decoded: bytes.to_vec() });
+        out.push(SplitPart { range, encoding, decoded: bytes.to_vec(), mime: p.mime });
         at = end;
     }
     if at != decoded.len() {
@@ -122,21 +122,32 @@ pub fn put_raw(cache: &Cache, split: &mut Splitter, id: LetterId, raw: &[u8]) ->
     Ok(p.message_id)
 }
 
-/// Открыть хранилище; файл формата 5 — перенести в формат 6 (ADR 0006 п. 6): ход — `Event::StoreUpgrade` в `notify`,
-/// письма целиком — на части `split` (`None` — целиком). Перенос долгий — звать не из потока интерфейса: первый кадр
+/// Открыть хранилище; файл формата 5 или 6 — перенести в текущий (ADR 0006 п. 6 и дополнение 2026-11-14): ход —
+/// `Event::StoreUpgrade` в `notify`, письма целиком — на части `split` (`None` — формат 5 целиком, формат 6 — с
+/// прежними крупными частями). Перенос долгий — звать не из потока интерфейса: первый кадр
 /// его не ждёт. `Migrated::Fresh` — база пустая: синхронизация с нуля, как прежде при смене формата. После переноса
 /// и с пустой базой индекс поиска по `LetterId` не готов: поиск — по кэшу до [`crate::indexer::rebuild`].
 pub fn open(path: &Path, split: Option<Splitter>, notify: &dyn Fn(Event)) -> postman_cache::Result<(Cache, Migrated)> {
     let mut split = split;
     let mut how = Migration {
         progress: Box::new(|done, total| notify(Event::StoreUpgrade { done, total })),
-        // Письмо, которое воркер не разобрал, хранится целиком: перенос из-за него не прерывается.
+        // Письмо, которое воркер не разобрал, хранится целиком (формат 6 — с прежними частями): перенос из-за него не
+        // прерывается.
         split: split.as_mut().map(|s| -> postman_cache::Split<'_> { Box::new(move |raw: &[u8]| Ok(s(raw).map(|p| p.parts).unwrap_or_default())) }),
     };
     let (cache, migrated) = Cache::open_with(path, &mut how)?;
     match &migrated {
         Migrated::Current => {}
-        Migrated::Done => tracing::info!("store: migrated from format 5"),
+        Migrated::Done => {
+            tracing::info!("store: migrated to the current format");
+            // Счётчики ссылок содержимого после переноса — пересчётом с нуля; расхождение — в журнал (данные целы:
+            // перенос не удаляет письма, только записи без ссылок).
+            match cache.check_refs() {
+                Ok(p) if p.is_empty() => {}
+                Ok(p) => tracing::error!(problems = p.len(), "store: content references after migration: {}", p[..p.len().min(5)].join("; ")),
+                Err(e) => tracing::warn!("store: content references not checked after migration: {e}"),
+            }
+        }
         Migrated::Fresh(reason) => tracing::error!("store: cache not read, starting empty: {reason}"),
     }
     Ok((cache, migrated))

@@ -227,6 +227,8 @@ pub(crate) struct ReadingPane {
     pub(crate) scroll: ScrollHandle,
     /// Ширина колонки текста по последней раскладке (T1-10, `ir_view::column_probe`): картинки не шире неё.
     pub(crate) column: std::rc::Rc<std::cell::Cell<Pixels>>,
+    /// Меню правой кнопки над выделенным текстом письма (`fragments.rs`): где открыто.
+    pub(crate) fragment_menu: Option<Point<Pixels>>,
 }
 
 /// Поля области письма слева и справа (`px(24.)` у `#reading`).
@@ -346,6 +348,7 @@ impl ReadingPane {
             reveal: false,
             scroll: ScrollHandle::new(),
             column: Default::default(),
+            fragment_menu: None,
         }
     }
 
@@ -1222,7 +1225,8 @@ impl Render for ReadingPane {
         // Лента беседы — тоже (T3-11): тема, затем показанный текст писем ленты; прокрутка — та же.
         let words: &[String] = self.marks.as_ref().map_or(&[], |(_, m)| m.as_slice());
         let target = (reveal && r.preview.is_none()).then(|| ir_view::Reveal { scroll: self.scroll.clone(), view: cx.entity_id() });
-        let hits = ir_view::Hits::new(words, self.hit, 0).with_reveal(target);
+        // Текст письма и ленты выделяется мышью (ответ на фрагмент, `fragments.rs`).
+        let hits = ir_view::Hits::new(words, self.hit, 0).with_reveal(target).selectable(cx.entity_id());
         let subject = {
             let (styled, at) = ir_view::hit_text(r.row.subject.clone(), Vec::new(), &hits, &l);
             let layout = styled.layout().clone();
@@ -1378,7 +1382,7 @@ impl Render for ReadingPane {
                 .children(matches)
                 .child(feed)
                 .children((!draft).then(|| quick_reply(&r.row, self.me.as_deref(), &l, cx)));
-            return with_side(main, side);
+            return with_side(crate::fragments::decorate(main, self.fragment_menu, cx), side);
         }
         // Открыт просмотр вложения — он на месте текста письма и карточки приглашения (DESIGN «Вложения»).
         if let Some(p) = &r.preview {
@@ -1408,7 +1412,9 @@ impl Render for ReadingPane {
             Some(doc) => {
                 // Внешние картинки (T3-04): строка «не загружаются (N)» с «Загрузить» и «Всегда для домена».
                 let col = div().flex().flex_col().gap_2().children(remote);
-                col.children(ir_view::blocks_marked(&doc.blocks, "doc", &r.images, &hits, self.column.get(), cx)).into_any_element()
+                hits.letter(&r.row.id, 1);
+                let text = div().relative().flex().flex_col().gap_2().children(crate::screens::spot("reading-body"));
+                col.child(text.children(ir_view::blocks_marked(&doc.blocks, "doc", &r.images, &hits, self.column.get(), cx))).into_any_element()
             }
         };
         let quick_reply = (r.doc.is_some() && !draft).then(|| quick_reply(&r.row, self.me.as_deref(), &l, cx));
@@ -1437,7 +1443,7 @@ impl Render for ReadingPane {
             .children(lock_line)
             .child(body)
             .children(quick_reply);
-        with_side(main, side)
+        with_side(crate::fragments::decorate(main, self.fragment_menu, cx), side)
     }
 }
 

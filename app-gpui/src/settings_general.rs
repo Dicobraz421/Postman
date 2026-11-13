@@ -24,6 +24,35 @@ pub(crate) struct OsState {
     pub(crate) error: Option<String>,
     /// Собранный отчёт для поддержки.
     pub(crate) report: Option<std::path::PathBuf>,
+    /// Хранилище писем в «Диагностике» (считается в фоне); `None` — ещё считаем или кэша нет.
+    pub(crate) store: Option<StoreInfo>,
+}
+
+/// Хранилище писем: размер файла на диске (у демо — нет) и сводка записей.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct StoreInfo {
+    pub(crate) disk: Option<u64>,
+    pub(crate) stats: postman_cache::StoreStats,
+}
+
+/// Строка «Хранилище писем»: размер, письма, части; сэкономлено дедупликацией и сжатием — в МБ и процентах от
+/// того, что заняли бы письма и тела без них.
+pub(crate) fn store_text(info: &StoreInfo) -> (String, String) {
+    let st = &info.stats;
+    let disk = info.disk.map_or_else(|| tr!("settings-store-memory"), crate::bulk::size_text);
+    let line = tr!("settings-store-hint", disk = disk, letters = st.letters as i64, parts = st.parts as i64);
+    let saved = st.dedup_saved() + st.packed_saved();
+    let percent = |n: u64| (n * 100).checked_div(st.logical).unwrap_or(0) as i64;
+    let note = tr!(
+        "settings-store-saved",
+        saved = crate::bulk::size_text(saved),
+        percent = percent(saved),
+        dedup = crate::bulk::size_text(st.dedup_saved()),
+        dedup_percent = percent(st.dedup_saved()),
+        packed = crate::bulk::size_text(st.packed_saved()),
+        packed_percent = percent(st.packed_saved())
+    );
+    (line, note)
 }
 
 impl SettingsView {
@@ -72,6 +101,27 @@ impl SettingsView {
                 if let Err(e) = result {
                     tracing::error!("settings: default mail app not set: {e}");
                     v.os.error = Some(tr!("settings-os-failed"));
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// «Хранилище писем» — в фоне: обход счётчиков содержимого и тел, размер файла на диске.
+    pub(crate) fn read_store(&mut self, cx: &mut Context<Self>) {
+        let Some(db) = self.info.db.clone() else { return };
+        let path = self.info.cache.clone();
+        let task = cx.background_spawn(async move {
+            let disk = path.and_then(|p| std::fs::metadata(p).ok()).map(|m| m.len());
+            db.store_stats().map(|stats| StoreInfo { disk, stats })
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |v, cx| {
+                match result {
+                    Ok(info) => v.os.store = Some(info),
+                    Err(e) => tracing::warn!("settings: store summary not read: {e}"),
                 }
                 cx.notify();
             });
@@ -291,6 +341,18 @@ impl SettingsView {
             Some(path) => tr!("settings-report-done", file = path.display().to_string()),
             None => tr!("settings-report-hint"),
         };
+        let store_hint = match &self.os.store {
+            Some(info) => {
+                let (line, note) = store_text(info);
+                format!("{line} {note}")
+            }
+            None => tr!("settings-store-reading"),
+        };
+        let store_control = button("settings-store-refresh", tr!("settings-store-refresh"), false, l).on_click(cx.listener(|this, _, _, cx| {
+            this.os.store = None;
+            this.read_store(cx);
+            cx.notify();
+        }));
         let report_control = div()
             .flex()
             .gap_2()
@@ -359,6 +421,29 @@ impl SettingsView {
                 })),
                 l,
             ))
+            .when(self.info.db.is_some(), |d| d.child(row(tr!("settings-store"), Some(store_hint), store_control, l)))
             .child(row(tr!("settings-report"), Some(report_hint), report_control, l))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{StoreInfo, store_text};
+
+    /// «Хранилище писем»: размер на диске, письма и части; сэкономлено повторами и сжатием — в МБ и процентах от
+    /// того, что заняли бы письма без них.
+    #[test]
+    fn store_line_shows_savings() {
+        let _ = pets_i18n::init(&crate::parts::texts(), "ru");
+        let mb = 1_048_576;
+        let stats =
+            postman_cache::StoreStats { letters: 500, contents: 480, parts: 120, bodies: 300, logical: 400 * mb, unique: 300 * mb, stored: 200 * mb };
+        let (line, note) = store_text(&StoreInfo { disk: Some(310 * mb), stats });
+        let plain = |s: String| s.replace(['\u{2068}', '\u{2069}'], "");
+        let (line, note) = (plain(line), plain(note));
+        assert!(line.contains("310,0 МБ") && line.contains("500") && line.contains("120"), "{line}");
+        assert!(note.contains("200,0 МБ (50 %)") && note.contains("100,0 МБ (25 %)"), "{note}");
+        let (line, _) = store_text(&StoreInfo { disk: None, stats: postman_cache::StoreStats::default() });
+        assert!(plain(line).starts_with("в памяти"));
     }
 }

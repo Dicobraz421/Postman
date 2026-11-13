@@ -159,6 +159,8 @@ pub(crate) struct Model {
     /// «Отмена отправки» (CMF-03): сколько секунд письмо ждёт после «Отправить»; 0 — сразу. Ставит окно письма из
     /// настройки перед отправкой (`Prefs::replies`).
     pub(crate) undo_secs: u8,
+    /// Ответ на фрагменты (`fragments.rs`): реплики «цитата → мой ответ» между своим текстом и подписью.
+    pub(crate) fragments: crate::fragments::Pairs,
 }
 
 /// Личная группа в письме (T2-47): чип «Имя · N»; при отправке и сохранении черновика — адреса участников, адреса
@@ -235,6 +237,7 @@ impl Model {
             false
         });
         let body = if base.markdown.is_empty() { signature_block(signature) } else { base.markdown.clone() };
+        let fragments = std::mem::take(&mut base.fragments);
         let mut m = Self {
             to: join(&base.to),
             cc: join(&base.cc),
@@ -263,9 +266,13 @@ impl Model {
             undo_secs: send_later::UNDO_DEFAULT,
             dismissed: HashSet::new(),
             groups: Vec::new(),
+            fragments: Default::default(),
         };
-        // Нетронутое новое письмо — не «изменения»: закрывается без вопроса.
+        // Нетронутое новое письмо — не «изменения»: закрывается без вопроса. Ответ на фрагмент — уже изменение.
         m.saved = m.snapshot();
+        for f in fragments {
+            m.add_fragment(f);
+        }
         m.refresh_text_checks();
         m
     }
@@ -362,6 +369,7 @@ impl Model {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (&self.to, &self.cc, &self.bcc, &self.subject, &self.body).hash(&mut h);
         (self.confidential, self.wait, &self.category).hash(&mut h);
+        self.fragments.hash(&mut h);
         // Картинки текста (подпись, T3-07) идут за текстом: их ссылки `cid:` уже в нём.
         for a in self.base.attachments.iter().filter(|a| a.inline_cid.is_none()) {
             (&a.name, a.data.len(), &a.blob_id).hash(&mut h);
@@ -489,9 +497,9 @@ impl Model {
             return Err(Status::NoRecipients);
         }
         d.subject = self.subject.clone();
-        d.markdown = self.body.clone();
+        d.markdown = self.markdown();
         // Картинка текста, на которую текст больше не ссылается (сменили подпись), — не уходит.
-        d.attachments.retain(|a| a.inline_cid.as_ref().is_none_or(|cid| self.body.contains(&format!("cid:{cid}"))));
+        d.attachments.retain(|a| a.inline_cid.as_ref().is_none_or(|cid| d.markdown.contains(&format!("cid:{cid}"))));
         d.keywords = self.keywords(jiff::Zoned::now().date());
         d.sign = for_send && self.sign;
         // «Конфиденциально» = шифрование (S5-12 Ф4); черновик — только себе (решение владельца №5).
@@ -755,6 +763,10 @@ impl Model {
 
     /// Сменить подпись в тексте: прежняя заменяется, нет её — новая встаёт в конец своего текста.
     pub(crate) fn set_signature(&mut self, signature: &str) {
+        // Реплики фрагментов (`fragments.rs`): подпись — под ними, в хвосте письма.
+        if self.swap_tail_signature(signature) {
+            return;
+        }
         let next = swap_signature(&self.body, &self.signature, signature);
         self.signature = signature.trim_end().to_owned();
         self.set(Field::Body, next);

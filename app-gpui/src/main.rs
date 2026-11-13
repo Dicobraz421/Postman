@@ -38,6 +38,7 @@ mod export;
 mod features;
 mod filters;
 mod folders;
+mod fragments;
 mod icons;
 mod invite_card;
 mod ir_view;

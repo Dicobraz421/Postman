@@ -46,6 +46,8 @@ pub struct Hits<'a> {
     seen: Cell<usize>,
     /// Прокрутить к текущему (после перехода F3 / Shift+F3).
     reveal: Option<Reveal>,
+    /// Текст выделяется мышью (`fragments.rs`): письмо и порядок абзацев.
+    select: Option<crate::fragments::Origin>,
 }
 
 /// Куда прокручивать: прокрутка области чтения и её view (перерисовать со сдвигом).
@@ -58,11 +60,23 @@ pub struct Reveal {
 impl<'a> Hits<'a> {
     /// `start` — совпадений до текста (в теме письма).
     pub fn new(words: &'a [String], current: usize, start: usize) -> Self {
-        Hits { words, current, seen: Cell::new(start), reveal: None }
+        Hits { words, current, seen: Cell::new(start), reveal: None, select: None }
     }
 
     pub fn with_reveal(self, reveal: Option<Reveal>) -> Self {
         Hits { reveal, ..self }
+    }
+
+    /// Текст выделяется мышью; выделение перерисовывает view `view` (кнопка «Ответить на фрагмент»).
+    pub fn selectable(self, view: EntityId) -> Self {
+        Hits { select: Some(crate::fragments::Origin::new(view)), ..self }
+    }
+
+    /// Дальше — текст письма `id`, абзацы по порядку чтения — с номера `base`.
+    pub fn letter(&self, id: &str, base: u64) {
+        if let Some(o) = &self.select {
+            o.letter(id, base);
+        }
     }
 
     pub fn seen(&self) -> usize {
@@ -481,6 +495,7 @@ fn text(items: &[Inline], key: &str, hits: &Hits, l: &Look) -> AnyElement {
     let (mut text, mut hl, mut links) = (String::new(), Vec::new(), Vec::new());
     flatten(items, &mut text, &mut hl, &mut links, l);
     let visible: Vec<String> = links.iter().map(|(r, _, _)| text.get(r.clone()).unwrap_or_default().to_owned()).collect();
+    let plain = hits.select.as_ref().map(|_| text.clone());
     let (styled, at) = hit_text(text, hl, hits, l);
     let layout = styled.layout().clone();
     let el = if links.is_empty() {
@@ -511,6 +526,10 @@ fn text(items: &[Inline], key: &str, hits: &Hits, l: &Look) -> AnyElement {
                 }
             })
             .into_any_element()
+    };
+    let el = match (&hits.select, plain) {
+        (Some(origin), Some(plain)) => crate::fragments::selectable(el, plain, layout.clone(), key, origin),
+        _ => el,
     };
     match at {
         Some(at) => reveal_at(el, layout, at, hits),

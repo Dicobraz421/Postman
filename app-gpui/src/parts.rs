@@ -17,6 +17,7 @@ pub(crate) const PARTS: &[Part] = &[
     crate::palette::PART,
     crate::calendar::PART,
     crate::compose::PART,
+    crate::fragments::PART,
     crate::recipients::PART,
     crate::meeting::PART,
     crate::contacts::PART,
