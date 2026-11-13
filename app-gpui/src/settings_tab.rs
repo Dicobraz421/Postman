@@ -242,6 +242,9 @@ pub(crate) struct SettingsView {
     pub(crate) sandbox_checking: bool,
     /// «Безопасность → Каталог сертификатов» (S5-12.5б).
     pub(crate) dir: crate::settings_directory::DirState,
+    /// Свои сертификаты из файлов PKCS#12 (Linux, LIN-05b).
+    #[cfg(target_os = "linux")]
+    pub(crate) files: crate::smime_files::FileUi,
     /// «Безопасность → Доверенные домены» картинок (T3-04).
     pub(crate) domains: crate::remote_images::DomainsState,
     _subscriptions: Vec<Subscription>,
@@ -286,6 +289,8 @@ impl SettingsView {
             }
         }));
         let dir = crate::settings_directory::DirState::new(window, cx, &mut subscriptions);
+        #[cfg(target_os = "linux")]
+        let files = crate::smime_files::FileUi::new(window, cx, &mut subscriptions);
         let domains = crate::remote_images::DomainsState::new(window, cx, &mut subscriptions);
         let mut v = Self {
             section,
@@ -323,6 +328,8 @@ impl SettingsView {
             sandbox_help: false,
             sandbox_checking: false,
             dir,
+            #[cfg(target_os = "linux")]
+            files,
             domains,
             _subscriptions: subscriptions,
         };
