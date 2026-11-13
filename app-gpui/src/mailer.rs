@@ -305,7 +305,7 @@ impl Mailer {
                 }
                 ReadingEvent::Error(text) => this.toasts.update(cx, |t, cx| t.push(Toast::Error, text.clone(), cx)),
                 ReadingEvent::Toast(level, text) => this.toasts.update(cx, |t, cx| t.push(*level, text.clone(), cx)),
-                ReadingEvent::Categorize => this.category_key(cx),
+                ReadingEvent::Categorize(at) => this.category_picker(*at, cx),
                 ReadingEvent::AnswerQueued(text) => {
                     let reading = this.reading.downgrade();
                     let action = pets_ui::ToastAction::new(tr!("bulk-undo"), move |_, cx| {
@@ -769,13 +769,14 @@ impl Render for Mailer {
             // Окно «Отменить» отправки — внизу, над строкой состояния; над ним — напоминания (S5-04).
             .children(self.undo_card(cx))
             .children(self.reminder_cards(cx))
-            // Контекстное меню письма (S5-08) и папки (S5-05б) — над всем, кроме тостов.
-            .children(menu)
-            .children(self.export_menu(&l, cx))
             // Образцы кнопок — только снимок `buttons` (S5-19).
             .children(self.screens.as_ref().filter(|d| d.gallery()).map(|_| crate::buttons::gallery(&l)))
-            // Тосты — поверх всего, последним ребёнком.
-            .child(self.toasts.clone());
+            // Тосты — поверх экрана.
+            .child(self.toasts.clone())
+            // Контекстное меню письма (S5-08) и папки (S5-05б) — над всем, и над тостами: тост у края окна не
+            // перекрывает подменю, щелчок доходит до пункта (BUG-conv-view).
+            .children(menu)
+            .children(self.export_menu(&l, cx));
         if let Some(b) = &mut self.bench {
             b.ui_time(started.elapsed());
         }

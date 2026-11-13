@@ -235,8 +235,8 @@ const READING_INSET: f32 = 48.;
 /// Итог разбора и действий: уровень песочницы (строка состояния), тосты, запросы к серверу.
 pub(crate) enum ReadingEvent {
     Sandbox(Level),
-    /// «+ категория» в шапке письма (T2-25): меню категорий, как кнопка «Категория».
-    Categorize,
+    /// «+ категория» в шапке письма (T2-25): список категорий у кнопки (точка щелчка), без меню письма.
+    Categorize(Point<Pixels>),
     /// Ответ на приглашение поставлен (T2-22): тост с «Отменить» на [`ANSWER_UNDO`].
     AnswerQueued(String),
     /// Время встреч писем-приглашений (T2-18): в строки списка вместо превью.
@@ -1282,7 +1282,7 @@ impl Render for ReadingPane {
                             .cursor_pointer()
                             .hover(|d| d.bg(l.hover()))
                             .child(tr!("reading-add-category"))
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(ReadingEvent::Categorize))),
+                            .on_click(cx.listener(|_, ev: &ClickEvent, _, cx| cx.emit(ReadingEvent::Categorize(ev.position())))),
                     ),
             )
             .child(
