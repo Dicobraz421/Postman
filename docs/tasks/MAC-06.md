@@ -29,5 +29,11 @@ Postman для Mac на странице Releases рядом с Windows: под�
 - Тег `v*` даёт выпуск с файлами macOS; скачанный на M1 zip/dmg ставится и открывается (с подписью — без
   предупреждения Gatekeeper).
 
+## Сделано
+- Строка `macos-arm64` в `release` (`ci.yml`): `.zip` и `.dmg`, `SHA256SUMS.txt`, блок macOS в release-notes;
+  `pets-update` заменяет `Postman.app` из `.zip`; шаг подписи Developer ID и нотаризации — по секретам, без них ad-hoc.
+
+**Ждёт:** подпись Developer ID и нотаризация — аккаунт Apple Developer владельца (секреты `MACOS_CERT_*`).
+
 ## Зависимости
 MAC-02, MAC-03; подпись — аккаунт Apple Developer (владелец).
