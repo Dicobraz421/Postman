@@ -15,21 +15,13 @@ use zeroize::Zeroizing;
 
 use super::keys::{KeyError, Prompt, labels, supported};
 
-const NTE_SILENT_CONTEXT: i32 = 0x8009_0022u32 as i32;
-const NTE_DEVICE_NOT_READY: i32 = 0x8009_0030u32 as i32;
 const NTE_NO_KEY: i32 = 0x8009_000Du32 as i32;
-const SCARD_W_REMOVED_CARD: i32 = 0x8010_0069u32 as i32;
-const SCARD_E_NO_SMARTCARD: i32 = 0x8010_000Cu32 as i32;
-const SCARD_W_CANCELLED_BY_USER: i32 = 0x8010_006Eu32 as i32;
-const ERROR_CANCELLED_HR: i32 = 0x8007_04C7u32 as i32;
 
-/// Код CNG → ошибка интерфейса.
+/// Код CNG → ошибка интерфейса (общая таблица — [`super::keys::windows_fault`]).
 fn key_error(hr: i32, what: &str) -> KeyError {
-    match hr {
-        NTE_SILENT_CONTEXT => KeyError::NeedPin,
-        NTE_DEVICE_NOT_READY | SCARD_W_REMOVED_CARD | SCARD_E_NO_SMARTCARD => KeyError::NoCard,
-        SCARD_W_CANCELLED_BY_USER | ERROR_CANCELLED_HR => KeyError::Cancelled,
-        _ => KeyError::Failed(format!("{what}: 0x{:08X}", hr as u32)),
+    match super::keys::windows_fault(hr) {
+        Some(f) => f.key_error(),
+        None => KeyError::Failed(format!("{what}: 0x{:08X}", hr as u32)),
     }
 }
 
@@ -159,7 +151,7 @@ pub(super) fn decrypt_with(key: usize, wrap: &Wrap, data: &[u8], silent: bool, k
     match wrap {
         Wrap::RsaPkcs1 | Wrap::RsaOaep(_) => rsa_decrypt(key, wrap, data, silent, key_len),
         Wrap::Ecdh { .. } => ecdh(key, wrap, data, silent),
-        Wrap::Gost(_) => Err(KeyError::Unsupported("ГОСТ — через СКЗИ".into())),
+        Wrap::Gost(_) => Err(KeyError::Unsupported("GOST (CSP only)".into())),
         Wrap::Unsupported(n) => Err(KeyError::Unsupported(n.clone())),
     }
 }
@@ -268,7 +260,7 @@ pub(crate) fn unwrap_cek(env: &Envelope, prompt: Prompt) -> Result<Cek, KeyError
 /// ГОСТ через СКЗИ (CryptoAPI, `skzi.rs`): свой сертификат получателя, ключ — в провайдере СКЗИ; согласование
 /// ключа, сессионный ключ из `SIMPLEBLOB`, `CryptDecrypt` содержимого. [проверить с КриптоПро CSP]
 pub(crate) fn gost_decrypt(env: &Envelope, prompt: Prompt) -> Result<super::skzi::Plain, KeyError> {
-    let content = env.gost.as_ref().ok_or_else(|| KeyError::Unsupported("ГОСТ: нет параметров содержимого".into()))?;
+    let content = env.gost.as_ref().ok_or_else(|| KeyError::Unsupported("GOST: no content parameters".into()))?;
     let name = wide("MY");
     let flags = CERT_SYSTEM_STORE_CURRENT_USER | CERT_STORE_READONLY_FLAG | CERT_STORE_OPEN_EXISTING_FLAG;
     // SAFETY: имя хранилища — UTF-16 с нулём; хранилище закрывается ниже.
@@ -349,7 +341,7 @@ fn gost_with_cert(
     }
     let release = Release(if free != 0 { prov } else { 0 });
     if spec == CERT_NCRYPT_KEY_SPEC {
-        return Err(KeyError::Unsupported("ГОСТ через CNG (KSP СКЗИ) [проверить]".into()));
+        return Err(KeyError::Unsupported("GOST via CNG KSP".into()));
     }
     let mut user: usize = 0;
     // SAFETY: провайдер получен выше.
@@ -357,7 +349,7 @@ fn gost_with_cert(
         return Err(last_error("CryptGetUserKey"));
     }
     let user = CapiKey(user);
-    let blob = skzi::public_key_blob(t).ok_or_else(|| KeyError::Unsupported("ГОСТ: эфемерный ключ".into()))?;
+    let blob = skzi::public_key_blob(t).ok_or_else(|| KeyError::Unsupported("GOST: ephemeral key".into()))?;
     let mut agree: usize = 0;
     // SAFETY: блоб с длиной; ключ согласования освобождается `CapiKey`.
     if unsafe { CryptImportKey(prov, blob.as_ptr(), blob.len() as u32, user.0, 0, &mut agree) } == 0 {
@@ -369,7 +361,7 @@ fn gost_with_cert(
     if unsafe { CryptSetKeyParam(agree.0, KP_ALGID, ptr::from_ref(&export).cast(), 0) } == 0 {
         return Err(last_error("CryptSetKeyParam(KP_ALGID)"));
     }
-    let simple = skzi::simple_blob(t).ok_or_else(|| KeyError::Unsupported("ГОСТ: ключ сеанса".into()))?;
+    let simple = skzi::simple_blob(t).ok_or_else(|| KeyError::Unsupported("GOST: session key".into()))?;
     let mut session: usize = 0;
     // SAFETY: блоб с длиной; ключ сеанса освобождается `CapiKey`.
     if unsafe { CryptImportKey(prov, simple.as_ptr(), simple.len() as u32, agree.0, 0, &mut session) } == 0 {
@@ -581,9 +573,10 @@ mod tests {
     /// Коды CNG → строки интерфейса.
     #[test]
     fn error_codes() {
-        assert_eq!(key_error(NTE_SILENT_CONTEXT, "x"), KeyError::NeedPin);
-        assert_eq!(key_error(SCARD_W_REMOVED_CARD, "x"), KeyError::NoCard);
-        assert_eq!(key_error(SCARD_W_CANCELLED_BY_USER, "x"), KeyError::Cancelled);
+        assert_eq!(key_error(0x8009_0022u32 as i32, "x"), KeyError::NeedPin);
+        assert_eq!(key_error(0x8009_0033u32 as i32, "x"), KeyError::NeedPin);
+        assert_eq!(key_error(0x8010_0069u32 as i32, "x"), KeyError::NoCard);
+        assert_eq!(key_error(0x8010_006Eu32 as i32, "x"), KeyError::Cancelled);
         assert!(matches!(key_error(0x8009_0016u32 as i32, "x"), KeyError::Failed(_)));
     }
 }

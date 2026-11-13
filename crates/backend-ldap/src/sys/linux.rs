@@ -78,7 +78,7 @@ fn kerberos_principal() -> Option<String> {
     // SAFETY: имя — по умолчанию (null); OID и набор механизмов живы на время вызова; `cred` освобождается ниже.
     let major = unsafe { gss_acquire_cred(&mut minor, null_mut(), 0, &mechs, GSS_C_INITIATE, &mut cred, null_mut(), null_mut()) };
     if gss_error(major) || cred.is_null() {
-        tracing::info!("no Kerberos credentials: GSS-API {major:#x}/{minor:#x}");
+        tracing::debug!(major, minor, "ldap: no Kerberos credentials");
         return None;
     }
     let mut name = null_mut();
@@ -87,7 +87,7 @@ fn kerberos_principal() -> Option<String> {
     // SAFETY: `cred` выдан выше и дальше не используется.
     unsafe { gss_release_cred(&mut 0, &mut cred) };
     if gss_error(major) || name.is_null() {
-        tracing::info!("no Kerberos principal: GSS-API {major:#x}/{minor:#x}");
+        tracing::debug!(major, minor, "ldap: no Kerberos principal");
         return None;
     }
     let mut out = Buffer { length: 0, value: null_mut() };
@@ -119,7 +119,7 @@ fn srv_records(name: &str) -> Vec<Vec<u8>> {
     // SAFETY: имя — строка C с нулём; буфер ответа — `DNS_MAX` байт, резолвер пишет не больше `len`.
     let n = unsafe { res_query(cname.as_ptr(), DNS_CLASS_IN, DNS_TYPE_SRV, answer.as_mut_ptr(), DNS_MAX as c_int) };
     let Ok(n) = usize::try_from(n) else {
-        tracing::info!("DNS SRV query failed");
+        tracing::debug!("ldap: DNS SRV query failed");
         return Vec::new();
     };
     answer.truncate(n.min(DNS_MAX));
@@ -129,11 +129,15 @@ fn srv_records(name: &str) -> Vec<Vec<u8>> {
 /// Контроллер домена: домен — область билета Kerberos пользователя, сервер — по записям SRV
 /// `_ldap._tcp.dc._msdcs.<домен>`. Нет билета или записей — `None` (компьютер не в домене).
 pub(crate) fn domain_controller() -> Option<String> {
+    super::bounded(dc_lookup)
+}
+
+fn dc_lookup() -> Option<String> {
     let domain = crate::srv::realm_domain(&kerberos_principal()?)?;
     let records = srv_records(&crate::srv::query_name(&domain));
     let dc = crate::srv::choose(records.iter().filter_map(|r| crate::srv::parse(r)));
     if dc.is_none() {
-        tracing::info!("no domain controller in DNS for the Kerberos realm");
+        tracing::debug!("ldap: no domain controller in DNS for the Kerberos realm");
     }
     dc
 }
