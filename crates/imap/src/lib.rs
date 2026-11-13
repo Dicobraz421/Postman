@@ -43,8 +43,9 @@ pub enum Error {
     /// Сервер отклонил вход (`NO`/`BAD` на LOGIN, 535 у SMTP).
     #[error("authentication failed: {0}")]
     Auth(String),
+    /// Ответ сервера (`NO`, `BAD`, неверный ответ). Обрыв связи — не здесь, а [`Error::Io`] ([`From`] ниже).
     #[error("imap: {0}")]
-    Imap(#[from] async_imap::error::Error),
+    Imap(async_imap::error::Error),
     #[error("smtp: {0}")]
     Smtp(String),
     /// Сервер ответил не так, как ждали (нет UIDVALIDITY, нет STARTTLS…).
@@ -55,6 +56,26 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Обрыв связи внутри `async-imap` (`Io`, `ConnectionLost`) — [`Error::Io`]: путь к серверу видит в нём сеть и
+/// подключается заново. Раньше это была ошибка сервера, и соединение, которое Яндекс закрыл
+/// (`peer closed connection without sending TLS close_notify`, `os error 10053`), жило до перезапуска.
+impl From<async_imap::error::Error> for Error {
+    fn from(e: async_imap::error::Error) -> Error {
+        match e {
+            async_imap::error::Error::Io(io) => Error::Io(io),
+            async_imap::error::Error::ConnectionLost => Error::Io(std::io::ErrorKind::ConnectionAborted.into()),
+            e => Error::Imap(e),
+        }
+    }
+}
+
+impl Error {
+    /// Соединение потеряно (обрыв, TLS, тайм-аут): его — заново, повтор на новом может удаться.
+    pub fn lost(&self) -> bool {
+        matches!(self, Error::Io(_) | Error::Tls(_) | Error::Timeout)
+    }
+}
 
 /// Отказ `APPEND` ([`Session::append_message`]): письмо больше предела сервера или ящик полон — тот же повтор не
 /// поможет. Остальное — [`Error`].
@@ -255,6 +276,17 @@ async fn timed<T>(f: impl Future<Output = Result<T>>) -> Result<T> {
     tokio::time::timeout(TIMEOUT, f).await.map_err(|_| Error::Timeout)?
 }
 
+/// Ответ из многих строк (`FETCH`) — пока сервер шлёт их: [`TIMEOUT`] — на тишину между строками, не на весь ответ.
+/// Сотня заголовков с `BODYSTRUCTURE` или крупное письмо идут у Яндекса дольше 30 с — и обрывались тайм-аутом.
+async fn drain<T>(lines: impl futures::Stream<Item = async_imap::error::Result<T>>) -> Result<Vec<T>> {
+    let mut lines = std::pin::pin!(lines);
+    let mut out = Vec::new();
+    while let Some(x) = tokio::time::timeout(TIMEOUT, lines.try_next()).await.map_err(|_| Error::Timeout)?? {
+        out.push(x);
+    }
+    Ok(out)
+}
+
 /// Строка ответа сервера (до CRLF) на открытом соединении — для STARTTLS до TLS.
 async fn line<S: AsyncRead + Unpin>(s: &mut S) -> Result<String> {
     let mut out = Vec::new();
@@ -303,6 +335,17 @@ fn list_attr(a: &NameAttribute<'_>) -> names::Attr {
     }
 }
 
+/// `UIDVALIDITY` ответа на `SELECT`. Ни её, ни `FLAGS` (их шлёт любой сервер, RFC 3501 §6.3.1): `async-imap` дочитал
+/// закрытое соединение и вернул пустой ответ — это обрыв, а не сервер без `UIDVALIDITY`. Раньше после одного обрыва
+/// каждая следующая папка Яндекса падала с «no UIDVALIDITY», а соединение не открывалось заново.
+fn validity(mb: &async_imap::types::Mailbox, raw: &str) -> Result<u32> {
+    match mb.uid_validity {
+        Some(v) => Ok(v),
+        None if mb.flags.is_empty() && mb.exists == 0 => Err(Error::Io(std::io::ErrorKind::UnexpectedEof.into())),
+        None => Err(Error::Protocol(format!("no UIDVALIDITY for {raw}"))),
+    }
+}
+
 fn fetch_flags(f: &async_imap::types::Fetch) -> Vec<String> {
     f.flags().map(|x| flags::flag_text(&x)).collect()
 }
@@ -323,7 +366,7 @@ impl Session {
             }
             let mut inner = client.login(&cfg.user, &cfg.password).await.map_err(|(e, _)| match e {
                 async_imap::error::Error::No(m) | async_imap::error::Error::Bad(m) => Error::Auth(m),
-                e => Error::Imap(e),
+                e => e.into(),
             })?;
             let caps: Vec<String> = inner.capabilities().await?.iter().map(|c| format!("{c:?}")).map(|c| caps::name(&c)).collect();
             let mut s = Session { inner, caps };
@@ -396,7 +439,7 @@ impl Session {
     pub async fn select(&mut self, raw: &str) -> Result<Selected> {
         let condstore = self.condstore();
         let mb = timed(async { Ok(if condstore { self.inner.select_condstore(raw).await? } else { self.inner.select(raw).await? }) }).await?;
-        let uid_validity = mb.uid_validity.ok_or_else(|| Error::Protocol(format!("no UIDVALIDITY for {raw}")))?;
+        let uid_validity = validity(&mb, raw)?;
         let keywords = mb.permanent_flags.iter().any(|f| matches!(f, async_imap::types::Flag::MayCreate));
         Ok(Selected {
             exists: mb.exists,
@@ -414,22 +457,23 @@ impl Session {
     /// письма ([`fetch::unparsed`]).
     pub async fn headers_with(&mut self, uids: &str, fields: fetch::Fields) -> Result<Vec<Header>> {
         let query = fields.query(self.condstore());
-        let fetched: Result<Vec<async_imap::types::Fetch>> =
-            timed(async { Ok(self.inner.uid_fetch(uids, &query).await?.try_collect().await?) }).await;
+        let fetched: Result<Vec<async_imap::types::Fetch>> = match timed(async { Ok(self.inner.uid_fetch(uids, &query).await?) }).await {
+            Ok(lines) => drain(lines).await,
+            Err(e) => Err(e),
+        };
         Ok(fetched.map_err(fetch::unparsed)?.iter().filter_map(header).collect())
     }
 
     /// Флаги писем, изменённых после `modseq` (CONDSTORE, RFC 7162 §3.1.4).
     pub async fn changed_since(&mut self, modseq: u64) -> Result<Vec<FlagChange>> {
         let query = format!("(UID FLAGS) (CHANGEDSINCE {modseq})");
-        let fetched: Vec<async_imap::types::Fetch> = timed(async { Ok(self.inner.uid_fetch("1:*", &query).await?.try_collect().await?) }).await?;
+        let fetched = drain(timed(async { Ok(self.inner.uid_fetch("1:*", &query).await?) }).await?).await?;
         Ok(fetched.iter().filter_map(|f| Some(FlagChange { uid: f.uid?, flags: fetch_flags(f) })).collect())
     }
 
     /// Флаги всех писем выбранной папки (без CONDSTORE — сверка целиком).
     pub async fn all_flags(&mut self) -> Result<Vec<FlagChange>> {
-        let fetched: Vec<async_imap::types::Fetch> =
-            timed(async { Ok(self.inner.uid_fetch("1:*", "(UID FLAGS)").await?.try_collect().await?) }).await?;
+        let fetched = drain(timed(async { Ok(self.inner.uid_fetch("1:*", "(UID FLAGS)").await?) }).await?).await?;
         Ok(fetched.iter().filter_map(|f| Some(FlagChange { uid: f.uid?, flags: fetch_flags(f) })).collect())
     }
 
@@ -442,8 +486,7 @@ impl Session {
 
     /// Письмо целиком (RFC 5322), не отмечая прочитанным (`BODY.PEEK[]`).
     pub async fn message(&mut self, uid: u32) -> Result<Option<Vec<u8>>> {
-        let fetched: Vec<async_imap::types::Fetch> =
-            timed(async { Ok(self.inner.uid_fetch(uid.to_string(), "(UID BODY.PEEK[])").await?.try_collect().await?) }).await?;
+        let fetched = drain(timed(async { Ok(self.inner.uid_fetch(uid.to_string(), "(UID BODY.PEEK[])").await?) }).await?).await?;
         Ok(fetched.iter().find(|f| f.uid == Some(uid)).and_then(|f| f.body().map(<[u8]>::to_vec)))
     }
 
@@ -768,8 +811,8 @@ fn header(f: &async_imap::types::Fetch) -> Option<Header> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppendError, Appended, Error, Quota, Usage, append_command, append_limit, append_outcome, caps, internal_date, message_id_query, quote,
-        uid_set,
+        AppendError, Appended, Error, Quota, Usage, append_command, append_limit, append_outcome, caps, drain, internal_date, message_id_query,
+        quote, uid_set, validity,
     };
     use async_imap::imap_proto::Response;
 
@@ -942,5 +985,39 @@ mod tests {
         assert_eq!(caps::name("Atom(\"IDLE\")"), "IDLE");
         assert_eq!(caps::name("Auth(\"PLAIN\")"), "AUTH=PLAIN");
         assert_eq!(caps::name("Imap4rev1"), "IMAP4rev1");
+    }
+
+    /// Записанные обрывы Яндекса — сеть (соединение заново), отказ сервера — нет.
+    #[test]
+    fn lost_connection_is_network() {
+        use async_imap::error::Error as A;
+        let eof = std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "peer closed connection without sending TLS close_notify");
+        let aborted = std::io::Error::from_raw_os_error(10053);
+        for e in [Error::from(A::Io(eof)), Error::from(A::Io(aborted)), Error::from(A::ConnectionLost), Error::Timeout] {
+            assert!(e.lost() && matches!(e, Error::Io(_) | Error::Timeout), "{e}");
+        }
+        let no = Error::from(A::No("[UNAVAILABLE] Backend error".into()));
+        assert!(!no.lost() && matches!(no, Error::Imap(_)));
+        assert!(!Error::Auth("x".into()).lost() && !Error::Protocol("x".into()).lost());
+    }
+
+    /// Пустой ответ на `SELECT` (закрытое соединение) — обрыв; ответ с FLAGS без `UIDVALIDITY` — ошибка протокола.
+    #[test]
+    fn select_on_closed_connection_is_lost() {
+        let mut mb = async_imap::types::Mailbox::default();
+        assert!(validity(&mb, "INBOX").is_err_and(|e| e.lost()));
+        mb.flags.push(async_imap::types::Flag::Seen);
+        assert!(matches!(validity(&mb, "INBOX"), Err(Error::Protocol(_))));
+        mb.uid_validity = Some(1_700_000_000);
+        assert_eq!(validity(&mb, "INBOX").unwrap(), 1_700_000_000);
+    }
+
+    /// Строки ответа собираются все; обрыв посреди ответа — сеть.
+    #[tokio::test]
+    async fn drain_collects_and_maps_errors() {
+        let ok = futures::stream::iter([Ok(1), Ok(2), Ok(3)]);
+        assert_eq!(drain(ok).await.unwrap(), [1, 2, 3]);
+        let cut = futures::stream::iter([Ok(1), Err(async_imap::error::Error::Io(std::io::Error::from_raw_os_error(10053)))]);
+        assert!(drain(cut).await.is_err_and(|e| e.lost()));
     }
 }

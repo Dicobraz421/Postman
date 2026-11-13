@@ -98,22 +98,22 @@ impl Batches {
     }
 }
 
-/// Отказ порции, после которого стоит попросить меньше: `NO`/`BAD` сервера, неразобранный ответ, тайм-аут. Вход,
-/// TLS и обрыв связи — нет: меньшая порция не поможет.
+/// Отказ порции, после которого стоит попросить меньше: `NO`/`BAD` сервера, неразобранный ответ, тайм-аут, обрыв
+/// (Яндекс закрывает соединение посреди тяжёлой выборки). Вход и TLS — нет: меньшая порция не поможет.
 pub fn retry_smaller(e: &Error) -> bool {
-    matches!(e, Error::Imap(async_imap::error::Error::No(_) | async_imap::error::Error::Bad(_)) | Error::Protocol(_) | Error::Timeout)
+    matches!(e, Error::Imap(async_imap::error::Error::No(_) | async_imap::error::Error::Bad(_)) | Error::Protocol(_) | Error::Timeout | Error::Io(_))
 }
 
-/// После отказа соединение не годится: ответ прерван посередине (тайм-аут) или в буфере неразобранные байты.
+/// После отказа соединение не годится: ответ прерван посередине (тайм-аут, обрыв) или в буфере неразобранные байты.
 pub fn drops_session(e: &Error) -> bool {
-    matches!(e, Error::Protocol(_) | Error::Timeout)
+    matches!(e, Error::Protocol(_) | Error::Timeout | Error::Io(_))
 }
 
 /// Ответ, который `imap-proto` не разобрал (`async-imap` отдаёт его как `io::Error` с байтами ответа в тексте), — без
 /// этих байтов: в них чужое письмо, ему не место в журнале и тосте.
 pub fn unparsed(e: Error) -> Error {
     match e {
-        Error::Imap(async_imap::error::Error::Io(io)) if io.kind() == std::io::ErrorKind::Other && io.to_string().contains("during parsing") => {
+        Error::Io(io) if io.kind() == std::io::ErrorKind::Other && io.to_string().contains("during parsing") => {
             Error::Protocol("unparsable FETCH response".into())
         }
         e => e,
@@ -192,19 +192,21 @@ mod tests {
         assert_eq!(calls, MAX_FAILURES + 1);
     }
 
-    /// Записанные отказы: `NO [UNAVAILABLE]` Яндекса и неразобранный ответ — порцию меньше; вход — нет.
+    /// Записанные отказы: `NO [UNAVAILABLE]` Яндекса, неразобранный ответ, обрыв — порцию меньше; вход — нет.
     #[test]
     fn which_errors_shrink() {
         let no = Error::Imap(async_imap::error::Error::No("[UNAVAILABLE] FETCH Backend error. sc=abc".into()));
         assert!(retry_smaller(&no) && !drops_session(&no));
         assert!(retry_smaller(&Error::Timeout) && drops_session(&Error::Timeout));
         let io = std::io::Error::other("Error(Tag) during parsing of \"* 7 FETCH (UID 9 ENVELOPE (\\\"секрет\\\"…\"");
-        let parsed = unparsed(Error::Imap(async_imap::error::Error::Io(io)));
+        let parsed = unparsed(Error::from(async_imap::error::Error::Io(io)));
         assert!(matches!(&parsed, Error::Protocol(m) if !m.contains("секрет")), "{parsed}");
         assert!(retry_smaller(&parsed) && drops_session(&parsed));
         assert!(!retry_smaller(&Error::Auth("x".into())));
-        let reset = Error::Imap(async_imap::error::Error::Io(std::io::Error::from(std::io::ErrorKind::ConnectionReset)));
-        assert!(!retry_smaller(&unparsed(reset)));
+        // Яндекс закрыл соединение посреди тяжёлой выборки: порция меньше, соединение заново.
+        let reset = unparsed(Error::from(async_imap::error::Error::Io(std::io::Error::from(std::io::ErrorKind::ConnectionReset))));
+        assert!(matches!(reset, Error::Io(_)) && retry_smaller(&reset) && drops_session(&reset));
+        assert!(!retry_smaller(&Error::Tls("x".into())));
     }
 
     #[test]
