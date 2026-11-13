@@ -953,8 +953,41 @@ pub const STDERR_LINE: usize = 2048;
 /// Наибольшее число строк stderr процесса песочницы в журнале за секунду; сверх — одна строка WARN за секунду.
 pub const STDERR_RATE: u32 = 100;
 
+/// Важность строки stderr процесса песочницы для журнала приложения (`pets-shell/LOGGING.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JournalLevel {
+    /// Паника, отказ в памяти: разбор не состоялся.
+    Error,
+    /// Остальное: процесс песочницы пишет в stderr только о необычном (запасной путь, предел частоты строк).
+    Warn,
+}
+
+impl JournalLevel {
+    /// Важность строки по её началу: строки процесса — `WARN …`, паника std — `thread '…' panicked at`, отказ в памяти —
+    /// `memory allocation of … failed`.
+    pub fn of(line: &str) -> Self {
+        if line.contains("panicked at") || line.starts_with("memory allocation of ") || line.contains("memory limit exceeded") {
+            Self::Error
+        } else {
+            Self::Warn
+        }
+    }
+}
+
+/// Приёмник журнала по умолчанию для всех клиентов процесса ([`set_default_journal`]).
+static DEFAULT_JOURNAL: std::sync::OnceLock<Journal> = std::sync::OnceLock::new();
+
+/// Куда писать строки stderr процессов песочницы всем клиентам, у которых не задан свой [`Client::journal`]: приложение
+/// ставит один раз при запуске (журнал `tracing`). Второй вызов не меняет приёмник; `false` — уже был задан.
+pub fn set_default_journal(sink: impl Fn(JournalLevel, &str) + Send + Sync + 'static) -> bool {
+    DEFAULT_JOURNAL.set(Arc::new(move |line: &str| sink(JournalLevel::of(line), line))).is_ok()
+}
+
 fn default_journal(line: &str) {
-    // Журнал приложения — его stderr (в файл его направляет приложение); строка уже ограничена по длине.
+    if let Some(sink) = DEFAULT_JOURNAL.get() {
+        return sink(line);
+    }
+    // Без приёмника приложения — его stderr (в файл его направляет приложение); строка уже ограничена по длине.
     let _ = writeln!(io::stderr().lock(), "worker: {line}");
 }
 
