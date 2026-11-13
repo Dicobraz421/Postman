@@ -137,13 +137,32 @@ pub(crate) struct Drag {
     running: bool,
     /// macOS (MAC-02): копия файла на диске — готовится в фоне, как только есть байты: сеанс перетаскивания
     /// начинается только в событии мыши, ждать записи там нельзя.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     copy: Option<std::path::PathBuf>,
 }
 
 impl Drag {
     pub(crate) fn blob(&self) -> &str {
         &self.row.blob_id
+    }
+}
+
+/// Linux (INT-01): что тащат — вложение `blob`; имя — для призрака под указателем.
+#[cfg(target_os = "linux")]
+struct OutDrag {
+    blob: String,
+    name: SharedString,
+}
+
+/// Призрак перетаскивания внутри окна: имя файла.
+#[cfg(target_os = "linux")]
+struct DragGhost(SharedString);
+
+#[cfg(target_os = "linux")]
+impl Render for DragGhost {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let l = crate::roles::look(cx);
+        div().px_2().py_1().rounded(px(4.)).bg(l.panel()).border_1().border_color(l.stroke()).text_color(l.text()).child(self.0.clone())
     }
 }
 
@@ -466,6 +485,19 @@ impl ReadingPane {
             .when(waiting, |d| d.cursor(CursorStyle::OperationNotAllowed))
             .child(tile)
             .child(text);
+        // Linux (INT-01): перетаскивание наружу ведёт gpui; за окном получатель берёт путь копии.
+        #[cfg(target_os = "linux")]
+        if can_drag {
+            let pane = cx.entity().downgrade();
+            card = card
+                .on_drag(OutDrag { blob: item.row.blob_id.clone(), name: item.name.clone().into() }, |d, _, _, cx| {
+                    cx.new(|_| DragGhost(d.name.clone()))
+                })
+                .external_drag_payload::<OutDrag>(move |d, _, cx| {
+                    let copy = pane.upgrade()?.read(cx).drag_copy_of(&d.blob)?;
+                    Some(crate::sys::drag::payload(&copy))
+                });
+        }
         if let Some((text, g)) = status {
             card = card.child(div().id(("att-risk", n)).flex_none().text_color(l.pm(Pm::ThreatFg)).tooltip(tip(text)).child(icon(g, 14.)));
         }
@@ -491,7 +523,7 @@ impl ReadingPane {
             data: demo,
             waiting: false,
             running: false,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             copy: None,
         });
         if !self.live {
@@ -599,9 +631,9 @@ impl ReadingPane {
         cx.notify();
     }
 
-    /// macOS: байты есть — копия для перетаскивания в фоне (`$TMPDIR/Postman/drag`, метка карантина). Ждали её после
-    /// порога — тост «можно перетаскивать».
-    #[cfg(target_os = "macos")]
+    /// macOS и Linux: байты есть — копия для перетаскивания в фоне (`$TMPDIR/Postman/drag`; macOS — метка карантина).
+    /// Ждали её после порога — тост «можно перетаскивать».
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn drag_copy(&mut self, cx: &mut Context<Self>) {
         use crate::sys::drag;
         let Some(d) = self.drag.as_ref().filter(|d| d.copy.is_none()) else { return };
@@ -636,11 +668,29 @@ impl ReadingPane {
         .detach();
     }
 
-    /// Копия заранее нужна только на macOS (на Windows её пишут перед `DoDragDrop`).
-    #[cfg(not(target_os = "macos"))]
+    /// Копия заранее нужна на macOS и Linux (на Windows её пишут перед `DoDragDrop`).
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     fn drag_copy(&mut self, _cx: &mut Context<Self>) {}
 
-    #[cfg(not(any(windows, target_os = "macos")))]
+    /// Linux (INT-01): сеанс ведёт gpui (`on_drag` у карточки, путь копии — `external_drag_payload`); здесь — только
+    /// копии ещё нет: ждём её, по готовности — тост «можно перетаскивать».
+    #[cfg(target_os = "linux")]
+    fn start_drag(&mut self, _: String, _: Arc<Vec<u8>>, cx: &mut Context<Self>) {
+        let Some(d) = &mut self.drag else { return };
+        if d.copy.is_none() {
+            d.running = false;
+            d.waiting = true;
+            cx.notify();
+        }
+    }
+
+    /// Linux: путь копии вложения `blob` для получателя за окном; копии нет — `None` (не тащим).
+    #[cfg(target_os = "linux")]
+    pub(crate) fn drag_copy_of(&self, blob: &str) -> Option<std::path::PathBuf> {
+        self.drag.as_ref().filter(|d| d.row.blob_id == blob).and_then(|d| d.copy.clone())
+    }
+
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     fn start_drag(&mut self, _: String, _: Arc<Vec<u8>>, _: &mut Context<Self>) {
         self.drag = None;
     }
@@ -669,9 +719,9 @@ impl ReadingPane {
 
 /// Порог начала перетаскивания (точки окна): системный на Windows, иначе 4.
 fn drag_threshold(scale: f32) -> (f32, f32) {
-    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
     return crate::sys::drag::threshold(scale);
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
         let _ = scale;
         (4., 4.)

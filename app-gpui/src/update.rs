@@ -73,9 +73,13 @@ pub(crate) fn helper() {
 }
 
 /// Как установлена программа: macOS — бандл `Postman.app` (обновление заменяет его целиком; не в бандле — `install`
-/// вернёт ошибку до выхода); Windows — флаг portable или `install.ps1` рядом с exe — архив, иначе MSI.
-pub(crate) fn install_kind(exe_dir: &Path) -> InstallKind {
-    install_kind_on(exe_dir, cfg!(target_os = "macos"))
+/// вернёт ошибку до выхода); Windows — флаг portable или `install.ps1` рядом с exe — архив, иначе MSI; Linux (INT-01)
+/// — `$APPIMAGE` (AppImage), пакет deb/rpm под `/usr`; иначе (сборка из исходников, архив) — `None`, обновления нет.
+pub(crate) fn install_kind(exe_dir: &Path) -> Option<InstallKind> {
+    if cfg!(target_os = "linux") {
+        return InstallKind::current_linux();
+    }
+    Some(install_kind_on(exe_dir, cfg!(target_os = "macos")))
 }
 
 fn install_kind_on(exe_dir: &Path, mac: bool) -> InstallKind {
@@ -93,7 +97,7 @@ fn install_kind_on(exe_dir: &Path, mac: bool) -> InstallKind {
 pub(crate) fn keep(kind: InstallKind) -> Vec<String> {
     match kind {
         InstallKind::Portable => vec![PORTABLE_FLAG.to_owned()],
-        InstallKind::Msi | InstallKind::AppBundle => Vec::new(),
+        InstallKind::Msi | InstallKind::AppBundle | InstallKind::AppImage | InstallKind::Deb | InstallKind::Rpm => Vec::new(),
     }
 }
 
@@ -209,7 +213,7 @@ fn exe_dir() -> PathBuf {
 /// Поставить `Global`. `data` — каталог данных (`None` — `--screens`, `--bench`: без сети и файлов). Чтение политики —
 /// микросекунды, сети нет.
 pub(crate) fn init(data: Option<&Path>, cx: &mut App) {
-    let kind = data.map(|_| install_kind(&exe_dir()));
+    let kind = data.and_then(|_| install_kind(&exe_dir()));
     let updater = data.zip(product()).zip(kind).map(|((data, p), kind)| {
         let own = crate::security::policy_flag("AllowUpdate", crate::sys::shell::policy("AllowUpdate"));
         let policy = policy(own, Policy::read(p.name));
@@ -365,15 +369,31 @@ fn checked(reason: CheckReason, res: Result<CheckOutcome, UpdateError>, cx: &mut
 }
 
 fn offer_toast(version: &str, cx: &mut App) {
-    let action = ToastAction::new(tr!("update-install"), |_, cx| install(cx));
+    let action = ToastAction::new(tr!(install_label(cx)), |_, cx| install(cx));
     toast(cx, Level::Info, tr!("update-available", version = version.to_owned()), Some(action));
 }
 
+/// Подпись кнопки предложения: пакет deb/rpm ставит менеджер пакетов (root) — «Скачать», иначе «Установить».
+pub(crate) fn install_label(cx: &App) -> &'static str {
+    match cx.try_global::<Model>().and_then(|m| m.kind) {
+        Some(kind) if !kind.can_install() => "update-download",
+        _ => "update-install",
+    }
+}
+
 /// «Установить»: скачать (полоса хода, «Отменить»), проверить подпись, запустить помощника и выйти обычным выходом.
+/// Пакет deb/rpm (INT-01): установить нельзя без root — открыть файл выпуска в браузере («Скачать»).
 pub(crate) fn install(cx: &mut App) {
     let Some(m) = cx.try_global::<Model>() else { return };
     if !m.allowed {
         toast(cx, Level::Info, tr!("update-policy"), None);
+        return;
+    }
+    if let Some(update) = m.offer.as_ref().filter(|u| !u.kind.can_install()) {
+        if let Err(e) = crate::sys::shell::open(&update.asset_url) {
+            tracing::error!("update: release file not opened: {e}");
+            toast(cx, Level::Warning, tr!("update-install-failed", error = e), None);
+        }
         return;
     }
     let (Some(updater), Some(update), None) = (m.updater.clone(), m.offer.clone(), m.download.as_ref()) else { return };

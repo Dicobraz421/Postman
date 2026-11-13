@@ -41,6 +41,7 @@ tray-hint-body = Окно закрыто, почта синхронизируе�
 
 # Сбой запуска (журнал Windows и stderr).
 fatal-data-dir = каталог данных
+fatal-single-instance = проверка, что Postman ещё не запущен
 fatal-bench-mailbox = ящик для замера
 fatal-screens-dir = каталог снимков
 fatal-demo-mailbox = демо-ящик

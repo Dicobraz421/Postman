@@ -1,6 +1,7 @@
 # Обновление Postman (решение 2026-11-11 «self-update»): тосты, полоса скачивания, строки «Настроек → Общие».
 update-available = Вышла версия { $version }
 update-install = Установить
+update-download = Скачать
 update-done = Postman обновлён до версии { $version }
 update-failed = Не удалось обновить до версии { $version }: { $error }
 update-idle = Нажмите «Проверить обновления», чтобы узнать, нет ли новой версии.

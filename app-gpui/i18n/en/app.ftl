@@ -39,6 +39,7 @@ tray-hint-body = The window is closed, mail keeps syncing. The icon is in the no
 
 # Startup failure (Windows event log and stderr).
 fatal-data-dir = data directory
+fatal-single-instance = check that Postman is not already running
 fatal-bench-mailbox = bench mailbox
 fatal-screens-dir = screenshots directory
 fatal-demo-mailbox = demo mailbox
