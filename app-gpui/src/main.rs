@@ -96,6 +96,8 @@ mod shared;
 mod signin;
 mod smime;
 mod smime_enc;
+#[cfg(target_os = "linux")]
+mod smime_files;
 mod smime_seal;
 mod states;
 mod sys;
@@ -237,6 +239,11 @@ fn main() {
         diagnostics::start_log_file(&dir);
     }
     pets_shell::init_logging("Postman", "POSTMAN_LOG");
+    // Строки stderr процессов песочницы — в журнал приложения с уровнем (SBX-04, `pets-shell/LOGGING.md`).
+    postman_worker::set_default_journal(|level, line| match level {
+        postman_worker::JournalLevel::Error => tracing::error!(target: "worker", "worker: {line}"),
+        postman_worker::JournalLevel::Warn => tracing::warn!(target: "worker", "worker: {line}"),
+    });
     reading::check_worker();
     let lang = prefs::language_at_start(value("--lang"), &user_prefs);
     let theme = prefs::theme_at_start(value("--theme"), &user_prefs);
@@ -337,6 +344,11 @@ fn main() {
         // Клавиши — из реестра команд (S2-02) и свои из настроек (S5-09); в поле ввода клавиши без модификаторов — текст.
         commands::bind(cx, &user_prefs);
         prefs::init(user_prefs, prefs_path, cx);
+        // Свои ключи S/MIME из файлов PKCS#12 (LIN-05b): в фоне, до первого письма.
+        #[cfg(target_os = "linux")]
+        if persist {
+            smime_files::load(cx);
+        }
         // Обновление (решение 2026-11-11 «self-update»): замер и снимки — без сети и файлов.
         update::init(persist.then(data_dir).as_deref(), cx);
         let minimized = args.iter().any(|a| a == "--minimized");
