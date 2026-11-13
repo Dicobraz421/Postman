@@ -425,10 +425,15 @@ pub(crate) fn open_store(path: &Path) -> Result<(Cache, Index), postman_cache::E
 
 /// То же с ходом переноса прежнего формата (`Event::StoreUpgrade`, ADR 0006 п. 6) в `notify`. Письма целиком при
 /// переносе режет воркер (мелкие части и картинки — по хэшу, дополнение ADR 2026-11-14); он запускается только
-/// если перенос нужен.
+/// если перенос нужен. Прежние файлы данных клиента (метки, подписи, подписки, история уведомлений) — в базу
+/// (решение 2026-11-14, `postman_core::local::adopt`); не вышло — файлы на месте, перенос — при следующем запуске.
 fn open_store_with(path: &Path, notify: &dyn Fn(Event)) -> Result<(Cache, Index), postman_cache::Error> {
     let client = postman_worker::Client::new(postman_worker::Client::default_exe(), crate::migration::WORKER_TIMEOUT);
     let (cache, _) = postman_core::store::open(path, Some(postman_core::store::worker_splitter(client)), notify)?;
+    let files = postman_core::local::OldFiles::of(path);
+    if let Err(e) = postman_core::local::adopt(&cache, &files, jiff::Timestamp::now().as_second()) {
+        tracing::error!("local: old data files not moved into the store, retry at next start: {e}");
+    }
     let index = match postman_search::SearchIndex::open(&path.with_extension("search")) {
         Ok(i) => Some(Arc::new(i)),
         Err(e) => {
@@ -1042,15 +1047,18 @@ impl Mailer {
         }
     }
 
-    /// Таблицы категорий учётной записи (S5-02) — сначала локальная копия из файла рядом с кэшем (в фоне), затем
-    /// с сервера (`Event::Categories` при входе). Копии нет — по умолчанию (список их уже показывает); копия не
-    /// читается — тоже по умолчанию, причина — в журнал.
+    /// Таблицы категорий учётной записи (S5-02) — сначала локальная копия из базы профиля (в фоне), затем с сервера
+    /// (`Event::Categories` при входе). Копии нет — по умолчанию (список их уже показывает); копия не читается — тоже
+    /// по умолчанию, причина — в журнал.
     fn load_labels(&mut self, cx: &mut Context<Self>) {
-        use postman_core::labels::{LocalFile, Store as _};
-        let Some(path) = self.live.path.clone() else { return };
+        use postman_core::labels::Store as _;
+        if self.live.path.is_none() {
+            return;
+        }
         self.live.labels_local = false;
         self.live.labels_early.clear();
-        let task = cx.background_spawn(async move { LocalFile::beside(&path).load() });
+        let store = postman_core::local::Labels(self.cache.clone());
+        let task = cx.background_spawn(async move { store.load() });
         cx.spawn(async move |this, cx| {
             let book = match task.await {
                 Ok(book) => book,
@@ -1071,11 +1079,13 @@ impl Mailer {
         .detach();
     }
 
-    /// Подписи и шаблоны учётной записи (S5-09) — из файла рядом с кэшем (в фоне), для письма.
+    /// Подписи и шаблоны учётной записи (S5-09) — из базы профиля (в фоне), для письма.
     fn load_account_prefs(&mut self, cx: &mut Context<Self>) {
-        use postman_core::prefs::AccountPrefs;
-        let Some(path) = self.live.path.clone() else { return };
-        let task = cx.background_spawn(async move { AccountPrefs::load(&AccountPrefs::beside(&path)) });
+        if self.live.path.is_none() {
+            return;
+        }
+        let db = self.cache.clone();
+        let task = cx.background_spawn(async move { postman_core::local::account_prefs(&db) });
         cx.spawn(async move |this, cx| {
             let prefs = match task.await {
                 Ok(p) => p,
@@ -1136,13 +1146,15 @@ impl Mailer {
         self.categories_changed(cx);
     }
 
-    /// Локальная копия таблиц — в файл рядом с кэшем (в фоне).
+    /// Локальная копия таблиц — в базу профиля (в фоне).
     pub(crate) fn save_labels(&self, book: &postman_core::labels::Book, cx: &mut Context<Self>) {
-        use postman_core::labels::{LocalFile, Store as _};
-        let Some(path) = self.live.path.clone() else { return };
-        let book = book.clone();
+        use postman_core::labels::Store as _;
+        if self.live.path.is_none() {
+            return;
+        }
+        let (store, book) = (postman_core::local::Labels(self.cache.clone()), book.clone());
         cx.background_spawn(async move {
-            if let Err(e) = LocalFile::beside(&path).save(&book) {
+            if let Err(e) = store.save(&book) {
                 tracing::error!("categories: category table not written: {e}");
             }
         })
@@ -1336,7 +1348,7 @@ impl Mailer {
         self.live.account.as_ref()
     }
 
-    /// Файл кэша учётной записи (рядом — её настройки: подписи и шаблоны); демо — `None`.
+    /// Файл базы учётной записи; демо — `None`.
     pub(crate) fn account_cache(&self) -> Option<PathBuf> {
         self.live.path.clone()
     }
@@ -1416,7 +1428,9 @@ impl Mailer {
                         }
                         Opening::Done(Ok((cache, index))) => {
                             let screens = m.screens.take();
+                            let notices = m.toasts.read(cx).persisted();
                             *m = Mailer { screens, ..Mailer::new(cache, None, window, cx) };
+                            m.keep_notices(notices, cx);
                             m.start_sync(account, index, false, cx);
                             false
                         }
@@ -1431,12 +1445,22 @@ impl Mailer {
         .detach();
     }
 
+    /// Экран заново на другой базе: история уведомлений писалась — пишется дальше в новую (решение 2026-11-14).
+    fn keep_notices(&mut self, persisted: bool, cx: &mut Context<Self>) {
+        if persisted {
+            let store = self.cache.clone();
+            self.toasts.update(cx, |t, cx| t.persist_to(store, cx));
+        }
+    }
+
     /// Экран заново на кэше учётной записи; строка входа остаётся, пока сервер не ответит.
     fn switch_account(&mut self, cache: Cache, index: Index, account: Account, window: &mut Window, cx: &mut Context<Self>) {
         let panel = self.live.signin.take();
         let screens = self.screens.take();
         let store = self.live.pending_store;
+        let notices = self.toasts.read(cx).persisted();
         *self = Mailer { screens, ..Mailer::new(cache, None, window, cx) };
+        self.keep_notices(notices, cx);
         self.live.pending_store = store;
         if let Some(panel) = panel {
             self.watch_signin(&panel, window, cx);

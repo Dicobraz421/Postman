@@ -4,7 +4,8 @@
 //!
 //! - [`Prefs`] — общие для пользователя: тема, плотность, язык, быстрые фильтры, сроки и жизненный цикл, чтение,
 //!   календарь ([`Calendar`], S5-20), свои клавиши. Файл [`FILE`] в каталоге данных (`%LOCALAPPDATA%\Postman`).
-//! - [`AccountPrefs`] — у учётной записи: подписи и шаблоны. Файл рядом с её кэшем ([`AccountPrefs::beside`]).
+//! - [`AccountPrefs`] — у учётной записи: подписи и шаблоны. В базе профиля (`crate::local::account_prefs`, решение
+//!   2026-11-14); файл рядом с кэшем прежних версий ([`AccountPrefs::beside`]) переносится в базу.
 //!   Хранение на сервере (FileNode, как таблица категорий) — [проверить].
 //!
 //! Без UI и без gpui: интерфейс читает файл до первого окна (микросекунды), пишет — в фоне ([`Writer`]).
@@ -1349,7 +1350,8 @@ impl Default for AccountPrefs {
 }
 
 impl AccountPrefs {
-    /// Файл настроек для кэша учётной записи `cache`: `<кэш>.settings.json`.
+    /// Файл настроек прежних версий для кэша учётной записи `cache`: `<кэш>.settings.json` (перенос в базу,
+    /// `crate::local::adopt`; запись файлом — только тесты переноса).
     pub fn beside(cache: &Path) -> PathBuf {
         let mut name = cache.file_name().unwrap_or_default().to_os_string();
         name.push(".settings.json");
@@ -1511,7 +1513,7 @@ impl Writer {
 
     /// Записать (в фоновом потоке): `save` выполняется, только если номер `seq` новее записанного. `Ok(false)` —
     /// пропущено.
-    pub fn write(&self, seq: u64, save: impl FnOnce() -> Result<(), Error>) -> Result<bool, Error> {
+    pub fn write<E>(&self, seq: u64, save: impl FnOnce() -> Result<(), E>) -> Result<bool, E> {
         let mut written = self.written.lock().unwrap_or_else(PoisonError::into_inner);
         if seq <= *written {
             return Ok(false);
@@ -2004,7 +2006,7 @@ mod tests {
         let mut out = Vec::new();
         let mut push = |n: u64| {
             out.push(n);
-            Ok(())
+            Ok::<(), Error>(())
         };
         assert!(w.write(b, || push(b)).unwrap());
         assert!(!w.write(a, || push(a)).unwrap());

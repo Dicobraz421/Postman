@@ -414,8 +414,9 @@ fn main() {
                     if keep_tabs {
                         mailer.update(cx, |m, cx| {
                             m.meeting_drafts = true;
-                            // История уведомлений — 7 дней на диске (T2-34r).
-                            m.toasts.update(cx, |t, cx| t.persist_to(crate::data_dir().join("notices.jsonl"), cx));
+                            // История уведомлений — 7 дней в базе профиля (T2-34r, решение 2026-11-14).
+                            let store = m.cache.clone();
+                            m.toasts.update(cx, |t, cx| t.persist_to(store, cx));
                             if restore_tabs { m.restore_session(window, cx) } else { m.session_ready = true }
                         });
                     }
