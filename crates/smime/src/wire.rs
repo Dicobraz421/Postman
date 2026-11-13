@@ -136,6 +136,27 @@ pub fn encode_crl(cert: &[u8], issuer: &[u8], crl: &[u8]) -> Vec<u8> {
     out
 }
 
+const OCSP: &[u8; 4] = b"PMO1";
+
+/// Запрос проверки ответа OCSP (LIN-05d): сертификат, издатель (из доверенной цепочки), nonce запроса и ответ
+/// ответчика, полученный ядром.
+pub fn encode_ocsp(cert: &[u8], issuer: &[u8], nonce: &[u8], response: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(cert.len() + issuer.len() + nonce.len() + response.len() + 20);
+    out.extend_from_slice(OCSP);
+    for part in [cert, issuer, nonce, response] {
+        put(&mut out, part);
+    }
+    out
+}
+
+/// Разбор запроса проверки OCSP (в воркере): сертификат, издатель, nonce, ответ.
+#[allow(clippy::type_complexity)]
+pub fn decode_ocsp(bin: &[u8]) -> Option<(&[u8], &[u8], &[u8], &[u8])> {
+    let mut r = Reader(bin.strip_prefix(OCSP)?);
+    let (cert, issuer, nonce, response) = (r.bytes()?, r.bytes()?, r.bytes()?, r.bytes()?);
+    r.0.is_empty().then_some((cert, issuer, nonce, response))
+}
+
 /// Разбор запроса проверки CRL (в воркере): сертификат, издатель, CRL.
 pub fn decode_crl(bin: &[u8]) -> Option<(&[u8], &[u8], &[u8])> {
     let mut r = Reader(bin.strip_prefix(CRL)?);
@@ -204,6 +225,10 @@ mod tests {
             assert!(decode_open(&open[..cut]).is_none(), "обрезан на {cut}");
         }
 
+        let o = encode_ocsp(b"cert", b"ca", b"n", b"resp");
+        assert_eq!(decode_ocsp(&o), Some((&b"cert"[..], &b"ca"[..], &b"n"[..], &b"resp"[..])));
+        assert!(decode_ocsp(&o[..o.len() - 1]).is_none());
+        assert!(decode_ocsp(&encode_crl(b"cert", b"ca", b"list")).is_none());
         let crl = encode_crl(b"cert", b"ca", b"list");
         assert_eq!(decode_crl(&crl), Some((&b"cert"[..], &b"ca"[..], &b"list"[..])));
         for cut in 0..crl.len() {

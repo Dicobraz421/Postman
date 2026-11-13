@@ -125,7 +125,7 @@ pub(crate) fn badge(seal: &Seal) -> (String, Tone, char) {
     match (&r.status, &v.revocation) {
         (_, Revocation::Revoked) => (tr!("smime-revoked"), Tone::Danger, glyph::SHIELD),
         (Status::Invalid, _) => (tr!("smime-invalid"), Tone::Danger, glyph::SHIELD),
-        (Status::Expired | Status::WrongUsage | Status::Distrusted, _) | (_, Revocation::Rejected(_)) => {
+        (Status::Expired | Status::NotYetValid | Status::WrongUsage | Status::Distrusted, _) | (_, Revocation::Rejected(_)) => {
             (tr!("smime-cert-bad"), Tone::Danger, glyph::SHIELD)
         }
         (Status::Valid | Status::Untrusted(_), _) if !r.address_ok => (tr!("smime-mismatch"), Tone::Danger, glyph::SHIELD),
@@ -158,6 +158,7 @@ fn verdict_text(seal: &Seal) -> String {
         Status::Valid => tr!("smime-verdict-valid"),
         Status::Untrusted(_) => tr!("smime-verdict-untrusted"),
         Status::Expired => tr!("smime-verdict-expired"),
+        Status::NotYetValid => tr!("smime-verdict-not-yet-valid"),
         Status::WrongUsage => tr!("smime-verdict-usage"),
         Status::Distrusted => tr!("smime-verdict-distrusted"),
         Status::Invalid => tr!("smime-verdict-invalid"),
@@ -173,6 +174,7 @@ fn reason(c: Confirm) -> String {
         Confirm::Untrusted => tr!("smime-reason-untrusted"),
         Confirm::Distrusted => tr!("smime-reason-distrusted"),
         Confirm::Expired => tr!("smime-reason-expired"),
+        Confirm::NotYetValid => tr!("smime-reason-not-yet-valid"),
         Confirm::WrongUsage => tr!("smime-reason-usage"),
         Confirm::BadSignature => tr!("smime-reason-signature"),
         Confirm::Failed => tr!("smime-reason-failed"),

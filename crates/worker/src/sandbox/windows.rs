@@ -20,7 +20,7 @@ use std::ptr::{null, null_mut};
 use std::sync::Arc;
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation, WAIT_OBJECT_0};
-use windows_sys::Win32::Security::Isolation::{CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName};
+use windows_sys::Win32::Security::Isolation::{CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName};
 use windows_sys::Win32::Security::{FreeSid, PSID, SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION,
@@ -231,6 +231,16 @@ fn app_container_sid() -> Result<Sid, u32> {
     if hr >= 0 { Ok(Sid(sid)) } else { Err(hr as u32) }
 }
 
+/// Удалить профиль AppContainer воркера (PAR-05: при удалении Postman); профиля нет — успех.
+pub(crate) fn remove_profile() -> Result<(), String> {
+    // HRESULT_FROM_WIN32: ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_NOT_FOUND — профиля нет.
+    const ABSENT: [u32; 3] = [0x8007_0002, 0x8007_0003, 0x8007_0490];
+    let name = wide(PROFILE);
+    // SAFETY: строка нуль-терминирована и живёт до конца вызова.
+    let hr = unsafe { DeleteAppContainerProfile(name.as_ptr()) };
+    if hr >= 0 || ABSENT.contains(&(hr as u32)) { Ok(()) } else { Err(format!("DeleteAppContainerProfile: 0x{:08X}", hr as u32)) }
+}
+
 /// Пара анонимных каналов; конец для дочернего процесса наследуемый.
 fn pipe(child_reads: bool) -> io::Result<(Owned, Owned)> {
     let sa = SECURITY_ATTRIBUTES { nLength: size_of::<SECURITY_ATTRIBUTES>() as u32, lpSecurityDescriptor: null_mut(), bInheritHandle: 1 };
@@ -327,11 +337,13 @@ impl Drop for Attributes {
 fn create(exe: &Path, sid: Option<PSID>, memory: usize) -> io::Result<Process> {
     let (child_in, parent_in) = pipe(true)?;
     let (child_out, parent_out) = pipe(false)?;
+    // Журнал воркера — канал к клиенту (SBX-01): дочернему — только конец на запись.
+    let (child_err, parent_err) = pipe(false)?;
     let job = job(memory)?;
 
     let mitigations: u64 = mitigations();
     let child_policy: u32 = PROCESS_CREATION_CHILD_PROCESS_RESTRICTED;
-    let handles: [HANDLE; 2] = [child_in.0, child_out.0];
+    let handles: [HANDLE; 3] = [child_in.0, child_out.0, child_err.0];
     let caps = sid.map(|sid| SECURITY_CAPABILITIES { AppContainerSid: sid, Capabilities: null_mut(), CapabilityCount: 0, Reserved: 0 });
     let mut attrs = Attributes::new(if caps.is_some() { 4 } else { 3 })?;
     // SAFETY: все значения — локальные переменные, живущие до CreateProcessW.
@@ -352,7 +364,7 @@ fn create(exe: &Path, sid: Option<PSID>, memory: usize) -> io::Result<Process> {
     si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     si.StartupInfo.hStdInput = child_in.0;
     si.StartupInfo.hStdOutput = child_out.0;
-    si.StartupInfo.hStdError = null_mut();
+    si.StartupInfo.hStdError = child_err.0;
     si.lpAttributeList = attrs.ptr();
 
     let app: Vec<u16> = exe.as_os_str().encode_wide().chain(Some(0)).collect();
@@ -398,7 +410,7 @@ fn create(exe: &Path, sid: Option<PSID>, memory: usize) -> io::Result<Process> {
             return Err(e);
         }
     }
-    drop((child_in, child_out, thread));
+    drop((child_in, child_out, child_err, thread));
 
     let into_file = |h: Owned| {
         let raw = h.0;
@@ -408,11 +420,13 @@ fn create(exe: &Path, sid: Option<PSID>, memory: usize) -> io::Result<Process> {
     };
     let stdin = into_file(parent_in);
     let stdout = into_file(parent_out);
+    let stderr = into_file(parent_err);
     let mut job = Some(job);
     let watched = process.clone();
     Ok(Process {
         stdin: Box::new(stdin),
         stdout: Box::new(stdout),
+        stderr: Box::new(stderr),
         kill: Box::new(move || {
             process.terminate();
             // Закрытие джоба (KILL_ON_JOB_CLOSE) добивает всё, что осталось.
@@ -479,4 +493,9 @@ fn policy_flags<T>(policy: i32) -> Result<u32, String> {
         return Err(format!("GetProcessMitigationPolicy({policy}): {}", io::Error::last_os_error()));
     }
     Ok(flags)
+}
+
+/// Смерть клиента на Windows ловит Job Object (`KILL_ON_JOB_CLOSE`): сторожу проверять нечего.
+pub(crate) fn parent() -> u32 {
+    0
 }

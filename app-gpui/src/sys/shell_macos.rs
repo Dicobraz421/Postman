@@ -8,6 +8,8 @@ use std::path::Path;
 
 use pets_gpui_macos::toast;
 
+use super::PolicyValue;
+
 /// Подсказка «сделать клиентом `mailto:`» (PAR-04 №41): macOS спрашивает подтверждение.
 pub const MAILTO_HINT: &str = "settings-mailto-hint-confirm";
 
@@ -170,10 +172,97 @@ pub fn mailto_is_default() -> bool {
     pets_shell::url_scheme::is_default(MAILTO)
 }
 
-/// Политика организации (`AllowUpdate` и др., как `Software\Policies\Pets\Postman` на Windows): принудительное
-/// значение профиля конфигурации для пакета Postman (`CFPreferences`); свои `defaults write` не считаются.
-pub fn policy(name: &str) -> Option<String> {
-    pets_shell::managed::get(name)
+/// Политика организации (как `Software\Policies\Pets\Postman` на Windows): принудительное значение профиля
+/// конфигурации для пакета Postman (`CFPreferences`) с типом; свои `defaults write` не считаются. Дробное число
+/// (`MinTls` = 1.3 `<real>`) — [`PolicyValue::Real`]: `pets_shell::managed::get` его теряет (POL-01).
+pub fn policy(name: &str) -> Option<PolicyValue> {
+    cf::forced(name)
+}
+
+/// Чтение принудительного значения `CFPreferences` любого типа. Перенести в `pets_shell::managed` при подъёме пина
+/// pets (POL-01, решения владельца).
+mod cf {
+    use std::ffi::{c_char, c_void};
+
+    use super::PolicyValue;
+
+    type Ref = *const c_void;
+    const UTF8: u32 = 0x0800_0100;
+    const SINT64: isize = 4;
+    const FLOAT64: isize = 6;
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        static kCFPreferencesCurrentApplication: Ref;
+        fn CFStringCreateWithBytes(alloc: Ref, bytes: *const u8, len: isize, encoding: u32, external: u8) -> Ref;
+        fn CFPreferencesAppValueIsForced(key: Ref, app: Ref) -> u8;
+        fn CFPreferencesCopyAppValue(key: Ref, app: Ref) -> Ref;
+        fn CFGetTypeID(cf: Ref) -> usize;
+        fn CFStringGetTypeID() -> usize;
+        fn CFNumberGetTypeID() -> usize;
+        fn CFBooleanGetTypeID() -> usize;
+        fn CFBooleanGetValue(b: Ref) -> u8;
+        fn CFNumberIsFloatType(n: Ref) -> u8;
+        fn CFNumberGetValue(n: Ref, kind: isize, out: *mut c_void) -> u8;
+        fn CFStringGetCString(s: Ref, buf: *mut c_char, size: isize, encoding: u32) -> u8;
+        fn CFRelease(cf: Ref);
+    }
+
+    /// Освободить объект при выходе.
+    struct Owned(Ref);
+
+    impl Drop for Owned {
+        fn drop(&mut self) {
+            // SAFETY: объект получен по правилу Create/Copy и освобождается один раз.
+            unsafe { CFRelease(self.0) };
+        }
+    }
+
+    pub fn forced(name: &str) -> Option<PolicyValue> {
+        let len = isize::try_from(name.len()).ok()?;
+        // SAFETY: байты UTF-8 живут до конца вызова; результат — по правилу Create, освобождает `Owned`.
+        let key = unsafe { CFStringCreateWithBytes(std::ptr::null(), name.as_ptr(), len, UTF8, 0) };
+        if key.is_null() {
+            return None;
+        }
+        let key = Owned(key);
+        // SAFETY: неизменяемая константа CoreFoundation, живёт весь процесс; ключ — живая строка.
+        let app = unsafe { kCFPreferencesCurrentApplication };
+        // SAFETY: ключ и домен — живые объекты CoreFoundation.
+        if unsafe { CFPreferencesAppValueIsForced(key.0, app) } == 0 {
+            return None;
+        }
+        // SAFETY: то же; результат — по правилу Copy, освобождает `Owned`.
+        let value = unsafe { CFPreferencesCopyAppValue(key.0, app) };
+        if value.is_null() {
+            return None;
+        }
+        let value = Owned(value);
+        // SAFETY: `value` — живой объект; вызовы по его типу.
+        unsafe {
+            let id = CFGetTypeID(value.0);
+            if id == CFStringGetTypeID() {
+                let mut buf = [0 as c_char; 256];
+                if CFStringGetCString(value.0, buf.as_mut_ptr(), 256, UTF8) == 0 {
+                    return Some(PolicyValue::Other("too long string"));
+                }
+                let text = std::ffi::CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned();
+                Some(PolicyValue::Text(text))
+            } else if id == CFBooleanGetTypeID() {
+                Some(PolicyValue::Bool(CFBooleanGetValue(value.0) != 0))
+            } else if id == CFNumberGetTypeID() {
+                if CFNumberIsFloatType(value.0) != 0 {
+                    let mut n = 0f64;
+                    (CFNumberGetValue(value.0, FLOAT64, (&raw mut n).cast()) != 0).then_some(PolicyValue::Real(n))
+                } else {
+                    let mut n = 0i64;
+                    (CFNumberGetValue(value.0, SINT64, (&raw mut n).cast()) != 0).then_some(PolicyValue::Int(n))
+                }
+            } else {
+                Some(PolicyValue::Other("unsupported plist type"))
+            }
+        }
+    }
 }
 
 /// Запуск из Finder или Dock (stderr — `/dev/null`): поток ошибок — в файл журнала, туда пишет `tracing`. Из терминала

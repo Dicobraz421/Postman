@@ -39,7 +39,7 @@ fn forbidden_calls_kill_the_worker_with_a_clear_code() {
     }
 }
 
-/// Предел памяти — `RLIMIT_AS`: под пределом выделение удаётся, сверх — отказ ядра, процесс аварийно завершается,
+/// Предел памяти — `RLIMIT_DATA` (частная выделенная память, SBX-03): под пределом выделение удаётся, сверх — отказ ядра, процесс аварийно завершается,
 /// клиент поднимает новый. Воркер — `MEMORY_LIMIT` (1 ГиБ).
 #[test]
 fn worker_memory_over_the_limit_exits_with_a_clear_code() {
@@ -47,7 +47,7 @@ fn worker_memory_over_the_limit_exits_with_a_clear_code() {
     started(&mut c);
     assert_eq!(c.render(&Request::Probe(Probe::Alloc(256 << 20))).unwrap_err(), "ДОСТУП РАЗРЕШЁН", "под пределом");
     let e = c.render(&Request::Probe(Probe::Alloc(3 << 29))).unwrap_err();
-    assert!(e.contains("код 134 (аварийное завершение, SIGABRT)"), "{e}");
+    assert!(e.contains("превышен предел памяти"), "{e}");
     assert!(c.render(&Request::Text("ещё жив".into())).is_ok());
 }
 
@@ -58,5 +58,5 @@ fn viewer_memory_over_the_limit_exits_with_a_clear_code() {
     assert_eq!(c.render(&Request::Probe(Probe::Alloc(256 << 20))).unwrap_err(), "ДОСТУП РАЗРЕШЁН", "под пределом");
     assert_eq!(c.level(), Level::Full, "{:?}", c.fallback());
     let e = c.render(&Request::Probe(Probe::Alloc(768 << 20))).unwrap_err();
-    assert!(e.contains("код 134 (аварийное завершение, SIGABRT)"), "{e}");
+    assert!(e.contains("превышен предел памяти"), "{e}");
 }

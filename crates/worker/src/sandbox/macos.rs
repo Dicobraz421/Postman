@@ -1,8 +1,7 @@
 //! macOS (MAC-01, MAC-03, `docs/adr/0009-macos-sandbox.md`): Seatbelt — `sandbox_init` с профилем «запрещено всё»
 //! (`deny default`) в самом воркере, до первого запроса; пределы `setrlimit` (без дампа памяти, ≤ 16 дескрипторов) и
-//! предел кучи — распределитель [`Limited`]. `RLIMIT_FSIZE = 0`, как на Linux, не ставится: stderr воркера унаследован
-//! от приложения и может быть файлом журнала — запись в него убила бы воркер сигналом `SIGXFSZ`; новые файлы и так не
-//! открыть (Seatbelt).
+//! предел кучи — распределитель [`Limited`]. `RLIMIT_FSIZE = 0`, как на Linux: stderr воркера — канал к клиенту (SBX-01),
+//! клиент пишет строки в журнал приложения; в обычные файлы воркер не пишет вовсе.
 //!
 //! После запирания у воркера остаются только уже открытые stdin, stdout и stderr: ни файлов, ни сети, ни дочерних
 //! процессов, ни служб Mach, ни sysctl. Профиль ничего не открывает; понадобится открыть — только явным правилом здесь,
@@ -41,6 +40,7 @@ const ALLOW: &str = "POSTMAN_SANDBOX_ALLOW";
 // <sandbox.h>, <sys/resource.h>, <unistd.h> — libSystem, линкуется всегда.
 unsafe extern "C" {
     fn getdtablesize() -> c_int;
+    fn getppid() -> c_int;
     fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
     fn sandbox_init(profile: *const c_char, flags: u64, errorbuf: *mut *mut c_char) -> c_int;
     fn sandbox_free_error(errorbuf: *mut c_char);
@@ -55,6 +55,7 @@ struct RLimit {
     max: u64,
 }
 
+const RLIMIT_FSIZE: c_int = 1;
 const RLIMIT_CORE: c_int = 4;
 const F_SETFD: c_int = 2;
 const FD_CLOEXEC: c_int = 1;
@@ -64,7 +65,7 @@ const RLIMIT_NOFILE: c_int = 8;
 /// аргументом `--memory=…`, окружение очищено.
 pub(crate) fn spawn(exe: &Path, memory: usize) -> io::Result<Process> {
     let mut cmd = Command::new(exe);
-    cmd.env_clear().current_dir("/").arg(format!("--memory={memory}")).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+    cmd.env_clear().current_dir("/").arg(format!("--memory={memory}")).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     if cfg!(debug_assertions)
         && let Some(allow) = std::env::var_os(ALLOW)
     {
@@ -83,7 +84,7 @@ pub(crate) fn spawn(exe: &Path, memory: usize) -> io::Result<Process> {
         });
     }
     let mut child = cmd.spawn()?;
-    let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+    let (Some(stdin), Some(stdout), Some(stderr)) = (child.stdin.take(), child.stdout.take(), child.stderr.take()) else {
         let _ = child.kill();
         let _ = child.wait();
         return Err(io::Error::other("worker pipes are missing"));
@@ -93,6 +94,7 @@ pub(crate) fn spawn(exe: &Path, memory: usize) -> io::Result<Process> {
     Ok(Process {
         stdin: Box::new(stdin),
         stdout: Box::new(stdout),
+        stderr: Box::new(stderr),
         kill: Box::new(move || {
             let mut c = child.lock().unwrap_or_else(PoisonError::into_inner);
             let _ = c.kill();
@@ -170,6 +172,8 @@ fn set_rlimits() -> Result<(), String> {
         Ok(())
     };
     set(RLIMIT_CORE, 0)?;
+    // stderr — канал к клиенту (SBX-01), не файл журнала: запись в обычные файлы не нужна вовсе.
+    set(RLIMIT_FSIZE, 0)?;
     set(RLIMIT_NOFILE, 16)
 }
 
@@ -281,4 +285,18 @@ pub(crate) mod probe {
         let rc = unsafe { sysctlbyname(name.as_ptr(), null_mut(), &mut len, null_mut(), 0) };
         if rc == 0 { Ok(()) } else { Err(format!("sysctlbyname: {}", std::io::Error::last_os_error())) }
     }
+}
+
+/// Родитель процесса — клиент; сменился — клиент умер (сторож, SBX-03).
+pub(crate) fn parent() -> u32 {
+    // SAFETY: простой системный вызов без аргументов.
+    unsafe { getppid() as u32 }
+}
+
+/// Открыт ли дескриптор (`fcntl(F_GETFD)`; проверка `Probe::Fd`, отладочная сборка).
+#[cfg(debug_assertions)]
+pub(crate) fn probe_fd(fd: i32) -> Result<(), String> {
+    const F_GETFD: c_int = 1;
+    // SAFETY: fcntl с F_GETFD только читает флаги; номер может быть закрыт — тогда ошибка EBADF.
+    if unsafe { fcntl(fd, F_GETFD) } < 0 { Err(io::Error::last_os_error().to_string()) } else { Ok(()) }
 }

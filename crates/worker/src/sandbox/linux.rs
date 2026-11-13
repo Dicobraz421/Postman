@@ -46,13 +46,13 @@ pub(crate) fn spawn(exe: &Path, memory: usize, namespaces: Namespaces) -> io::Re
         .arg(format!("--namespaces={}", namespaces.as_arg()))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
+        .stderr(Stdio::piped());
     if cfg!(debug_assertions)
         && let Some(drop) = std::env::var_os(DROP)
     {
         cmd.env(DROP, drop);
     }
-    // SAFETY: в pre_exec — только async-signal-safe prctl и close_range.
+    // SAFETY: в pre_exec — только async-signal-safe close_range.
     unsafe {
         cmd.pre_exec(|| {
             // Дескрипторы родителя сверх stdin/stdout/stderr воркеру не достаются (SBX-02): закрываются при exec.
@@ -60,15 +60,11 @@ pub(crate) fn spawn(exe: &Path, memory: usize, namespaces: Namespaces) -> io::Re
             if libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, libc::CLOSE_RANGE_CLOEXEC) != 0 {
                 return Err(io::Error::last_os_error());
             }
-            // Клиент упал — воркер не переживает его.
-            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
-                return Err(io::Error::last_os_error());
-            }
             Ok(())
         });
     }
     let mut child = cmd.spawn()?;
-    let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+    let (Some(stdin), Some(stdout), Some(stderr)) = (child.stdin.take(), child.stdout.take(), child.stderr.take()) else {
         let _ = child.kill();
         let _ = child.wait();
         return Err(io::Error::other("worker pipes are missing"));
@@ -78,6 +74,7 @@ pub(crate) fn spawn(exe: &Path, memory: usize, namespaces: Namespaces) -> io::Re
     Ok(Process {
         stdin: Box::new(stdin),
         stdout: Box::new(stdout),
+        stderr: Box::new(stderr),
         kill: Box::new(move || {
             let mut c = child.lock().unwrap_or_else(PoisonError::into_inner);
             let _ = c.kill();
@@ -183,7 +180,10 @@ fn set_rlimits(memory: u64) -> Result<(), String> {
         }
         Ok(())
     };
-    set(libc::RLIMIT_AS, "RLIMIT_AS", memory)?;
+    // Предел — частная выделенная память (SBX-03, аудит №17): `RLIMIT_DATA` с ядра 4.7 считает частные анонимные
+    // отображения, как commit на Windows. `RLIMIT_AS` — запасной потолок с запасом на резервы адресного пространства.
+    set(libc::RLIMIT_DATA, "RLIMIT_DATA", memory)?;
+    set(libc::RLIMIT_AS, "RLIMIT_AS", (memory * 2).max(4 << 30))?;
     set(libc::RLIMIT_CORE, "RLIMIT_CORE", 0)?;
     set(libc::RLIMIT_FSIZE, "RLIMIT_FSIZE", 0)?;
     set(libc::RLIMIT_NOFILE, "RLIMIT_NOFILE", 16)?;
@@ -239,6 +239,8 @@ fn filter() -> Result<BpfProgram, String> {
         // abort() при панике: raise(SIGABRT) самому себе (`tgkill` — только своему процессу, ниже).
         libc::SYS_getpid,
         libc::SYS_gettid,
+        // Жив ли клиент (сторож, SBX-03).
+        libc::SYS_getppid,
     ]
     .into_iter()
     .map(|s| (s, vec![]))
@@ -257,4 +259,17 @@ fn filter() -> Result<BpfProgram, String> {
     SeccompFilter::new(rules, SeccompAction::KillProcess, SeccompAction::Allow, arch)
         .and_then(BpfProgram::try_from)
         .map_err(|e| format!("seccomp: {e}"))
+}
+
+/// Родитель процесса — клиент; сменился — клиент умер (сторож, SBX-03).
+pub(crate) fn parent() -> u32 {
+    // SAFETY: простой системный вызов без аргументов.
+    unsafe { libc::getppid() as u32 }
+}
+
+/// Открыт ли дескриптор (`fcntl(F_GETFD)`; проверка `Probe::Fd`, отладочная сборка).
+#[cfg(debug_assertions)]
+pub(crate) fn probe_fd(fd: i32) -> Result<(), String> {
+    // SAFETY: fcntl с F_GETFD только читает флаги; номер может быть закрыт — тогда ошибка EBADF.
+    if unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 { Err(io::Error::last_os_error().to_string()) } else { Ok(()) }
 }
