@@ -325,6 +325,8 @@ impl Mailer {
                     cx.notify();
                 }),
                 ReadingEvent::Respond(row, mode) => this.respond_to(row.clone(), *mode, cx),
+                ReadingEvent::QuickReply(q) => this.quick_reply(q.0.clone(), q.1.clone(), cx),
+                ReadingEvent::LoadBook => this.load_address_book(cx),
                 ReadingEvent::TaskMail(inc, letter, files) => this.tasks.update(cx, |t, cx| t.receive_mail(inc, letter, files.clone(), cx)),
                 ReadingEvent::TaskAction { uid, action } => {
                     let found = this.tasks.update(cx, |t, cx| t.mail_action(uid, *action, cx));
@@ -394,6 +396,8 @@ impl Mailer {
         .detach();
         // Кто я и имена коллег — строке списка и шапке письма общего ящика (S5-28, `shared.rs`).
         let compose = crate::compose::Composers::default();
+        // Быстрый ответ ленты (`quick.rs`): @упоминания — по той же адресной книге, что у окон писем.
+        reading.update(cx, |r, _| r.book = Some(compose.book.clone()));
         cx.set_global(crate::shared::People { book: compose.book.clone(), me: Some(postman_demo::ME.to_owned()) });
         Self {
             cache,

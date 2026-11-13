@@ -251,8 +251,8 @@ impl Mailer {
         let local = |blob: &str| if live { None } else { postman_demo::blob(blob) };
         let quote = crate::prefs::with(cx, |p| p.replies.quote);
         let mut d = draft(mode, &r.row, body, doc, &me, &signature, quote, local);
-        // Ответ на фрагмент (`fragments.rs`): реплика — в черновик.
-        d.fragments = self.fragments.take(id);
+        // Ответ на фрагмент (`fragments.rs`) и быстрый ответ ленты (`quick.rs`): реплики и текст — в черновик.
+        let send = self.fragments.apply(id, &mut d);
         let row = r.row.clone();
         // Вложения беседы новым участникам (решение владельца 2026-11-13) — ответу; пересылка — стандартная.
         if mode != Mode::Forward {
@@ -260,6 +260,9 @@ impl Mailer {
         }
         // Ответ и пересылка — в области чтения над письмом (S5-06б); «Развернуть» — во вкладку.
         self.open_reply(d, id.to_owned(), cx);
+        if send {
+            self.send_inline_soon(cx);
+        }
         true
     }
 

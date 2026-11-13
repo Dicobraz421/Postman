@@ -123,6 +123,10 @@ mod tests {
         let found = scan(&cache, 200, &me).unwrap();
         let ids: Vec<(&str, bool)> = found.iter().map(|f| (f.id.as_str(), f.important)).collect();
         assert_eq!(ids, [("d", true), ("c", true)], "старое и прочитанное — нет; новые первыми");
+        // Упоминание из окна письма (`**@Имя**`) — тоже важное.
+        let mut marked = row("f", 600, false);
+        marked.preview = "Коллеги, **@Антон Антропов** посмотрите".into();
+        assert!(important(&marked, &me, false));
         let mut plain = row("e", 500, false);
         plain.subject = "Привет".into();
         assert!(!important(&plain, &me, false));

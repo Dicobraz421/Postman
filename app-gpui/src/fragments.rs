@@ -3,8 +3,8 @@
 //! - Текст письма и ленты беседы выделяется мышью: абзацы письма (`ir_view::text`) — участники выделения окна
 //!   gpui-kit (`TextSelectionLayer` у корня окна; Ctrl+C копирует). Что выделено и из какого письма — [`picked`].
 //! - «Ответить на фрагмент» (`mail.reply_fragment`): кнопкой над выделением, пунктом меню правой кнопки, палитрой.
-//!   Ответа на эту беседу ещё нет — ответ, как `mail.reply` из письма и `mail.reply_all` из ленты, с репликой; есть —
-//!   реплика добавляется в него.
+//!   Ответ на эту беседу открыт — реплика добавляется в него; нет — в ленте беседы реплика встаёт в быстрый ответ под
+//!   лентой (`quick.rs`, «Ответить всем»), в письме — открывается ответ (`mail.reply`) с ней.
 //! - Черновик — сверху свой текст, под ним реплики «цитата → мой ответ» по порядку добавления, подпись — внизу. Порядок
 //!   — перетаскиванием за ручку и командами `compose.fragment_up` / `compose.fragment_down`; «×» убирает реплику,
 //!   Ctrl+Z (`compose.fragment_restore`) возвращает. Данные реплик — `postman_compose::fragments`, в модели письма
@@ -140,22 +140,42 @@ pub(crate) fn tail_start(body: &str, signature: &str) -> usize {
     end
 }
 
-/// Реплики, с которыми откроется ответ: письмо и фрагмент (ответу ещё нужно тело письма — `actions::respond_now`).
+/// Ответ, который ждёт тела письма (`actions::respond_now`): реплики, набранный текст быстрого ответа (MSGR-02),
+/// упомянутые в нём люди и отправить ли сразу.
+#[derive(Default, Debug, Clone, PartialEq)]
+pub(crate) struct Prepared {
+    pub(crate) letter: String,
+    pub(crate) fragments: Vec<Fragment>,
+    pub(crate) text: String,
+    pub(crate) mentioned: Vec<postman_compose::Address>,
+    pub(crate) send: bool,
+}
+
 #[derive(Default)]
 pub(crate) struct Pending {
-    pending: Option<(String, Fragment)>,
+    pub(crate) pending: Option<Prepared>,
 }
 
 impl Pending {
-    /// Фрагмент для ответа на письмо `letter`, если он ждёт этого ответа.
-    pub(crate) fn take(&mut self, letter: &str) -> Vec<Fragment> {
-        match self.pending.take() {
-            Some((l, f)) if l == letter => vec![f],
-            other => {
-                self.pending = other;
-                Vec::new()
+    /// Ждущее для ответа на письмо `letter` — в черновик `d`: реплики; текст — своим текстом над подписью, а с
+    /// репликами — ответом на последнюю; упомянутые — в «Кому». `true` — отправить сразу.
+    pub(crate) fn apply(&mut self, letter: &str, d: &mut postman_compose::Draft) -> bool {
+        let Some(p) = self.pending.take_if(|p| p.letter == letter) else { return false };
+        let mut fragments = p.fragments;
+        let text = p.text.trim();
+        if !text.is_empty() {
+            match fragments.last_mut() {
+                Some(f) => text.clone_into(&mut f.answer),
+                None => d.markdown = format!("{text}{}", d.markdown),
             }
         }
+        d.fragments = fragments;
+        for a in p.mentioned {
+            if !d.to.iter().chain(&d.cc).any(|x| x.email.eq_ignore_ascii_case(&a.email)) {
+                d.to.push(a);
+            }
+        }
+        p.send
     }
 
     /// Обычный ответ (`mail.reply`): ждущий фрагмент к нему не относится.
@@ -515,8 +535,6 @@ impl Mailer {
         let Some(row) = letters.iter().find(|r| r.id.as_str() == sel.letter.as_ref()).cloned() else {
             return self.toast(Toast::Info, tr!("fragments-select-text"), cx);
         };
-        // Ответ из ленты беседы — всем её участникам, из письма — его автору.
-        let mode = if feed.is_some() { Mode::ReplyAll } else { Mode::Reply };
         let fragment = Fragment::new(row.id.clone(), who(&row), crate::actions::full_date(row.received_at), sel.text);
         let ids: Vec<&str> = letters.iter().map(|r| r.id.as_str()).collect();
         if let Some((view, inline)) = self.composer_for(&ids, cx) {
@@ -526,12 +544,17 @@ impl Mailer {
             }
             return;
         }
-        self.fragments.pending = Some((row.id.clone(), fragment));
-        self.respond_to(row, mode, cx);
+        // Лента беседы без открытого ответа: фрагмент — в быстрый ответ под лентой (MSGR-02).
+        if feed.is_some() {
+            return self.reading.update(cx, |r, cx| r.quick_add_fragment(fragment, window, cx));
+        }
+        let letter = row.id.clone();
+        self.fragments.pending = Some(Prepared { letter, fragments: vec![fragment], ..Default::default() });
+        self.respond_to(row, Mode::Reply, cx);
     }
 
     /// Ответ на эту беседу, который уже открыт: в области чтения над письмом беседы или вкладкой с её репликами.
-    fn composer_for(&self, letters: &[&str], cx: &App) -> Option<(Entity<Composer>, bool)> {
+    pub(crate) fn composer_for(&self, letters: &[&str], cx: &App) -> Option<(Entity<Composer>, bool)> {
         if let Some(i) = &self.compose.inline
             && letters.contains(&i.letter.as_str())
             && let Some(v) = self.compose.get(i.id)
@@ -701,17 +724,17 @@ impl Render for Dragged {
     }
 }
 
-/// Свой текст письма с репликами: поле — невысокое, под ним реплики; без реплик — `None` (поле на всю высоту).
-pub(crate) fn split_view(c: &Composer, head: AnyElement, cx: &mut Context<Composer>) -> Result<AnyElement, AnyElement> {
+/// Поле своего текста и под ним `under` (подсказка упоминания); с репликами поле невысокое, под ним реплики и подпись.
+pub(crate) fn split_view(c: &Composer, head: AnyElement, under: Option<AnyElement>, cx: &mut Context<Composer>) -> AnyElement {
+    let col = div().flex_1().min_h_0().flex().flex_col();
     if !c.model.has_fragments() && !c.board.removed {
-        return Err(head);
+        return col.child(head).children(under).into_any_element();
     }
     let l = crate::roles::look(cx);
-    let col = div().flex_1().min_h_0().flex().flex_col();
     if !c.model.has_fragments() {
-        return Ok(col.child(head).child(removed_line(&l, cx)).into_any_element());
+        return col.child(head).children(under).child(removed_line(&l, cx)).into_any_element();
     }
-    Ok(col.child(div().h(px(HEAD_H)).flex_none().flex().flex_col().child(head)).child(list(c, &l, cx)).into_any_element())
+    col.child(div().h(px(HEAD_H)).flex_none().flex().flex_col().child(head)).children(under).child(list(c, &l, cx)).into_any_element()
 }
 
 fn removed_line(l: &Look, cx: &mut Context<Composer>) -> Div {
@@ -886,19 +909,27 @@ pub(crate) mod scenes {
         // Письмо с картинкой и цитатой (как `reply-inline`): строка его текста выделена протяжкой мыши — подсветка и
         // кнопка «Ответить на фрагмент» под концом выделения.
         Scene::new("fragment-select", letter, letter_ready).after("reply-inline").input(SELECT),
-        // Кнопка нажата: ответ в области чтения, реплика «цитата → ответ» с набранным ответом и вторая реплика из
-        // того же письма; подпись — под репликами.
+        // Кнопка нажата: фрагмент — в быстрый ответ под лентой, набран ответ, второй фрагмент того же письма;
+        // «Развернуть» — ответ всем в области чтения с двумя репликами, набранное — ответ на последнюю.
         Scene::new("reply-fragments", stay, fragments_ready).continues().input(REPLY),
     ];
 
     const SELECT: &[Input] = &[Input::Until(letter_ready), Input::Drag(from, to), Input::Until(selected)];
-    const REPLY: &[Input] =
-        &[Input::Press("fragment-reply"), Input::Until(one_fragment), Input::Text(ANSWER), Input::Until(answered), Input::Run(second)];
+    // В ленте без открытого ответа фрагменты встают в быстрый ответ под лентой (MSGR-02); «Развернуть» — полный ответ.
+    const REPLY: &[Input] = &[
+        Input::Press("fragment-reply"),
+        Input::Until(one_fragment),
+        Input::Text(ANSWER),
+        Input::Until(answered),
+        Input::Run(second),
+        Input::Until(two_fragments),
+        Input::Press("quick-expand"),
+    ];
 
     const ANSWER: &str = "Да, к пятнице успеем."; // i18n-ok: ввод сценария
 
     fn answered(_: &Scene, m: &Mailer, cx: &App) -> bool {
-        m.compose.inline_view().is_some_and(|c| c.read(cx).model.fragments.list.items().first().is_some_and(|f| f.answer == ANSWER))
+        m.reading.read(cx).quick.text(cx) == ANSWER
     }
 
     fn letter(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
@@ -937,12 +968,12 @@ pub(crate) mod scenes {
         super::picked(cx).is_some_and(|p| !p.selecting)
     }
 
-    fn fragments(m: &Mailer, cx: &App) -> usize {
-        m.compose.inline_view().map_or(0, |c| c.read(cx).model.fragments.list.len())
+    fn one_fragment(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.reading.read(cx).quick.fragments.len() == 1
     }
 
-    fn one_fragment(_: &Scene, m: &Mailer, cx: &App) -> bool {
-        fragments(m, cx) == 1
+    fn two_fragments(_: &Scene, m: &Mailer, cx: &App) -> bool {
+        m.reading.read(cx).quick.fragments.len() == 2
     }
 
     /// Вторая реплика — как выделение из того же письма (протяжка уже показана прошлой сценой).
@@ -957,7 +988,7 @@ pub(crate) mod scenes {
     fn fragments_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
         m.compose.inline_view().is_some_and(|c| {
             let c = c.read(cx);
-            c.drawn() && c.model.fragments.list.len() == 2 && c.model.fragments.list.items().first().is_some_and(|f| f.answer == ANSWER)
+            c.drawn() && c.model.fragments.list.len() == 2 && c.model.fragments.list.items().last().is_some_and(|f| f.answer == ANSWER)
         })
     }
 }

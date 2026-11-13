@@ -5,6 +5,7 @@
 pub mod display;
 pub mod fragments;
 pub mod mailto;
+pub mod mention;
 pub mod share;
 pub mod vcard;
 
