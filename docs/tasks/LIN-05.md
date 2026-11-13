@@ -1,7 +1,7 @@
 # LIN-05: корпоративное на Linux — Kerberos, LDAP, S/MIME
 
 lane: x
-status: review
+status: done
 deps: [LIN-03]
 class: B
 files: [crates/ews/src/, crates/backend-ews/, crates/backend-ldap/, crates/core/src/smime/, crates/smime/src/p12.rs, crates/smime/src/p12/, crates/smime/src/soft.rs, crates/smime/src/lib.rs]
