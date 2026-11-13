@@ -96,6 +96,8 @@ mod shared;
 mod signin;
 mod smime;
 mod smime_enc;
+#[cfg(target_os = "linux")]
+mod smime_files;
 mod smime_seal;
 mod states;
 mod sys;
@@ -326,6 +328,11 @@ fn main() {
         // Клавиши — из реестра команд (S2-02) и свои из настроек (S5-09); в поле ввода клавиши без модификаторов — текст.
         commands::bind(cx, &user_prefs);
         prefs::init(user_prefs, prefs_path, cx);
+        // Свои ключи S/MIME из файлов PKCS#12 (LIN-05b): в фоне, до первого письма.
+        #[cfg(target_os = "linux")]
+        if persist {
+            smime_files::load(cx);
+        }
         // Обновление (решение 2026-11-11 «self-update»): замер и снимки — без сети и файлов.
         update::init(persist.then(data_dir).as_deref(), cx);
         let minimized = args.iter().any(|a| a == "--minimized");

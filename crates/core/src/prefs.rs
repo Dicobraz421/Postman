@@ -321,6 +321,9 @@ pub struct Security {
     pub sign_all: bool,
     /// Каталог сертификатов адресатов (S5-12 Ф5).
     pub directory: Directory,
+    /// Свои сертификаты S/MIME из файлов PKCS#12 (Linux, LIN-05b): пути. Пароль — в хранилище паролей системы, не
+    /// здесь.
+    pub smime_files: Vec<String>,
 }
 
 impl Default for Security {
@@ -334,6 +337,7 @@ impl Default for Security {
             store_password: true,
             sign_all: true,
             directory: Directory::default(),
+            smime_files: Vec::new(),
         }
     }
 }
