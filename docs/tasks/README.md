@@ -148,6 +148,7 @@ Apple Silicon, macOS 13+; подпись ad-hoc до волны выпуска. 
 | [MAC-05](MAC-05.md) | Корпоративное: EWS NTLM/Kerberos, LDAP GSSAPI, S/MIME через Связку ключей | x | B | done | MAC-02 |
 | [MAC-06](MAC-06.md) | Выпуск: строка в `release`, подпись и нотаризация, .dmg, обновление | ci | B | in-progress | MAC-02, MAC-03 |
 | [MAC-07](MAC-07.md) | Строка меню macOS и бейдж непрочитанных в Dock | x | B | done | MAC-02, MAC-04 |
+| [MAC-08](MAC-08.md) | Раскладка окна macOS: разделы над деревом, полный экран; вкладки без «Почты» | app-gpui | A | todo | MAC-02, T1-26 |
 
 ## LIN — Postman для Linux (`docs/decisions/2026-11-12-linux.md`)
 
