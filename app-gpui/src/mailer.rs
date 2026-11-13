@@ -707,6 +707,19 @@ impl Render for Mailer {
         let first_run = self.section == Section::Mail && self.live.signin.is_some();
         // Командная строка и полоса автоответа — у почты; во вкладках «Настройки», письма и при первом запуске их нет.
         let bars = free && !first_run && letter.is_none() && meeting.is_none();
+        // macOS (макет `MainMac`): разделы — над деревом папок, в строке команд; в полном экране (`MainMacFull`) и без
+        // строки команд — в заголовке.
+        #[cfg(target_os = "macos")]
+        let bar_sections = bars && !window.is_fullscreen();
+        #[cfg(not(target_os = "macos"))]
+        let bar_sections = false;
+        let lead = if bar_sections { self.panes.0 } else { 0. };
+        if self.bar.read(cx).lead != lead {
+            self.bar.update(cx, |b, cx| {
+                b.lead = lead;
+                cx.notify();
+            });
+        }
         // Контекст раздела: клавиши писем (j/k, Delete, Ctrl+R…) — только в «Почте» без открытых настроек (`commands.rs`).
         let context = match self.section {
             _ if letter.is_some() => "Mailer ComposeView",
@@ -742,8 +755,8 @@ impl Render for Mailer {
             .text_color(l.text())
             // Размер шрифта (S5-30, «Внешний вид»): список, письма и панели.
             .text_size(px(f32::from(crate::prefs::with(cx, |p| p.look.font_px()))))
-            .child(self.titlebar(&l, window, cx))
-            .when(bars, |d| d.child(self.section_bar(free)))
+            .child(self.titlebar(&l, window, bar_sections, cx))
+            .when(bars, |d| d.child(self.section_bar(&l, free, bar_sections, cx)))
             .when_some(self.settings.bar.clone().filter(|_| bars), |d, bar| {
                 d.child(bar.cached(StyleRefinement::default().w_full().h(px(crate::vacation::BAR_HEIGHT)).flex_none()))
             })
@@ -1012,7 +1025,26 @@ impl Mailer {
     }
 
     /// Командная строка: своя у календаря и контактов (вкладка «Почта»), иначе — строка почты.
-    fn section_bar(&self, free: bool) -> AnyElement {
+    /// macOS (`lead`, макет `MainMac`): слева — разделы над деревом папок, по его ширине с полями 8.
+    fn section_bar(&self, l: &crate::roles::Look, free: bool, lead: bool, cx: &App) -> AnyElement {
+        #[cfg(target_os = "macos")]
+        if lead {
+            let w = (self.panes.0 - 16.).max(0.);
+            return div()
+                .w_full()
+                .h(px(BAR_HEIGHT))
+                .flex_none()
+                .flex()
+                .items_center()
+                .child(self.bar_sections(l, w, cx).mx(px(8.)))
+                .child(div().flex_1().min_w_0().h_full().child(self.command_bar(free)))
+                .into_any_element();
+        }
+        let _ = (l, lead, cx);
+        self.command_bar(free)
+    }
+
+    fn command_bar(&self, free: bool) -> AnyElement {
         let style = StyleRefinement::default().w_full().h(px(BAR_HEIGHT)).flex_none();
         match self.section {
             Section::Calendar if free => self.cal_bar.clone().cached(style).into_any_element(),
