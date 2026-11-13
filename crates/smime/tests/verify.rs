@@ -125,6 +125,14 @@ fn untrusted_expired_usage_address() {
     );
     let m2 = testkit::signed_letter(&head("user1@itt.test"), HTML, &expired, &pki.user_key, &[&pki.root], &Sign::default());
     assert_eq!(verify(&m2, &pki.trust(), NOW).status, Status::Expired);
+    // Срок ещё не начался — своя причина, не «истёк».
+    let early = testkit::issue(
+        &Spec { not_before: NOW as i64 + 86_400, ..Spec::user("Иванов", "user1@itt.test") },
+        &pki.user_key,
+        Some((&pki.root, &pki.root_key)),
+    );
+    let m3 = testkit::signed_letter(&head("user1@itt.test"), HTML, &early, &pki.user_key, &[&pki.root], &Sign::default());
+    assert_eq!(verify(&m3, &pki.trust(), NOW).status, Status::NotYetValid);
     // Только «Проверка подлинности сервера» и только шифрование.
     for spec in [Spec { eku: Eku::Server, ..Spec::user("u", "user1@itt.test") }, Spec { encrypt_only: true, ..Spec::user("u", "user1@itt.test") }] {
         let c = testkit::issue(&spec, &pki.user_key, Some((&pki.root, &pki.root_key)));

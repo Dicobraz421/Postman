@@ -85,3 +85,20 @@ fn ec_key_signs_and_agrees() {
     assert_eq!(crate::soft::ecdh(&id.key, &eph).unwrap(), z);
     assert!(id.soft_key().is_some());
 }
+
+/// `ec521.p12` — ключ P-521: открывается, ECDH даёт тот же секрет, что у отправителя (расшифровка, как CNG);
+/// подписи P-521 нет — подписант отказывает, не падает.
+#[test]
+fn p521_key_agrees() {
+    use p256::elliptic_curve::sec1::ToSec1Point;
+    let ids = parse(include_bytes!("ec521.p12"), "secret").unwrap();
+    let id = &ids[0];
+    let cert = Certificate::from_der(&id.cert).unwrap();
+    let point = cert.tbs_certificate().subject_public_key_info().subject_public_key.as_bytes().unwrap().to_vec();
+    let eph = p521::SecretKey::from_slice(&[1u8; 66]).unwrap();
+    let z = p521::ecdh::diffie_hellman(eph.to_nonzero_scalar(), p521::PublicKey::from_sec1_bytes(&point).unwrap().as_affine());
+    let eph_point = eph.public_key().to_sec1_point(false).as_bytes().to_vec();
+    assert_eq!(crate::soft::ecdh(&id.key, &eph_point).unwrap().as_slice(), z.raw_secret_bytes().as_slice());
+    assert!(id.soft_key().is_some());
+    assert!(crate::sign::Signer::sign(&id.signer(crate::Scheme::Ecdsa(Hash::Sha512)), &[0; 64]).is_err());
+}

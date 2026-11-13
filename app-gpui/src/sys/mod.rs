@@ -159,6 +159,19 @@ pub fn clipboard_html(max: usize) -> Option<String> {
     }
 }
 
+/// Значение политики организации с типом, как его задал администратор (POL-01): реестр (`REG_SZ`, `REG_DWORD`,
+/// `REG_QWORD`) или профиль конфигурации macOS (строка, логическое, целое, дробное). Разбор — `security::policy_*`.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code, reason = "дробное и логическое бывают только в профиле macOS"))]
+pub enum PolicyValue {
+    Text(String),
+    Int(i64),
+    Real(f64),
+    Bool(bool),
+    /// Тип, которого политики не бывает (`REG_BINARY`, массив…): имя типа — для журнала.
+    Other(&'static str),
+}
+
 /// Автозапуск, клиент `mailto:`, журнал в файл, открытие в Проводнике (S5-30).
 #[cfg(windows)]
 pub mod shell;
@@ -209,7 +222,7 @@ pub mod shell {
         false
     }
 
-    pub fn policy(_name: &str) -> Option<String> {
+    pub fn policy(_name: &str) -> Option<super::PolicyValue> {
         None
     }
 

@@ -25,17 +25,37 @@ pub const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 pub const BUDGET: Duration = Duration::from_secs(8);
 /// Недоступный адрес CRL не спрашивается снова столько секунд.
 pub const RETRY_AFTER: i64 = 10 * 60;
+/// Сколько ответов OCSP держать в памяти.
+const OCSP_CACHE: usize = 4096;
 /// Сколько байтов CRL держать в памяти (больше — проверяется, но не кэшируется).
 const CACHE_BYTES: usize = 32 * 1024 * 1024;
 
 /// Скачать CRL по адресу (`http`/`https` из сертификата доверенной цепочки) не дольше `timeout`. Байты не разбирает.
+/// OCSP (LIN-05d) — там, где загрузчик умеет POST и даёт nonce (Linux; на Windows OCSP проверяет CryptoAPI).
 pub trait CrlFetch: Send + Sync {
     fn fetch(&self, url: &str, timeout: Duration) -> Result<Vec<u8>, String>;
+
+    /// Случайный nonce запроса OCSP; `None` — OCSP этим загрузчиком не проверяется.
+    fn ocsp_nonce(&self) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// Отправить запрос OCSP (`application/ocsp-request`) и получить ответ — байты не разбирает.
+    fn post_ocsp(&self, url: &str, request: &[u8], timeout: Duration) -> Result<Vec<u8>, String> {
+        let _ = (url, request, timeout);
+        Err("OCSP is not supported here".into())
+    }
 }
 
-/// Проверить CRL `crl` для сертификата `cert`, выпущенного `issuer` (в песочнице).
+/// Проверить CRL `crl` (или ответ OCSP) для сертификата `cert`, выпущенного `issuer` (в песочнице).
 pub trait CrlVerify: Send + Sync {
     fn verify(&self, cert: &[u8], issuer: &[u8], crl: &[u8], now: i64) -> Result<Checked, String>;
+
+    /// Ответ OCSP `response` на запрос с `nonce`.
+    fn verify_ocsp(&self, cert: &[u8], issuer: &[u8], nonce: &[u8], response: &[u8], now: i64) -> Result<Checked, String> {
+        let _ = (cert, issuer, nonce, response, now);
+        Err("OCSP is not supported here".into())
+    }
 }
 
 /// Проверка в воркере: свой процесс воркера, запускается при первом CRL.
@@ -51,6 +71,16 @@ impl CrlVerify for WorkerVerify {
             Err(e) => Err(format!("{e:?}")),
         }
     }
+
+    fn verify_ocsp(&self, cert: &[u8], issuer: &[u8], nonce: &[u8], response: &[u8], now: i64) -> Result<Checked, String> {
+        let mut slot = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let worker = slot.get_or_insert_with(|| postman_worker::Client::new(postman_worker::Client::default_exe(), postman_worker::SMIME_TIMEOUT));
+        match worker.smime_ocsp(cert, issuer, nonce, response, u64::try_from(now).unwrap_or(0)) {
+            Ok(Ok(c)) => Ok(c),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(e) => Err(format!("{e:?}")),
+        }
+    }
 }
 
 /// Загрузка средствами ОС: Windows — `CryptRetrieveObjectByUrlW`, Linux — свой HTTP (`linux.rs`); без разбора.
@@ -59,6 +89,16 @@ pub struct SystemFetch;
 impl CrlFetch for SystemFetch {
     fn fetch(&self, url: &str, timeout: Duration) -> Result<Vec<u8>, String> {
         super::sys::fetch_crl(url, timeout)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn ocsp_nonce(&self) -> Option<Vec<u8>> {
+        super::sys::ocsp_nonce()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn post_ocsp(&self, url: &str, request: &[u8], timeout: Duration) -> Result<Vec<u8>, String> {
+        super::sys::post_ocsp(url, request, timeout)
     }
 }
 
@@ -72,6 +112,8 @@ struct State {
     lists: HashMap<String, Entry>,
     /// Адрес → когда не удалось скачать или проверить.
     failed: HashMap<String, i64>,
+    /// Ответы OCSP: SHA-256 сертификата → итог до `nextUpdate`.
+    ocsp: HashMap<Vec<u8>, Checked>,
 }
 
 /// Проверка отзыва ГОСТ по CRL с кэшем.
@@ -134,7 +176,64 @@ impl GostCrl {
         if all_good { Revocation::Good } else { Revocation::NotCheckedGost }
     }
 
+    /// Сначала OCSP (как CryptoAPI), затем CRL.
     fn link(&self, cert: &[u8], issuer: &[u8], now: i64, deadline: Instant) -> Link {
+        match self.ocsp(cert, issuer, now, deadline) {
+            Link::Unknown => self.crl(cert, issuer, now, deadline),
+            known => known,
+        }
+    }
+
+    /// OCSP по адресам AIA: ответ годен — «отозван»/«не отозван»; нет ответчика, сбой или `unknown` — `Unknown`.
+    fn ocsp(&self, cert: &[u8], issuer: &[u8], now: i64, deadline: Instant) -> Link {
+        let key = postman_smime::Hash::Sha256.digest(cert);
+        let verdict = |c: &Checked| match c.verdict {
+            Verdict::NotRevoked => Link::Good,
+            Verdict::Revoked { .. } => Link::Revoked,
+        };
+        if let Some(c) = self.state().ocsp.get(&key).filter(|c| now < c.next_update) {
+            return verdict(c);
+        }
+        let urls = postman_smime::ocsp::responders(cert);
+        if urls.is_empty() {
+            return Link::Unknown;
+        }
+        let Some(nonce) = self.fetch.ocsp_nonce() else { return Link::Unknown };
+        let Some(request) = postman_smime::ocsp::request(cert, issuer, &nonce) else { return Link::Unknown };
+        for url in urls {
+            if self.state().failed.get(&url).is_some_and(|at| now - at < RETRY_AFTER) {
+                continue;
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            let checked = self
+                .fetch
+                .post_ocsp(&url, &request, left.min(FETCH_TIMEOUT))
+                .and_then(|resp| self.verify.verify_ocsp(cert, issuer, &nonce, &resp, now));
+            match checked {
+                Ok(c) => {
+                    let mut s = self.state();
+                    s.failed.remove(&url);
+                    if s.ocsp.len() >= OCSP_CACHE {
+                        s.ocsp.retain(|_, c| now < c.next_update);
+                    }
+                    if s.ocsp.len() < OCSP_CACHE {
+                        s.ocsp.insert(key, c);
+                    }
+                    return verdict(&c);
+                }
+                Err(e) => {
+                    tracing::warn!(%url, error = %e, "smime: OCSP not usable, trying CRL");
+                    self.state().failed.insert(url, now);
+                }
+            }
+        }
+        Link::Unknown
+    }
+
+    fn crl(&self, cert: &[u8], issuer: &[u8], now: i64, deadline: Instant) -> Link {
         for url in postman_smime::crl::distribution_points(cert).into_iter().filter(|u| web(u)) {
             let Some(crl) = self.list(&url, now, deadline) else { continue };
             match self.verify.verify(cert, issuer, &crl, now) {
@@ -215,6 +314,10 @@ mod tests {
     impl CrlVerify for Direct {
         fn verify(&self, cert: &[u8], issuer: &[u8], crl: &[u8], now: i64) -> Result<Checked, String> {
             postman_smime::crl::check(cert, issuer, crl, now as u64).map_err(|e| e.to_string())
+        }
+
+        fn verify_ocsp(&self, cert: &[u8], issuer: &[u8], nonce: &[u8], response: &[u8], now: i64) -> Result<Checked, String> {
+            postman_smime::ocsp::check(cert, issuer, nonce, response, now as u64).map_err(|e| e.to_string())
         }
     }
 
@@ -378,6 +481,93 @@ mod tests {
         let (e, _) = engine(&[(RSA_URL, None)], Duration::ZERO);
         let ctx = Context { crl: Some(Arc::new(e)), ..Context::fixed(trust.clone()) };
         assert_eq!(finish(&cache, "offline", report(&good), &ctx, now).revocation, Revocation::Unknown);
+    }
+
+    /// Подменная сеть с OCSP: ответ ответчика строится тестом по запросу; счётчики загрузок CRL и запросов OCSP.
+    struct OcspNet {
+        reply: Box<dyn Fn() -> Option<Vec<u8>> + Send + Sync>,
+        crl: Option<Vec<u8>>,
+        posts: Arc<AtomicUsize>,
+        gets: Arc<AtomicUsize>,
+    }
+
+    const NONCE: &[u8] = b"fixed-test-nonce";
+
+    impl CrlFetch for OcspNet {
+        fn fetch(&self, _url: &str, _timeout: Duration) -> Result<Vec<u8>, String> {
+            self.gets.fetch_add(1, Ordering::SeqCst);
+            self.crl.clone().ok_or_else(|| "offline".into())
+        }
+
+        fn ocsp_nonce(&self) -> Option<Vec<u8>> {
+            Some(NONCE.to_vec())
+        }
+
+        fn post_ocsp(&self, _url: &str, request: &[u8], _timeout: Duration) -> Result<Vec<u8>, String> {
+            self.posts.fetch_add(1, Ordering::SeqCst);
+            assert!(request.windows(NONCE.len()).any(|w| w == NONCE));
+            (self.reply)().ok_or_else(|| "offline".into())
+        }
+    }
+
+    /// Порядок как у CryptoAPI: сначала OCSP (ответ — без загрузки CRL, из кэша до `nextUpdate`), недоступен или
+    /// `unknown` — CRL; нет ни того, ни другого — «не проверен».
+    #[test]
+    fn ocsp_first_then_crl() {
+        use postman_smime::testkit::{OcspReply, OcspStatus};
+        const OCSP_URL: &str = "http://ocsp.corp.test/";
+        let key = Key::rsa('a');
+        let root = testkit::issue(&Spec::ca("Corp CA"), &key, None);
+        let ukey = Key::rsa('b');
+        let user = testkit::issue(
+            &Spec { serial: 0x71, crl_url: Some(URL.into()), ocsp_url: Some(OCSP_URL.into()), ..Spec::user("U", "u@corp.test") },
+            &ukey,
+            Some((&root, &key)),
+        );
+        let chain = vec![user.der.clone(), root.der.clone()];
+        let now = NOW as i64;
+        let (r2, u2) = (root.clone(), user.clone());
+        let answer = move |status: OcspStatus| {
+            let (r, u) = (r2.clone(), u2.clone());
+            // Ключ тестового УЦ детерминирован буквой — тот же, что у `root`.
+            let k = Key::rsa('a');
+            move || {
+                Some(testkit::ocsp_response(&OcspReply {
+                    cert: &u,
+                    issuer: &r,
+                    signer: (&r, &k),
+                    status,
+                    this_update: now - 60,
+                    next_update: Some(now + 3600),
+                    nonce: Some(NONCE),
+                    by_key: false,
+                }))
+            }
+        };
+        let crl = testkit::crl(&root, &key, &[0x71], now - 3600, now + 86_400);
+        let net = |reply: Box<dyn Fn() -> Option<Vec<u8>> + Send + Sync>, crl: Option<Vec<u8>>| {
+            let (posts, gets) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+            let e = GostCrl::new(Box::new(OcspNet { reply, crl, posts: posts.clone(), gets: gets.clone() }), Box::new(Direct));
+            (e, posts, gets)
+        };
+        // OCSP «отозван» — CRL не скачивается.
+        let (e, posts, gets) = net(Box::new(answer(OcspStatus::Revoked(now - 5))), None);
+        assert_eq!(e.check(&chain, now), Revocation::Revoked);
+        assert_eq!((posts.load(Ordering::SeqCst), gets.load(Ordering::SeqCst)), (1, 0));
+        // OCSP «действует» — из кэша при повторе.
+        let (e, posts, gets) = net(Box::new(answer(OcspStatus::Good)), Some(crl.clone()));
+        assert_eq!(e.check(&chain, now), Revocation::Good);
+        assert_eq!(e.check(&chain, now + 60), Revocation::Good);
+        assert_eq!((posts.load(Ordering::SeqCst), gets.load(Ordering::SeqCst)), (1, 0));
+        // Ответчик не знает сертификат — по CRL (а там он отозван).
+        let (e, _, gets) = net(Box::new(answer(OcspStatus::Unknown)), Some(crl.clone()));
+        assert_eq!(e.check(&chain, now), Revocation::Revoked);
+        assert_eq!(gets.load(Ordering::SeqCst), 1);
+        // Ответчик недоступен — CRL; нет и CRL — «не проверен».
+        let (e, _, _) = net(Box::new(|| None), Some(crl));
+        assert_eq!(e.check(&chain, now), Revocation::Revoked);
+        let (e, _, _) = net(Box::new(|| None), None);
+        assert_eq!(e.check(&chain, now), Revocation::NotCheckedGost);
     }
 
     #[test]

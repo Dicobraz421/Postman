@@ -97,7 +97,8 @@ fn webpki_status(e: &webpki::Error) -> Status {
     use webpki::Error as E;
     match e {
         E::UnknownIssuer => Status::Untrusted("unknown issuer".into()),
-        E::CertExpired { .. } | E::CertNotValidYet { .. } | E::InvalidCertValidity => Status::Expired,
+        E::CertExpired { .. } | E::InvalidCertValidity => Status::Expired,
+        E::CertNotValidYet { .. } => Status::NotYetValid,
         E::RequiredEkuNotFoundContext(_) | E::EmptyEkuExtension => Status::WrongUsage,
         E::InvalidSignatureForPublicKey => Status::Untrusted("issuer signature is invalid".into()),
         E::UnsupportedSignatureAlgorithmContext(_) | E::UnsupportedSignatureAlgorithmForPublicKeyContext(_) => {

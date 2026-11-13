@@ -24,7 +24,7 @@ pub(super) fn gost_provider() -> Option<String> {
 /// Сети для CRL нет: отзыв ГОСТ — «не проверен».
 #[cfg(not(target_os = "linux"))]
 pub(super) fn fetch_crl(_url: &str, _timeout: std::time::Duration) -> Result<Vec<u8>, String> {
-    Err("CRL download is Windows-only".into())
+    Err("CRL download is not available on this OS".into())
 }
 
 /// СКЗИ нет вне Windows.
