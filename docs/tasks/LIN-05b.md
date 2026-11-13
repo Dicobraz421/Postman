@@ -1,7 +1,7 @@
 # LIN-05b: корпоративное на Linux — настройки и вход без пароля в интерфейсе
 
 lane: app-gpui
-status: review
+status: done
 deps: [LIN-05, GKIT-02]
 class: B
 files: [app-gpui/src/smime_files.rs, app-gpui/src/settings_security.rs, app-gpui/src/settings_tab.rs, app-gpui/src/main.rs, app-gpui/i18n/, crates/core/src/prefs.rs]

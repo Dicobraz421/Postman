@@ -1,7 +1,7 @@
 # LIN-06: выпуск для Linux — AppImage, deb, rpm
 
 lane: ci
-status: review
+status: done
 deps: [LIN-03, LIN-04]
 class: B
 files: [.github/workflows/ci.yml, .github/release-notes.md, scripts/linux/, tools/pack/, app-gpui/src/update.rs, docs/DEV.md]
