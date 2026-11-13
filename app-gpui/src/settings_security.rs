@@ -49,7 +49,13 @@ impl SettingsView {
         }
         self.disk_asked = true;
         if !self.info.live {
-            let demo = if cfg!(target_os = "macos") { "Macintosh HD" } else { "C:" };
+            let demo = if cfg!(target_os = "macos") {
+                "Macintosh HD"
+            } else if cfg!(target_os = "linux") {
+                "/dev/nvme0n1p2"
+            } else {
+                "C:"
+            };
             self.disk = Some((demo.into(), Some(false)));
             return;
         }
@@ -126,7 +132,8 @@ impl SettingsView {
     fn disk_row(&self, l: &Look, cx: &mut Context<Self>) -> Option<Div> {
         let (drive, state) = self.disk.clone()?;
         let (glyph, title, hint) = disk_texts(&drive, state);
-        let button = (state == Some(false)).then(|| {
+        // платформа: на Linux шифрование (LUKS) включают только при установке системы — открывать нечего.
+        let button = (state == Some(false) && !cfg!(target_os = "linux")).then(|| {
             button("settings-bitlocker-open", tr!("settings-bitlocker-open"), false, l).on_click(cx.listener(|_, _, _, cx| {
                 if let Err(e) = crate::sys::shell::open_bitlocker() {
                     tracing::error!("security: disk encryption settings not opened: {e}");

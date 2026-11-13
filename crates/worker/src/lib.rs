@@ -1115,6 +1115,19 @@ pub struct Client {
     namespaces: Namespaces,
 }
 
+/// Режим namespaces новых клиентов процесса (LIN-03): политику `SandboxNamespaces` читает приложение при старте,
+/// а клиентов создают и ядро, и интерфейс — так режим один для всех воркеров и хоста модулей. `true` — `Required`.
+static REQUIRED_NAMESPACES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Режим namespaces для клиентов, созданных после вызова (политика администратора, звать в начале `main`).
+pub fn set_default_namespaces(mode: Namespaces) {
+    REQUIRED_NAMESPACES.store(mode == Namespaces::Required, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn default_namespaces() -> Namespaces {
+    if REQUIRED_NAMESPACES.load(std::sync::atomic::Ordering::Relaxed) { Namespaces::Required } else { Namespaces::Optional }
+}
+
 impl Client {
     pub fn new(exe: PathBuf, timeout: Duration) -> Self {
         Self {
@@ -1126,7 +1139,7 @@ impl Client {
             memory: sandbox::MEMORY_LIMIT,
             cut: None,
             journal: Arc::new(default_journal),
-            namespaces: Namespaces::Optional,
+            namespaces: default_namespaces(),
         }
     }
 
@@ -1137,7 +1150,7 @@ impl Client {
     }
 
     /// Режим namespaces (Linux, ADR 0010): `Required` — политика администратора `SandboxNamespaces`. Применяется к
-    /// следующему запуску процесса.
+    /// следующему запуску процесса. Без вызова — режим процесса ([`set_default_namespaces`]).
     pub fn namespaces(mut self, mode: Namespaces) -> Self {
         self.namespaces = mode;
         self

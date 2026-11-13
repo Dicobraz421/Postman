@@ -72,6 +72,10 @@ pets-gpui-macos = { git = "https://github.com/Dicobraz421/pets", rev = "2b387b40
 [target.'cfg(target_os = "linux")'.dependencies]
 raw-window-handle = "0.6"
 x11rb = { version = "0.13.1", default-features = false }
+# LIN-03: D-Bus сеанса — уведомления, «Показать в папке» (FileManager1), тема и акцент среды (portal `Settings`).
+# Те же копии, что у pets-shell и gpui-pre-linux.
+zbus = { version = "5.19", default-features = false, features = ["async-io"] }
+ashpd = { version = "0.13", default-features = false, features = ["async-io", "settings"] }
 
 # Значок, версия и манифест exe (build.rs, rc.exe из Windows SDK).
 [build-dependencies]

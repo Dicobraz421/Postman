@@ -4,7 +4,9 @@
 //! (HKLM, затем HKCU) или профиль конфигурации macOS; ключи и типы — одни для всех ОС (POL-01,
 //! `docs/tasks/POL-01.md`): `ExternalImages` = `never` | `ask`, `MinTls` = `1.2` | `1.3` (строка; macOS — и число),
 //! `StorePasswords`, `AllowUpdate` = `0` | `1` (строка, `REG_DWORD`, логическое) — закрепляет значение, в настройках
-//! оно недоступно. Неверный тип или значение — WARN в журнал, не закреплено.
+//! оно недоступно. Неверный тип или значение — WARN в журнал, не закреплено. Linux (LIN-03) — файл
+//! `/etc/postman/policies.json` (JSON-объект, те же имена и типы; `sys::shell::POLICY_FILE`); там же
+//! `SandboxNamespaces` = `optional` | `required` ([`sandbox_namespaces`]).
 
 use std::sync::OnceLock;
 
@@ -114,6 +116,33 @@ pub(crate) fn apply(p: &Prefs) {
     crate::plugins::registry().set_tls13_only(effective(p).tls13);
 }
 
+/// Политика `SandboxNamespaces` (LIN-03, ADR 0010): `required` — воркер и хост модулей без user/net/ipc namespaces не
+/// работают (письмо — текстом), `optional` или нет политики — по умолчанию. Нераспознанное — WARN и строже
+/// (`required`, ADR 0011 п. 5). Действует на Linux; на других ОС namespaces нет.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code, reason = "namespaces are Linux only; the parser is tested on every OS"))]
+pub(crate) fn sandbox_namespaces(value: Option<PolicyValue>) -> postman_worker::Namespaces {
+    use postman_worker::Namespaces;
+    match &value {
+        None => Namespaces::Optional,
+        Some(PolicyValue::Text(v)) if v.trim().eq_ignore_ascii_case("optional") => Namespaces::Optional,
+        Some(PolicyValue::Text(v)) if v.trim().eq_ignore_ascii_case("required") => Namespaces::Required,
+        Some(v) => {
+            tracing::warn!(policy = "SandboxNamespaces", value = ?v, "policy: unsupported value, using the stricter `required`");
+            Namespaces::Required
+        }
+    }
+}
+
+/// Режим namespaces всех воркеров процесса — из политики (до первого воркера).
+#[cfg(target_os = "linux")]
+pub(crate) fn apply_sandbox_policy() {
+    let mode = sandbox_namespaces(crate::sys::shell::policy("SandboxNamespaces"));
+    if mode == postman_worker::Namespaces::Required {
+        tracing::info!("policy: sandbox namespaces are required");
+    }
+    postman_worker::set_default_namespaces(mode);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,6 +158,17 @@ mod tests {
 
     fn text(s: &str) -> Option<PolicyValue> {
         Some(PolicyValue::Text(s.to_owned()))
+    }
+
+    /// LIN-03: `SandboxNamespaces` — без политики и `optional` — по умолчанию; `required` — обязательны; непонятное —
+    /// строже.
+    #[test]
+    fn sandbox_namespaces_policy() {
+        use postman_worker::Namespaces;
+        assert_eq!(sandbox_namespaces(None), Namespaces::Optional);
+        assert_eq!(sandbox_namespaces(text("Optional")), Namespaces::Optional);
+        assert_eq!(sandbox_namespaces(text(" required ")), Namespaces::Required);
+        assert_eq!(sandbox_namespaces(Some(PolicyValue::Int(1))), Namespaces::Required);
     }
 
     /// Политика закрепляет значение; непонятное — не закреплено; без политики — выбор пользователя.

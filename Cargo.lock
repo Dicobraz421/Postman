@@ -6554,6 +6554,7 @@ dependencies = [
 name = "postman-gpui"
 version = "0.1.0-beta.5"
 dependencies = [
+ "ashpd",
  "embed-resource",
  "futures",
  "gpui-kit",
@@ -6588,6 +6589,7 @@ dependencies = [
  "tokio",
  "tracing",
  "x11rb",
+ "zbus",
  "zeroize",
  "zip",
 ]
