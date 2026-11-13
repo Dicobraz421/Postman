@@ -99,7 +99,7 @@ pub(crate) fn watch_list(list: &Entity<MailList>, cx: &mut Context<Mailer>) -> S
 }
 
 /// Полная дата для строки цитаты: «17.10.2026 12:00».
-fn full_date(ts: i64) -> String {
+pub(crate) fn full_date(ts: i64) -> String {
     jiff::Timestamp::from_second(ts).map(|t| t.to_zoned(jiff::tz::TimeZone::system()).strftime("%d.%m.%Y %H:%M").to_string()).unwrap_or_default()
 }
 
@@ -202,6 +202,7 @@ impl Mailer {
 
     /// `mail.reply` / `mail.reply_all` / `mail.forward`: окно письма с черновиком; тело ещё не готово — ждём его.
     pub(crate) fn respond(&mut self, mode: Mode, cx: &mut Context<Self>) {
+        self.fragments.clear();
         let Some(row) = self.list.read(cx).selected_row() else {
             return self.toast(Toast::Info, tr!("actions-select-letter"), cx);
         };
@@ -249,7 +250,9 @@ impl Mailer {
         let (me, signature) = identity.unwrap_or_else(|| (Address::new("", reading.me.clone().unwrap_or_default()), String::new()));
         let local = |blob: &str| if live { None } else { postman_demo::blob(blob) };
         let quote = crate::prefs::with(cx, |p| p.replies.quote);
-        let d = draft(mode, &r.row, body, doc, &me, &signature, quote, local);
+        let mut d = draft(mode, &r.row, body, doc, &me, &signature, quote, local);
+        // Ответ на фрагмент (`fragments.rs`): реплика — в черновик.
+        d.fragments = self.fragments.take(id);
         let row = r.row.clone();
         // Вложения беседы новым участникам (решение владельца 2026-11-13) — ответу; пересылка — стандартная.
         if mode != Mode::Forward {

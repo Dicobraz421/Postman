@@ -100,6 +100,8 @@ pub(crate) struct Mailer {
     pub(crate) window: AnyWindowHandle,
     /// Ответ, пересылка, удаление (S3-02).
     pub(crate) actions: crate::actions::Actions,
+    /// Ответ на фрагмент ждёт тела письма (`fragments.rs`).
+    pub(crate) fragments: crate::fragments::Pending,
     /// Уровень песочницы последнего разбора; о слабой песочнице — один тост за запуск.
     pub(crate) sandbox: Option<Level>,
     /// Последнее нажатие и сработавшее действие — проверка хоткеев в любой раскладке (S1-01).
@@ -419,6 +421,7 @@ impl Mailer {
             compose,
             window: window.window_handle(),
             actions: Default::default(),
+            fragments: Default::default(),
             sandbox: None,
             last_key: String::new(),
             bench,
@@ -932,6 +935,12 @@ pub(crate) const W_FOLDERS: f32 = postman_core::prefs::Layout::FOLDERS as f32;
 pub(crate) const W_LIST: f32 = postman_core::prefs::Layout::LIST as f32;
 /// Доля высоты области чтения под ответом (остальное — письмо, на которое отвечают).
 const INLINE_SHARE: f32 = 0.6;
+/// Ответ с репликами фрагментов (`fragments.rs`): им нужно больше места.
+const INLINE_SHARE_FRAGMENTS: f32 = 0.8;
+
+fn inline_share(reply: &Entity<crate::composer::Composer>, cx: &App) -> f32 {
+    if reply.read(cx).model.has_fragments() { INLINE_SHARE_FRAGMENTS } else { INLINE_SHARE }
+}
 
 /// Карточка на фоне каркаса: скругление сверху, рамка без нижней стороны.
 pub(crate) fn card(l: &crate::roles::Look) -> Div {
@@ -988,7 +997,7 @@ impl Mailer {
                     _ if picked => card(l).flex_1().child(self.summary.clone().cached(full())),
                     Some(reply) => card(l)
                         .flex_1()
-                        .child(reply.clone().cached(StyleRefinement::default().w_full().h(relative(INLINE_SHARE)).flex_none()))
+                        .child(reply.clone().cached(StyleRefinement::default().w_full().h(relative(inline_share(reply, cx))).flex_none()))
                         .child(self.reading.clone().cached(StyleRefinement::default().w_full().flex_1().min_h_0())),
                     None => card(l).flex_1().child(self.reading.clone().cached(full())),
                 }
