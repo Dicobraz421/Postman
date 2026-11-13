@@ -244,6 +244,10 @@ pub mod shell {
         false
     }
 
+    pub fn domain() -> Option<String> {
+        None
+    }
+
     pub fn set_autostart(_on: bool) -> Result<(), String> {
         Err("autostart is Windows only".into())
     }
@@ -387,6 +391,33 @@ pub fn hide_window(window: &Window) -> Result<(), String> {
 pub fn show_window(window: &Window) -> Result<(), String> {
     pets::window::show(window).map_err(|e| e.to_string())
 }
+
+/// Linux (PAR-06): спрятать окно в трей — X11 `UnmapWindow` (окна нет ни на экране, ни на панели задач); Wayland —
+/// спрятать нельзя, окно сворачивается.
+#[cfg(target_os = "linux")]
+pub fn hide_window(window: &Window) -> Result<(), String> {
+    match x11::window_id(window) {
+        Ok(id) => x11::set_mapped(id, false),
+        Err(_) => {
+            window.minimize_window();
+            Ok(())
+        }
+    }
+}
+
+/// Linux: вернуть спрятанное окно (`MapWindow`); Wayland — его выведет `activate_window`.
+#[cfg(target_os = "linux")]
+pub fn show_window(window: &Window) -> Result<(), String> {
+    match x11::window_id(window) {
+        Ok(id) => x11::set_mapped(id, true),
+        Err(_) => Ok(()),
+    }
+}
+
+/// Linux (PAR-06): значок в трее — StatusNotifierItem.
+#[cfg(target_os = "linux")]
+#[path = "tray_linux.rs"]
+pub mod tray;
 
 /// Снимок окна: RGBA, 8 бит на канал, строки сверху вниз.
 #[cfg(windows)]

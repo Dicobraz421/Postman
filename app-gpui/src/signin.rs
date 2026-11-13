@@ -82,8 +82,9 @@ pub(crate) struct SignIn {
     password: Entity<InputState>,
     /// Пароль — в диспетчер учётных данных Windows (`false` — не хранить, спрашивать при запуске).
     pub(crate) store: bool,
-    /// Машина в домене: у Exchange — выбор «Войти как пользователь Windows» (T1-02б).
-    pub(crate) domain: bool,
+    /// Домен входа без пароля (T1-02б, PAR-06 №24): Windows — домен пользователя, macOS и Linux — область билета
+    /// Kerberos; `None` — не в домене. Выбор «без пароля» — только для учётки этого домена ([`same_domain`]).
+    pub(crate) domain: Option<String>,
     /// Выбран вход Windows: шага «Пароль» нет, пароль пустой.
     pub(crate) windows: bool,
     /// Первый запуск: приветствие, тема и плотность; иначе — карточка в настройках с «Отмена».
@@ -144,7 +145,7 @@ impl SignIn {
         // Адрес и логин уже есть (сервер отклонил сохранённый вход) — сразу шаг сервера с паролем.
         let step = if prefill.user.is_empty() { Step::Address } else { Step::Server };
         let manual = !prefill.url.is_empty();
-        let domain = crate::sys::shell::in_domain();
+        let domain = crate::sys::shell::domain();
         let windows = prefill.windows;
         Self {
             step,
@@ -222,9 +223,10 @@ impl SignIn {
         cx.notify();
     }
 
-    /// Выбор входа Windows виден: адрес — EWS Exchange, машина в домене.
+    /// Выбор входа Windows виден: адрес — EWS Exchange, машина в домене этой учётки.
     fn windows_offered(&self, cx: &App) -> bool {
-        self.domain && postman_backend_ews::is_ews_url(&normalize_url(&self.url.read(cx).value()))
+        let url = normalize_url(&self.url.read(cx).value());
+        self.domain.as_deref().is_some_and(|d| same_domain(d, &url, &self.user.read(cx).value())) && postman_backend_ews::is_ews_url(&url)
     }
 
     /// «Войти как пользователь Windows»: логин — UPN из Windows (в фоне; можно поправить).
@@ -811,7 +813,7 @@ pub(crate) mod scenes {
             p.found = Some(super::Found { url: "https://mail.corp.example/EWS/Exchange.asmx".into(), ms: 800 });
             p.manual = false;
             p.detecting = false;
-            p.domain = false;
+            p.domain = None;
             p.error = None;
             p.signed = check;
             p.folder = check.then(|| "Входящие · 1 240 / 3 900".to_owned()); // i18n-ok: демо-ход загрузки
@@ -843,7 +845,7 @@ pub(crate) mod scenes {
         if let Some(panel) = &m.live.signin {
             panel.update(cx, |p, cx| {
                 // Снимок не зависит от машины: «в домене».
-                p.domain = true;
+                p.domain = Some("corp.example".to_owned());
                 p.go(super::Step::Server, cx);
             });
         }
@@ -851,7 +853,7 @@ pub(crate) mod scenes {
     }
 
     fn signin_ready(_: &Scene, m: &Mailer, cx: &App) -> bool {
-        m.live.signin.as_ref().is_some_and(|p| p.read(cx).windows && p.read(cx).domain)
+        m.live.signin.as_ref().is_some_and(|p| p.read(cx).windows && p.read(cx).domain.is_some())
     }
 
     fn firstrun(_: &Scene, m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
@@ -879,9 +881,35 @@ pub(crate) mod scenes {
     }
 }
 
+/// Учётка из домена входа без пароля `domain` (PAR-06 №24, одинаково на всех ОС): домен адреса (`anna@corp.example`)
+/// или узел сервера (`mail.corp.example`) равен ему или лежит внутри. Без учёта регистра.
+pub(crate) fn same_domain(domain: &str, url: &str, user: &str) -> bool {
+    let domain = domain.trim().trim_matches('.').to_lowercase();
+    if domain.is_empty() {
+        return false;
+    }
+    let inside = |name: &str| {
+        let name = name.trim().trim_end_matches('.').to_lowercase();
+        name == domain || name.ends_with(&format!(".{domain}"))
+    };
+    let host = url.split("://").nth(1).unwrap_or(url).split(['/', ':', '?']).next().unwrap_or_default();
+    user.rsplit_once('@').is_some_and(|(_, d)| inside(d)) || inside(host)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{check_url, is_mail_address, login_for, normalize_url};
+    use super::{check_url, is_mail_address, login_for, normalize_url, same_domain};
+
+    /// PAR-06 №24: вход без пароля — только для учётки домена билета; поддомен сервера — тот же домен.
+    #[test]
+    fn passwordless_needs_the_same_domain() {
+        let url = "https://mail.corp.example/EWS/Exchange.asmx";
+        assert!(same_domain("CORP.EXAMPLE", url, ""));
+        assert!(same_domain("corp.example", "https://ews.other.test/EWS", "Anna@Corp.Example"));
+        assert!(!same_domain("corp.example", "https://mail.other.test/EWS", "anna@other.test"));
+        assert!(!same_domain("corp.example", "https://mail.notcorp.example/EWS", ""), "не суффикс строки, а домен");
+        assert!(!same_domain("", url, "anna@corp.example"));
+    }
 
     /// «Имя пользователя» у Exchange: `DOMAIN\user` и UPN — как введены, пустое — адрес почты; у других серверов —
     /// адрес.

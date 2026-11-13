@@ -75,6 +75,11 @@ fn os_log_dir() -> Option<PathBuf> {
     }
 }
 
+/// `$XDG_CONFIG_HOME` (только абсолютный) или `~/.config` — Linux и прочие Unix.
+pub fn config_home() -> Option<PathBuf> {
+    xdg_var("XDG_CONFIG_HOME").or_else(|| home().map(|h| h.join(".config")))
+}
+
 /// Каталог пользователя: Linux — из `xdg-user-dirs` (`key` — `DOWNLOAD`, `DOCUMENTS`, `DESKTOP`), иначе подкаталог
 /// домашнего `name`; нет домашнего — временный каталог.
 fn user_dir(key: &str, name: &str) -> PathBuf {
@@ -88,7 +93,7 @@ fn user_dir(key: &str, name: &str) -> PathBuf {
     }
     let Some(home) = home() else { return std::env::temp_dir() };
     if cfg!(target_os = "linux")
-        && let Some(config) = xdg_var("XDG_CONFIG_HOME").or_else(|| Some(home.join(".config")))
+        && let Some(config) = config_home()
         && let Ok(text) = std::fs::read_to_string(config.join("user-dirs.dirs"))
         && let Some(dir) = xdg_user_dir(&text, key, &home)
     {
