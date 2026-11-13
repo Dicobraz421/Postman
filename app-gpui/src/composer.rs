@@ -144,13 +144,13 @@ pub(crate) struct Composer {
     subject: Entity<InputState>,
     /// Текст письма — поле с живым отображением Markdown (S5-27): разметка — `postman_compose::display`, оформление —
     /// украшения поля ([`Composer::paint_markdown`]).
-    body: Entity<EditorState>,
+    pub(crate) body: Entity<EditorState>,
     /// Украшения текста письма и тема, в которой они посчитаны (сменилась — заново).
     marks: Option<TextDecorationCollection>,
     marks_look: Option<Rc<crate::roles::Look>>,
     pub(crate) focus: FocusHandle,
-    mailer: WeakEntity<Mailer>,
-    book: Book,
+    pub(crate) mailer: WeakEntity<Mailer>,
+    pub(crate) book: Book,
     lists: std::collections::HashSet<String>,
     /// «Кому…» (T3-03): панель адресной книги и подписка на её итог.
     pub(crate) picker: Option<Entity<Picker>>,
@@ -189,6 +189,8 @@ pub(crate) struct Composer {
     screens: Option<u32>,
     /// Ответ на фрагменты (`fragments.rs`): поля ответов реплик.
     pub(crate) board: crate::fragments::Board,
+    /// @упоминания (`mentions.rs`): подсказка у набранного `@`.
+    pub(crate) mention: crate::mentions::Mentions,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -275,6 +277,7 @@ impl Composer {
             if matches!(ev, InputEvent::Change) {
                 this.paint_markdown(cx);
                 this.slash_template(&value, window, cx);
+                this.mention_changed(state.read(cx).cursor(), cx);
             }
         }));
         // Enter в строке «Отправить позже» — «Запланировать».
@@ -335,6 +338,7 @@ impl Composer {
             block_zone: None,
             line_h: Rc::new(std::cell::Cell::new(13.0 * 1.5)),
             board: Default::default(),
+            mention: Default::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -636,7 +640,7 @@ impl Composer {
 
     /// Черновик — в синхронизацию через шов экрана. Нет сервера — строка в письме (и тост, если просил
     /// пользователь), текст остаётся.
-    fn dispatch(&mut self, purpose: Purpose, cx: &mut Context<Self>) {
+    pub(crate) fn dispatch(&mut self, purpose: Purpose, cx: &mut Context<Self>) {
         if self.model.busy() {
             return;
         }
@@ -2032,13 +2036,12 @@ impl Composer {
                 if this.table_tab(true, window, cx) {
                     cx.stop_propagation();
                 }
-            }))
-            .into_any_element();
+            }));
+        // @упоминания (`mentions.rs`): ↑ / ↓ / Enter подсказки — раньше поля; подсказка — под текстом.
+        let head = crate::mentions::capture(div().flex_1().min_h_0().flex().flex_col().child(head), cx).into_any_element();
+        let mention = crate::mentions::composer_panel(self, cx);
         // Ответ на фрагменты: свой текст — невысоким полем, под ним реплики и подпись.
-        match crate::fragments::split_view(self, head, cx) {
-            Ok(split) => split,
-            Err(head) => div().flex_1().min_h_0().flex().flex_col().child(head).into_any_element(),
-        }
+        crate::fragments::split_view(self, head, mention, cx)
     }
 
     /// Строки вопросов в письме: «Сохранить черновик?» и «Удалить черновик?».
@@ -2689,6 +2692,8 @@ impl Render for Composer {
             self.subject.update(cx, |s, cx| s.set_value(subject, window, cx));
             let body = self.model.body.clone();
             self.body.update(cx, |s, cx| s.set_value(body, window, cx));
+            // Новый текст поля — оформление Markdown заново (прежние отрезки — от прежнего текста).
+            self.paint_markdown(cx);
             self.show_cc |= !self.model.cc.trim().is_empty();
             self.show_bcc |= !self.model.bcc.trim().is_empty();
         }

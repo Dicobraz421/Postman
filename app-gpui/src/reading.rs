@@ -229,6 +229,9 @@ pub(crate) struct ReadingPane {
     pub(crate) column: std::rc::Rc<std::cell::Cell<Pixels>>,
     /// Меню правой кнопки над выделенным текстом письма (`fragments.rs`): где открыто.
     pub(crate) fragment_menu: Option<Point<Pixels>>,
+    /// Быстрый ответ под лентой беседы (`quick.rs`) и адресная книга для его @упоминаний (общая с окнами писем).
+    pub(crate) quick: crate::quick::Quick,
+    pub(crate) book: Option<crate::compose::Book>,
 }
 
 /// Поля области письма слева и справа (`px(24.)` у `#reading`).
@@ -239,6 +242,10 @@ pub(crate) enum ReadingEvent {
     Sandbox(Level),
     /// «+ категория» в шапке письма (T2-25): список категорий у кнопки (точка щелчка), без меню письма.
     Categorize(Point<Pixels>),
+    /// Быстрый ответ ленты (`quick.rs`): ответ всем на письмо с набранным — отправить или развернуть.
+    QuickReply(Box<(EmailRow, crate::fragments::Prepared)>),
+    /// Подсказке упоминаний нужна адресная книга: загрузить (один раз).
+    LoadBook,
     /// Ответ на приглашение поставлен (T2-22): тост с «Отменить» на [`ANSWER_UNDO`].
     AnswerQueued(String),
     /// Время встреч писем-приглашений (T2-18): в строки списка вместо превью.
@@ -349,6 +356,8 @@ impl ReadingPane {
             scroll: ScrollHandle::new(),
             column: Default::default(),
             fragment_menu: None,
+            quick: Default::default(),
+            book: None,
         }
     }
 
@@ -1176,6 +1185,7 @@ impl Render for ReadingPane {
             let _ = window.drop_image(image);
         }
         let reveal = std::mem::take(&mut self.reveal);
+        self.quick_prepare(window, cx);
         let l = look(cx);
         let Some(r) = &self.reading else {
             return div().flex().size_full().items_center().justify_center().text_color(l.text2()).child(tr!("reading-empty")).into_any_element();
@@ -1381,7 +1391,8 @@ impl Render for ReadingPane {
                 .children(card)
                 .children(matches)
                 .child(feed)
-                .children((!draft).then(|| quick_reply(&r.row, self.me.as_deref(), &l, cx)));
+                // Быстрый ответ всем (MSGR-02): поле под лентой вместо строки «Ответить — Имя».
+                .children(if draft { None } else { self.quick_view(window, cx) });
             return with_side(crate::fragments::decorate(main, self.fragment_menu, cx), side);
         }
         // Открыт просмотр вложения — он на месте текста письма и карточки приглашения (DESIGN «Вложения»).
