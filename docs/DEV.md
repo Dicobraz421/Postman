@@ -84,7 +84,9 @@ Actions — для разработки. Схема общая для Pets (ск
 - Подпись обновления: job `publish` подписывает каждый `.msi`, `.zip`, `.dmg`, `.AppImage`, `.deb` и `.rpm` minisign (`.minisig`, до `SHA256SUMS.txt`) —
   секрет `UPDATE_SIGNING_KEY`, переменная `UPDATE_PUBLIC_KEY` (строка `RW…`, та же, что в `UPDATE_PUBLIC_KEYS`,
   `app-gpui/src/update.rs`); без них выпуск красный. Ключ создаёт владелец — pets `crates/pets-update/README.md`,
-  «Подпись в release-workflow». Самообновление ищет файлы по именам из таблицы выше: их не переименовывать.
+  «Подпись в release-workflow». Самообновление ищет файлы по именам из таблицы выше: их не переименовывать. Ручной запуск CI
+  (`workflow_dispatch`) — пробный: `publish` подписывает все файлы, считает `SHA256SUMS.txt` и кладёт их артефактом
+  `release-dry-run`, выпуска нет.
 - Ссылки приложения: «Проверить обновления» — проверка через `pets-update` (`app-gpui/src/update.rs`); «Все выпуски» —
   `releases/latest` (стабильный) или `releases` (предварительный); «Скачать» у «Нет компонента» —
   `releases/download/v<своя версия>/<файл>`: компонент той же версии.

@@ -471,7 +471,7 @@ jobs:
       # Файлы выпуска платформы для `publish`: Windows — архив, MSI и отдельные компоненты; macOS — .zip и .dmg;
       # Linux — .AppImage, .deb и .rpm.
       - name: Файлы выпуска
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v7.0.2
         with:
           name: release-${{ matrix.platform }}
@@ -560,9 +560,15 @@ jobs:
         shell: bash
         run: python3 .github/release_docs_check.py "${GITHUB_REF_NAME#v}" "*.md" "docs/*.md" "scripts/*/README.txt" .github/release-notes.md
 
+  # Ручной запуск (workflow_dispatch) — пробный: подпись minisign и SHA256SUMS.txt всех файлов выпуска, без выпуска
+  # на GitHub (шаг «Выпуск» — только тег); подписанные файлы — артефакт `release-dry-run`.
   publish:
     needs: [test, release, linux-install, docs-gate]
-    if: github.ref_type == 'tag'
+    if: >-
+      always() && needs.test.result == 'success' && needs.release.result == 'success' &&
+      needs.linux-install.result == 'success' &&
+      ((github.ref_type == 'tag' && needs.docs-gate.result == 'success') ||
+      (github.event_name == 'workflow_dispatch' && github.ref_type != 'tag'))
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -602,7 +608,26 @@ jobs:
       # Страница — для пользователей (.github/release-notes.md): готовность и что скачать, без списка PR.
       # Блоки: pre или stable — по версии; unsigned (подсказка про SmartScreen) — пока нет подписи Windows;
       # mac-unsigned («Всё равно открыть») — пока нет подписи Developer ID с нотаризацией.
+      - name: Суммы и подписи — пробный запуск
+        if: github.ref_type != 'tag'
+        shell: bash
+        run: |
+          cd assets
+          (sha256sum * > SHA256SUMS.txt)
+          shopt -s nullglob
+          for f in *.msi *.zip *.dmg *.AppImage *.deb *.rpm; do
+            if [ ! -s "$f.minisig" ]; then echo "::error::нет подписи $f.minisig"; exit 1; fi
+          done
+          ls -l
+      - name: Артефакт пробного запуска
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: release-dry-run
+          path: assets
+          if-no-files-found: error
       - name: Выпуск
+        if: github.ref_type == 'tag'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
