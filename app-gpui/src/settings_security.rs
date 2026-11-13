@@ -99,7 +99,9 @@ impl SettingsView {
             return d.child(row(tr!("settings-certs-loading"), None, div(), l));
         };
         if certs.is_empty() {
-            return d.child(row(tr!("settings-certs-none"), Some(tr!("settings-certs-none-hint")), div(), l));
+            // Ключи — в файлах (Linux) или в хранилище сертификатов системы: разный смысл — разные ключи (ADR 0011 п. 6).
+            let hint = if cfg!(target_os = "linux") { "settings-certs-none-file-hint" } else { "settings-certs-none-hint" };
+            return d.child(row(tr!("settings-certs-none"), Some(tr!(hint)), div(), l));
         }
         let now = jiff::Timestamp::now().as_second();
         for c in certs {
@@ -227,6 +229,8 @@ impl SettingsView {
         self.check_certs(cx);
         let disk = self.disk_row(l, cx);
         let certs = self.cert_rows(l);
+        #[cfg(target_os = "linux")]
+        let certs = certs.child(self.smime_file_rows(l, cx));
         let p = crate::prefs::get(cx);
         let fixed = |id: &'static str, key: &str| seg_group([seg(id, tr!(key), true, false, l)], l);
         let policy = crate::security::policy();
