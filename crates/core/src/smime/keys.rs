@@ -41,6 +41,55 @@ pub enum KeyError {
     Failed(String),
 }
 
+/// Чем кончилась операция с закрытым ключом, кроме «сбоя»: одно правило на все ОС (ADR 0011, PAR-AUDIT №28) —
+/// защищённый ключ или неверный PIN/пароль — «Ввести», нет карты — «Повторить», отмена — без ошибки.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyFault {
+    NeedPin,
+    NoCard,
+    Cancelled,
+}
+
+/// Коды CNG/CryptoAPI/смарт-карт Windows (HRESULT) → [`KeyFault`]; `None` — другой сбой. Таблица общая для `cng.rs`
+/// и `sign_win.rs`; проверяется тестом на любой ОС.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn windows_fault(hr: i32) -> Option<KeyFault> {
+    const NTE_SILENT_CONTEXT: u32 = 0x8009_0022;
+    const NTE_INCORRECT_PASSWORD: u32 = 0x8009_0033;
+    const NTE_DEVICE_NOT_READY: u32 = 0x8009_0030;
+    const SCARD_W_WRONG_CHV: u32 = 0x8010_006B;
+    const SCARD_W_REMOVED_CARD: u32 = 0x8010_0069;
+    const SCARD_E_NO_SMARTCARD: u32 = 0x8010_000C;
+    const SCARD_W_CANCELLED_BY_USER: u32 = 0x8010_006E;
+    const ERROR_CANCELLED_HR: u32 = 0x8007_04C7;
+    match hr as u32 {
+        NTE_SILENT_CONTEXT | NTE_INCORRECT_PASSWORD | SCARD_W_WRONG_CHV => Some(KeyFault::NeedPin),
+        NTE_DEVICE_NOT_READY | SCARD_W_REMOVED_CARD | SCARD_E_NO_SMARTCARD => Some(KeyFault::NoCard),
+        SCARD_W_CANCELLED_BY_USER | ERROR_CANCELLED_HR => Some(KeyFault::Cancelled),
+        _ => None,
+    }
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+impl KeyFault {
+    pub(crate) fn key_error(self) -> KeyError {
+        match self {
+            KeyFault::NeedPin => KeyError::NeedPin,
+            KeyFault::NoCard => KeyError::NoCard,
+            KeyFault::Cancelled => KeyError::Cancelled,
+        }
+    }
+
+    pub(crate) fn sign_error(self) -> postman_smime::sign::SignError {
+        use postman_smime::sign::SignError;
+        match self {
+            KeyFault::NeedPin => SignError::NeedPin,
+            KeyFault::NoCard => SignError::NoCard,
+            KeyFault::Cancelled => SignError::Cancelled,
+        }
+    }
+}
+
 /// Снимает ключ содержимого.
 pub trait KeyStore: Send + Sync {
     fn cek(&self, env: &Envelope, prompt: Prompt) -> Result<Cek, KeyError>;
@@ -166,6 +215,28 @@ mod tests {
     use postman_smime::envelope::Cipher;
     use postman_smime::soft::SoftKey;
     use postman_smime::testkit::{self, Head, Key, KeyAlg, Pki, To};
+
+    /// Неверный PIN/пароль — «Ввести», как на macOS (`errSecAuthFailed`) и Linux (пароль PKCS#12).
+    #[test]
+    fn windows_codes() {
+        let table: &[(u32, Option<KeyFault>)] = &[
+            (0x8009_0022, Some(KeyFault::NeedPin)),
+            (0x8009_0033, Some(KeyFault::NeedPin)),
+            (0x8010_006B, Some(KeyFault::NeedPin)),
+            (0x8009_0030, Some(KeyFault::NoCard)),
+            (0x8010_0069, Some(KeyFault::NoCard)),
+            (0x8010_000C, Some(KeyFault::NoCard)),
+            (0x8010_006E, Some(KeyFault::Cancelled)),
+            (0x8007_04C7, Some(KeyFault::Cancelled)),
+            (0x8009_000D, None),
+            (0, None),
+        ];
+        for &(hr, want) in table {
+            assert_eq!(windows_fault(hr as i32), want, "0x{hr:08X}");
+        }
+        assert_eq!(KeyFault::NeedPin.key_error(), KeyError::NeedPin);
+        assert!(matches!(KeyFault::NoCard.sign_error(), postman_smime::sign::SignError::NoCard));
+    }
 
     fn soft(pki: &Pki) -> SoftKeys {
         let Key::Rsa(k) = &pki.user_key else { unreachable!() };

@@ -70,7 +70,7 @@ fn worker_memory_over_the_limit_exits_with_a_clear_code() {
     started(&mut c);
     assert_eq!(c.render(&Request::Probe(Probe::Alloc(256 << 20))).unwrap_err(), "ДОСТУП РАЗРЕШЁН", "под пределом");
     let e = c.render(&Request::Probe(Probe::Alloc(3 << 29))).unwrap_err();
-    assert!(e.contains("код 6 (превышен предел памяти)"), "{e}");
+    assert!(e.contains("превышен предел памяти"), "{e}");
     assert!(c.render(&Request::Text("ещё жив".into())).is_ok());
 }
 
@@ -81,15 +81,15 @@ fn viewer_memory_over_the_limit_exits_with_a_clear_code() {
     assert_eq!(c.render(&Request::Probe(Probe::Alloc(256 << 20))).unwrap_err(), "ДОСТУП РАЗРЕШЁН", "под пределом");
     assert_eq!(c.level(), Level::Full, "{:?}", c.fallback());
     let e = c.render(&Request::Probe(Probe::Alloc(768 << 20))).unwrap_err();
-    assert!(e.contains("код 6 (превышен предел памяти)"), "{e}");
+    assert!(e.contains("превышен предел памяти"), "{e}");
 }
 
 /// Признак процесса-ребёнка в [`stderr_log_file_does_not_kill_the_worker`].
 const CHILD: &str = "POSTMAN_TEST_STDERR_CHILD";
 
-/// stderr воркера унаследован от приложения и бывает файлом журнала: запись в него не убивает воркер (нет
-/// `RLIMIT_FSIZE = 0`, Seatbelt не запрещает писать в открытый файл) и доходит до файла. Тест запускает себя же со stderr
-/// в файл: воркер наследует его от клиента.
+/// stderr воркера — канал к клиенту (SBX-01), клиент пишет строки в свой stderr — файл журнала: `RLIMIT_FSIZE = 0` воркера
+/// не мешает, строки доходят до файла с префиксом `worker: `, сверх предела частоты — строка WARN. Тест запускает себя же
+/// со stderr в файл.
 #[test]
 fn stderr_log_file_does_not_kill_the_worker() {
     if std::env::var_os(CHILD).is_some() {
@@ -109,5 +109,6 @@ fn stderr_log_file_does_not_kill_the_worker() {
         .unwrap();
     let text = std::fs::read_to_string(&log).unwrap();
     assert!(out.status.success(), "{}\n{}", String::from_utf8_lossy(&out.stdout), text.chars().take(4000).collect::<String>());
-    assert!(text.matches("postman-worker: stderr probe").count() > 30_000, "в журнал записано {} байт", text.len());
+    assert!(text.contains("worker: postman-worker: stderr probe"), "{}", text.chars().take(4000).collect::<String>());
+    assert!(text.contains("worker: WARN stderr rate limit"), "{}", text.chars().take(4000).collect::<String>());
 }

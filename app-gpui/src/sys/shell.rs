@@ -9,6 +9,8 @@ use gpui_windows::pets::toast;
 use pets_shell::console;
 use pets_shell::registry::{self, Hive};
 
+use super::PolicyValue;
+
 /// Имя значения в Run и приложения в RegisteredApplications.
 const APP: &str = "Postman";
 const RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -78,10 +80,87 @@ fn show(title: &str, body: &str, sound: toast::Sound, on_click: Option<Box<dyn F
     .map_err(|e| e.to_string())
 }
 
-/// Политика организации (`Software\Policies\Pets\Postman`, сначала HKLM, затем HKCU): строковое значение.
-pub fn policy(name: &str) -> Option<String> {
+/// Политика организации (`Software\Policies\Pets\Postman`, сначала HKLM, затем HKCU) с типом значения: `REG_SZ` и
+/// `REG_DWORD` — одинаково (POL-01); прочие типы — [`PolicyValue::Other`], разбор пишет WARN.
+pub fn policy(name: &str) -> Option<PolicyValue> {
     const PATH: &str = r"Software\Policies\Pets\Postman";
-    registry::get_string(Hive::Machine, PATH, Some(name)).or_else(|| get_string(PATH, Some(name)))
+    reg::value(reg::HKLM, PATH, name).or_else(|| reg::value(reg::HKCU, PATH, name))
+}
+
+/// Чтение значения реестра любого типа (`RegGetValueW`, `RRF_RT_ANY`). В `pets_shell::registry` — только `REG_SZ`;
+/// перенести туда при подъёме пина pets (POL-01, решения владельца).
+mod reg {
+    use std::ffi::c_void;
+
+    use super::PolicyValue;
+
+    pub const HKCU: usize = 0x8000_0001;
+    pub const HKLM: usize = 0x8000_0002;
+    const RRF_RT_ANY: u32 = 0x0000_ffff;
+    const REG_SZ: u32 = 1;
+    const REG_EXPAND_SZ: u32 = 2;
+    const REG_DWORD: u32 = 4;
+    const REG_QWORD: u32 = 11;
+    const ERROR_SUCCESS: i32 = 0;
+    const ERROR_MORE_DATA: i32 = 234;
+
+    #[link(name = "advapi32")]
+    unsafe extern "system" {
+        fn RegGetValueW(
+            hkey: *mut c_void,
+            subkey: *const u16,
+            value: *const u16,
+            flags: u32,
+            kind: *mut u32,
+            data: *mut c_void,
+            size: *mut u32,
+        ) -> i32;
+    }
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    /// Значение `name` ключа `path` раздела `root`; нет ключа или значения — `None`.
+    pub fn value(root: usize, path: &str, name: &str) -> Option<PolicyValue> {
+        let (wpath, wname) = (wide(path), wide(name));
+        let mut buf = [0u16; 512];
+        let mut size = 1024u32;
+        let mut kind = 0u32;
+        // SAFETY: предопределённый ключ раздела; строки UTF-16 с нулём живут до конца вызова; буфер и его размер в
+        // байтах — `size`.
+        let rc = unsafe {
+            RegGetValueW(
+                std::ptr::without_provenance_mut(root),
+                wpath.as_ptr(),
+                wname.as_ptr(),
+                RRF_RT_ANY,
+                &raw mut kind,
+                buf.as_mut_ptr().cast(),
+                &raw mut size,
+            )
+        };
+        match rc {
+            ERROR_SUCCESS => {}
+            ERROR_MORE_DATA => return Some(PolicyValue::Other("too long value")),
+            _ => return None,
+        }
+        let bytes = (size as usize).min(1024);
+        let dword = u32::from(buf[0]) | (u32::from(buf[1]) << 16);
+        let qword = u64::from(dword) | (u64::from(buf[2]) << 32) | (u64::from(buf[3]) << 48);
+        Some(match kind {
+            REG_SZ | REG_EXPAND_SZ => {
+                let text = &buf[..bytes / 2];
+                let end = text.iter().position(|&c| c == 0).unwrap_or(text.len());
+                PolicyValue::Text(String::from_utf16_lossy(&text[..end]))
+            }
+            REG_DWORD if bytes == 4 => PolicyValue::Int(i64::from(dword)),
+            REG_QWORD if bytes == 8 => i64::try_from(qword).map_or(PolicyValue::Other("REG_QWORD"), PolicyValue::Int),
+            3 => PolicyValue::Other("REG_BINARY"),
+            7 => PolicyValue::Other("REG_MULTI_SZ"),
+            _ => PolicyValue::Other("unknown registry type"),
+        })
+    }
 }
 
 /// Значение автозапуска есть.
