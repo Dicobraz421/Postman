@@ -23,6 +23,7 @@ pub mod keymap_file;
 pub mod labels;
 pub mod lifecycle;
 pub mod link;
+pub mod local;
 pub mod mailtask;
 pub mod marks;
 pub mod migrate;

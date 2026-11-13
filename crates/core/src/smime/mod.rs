@@ -248,12 +248,41 @@ static WINDOWS_TRUST: Mutex<Option<Arc<Trust>>> = Mutex::new(None);
 // платформа: Windows отдаёт промежуточные из хранилищ `CA` пользователя и машины (`windows.rs`) — кэш не нужен.
 const SEEN_INTERMEDIATES: bool = cfg!(not(windows));
 
-/// Промежуточные из писем в памяти процесса (`None` — файл ещё не прочитан).
+/// Промежуточные из писем в памяти процесса (`None` — база профиля ещё не прочитана).
 static SEEN: Mutex<Option<Vec<Vec<u8>>>> = Mutex::new(None);
 
-/// Кэш промежуточных из писем: из памяти или файла каталога данных.
-fn seen_list(slot: &mut Option<Vec<Vec<u8>>>) -> &mut Vec<Vec<u8>> {
-    slot.get_or_insert_with(|| seen::load(&seen::path()))
+/// Кэш промежуточных из писем: из памяти или базы профиля `cache`.
+fn seen_list<'a>(slot: &'a mut Option<Vec<Vec<u8>>>, cache: &Cache) -> &'a mut Vec<Vec<u8>> {
+    slot.get_or_insert_with(|| seen::load(cache))
+}
+
+/// Имя прежнего файла промежуточных в папке данных (перенос в базу, `crate::local::adopt`).
+pub(crate) const SEEN_FILE: &str = seen::FILE;
+
+/// Промежуточные из прежнего файла; нет или не читается — пусто.
+pub(crate) fn seen_file(path: &std::path::Path) -> Vec<Vec<u8>> {
+    seen::load_file(path)
+}
+
+/// Значение записи промежуточных в базе.
+pub(crate) fn seen_bytes(list: &[Vec<u8>]) -> Vec<u8> {
+    seen::encode(list)
+}
+
+/// Промежуточные из базы профиля.
+#[cfg(test)]
+pub(crate) fn seen_of(cache: &Cache) -> Vec<Vec<u8>> {
+    seen::load(cache)
+}
+
+/// База профиля открыта: промежуточные из неё — в память, якоря — заново при следующей проверке (у другого профиля
+/// свой список).
+pub(crate) fn open_seen(cache: &Cache) {
+    if !SEEN_INTERMEDIATES {
+        return;
+    }
+    *SEEN.lock().unwrap_or_else(PoisonError::into_inner) = Some(seen::load(cache));
+    Anchors::reload();
 }
 
 /// Добавить к якорям `t` промежуточные `ders` в пределе размера Windows (7/8 `MAX_TRUST`), без повторов.
@@ -271,8 +300,8 @@ fn merge_intermediates(t: &mut Trust, ders: &[Vec<u8>]) {
     }
 }
 
-/// Доверенная цепочка письма: её промежуточные — в кэш (файл и якоря процесса). Только живой ящик.
-fn learn(v: &Verdict, ctx: &Context) {
+/// Доверенная цепочка письма: её промежуточные — в кэш (база профиля и якоря процесса). Только живой ящик.
+fn learn(v: &Verdict, ctx: &Context, cache: &Cache) {
     if !SEEN_INTERMEDIATES || !ctx.anchors.windows() || !v.report.trusted() {
         return;
     }
@@ -283,12 +312,12 @@ fn learn(v: &Verdict, ctx: &Context) {
     {
         // Замок кэша отпускается до замка якорей: `Anchors::trust` берёт их в обратном порядке.
         let mut slot = SEEN.lock().unwrap_or_else(PoisonError::into_inner);
-        let list = seen_list(&mut slot);
+        let list = seen_list(&mut slot, cache);
         if !seen::add(list, mids) {
             return;
         }
-        if let Err(e) = seen::save(&seen::path(), list) {
-            tracing::warn!("smime: intermediate certificates not saved: {}", e.kind());
+        if let Err(e) = seen::save(cache, list) {
+            tracing::warn!("smime: intermediate certificates not saved: {e}");
         }
     }
     let mut cached = WINDOWS_TRUST.lock().unwrap_or_else(PoisonError::into_inner);
@@ -321,9 +350,9 @@ impl Anchors {
                     return t.clone();
                 }
                 let mut t = sys::load_trust(&corporate_extra());
-                if SEEN_INTERMEDIATES {
-                    let mut slot = SEEN.lock().unwrap_or_else(PoisonError::into_inner);
-                    merge_intermediates(&mut t, seen_list(&mut slot));
+                // База профиля ещё не открыта — без промежуточных из писем: `open_seen` сбросит якоря.
+                if SEEN_INTERMEDIATES && let Some(list) = SEEN.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+                    merge_intermediates(&mut t, list);
                 }
                 let t = Arc::new(t);
                 tracing::info!(
@@ -413,7 +442,7 @@ pub fn finish(cache: &Cache, id: &str, report: Report, ctx: &Context, now: i64) 
         store(cache, id, &v);
     }
     if v.report.trusted() && !matches!(v.revocation, Revocation::Revoked | Revocation::Rejected(_)) {
-        learn(&v, ctx);
+        learn(&v, ctx, cache);
     }
     if v.report.trusted() && v.report.address_ok && !matches!(v.revocation, Revocation::Revoked | Revocation::Rejected(_)) {
         remember(cache, &v, now);
@@ -429,7 +458,7 @@ pub fn assess(cache: &Cache, report: Report, ctx: &Context, now: i64) -> Verdict
     let (revocation, gost) = confirm(&report, &chain, ctx, now);
     let v = Verdict { report, chain, revocation, checked_at: now, gost };
     if v.report.trusted() && !matches!(v.revocation, Revocation::Revoked | Revocation::Rejected(_)) {
-        learn(&v, ctx);
+        learn(&v, ctx, cache);
     }
     if v.report.trusted() && v.report.address_ok && !matches!(v.revocation, Revocation::Revoked | Revocation::Rejected(_)) {
         remember(cache, &v, now);

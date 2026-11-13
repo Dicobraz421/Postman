@@ -211,7 +211,7 @@ impl Mailer {
         let summary = cx.new(|_| crate::bulk::SummaryView::new());
         let cal = cx.new(|cx| calendar::CalendarView::new(window, cx));
         let worker = reading.read(cx).worker.clone();
-        cal.update(cx, |c, cx| c.start_subscriptions(worker, cx));
+        cal.update(cx, |c, cx| c.start_subscriptions(worker, cache.clone(), cx));
         let contacts = cx.new(|cx| crate::contacts::ContactsView::new(window, cx));
         let cal_bar = cx.new(|cx| calendar::CalendarBar::new(cal.clone(), cx));
         let contacts_bar = cx.new(|cx| crate::contacts::ContactsBar::new(contacts.clone(), cx));
