@@ -11,7 +11,7 @@
 # Glibc: the binaries take the glibc of the build host - CI builds in an old container (ci.yml, job release); the
 # minimum version goes into the package dependencies by itself (the newest GLIBC_x.y symbol the binaries use).
 # Takes the binaries of a finished build (cargo build --release --workspace --features postman-worker/viewer).
-# Needs dpkg-deb, rpmbuild, mksquashfs and curl (the AppImage runtime: AppImage/type2-runtime, or the file in
+# Needs dpkg-deb, rpmbuild, mksquashfs and curl (the AppImage runtime: AppImage/type2-runtime of a fixed release, or the file in
 # APPIMAGE_RUNTIME). Prints the files; in GitHub Actions also sets the outputs name, dir (the folder with the files),
 # assets (the same folder: release files, docs/DEV.md "Выпуск") and version.
 # Usage: scripts/linux/package.sh [--target-dir <cargo target dir>] [--profile release|debug] [--out <dir, default dist>]
@@ -190,13 +190,22 @@ install -m 755 "$here/data/AppRun" "$appdir/AppRun"
 cp "$tree/usr/share/applications/postman.desktop" "$appdir/postman.desktop"
 cp "$tree/usr/share/icons/hicolor/256x256/apps/postman.png" "$appdir/postman.png"
 ln -s postman.png "$appdir/.DirIcon"
+# Runtime: a fixed release of AppImage/type2-runtime, checked by SHA-256 (a new release - both lines here). A local
+# file in APPIMAGE_RUNTIME (offline builds) is checked the same way.
+runtime_tag="20251108"
+runtime_sha256="2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d"
 runtime="${APPIMAGE_RUNTIME:-}"
 if [ -z "$runtime" ]; then
   runtime="$work/runtime"
-  curl -fsSL --retry 3 -o "$runtime" https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64
+  curl -fsSL --retry 3 -o "$runtime" "https://github.com/AppImage/type2-runtime/releases/download/$runtime_tag/runtime-x86_64"
 fi
+echo "$runtime_sha256  $runtime" | sha256sum -c --quiet - || { echo "AppImage runtime: SHA-256 mismatch" >&2; exit 1; }
 find "$appdir" -exec touch -h -d '2000-01-01 00:00Z' {} +
-mksquashfs "$appdir" "$work/app.squashfs" -root-owned -noappend -comp zstd -all-time 946684800 -quiet > /dev/null
+# zstd where mksquashfs has it, xz otherwise (both read by the runtime); times from SOURCE_DATE_EPOCH (squashfs-tools 4.4+).
+comp=zstd
+mkhelp="$(mksquashfs -help 2>&1 || true)"
+case "$mkhelp" in *zstd*) ;; *) comp=xz ;; esac
+SOURCE_DATE_EPOCH=946684800 mksquashfs "$appdir" "$work/app.squashfs" -root-owned -noappend -comp "$comp" > /dev/null
 cat "$runtime" "$work/app.squashfs" > "$appimage"
 chmod 755 "$appimage"
 

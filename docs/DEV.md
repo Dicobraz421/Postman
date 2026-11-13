@@ -98,14 +98,15 @@ Actions — для разработки. Схема общая для Pets (ск
   приложения с appleid.apple.com) — нотаризация `notarytool` и `stapler` у `.app` и `.dmg`, блок `mac-unsigned`
   со страницы уходит. Тесты macOS — workflow `macOS`; `publish` их не ждёт.
 - Linux (LIN-06, решение 2026-11-12 «linux»; Flatpak не делаем): строка `linux-x64` в matrix job `release` — сборка
-  в контейнере `ubuntu:22.04` (glibc 2.35: Ubuntu 22.04+, Debian 12+, Fedora 36+; окружение — `scripts/linux/build-env.sh`),
+  в контейнере `almalinux:9` (glibc 2.34: RHEL/Alma/Rocky 9, Ubuntu 22.04+, Debian 12+, Fedora 35+; окружение —
+  `scripts/linux/build-env.sh`; runtime AppImage — выпуск `AppImage/type2-runtime` с тегом и SHA-256 в `package.sh`),
   `scripts/linux/package.sh` собирает `.AppImage`, `.deb` и `.rpm` с теми же выходами. В пакетах — три бинаря в
   `/usr/bin`, `postman.desktop` (`x-scheme-handler/mailto`), значки hicolor; зависимости — по связанным библиотекам
   (неизвестная — ошибка сборки), минимальный glibc — по символам бинарей. deb и rpm ставят профиль AppArmor
   `/etc/apparmor.d/postman` (`userns` для `postman-worker` и `postman-viewer`, только где AppArmor 4): без него
   Ubuntu 23.10+ запрещает воркеру user namespaces и песочница идёт без них (ADR 0010, режим `optional`); у AppImage
   профиля нет — это видно в диагностике песочницы. Job `linux-install` ставит deb (Ubuntu 24.04, Debian 12), rpm
-  (Fedora) и AppImage (Ubuntu 22.04) в чистых контейнерах, запускает `postman --version` и удаляет; `publish` ждёт и
+  (Fedora, AlmaLinux 9) и AppImage (Ubuntu 22.04) в чистых контейнерах, запускает `postman --version` и удаляет; `publish` ждёт и
   его. Самообновления на Linux пока нет: в `pets-update` нет вида установки AppImage и пакетов (проверка находит только
   чужие файлы и молчит) — отдельная задача pets, затем подъём ревизии полосой deps. Локально: `bash scripts/linux/package.sh --profile debug` (нужны `dpkg-deb`, `rpmbuild`, `mksquashfs`).
 - MSI: `package.ps1` вызывает `postman-pack msi` той же сборки. Версия MSI для бет — `a.b.(c·1000 + r)`
