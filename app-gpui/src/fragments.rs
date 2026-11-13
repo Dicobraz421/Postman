@@ -933,7 +933,12 @@ pub(crate) mod scenes {
     }
 
     fn letter(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        // Ответ прошлых сцен над письмом (`reply-inline`) закрыт: текст письма — на виду, сверху.
+        if let Some(id) = m.compose.inline.as_ref().map(|i| i.id) {
+            m.close_composer(id, cx);
+        }
         let Some(i) = screens::demo_row(m.list.read(cx), screens::outlook_letter) else { return Err("no message to quote".into()) };
+        m.reading.update(cx, |r, _| r.scroll.set_offset(Point::default()));
         m.tabs.activate_kind(crate::tabs::TabKind::Main);
         m.set_section(Section::Mail, cx);
         m.list.update(cx, |l, cx| l.select(i, cx));
