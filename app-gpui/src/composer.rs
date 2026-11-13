@@ -2692,6 +2692,8 @@ impl Render for Composer {
             self.subject.update(cx, |s, cx| s.set_value(subject, window, cx));
             let body = self.model.body.clone();
             self.body.update(cx, |s, cx| s.set_value(body, window, cx));
+            // Новый текст поля — оформление Markdown заново (прежние отрезки — от прежнего текста).
+            self.paint_markdown(cx);
             self.show_cc |= !self.model.cc.trim().is_empty();
             self.show_bcc |= !self.model.bcc.trim().is_empty();
         }

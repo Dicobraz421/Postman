@@ -163,9 +163,8 @@ impl Composer {
             s.replace(token, window, cx);
             s.focus(window, cx);
         });
-        if add_recipient(&mut self.model, &who) {
-            self.sync_inputs = true;
-        }
+        // Чип «Кому» рисуется по модели: поля ввода не переписываем (это сбросило бы курсор в тексте).
+        add_recipient(&mut self.model, &who);
         cx.notify();
     }
 

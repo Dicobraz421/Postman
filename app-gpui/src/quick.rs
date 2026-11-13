@@ -88,6 +88,10 @@ impl ReadingPane {
                     let was = this.quick.mention.clone();
                     this.quick.mention.refresh(&text, cursor, &people, book.as_ref(), &me);
                     if this.quick.mention != was {
+                        // Подсказка — над полем внизу ленты: поле и подсказка — на виду.
+                        if this.quick.mention.open() {
+                            this.scroll.scroll_to_bottom();
+                        }
                         cx.notify();
                     }
                 }
@@ -294,12 +298,11 @@ impl Mailer {
     /// Отправить ответ в области чтения, как только он откроется (быстрый ответ, Enter).
     pub(crate) fn send_inline_soon(&mut self, cx: &mut Context<Self>) {
         let mailer = cx.entity();
+        // Отправка идёт через экран почты (`Composer::dispatch`): окно письма — вне его обновления.
         cx.defer(move |cx| {
-            mailer.update(cx, |m, cx| {
-                if let Some(v) = m.compose.inline_view().cloned() {
-                    v.update(cx, |c, cx| c.dispatch(crate::compose::Purpose::Send, cx));
-                }
-            })
+            if let Some(v) = mailer.read(cx).compose.inline_view().cloned() {
+                v.update(cx, |c, cx| c.dispatch(crate::compose::Purpose::Send, cx));
+            }
         });
     }
 }
