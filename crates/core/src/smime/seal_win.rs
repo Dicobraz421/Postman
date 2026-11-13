@@ -123,8 +123,9 @@ impl Ops for WindowsOps {
     }
 }
 
-/// Сертификаты системного хранилища пользователя `name` (DER).
-fn store_certs(name: &str) -> Vec<Vec<u8>> {
+/// Сертификаты системного хранилища пользователя `name` (DER); `with_key` — только с закрытым ключом (свойство
+/// `CERT_KEY_PROV_INFO_PROP_ID`), как удостоверения Связки ключей macOS и файлы PKCS#12 Linux (PAR-AUDIT №32).
+fn store_certs(name: &str, with_key: bool) -> Vec<Vec<u8>> {
     let n = wide(name);
     let flags = CERT_SYSTEM_STORE_CURRENT_USER | CERT_STORE_READONLY_FLAG | CERT_STORE_OPEN_EXISTING_FLAG;
     // SAFETY: имя хранилища — UTF-16 с нулём; хранилище закрывается ниже.
@@ -140,6 +141,13 @@ fn store_certs(name: &str) -> Vec<Vec<u8>> {
         if ctx.is_null() {
             break;
         }
+        if with_key {
+            let mut len = 0u32;
+            // SAFETY: только размер свойства (буфер NULL); контекст действителен до следующего перебора.
+            if unsafe { CertGetCertificateContextProperty(ctx, CERT_KEY_PROV_INFO_PROP_ID, ptr::null_mut(), &mut len) } == 0 {
+                continue;
+            }
+        }
         // SAFETY: байты копируются сразу.
         out.push(unsafe { std::slice::from_raw_parts((*ctx).pbCertEncoded, (*ctx).cbCertEncoded as usize) }.to_vec());
     }
@@ -150,7 +158,7 @@ fn store_certs(name: &str) -> Vec<Vec<u8>> {
 
 /// Свои сертификаты для адреса `from` (`My`, с закрытым ключом) — кандидаты «себе»; проверяет воркер.
 pub(crate) fn own_certs(from: &str) -> Vec<Vec<u8>> {
-    store_certs("MY")
+    my_certs()
         .into_iter()
         .filter(|der| {
             postman_smime::sign::own_certificate(der).is_some_and(|(info, _, _)| info.emails.iter().any(|e| e.eq_ignore_ascii_case(from.trim())))
@@ -158,14 +166,15 @@ pub(crate) fn own_certs(from: &str) -> Vec<Vec<u8>> {
         .collect()
 }
 
-/// Все свои сертификаты `My` (список в настройках).
+/// Свои сертификаты `My` с закрытым ключом (список в настройках).
 pub(crate) fn my_certs() -> Vec<Vec<u8>> {
-    store_certs("MY")
+    store_certs("MY", true)
 }
 
-/// «Другие пользователи» (`AddressBook`) — все: адреса узнает воркер.
+/// «Другие пользователи» (`AddressBook`): общий отбор [`super::others`] — с адресом, без своих, не больше
+/// [`super::OTHERS_MAX`].
 pub(crate) fn address_book() -> Vec<Vec<u8>> {
-    store_certs("AddressBook")
+    super::others(store_certs("AddressBook", false), &my_certs())
 }
 
 // --- ГОСТ через СКЗИ ---

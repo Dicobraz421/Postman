@@ -21,7 +21,7 @@ pub mod wasm;
 
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
@@ -137,6 +137,11 @@ pub enum Request {
     /// Отзыв ГОСТ без СКЗИ (S5-12.1д): в бинарной части — сертификат, его издатель (из уже доверенной цепочки) и CRL,
     /// скачанный ядром (`postman_smime::wire::encode_crl`). Ответ — «не отозван / отозван» или почему не проверен.
     SmimeCrl {
+        now: u64,
+    },
+    /// Отзыв по OCSP (Linux, LIN-05d): в бинарной части — сертификат, издатель, nonce запроса и ответ ответчика,
+    /// полученный ядром (`postman_smime::wire::encode_ocsp`). Ответ — «не отозван / отозван» или почему не годен.
+    SmimeOcsp {
         now: u64,
     },
     /// Письмо целиком (S8-29) в бинарной части → свойства MAPI для MSG и PST ([`mapi::mapi`]); `seen` — прочитано.
@@ -260,6 +265,8 @@ pub enum Probe {
     Sysctl(String),
     /// Переменная окружения задана (пути профиля воркеру не передаются, SBX-02).
     Env(String),
+    /// Дескриптор с этим номером открыт (унаследован от клиента; SBX-05). Только Unix.
+    Fd(i32),
 }
 
 #[cfg(debug_assertions)]
@@ -293,6 +300,7 @@ fn attempt(p: Probe) -> Result<(), String> {
         Probe::ReadFile(path) => std::fs::read(path).map(|_| ()).map_err(|e| e.to_string()),
         Probe::Connect(addr) => std::net::TcpStream::connect(addr).map(drop).map_err(|e| e.to_string()),
         Probe::Spawn(cmd) => std::process::Command::new(cmd).status().map(drop).map_err(|e| e.to_string()),
+        Probe::Fd(fd) => sandbox::probe_fd(fd),
         Probe::Env(name) => std::env::var_os(&name).map(drop).ok_or_else(|| format!("{name} не задана")),
         Probe::Hang => loop {
             std::hint::spin_loop();
@@ -345,6 +353,8 @@ enum Response {
     Prepared(Vec<Result<postman_smime::prepare::Prepared, String>>),
     /// Итог проверки по CRL (12.1д).
     Crl(Result<postman_smime::crl::Checked, postman_smime::crl::CrlError>),
+    /// Итог проверки ответа OCSP (LIN-05d).
+    Ocsp(Result<postman_smime::crl::Checked, postman_smime::ocsp::OcspError>),
     /// Письмо MAPI — в бинарной части.
     Mapi,
     /// Ответ модуля просмотра; пиксели картинки — в бинарной части.
@@ -732,6 +742,12 @@ fn read_frame(r: &mut impl Read, max: usize) -> io::Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// Удалить след песочницы на диске (Windows: профиль AppContainer; ADR 0011, PAR-05) — действие
+/// `postman-worker --remove-appcontainer` при удалении Postman. Следа нет — успех.
+pub fn remove_appcontainer() -> Result<(), String> {
+    sandbox::remove_profile()
+}
+
 /// Точка входа процесса-воркера.
 pub fn serve() -> ! {
     run(TIME_LIMIT, handle)
@@ -748,7 +764,7 @@ pub(crate) fn run(limit: Duration, handle: impl Fn(Result<Request, serde_json::E
     let watchdog = watchdog(limit);
     if let Err(e) = isolated.and_then(|()| sandbox::lockdown()) {
         // Без песочницы не работаем: лучше показать письмо текстом, чем разбирать HTML без защиты.
-        let json = serde_json::to_vec(&Response::Err(format!("песочница: {e}"))).unwrap_or_default();
+        let json = serde_json::to_vec(&Response::Err(format!("{SANDBOX_REFUSAL}{e}"))).unwrap_or_default();
         let _ = write_msg(&mut stdout, &json, &[], MAX_FRAME);
         std::process::exit(3);
     }
@@ -883,6 +899,10 @@ fn handle(req: Result<Request, serde_json::Error>, bin: &[u8]) -> (Response, Vec
             Some((cert, issuer, crl)) => Response::Crl(postman_smime::crl::check(cert, issuer, crl, now)),
             None => Response::Err("запрос проверки CRL повреждён".into()),
         },
+        Ok(Request::SmimeOcsp { now }) => match postman_smime::wire::decode_ocsp(bin) {
+            Some((cert, issuer, nonce, response)) => Response::Ocsp(postman_smime::ocsp::check(cert, issuer, nonce, response, now)),
+            None => Response::Err("OCSP request is damaged".into()),
+        },
         Ok(Request::ViewModule { .. }) => Response::Err("модули просмотра — только в postman-viewer".into()),
         #[cfg(debug_assertions)]
         Ok(Request::Probe(p)) => probe(p),
@@ -894,22 +914,36 @@ fn handle(req: Result<Request, serde_json::Error>, bin: &[u8]) -> (Response, Vec
 /// Поток-сторож: `true` — запрос начат, `false` — закончен. Не закончен за `limit` — выход с [`EXIT_TIME`].
 /// В простое поток спит в `recv` и процессор не тратит. Поток не запустился — работаем без сторожа (клиент всё
 /// равно убьёт воркер по своему таймауту).
+/// Тот же поток следит за клиентом (SBX-03, аудит №44): клиент умер (сменился родитель) — выход не позже
+/// [`PARENT_POLL`], на всех ОС одинаково (на Windows процесс к тому же в Job Object с `KILL_ON_JOB_CLOSE`).
 fn watchdog(limit: Duration) -> Option<mpsc::Sender<bool>> {
     let (tx, rx) = mpsc::channel::<bool>();
+    let parent = sandbox::parent();
     let spawned = std::thread::Builder::new().name("watchdog".into()).spawn(move || {
-        while let Ok(started) = rx.recv() {
-            if !started {
-                continue;
-            }
-            match rx.recv_timeout(limit) {
-                Ok(_) => {}
-                Err(mpsc::RecvTimeoutError::Timeout) => std::process::exit(EXIT_TIME),
+        let mut started: Option<Instant> = None;
+        loop {
+            match rx.recv_timeout(PARENT_POLL) {
+                Ok(true) => started = Some(Instant::now()),
+                Ok(false) => started = None,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+            if sandbox::parent() != parent {
+                std::process::exit(0);
+            }
+            if started.is_some_and(|t| t.elapsed() >= limit) {
+                std::process::exit(EXIT_TIME);
             }
         }
     });
     spawned.ok().map(|_| tx)
 }
+
+/// Как часто процесс песочницы проверяет, жив ли клиент.
+const PARENT_POLL: Duration = Duration::from_millis(250);
+
+/// Начало ответа процесса, отказавшего в запирании (до первого запроса, выход 3).
+const SANDBOX_REFUSAL: &str = "песочница: ";
 
 /// Приёмник строк журнала процесса песочницы ([`Client::journal`]).
 pub type Journal = Arc<dyn Fn(&str) + Send + Sync>;
@@ -985,7 +1019,11 @@ impl StderrLog {
 
 /// Фоновое чтение stderr процесса песочницы до его закрытия: канал не переполняется (процесс не встанет на записи),
 /// UI не ждёт. Строки — в `journal` с ограничением [`StderrLog`].
-fn drain_stderr(mut stderr: Box<dyn Read + Send>, journal: Journal) -> io::Result<()> {
+/// Строка, которую std пишет в stderr перед аварийным завершением при отказе в памяти (все ОС): по ней клиент называет
+/// исход «превышен предел памяти» одинаково везде (SBX-03, аудит №45).
+const OOM_LINE: &[u8] = b"memory allocation of ";
+
+fn drain_stderr(mut stderr: Box<dyn Read + Send>, journal: Journal, oom: Arc<AtomicBool>) -> io::Result<()> {
     std::thread::Builder::new()
         .name("worker-stderr".into())
         .spawn(move || {
@@ -1009,6 +1047,9 @@ fn drain_stderr(mut stderr: Box<dyn Read + Send>, journal: Journal) -> io::Resul
                     line.extend_from_slice(&body[..body.len().min(room)]);
                     cut |= body.len() > room;
                     if end {
+                        if line.starts_with(OOM_LINE) && line.ends_with(b" failed") {
+                            oom.store(true, Ordering::SeqCst);
+                        }
                         log.line(&line, cut);
                         line.clear();
                         cut = false;
@@ -1045,6 +1086,8 @@ struct Running {
     exit_code: Box<dyn FnMut() -> Option<u32> + Send>,
     /// Воркер ответил хотя бы раз — значит, в этой песочнице он работоспособен.
     answered: bool,
+    /// В stderr была строка std об отказе в памяти ([`OOM_LINE`]).
+    oom: Arc<AtomicBool>,
 }
 
 impl Drop for Running {
@@ -1156,6 +1199,7 @@ impl Client {
             | Response::Threads(_)
             | Response::Prepared(_)
             | Response::Crl(_)
+            | Response::Ocsp(_)
             | Response::Mapi
             | Response::View(_) => Err("неожиданный ответ".into()),
             Response::Err(e) => Err(e),
@@ -1331,6 +1375,32 @@ impl Client {
         }
     }
 
+    /// Отзыв по OCSP (LIN-05d): проверить ответ `response` ответчика (получен ядром) о сертификате `cert`, выпущенном
+    /// `issuer` (оба — из доверенной цепочки), на запрос с `nonce`. Подпись ответчика, `CertID`, nonce и срок — в
+    /// песочнице; `Ok(Err(_))` — ответ не годится (ядро переходит к CRL).
+    pub fn smime_ocsp(
+        &mut self,
+        cert: &[u8],
+        issuer: &[u8],
+        nonce: &[u8],
+        response: &[u8],
+        now: u64,
+    ) -> Result<Result<postman_smime::crl::Checked, postman_smime::ocsp::OcspError>, SmimeFailure> {
+        if response.len() > postman_smime::ocsp::MAX_RESPONSE {
+            return Err(SmimeFailure::TooLarge);
+        }
+        let bin = postman_smime::wire::encode_ocsp(cert, issuer, nonce, response);
+        if bin.len() > MAX_FRAME {
+            return Err(SmimeFailure::TooLarge);
+        }
+        let timeout = self.timeout.max(SMIME_TIMEOUT);
+        match self.call_for(&Request::SmimeOcsp { now }, &bin, timeout).map_err(SmimeFailure::Worker)? {
+            (Response::Ocsp(r), _) => Ok(r),
+            (Response::Err(e), _) => Err(SmimeFailure::Worker(e)),
+            _ => Err(SmimeFailure::Worker("unexpected response".into())),
+        }
+    }
+
     /// Байты вложения `index` расшифрованного письма (только в памяти).
     pub fn smime_part(&mut self, raw: &[u8], cek: &[u8], index: u32) -> Result<Result<Zeroizing<Vec<u8>>, OpenError>, SmimeFailure> {
         let bin = open_request(raw, cek, &postman_smime::Trust::default())?;
@@ -1495,7 +1565,17 @@ impl Client {
             self.running = None;
         }
         let (json, bin) = result?;
-        Ok((serde_json::from_slice(&json).map_err(|e| e.to_string())?, bin))
+        let resp: Response = serde_json::from_slice(&json).map_err(|e| e.to_string())?;
+        // Уровень — по первому ответу (SBX-03, аудит №16): процесс отказал в запирании («песочница: …», выход 3) — изоляции
+        // нет, а не «полная».
+        if let Response::Err(e) = &resp
+            && e.starts_with(SANDBOX_REFUSAL)
+        {
+            self.running = None;
+            self.level = Level::None;
+            self.fallback = Some(e.clone());
+        }
+        Ok((resp, bin))
     }
 
     fn exchange(&mut self, json: &[u8], bin: &[u8], max_bin: usize, timeout: Duration) -> Result<(Vec<u8>, Vec<u8>), String> {
@@ -1510,10 +1590,17 @@ impl Client {
                 r.answered = true;
                 Ok(msg)
             }
-            Ok(Err(_)) | Err(mpsc::RecvTimeoutError::Disconnected) => Err(match (r.exit_code)() {
-                Some(code) => format!("воркер завершился, код {}", exit_name(code)),
-                None => "воркер завершился".into(),
-            }),
+            Ok(Err(_)) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let code = (r.exit_code)();
+                // Отказ в памяти — одно имя исхода на всех ОС (Windows — fail-fast, Linux — SIGABRT, macOS — код 6).
+                if r.oom.load(Ordering::SeqCst) || code == Some(EXIT_MEMORY as u32) {
+                    return Err(format!("воркер завершился: превышен предел памяти{}", code.map(|c| format!(" (код {c})")).unwrap_or_default()));
+                }
+                Err(match code {
+                    Some(code) => format!("воркер завершился, код {}", exit_name(code)),
+                    None => "воркер завершился".into(),
+                })
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => Err(format!("воркер не ответил за {timeout:?}")),
         }
     }
@@ -1530,7 +1617,8 @@ impl Client {
             (_, Some(reason)) => self.fallback = Some(reason),
             _ => {}
         }
-        drain_stderr(p.stderr, Arc::clone(&self.journal)).map_err(|e| e.to_string())?;
+        let oom = Arc::new(AtomicBool::new(false));
+        drain_stderr(p.stderr, Arc::clone(&self.journal), Arc::clone(&oom)).map_err(|e| e.to_string())?;
         let (tx, rx) = mpsc::channel();
         let mut stdout = p.stdout;
         let max_bin = Arc::new(AtomicUsize::new(MAX_FRAME));
@@ -1547,7 +1635,7 @@ impl Client {
                 }
             })
             .map_err(|e| e.to_string())?;
-        Ok(Running { stdin: p.stdin, responses: rx, max_bin, kill: p.kill, exit_code: p.exit_code, answered: false })
+        Ok(Running { stdin: p.stdin, responses: rx, max_bin, kill: p.kill, exit_code: p.exit_code, answered: false, oom })
     }
 }
 

@@ -9,7 +9,7 @@ license.workspace = true
 # Тестовый набор: сертификаты, подписанты и сборка писем S/MIME для тестов воркера, ядра и демо-образцов.
 testkit = ["dep:p256", "dep:p384", "soft"]
 # Ключи в памяти: демо-ящик и тесты ядра (ключ — не из хранилища Windows).
-soft = ["dep:p256", "dep:p384", "dep:rc2"]
+soft = ["dep:p256", "dep:p384", "dep:p521", "dep:rc2"]
 
 [dependencies]
 serde.workspace = true
@@ -43,6 +43,8 @@ zeroize = "1"
 rand_core = { version = "0.10", default-features = false }
 p256 = { version = "0.14", optional = true, features = ["ecdsa", "ecdh"] }
 p384 = { version = "0.14", optional = true, features = ["ecdsa", "ecdh"] }
+# P-521 — только расшифровка писем на свой ключ из PKCS#12 (ECDH), как CNG на Windows (LIN-05d).
+p521 = { version = "0.14", optional = true, default-features = false, features = ["arithmetic", "ecdh", "std"] }
 
 [dev-dependencies]
 postman-smime = { path = ".", features = ["testkit"] }

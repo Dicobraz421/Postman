@@ -40,6 +40,7 @@ const ALLOW: &str = "POSTMAN_SANDBOX_ALLOW";
 // <sandbox.h>, <sys/resource.h>, <unistd.h> — libSystem, линкуется всегда.
 unsafe extern "C" {
     fn getdtablesize() -> c_int;
+    fn getppid() -> c_int;
     fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
     fn sandbox_init(profile: *const c_char, flags: u64, errorbuf: *mut *mut c_char) -> c_int;
     fn sandbox_free_error(errorbuf: *mut c_char);
@@ -284,4 +285,18 @@ pub(crate) mod probe {
         let rc = unsafe { sysctlbyname(name.as_ptr(), null_mut(), &mut len, null_mut(), 0) };
         if rc == 0 { Ok(()) } else { Err(format!("sysctlbyname: {}", std::io::Error::last_os_error())) }
     }
+}
+
+/// Родитель процесса — клиент; сменился — клиент умер (сторож, SBX-03).
+pub(crate) fn parent() -> u32 {
+    // SAFETY: простой системный вызов без аргументов.
+    unsafe { getppid() as u32 }
+}
+
+/// Открыт ли дескриптор (`fcntl(F_GETFD)`; проверка `Probe::Fd`, отладочная сборка).
+#[cfg(debug_assertions)]
+pub(crate) fn probe_fd(fd: i32) -> Result<(), String> {
+    const F_GETFD: c_int = 1;
+    // SAFETY: fcntl с F_GETFD только читает флаги; номер может быть закрыт — тогда ошибка EBADF.
+    if unsafe { fcntl(fd, F_GETFD) } < 0 { Err(io::Error::last_os_error().to_string()) } else { Ok(()) }
 }

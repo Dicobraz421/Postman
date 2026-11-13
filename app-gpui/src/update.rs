@@ -111,11 +111,20 @@ pub(crate) fn settings(g: &General) -> Settings {
     Settings { enabled: g.auto_update, channel }
 }
 
-/// Политика: стандартная Pets (`HKLM\Software\Policies\Aahz\Postman`, `AllowUpdate` DWORD, читает крейт) и своя
-/// Postman (`Software\Policies\Pets\Postman`, `AllowUpdate` строкой, как прочие политики Postman). Запрет любой — запрет.
-pub(crate) fn policy(standard: Policy, own: Option<&str>) -> Policy {
-    let own_off = own.map(str::trim).is_some_and(|v| ["0", "false", "off", "no"].iter().any(|n| v.eq_ignore_ascii_case(n)));
-    if own_off { Policy { allow_update: Some(false) } } else { standard }
+/// Политика: `AllowUpdate` в общем ключе политик Postman (`Software\Policies\Pets\Postman`, профиль конфигурации
+/// macOS; `REG_SZ` или `REG_DWORD`, как прочие — POL-01). Прежний ключ крейта (`Software\Policies\Aahz\Postman`,
+/// `REG_DWORD`) — запасной: действует, только если в общем значения нет; задан — WARN (перенести).
+pub(crate) fn policy(own: Option<bool>, legacy: Policy) -> Policy {
+    if legacy.allow_update.is_some() {
+        tracing::warn!(
+            used = own.is_none(),
+            r"policy: AllowUpdate in legacy key Software\Policies\Aahz\Postman, move it to Software\Policies\Pets\Postman"
+        );
+    }
+    match own {
+        Some(allow) => Policy { allow_update: Some(allow) },
+        None => legacy,
+    }
 }
 
 /// Что сейчас с обновлением — строка в «Настройках».
@@ -202,7 +211,8 @@ fn exe_dir() -> PathBuf {
 pub(crate) fn init(data: Option<&Path>, cx: &mut App) {
     let kind = data.map(|_| install_kind(&exe_dir()));
     let updater = data.zip(product()).zip(kind).map(|((data, p), kind)| {
-        let policy = policy(Policy::read(p.name), crate::sys::shell::policy("AllowUpdate").as_deref());
+        let own = crate::security::policy_flag("AllowUpdate", crate::sys::shell::policy("AllowUpdate"));
+        let policy = policy(own, Policy::read(p.name));
         Arc::new(Updater::with_parts(p, kind, dir(data), policy, Box::new(UreqTransport::new())))
     });
     let allowed = updater.as_ref().is_none_or(|u| u.policy().updates_allowed());
@@ -698,7 +708,7 @@ mod tests {
     fn update_policy_and_setting_off() {
         let dir = tempfile::tempdir().unwrap();
         let net = Net::new("99.0.0");
-        for p in [Policy::from_values(Some(0), None), policy(Policy::default(), Some("0"))] {
+        for p in [policy(None, Policy::from_values(Some(0), None)), policy(Some(false), Policy::default())] {
             let u = updater(InstallKind::Msi, p, &net, dir.path());
             assert!(!u.policy().updates_allowed());
             for reason in [CheckReason::Scheduled, CheckReason::Manual] {
@@ -742,15 +752,16 @@ mod tests {
         assert!(keep(InstallKind::AppBundle).is_empty());
     }
 
-    /// Своя политика Postman — строкой; пусто или «1» — как стандартная.
+    /// Общий ключ сильнее прежнего (`Aahz`); прежний — только когда в общем пусто.
     #[test]
     fn update_own_policy_values() {
-        for off in ["0", " false ", "OFF"] {
-            assert!(!policy(Policy::default(), Some(off)).updates_allowed(), "{off}");
-        }
-        assert!(policy(Policy::default(), Some("1")).updates_allowed());
-        assert!(policy(Policy::default(), None).updates_allowed());
-        assert!(!policy(Policy::from_values(Some(0), None), Some("1")).updates_allowed());
+        let legacy_off = Policy::from_values(Some(0), None);
+        assert!(!policy(Some(false), Policy::default()).updates_allowed());
+        assert!(policy(Some(true), Policy::default()).updates_allowed());
+        assert!(policy(None, Policy::default()).updates_allowed());
+        assert!(!policy(None, legacy_off).updates_allowed(), "запасной ключ действует");
+        assert!(policy(Some(true), legacy_off).updates_allowed(), "общий ключ сильнее");
+        assert!(!policy(Some(false), Policy::from_values(Some(1), None)).updates_allowed());
     }
 
     #[test]

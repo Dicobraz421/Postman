@@ -24,6 +24,8 @@ pub enum Private {
     Rsa(Box<RsaPrivateKey>),
     P256(p256::SecretKey),
     P384(p384::SecretKey),
+    /// Только ECDH (расшифровка): подписи P-521 нет ни на одной ОС (`sign::own_certificate`).
+    P521(p521::SecretKey),
 }
 
 /// Свой сертификат и закрытый ключ.
@@ -45,6 +47,10 @@ pub(crate) fn ecdh(key: &Private, peer: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
             let p = p384::PublicKey::from_sec1_bytes(peer).ok()?;
             Some(Zeroizing::new(p384::ecdh::diffie_hellman(k.to_nonzero_scalar(), p.as_affine()).raw_secret_bytes().to_vec()))
         }
+        Private::P521(k) => {
+            let p = p521::PublicKey::from_sec1_bytes(peer).ok()?;
+            Some(Zeroizing::new(p521::ecdh::diffie_hellman(k.to_nonzero_scalar(), p.as_affine()).raw_secret_bytes().to_vec()))
+        }
         Private::Rsa(_) => None,
     }
 }
@@ -57,7 +63,7 @@ pub fn ecdh_ephemeral(bits: u16, seed: &[u8], peer: &[u8]) -> Option<(Vec<u8>, Z
     let own = match &key {
         Private::P256(k) => k.public_key().to_sec1_point(false).as_bytes().to_vec(),
         Private::P384(k) => k.public_key().to_sec1_point(false).as_bytes().to_vec(),
-        Private::Rsa(_) => return None,
+        Private::Rsa(_) | Private::P521(_) => return None,
     };
     Some((own, ecdh(&key, peer)?))
 }

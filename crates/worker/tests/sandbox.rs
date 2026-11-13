@@ -421,3 +421,13 @@ fn worker_stderr_reaches_the_journal() {
     assert!(got.len() < 36_000 / 10, "{}", got.len());
     assert!(got.iter().any(|s| s.starts_with("WARN stderr rate limit")), "{:?}", &got[got.len().saturating_sub(3)..]);
 }
+
+/// Предел памяти воркера — 1 ГиБ частной выделенной памяти на всех ОС, исход назван одинаково (SBX-03, аудит №17, №45).
+#[test]
+fn worker_memory_limit_has_one_name_everywhere() {
+    let mut c = Client::new(PathBuf::from(env!("CARGO_BIN_EXE_postman-worker")), Duration::from_secs(20));
+    assert_eq!(c.render(&Request::Probe(Probe::Alloc(256 << 20))).unwrap_err(), "ДОСТУП РАЗРЕШЁН", "под пределом");
+    let e = c.render(&Request::Probe(Probe::Alloc(3 << 29))).unwrap_err();
+    assert!(e.contains("превышен предел памяти"), "{e}");
+    assert!(c.render(&Request::Text("ещё жив".into())).is_ok());
+}
