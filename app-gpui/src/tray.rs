@@ -19,7 +19,7 @@ use crate::Mailer;
 use crate::folders::Folders;
 
 /// Что просит значок или уведомление.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(windows), allow(dead_code, reason = "not every OS sends every signal"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Signal {
     /// Показать окно.
@@ -30,11 +30,11 @@ pub(crate) enum Signal {
     Letter(Option<String>),
 }
 
-#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code, reason = "tray icon exists on Windows and Linux only"))]
 static TX: OnceLock<UnboundedSender<Signal>> = OnceLock::new();
 
 /// Передать событие задаче интерфейса; значка нет — никуда.
-#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code, reason = "tray icon exists on Windows and Linux only"))]
 pub(crate) fn send(signal: Signal) {
     if let Some(tx) = TX.get() {
         let _ = tx.unbounded_send(signal);
@@ -42,14 +42,14 @@ pub(crate) fn send(signal: Signal) {
 }
 
 /// Подсказка значка: непрочитанные «Входящих».
-#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code, reason = "tray icon exists on Windows and Linux only"))]
 pub(crate) fn tip(unread: u32) -> String {
     if unread == 0 { "Postman".to_owned() } else { tr!("tray-tip-unread", n = unread) }
 }
 
 /// Бейдж на значке в Dock (MAC-07): непрочитанные «Входящих»; нет непрочитанных — без бейджа, больше 999 — «999+»
 /// (бейдж узкий).
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code, reason = "Dock badge is macOS only; tested on every OS"))]
 pub(crate) fn badge(unread: u32) -> Option<String> {
     match unread {
         0 => None,
