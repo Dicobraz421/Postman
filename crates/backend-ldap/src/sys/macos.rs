@@ -160,7 +160,8 @@ fn take(buf: &mut Buffer) -> Vec<u8> {
     out
 }
 
-/// Текст ошибки GSS-API (английский, для журнала и `DirectoryError`).
+/// Полный текст ошибки GSS-API — только для журнала DEBUG: в сообщениях механизма Kerberos бывают принципалы и узлы
+/// (PAR-AUDIT №18, как EWS).
 fn status(major: OmUint32, minor: OmUint32) -> String {
     let mut parts = Vec::new();
     let krb5 = oid(&MECH_KRB5);
@@ -184,6 +185,12 @@ fn status(major: OmUint32, minor: OmUint32) -> String {
         }
     }
     format!("GSS-API error {major:#x}/{minor:#x}: {}", parts.join("; "))
+}
+
+/// Ошибка вызова GSS для `DirectoryError`: только коды; полный текст — в журнал DEBUG.
+fn fail(call: &'static str, major: OmUint32, minor: OmUint32) -> String {
+    tracing::debug!(call, "ldap: {}", status(major, minor));
+    format!("GSS-API {call} error {major:#x}/{minor:#x}")
 }
 
 /// Контекст Kerberos для `ldap@<узел>`: билет пользователя (вход в домен, `kinit` или единый вход Kerberos).
@@ -210,7 +217,7 @@ impl Kerberos {
         // SAFETY: буфер имени указывает на живую строку; тип — OID, живущий вместе с `Kerberos`; `target` — выход.
         let major = unsafe { gss_import_name(&mut minor, &Buffer::of(service.as_bytes()), &*name_type, &mut target) };
         if gss_error(major) {
-            return Err(status(major, minor));
+            return Err(fail("gss_import_name", major, minor));
         }
         Ok(Kerberos { ctx: null_mut(), target, binding: binding.map(<[u8]>::to_vec), mech: oid(&MECH_KRB5), _name_type: name_type })
     }
@@ -263,7 +270,7 @@ impl Gss for Kerberos {
         };
         let token = take(&mut out);
         if gss_error(major) {
-            return Err(status(major, minor));
+            return Err(fail("gss_init_sec_context", major, minor));
         }
         Ok(GssStep { token, done: major & GSS_S_CONTINUE_NEEDED == 0 })
     }
@@ -274,7 +281,7 @@ impl Gss for Kerberos {
         let major = unsafe { gss_wrap(&mut minor, self.ctx, c_int::from(encrypt), GSS_C_QOP_DEFAULT, &Buffer::of(data), &mut conf, &mut out) };
         let token = take(&mut out);
         if gss_error(major) {
-            return Err(status(major, minor));
+            return Err(fail("gss_wrap", major, minor));
         }
         if encrypt && conf == 0 {
             return Err("GSS-API wrap without confidentiality".into());
@@ -288,7 +295,7 @@ impl Gss for Kerberos {
         let major = unsafe { gss_unwrap(&mut minor, self.ctx, &Buffer::of(data), &mut out, &mut conf, &mut qop) };
         let plain = take(&mut out);
         if gss_error(major) {
-            return Err(status(major, minor));
+            return Err(fail("gss_unwrap", major, minor));
         }
         Ok(plain)
     }
@@ -298,7 +305,7 @@ impl Gss for Kerberos {
         // SAFETY: контекст установлен; выход — локальная переменная.
         let major = unsafe { gss_wrap_size_limit(&mut minor, self.ctx, 1, GSS_C_QOP_DEFAULT, max_token, &mut max) };
         if gss_error(major) {
-            return Err(status(major, minor));
+            return Err(fail("gss_wrap_size_limit", major, minor));
         }
         Ok(max)
     }
@@ -313,7 +320,7 @@ fn kerberos_principal() -> Option<String> {
     // SAFETY: имя — по умолчанию (null); набор механизмов жив на время вызова; `cred` освобождается ниже.
     let major = unsafe { gss_acquire_cred(&mut minor, null_mut(), 0, &mechs, GSS_C_INITIATE, &mut cred, null_mut(), null_mut()) };
     if gss_error(major) || cred.is_null() {
-        tracing::info!("no Kerberos credentials: {}", status(major, minor));
+        tracing::debug!("ldap: no Kerberos credentials: {}", status(major, minor));
         return None;
     }
     let mut name = null_mut();
@@ -322,7 +329,7 @@ fn kerberos_principal() -> Option<String> {
     // SAFETY: `cred` выдан выше и дальше не используется.
     unsafe { gss_release_cred(&mut 0, &mut cred) };
     if gss_error(major) || name.is_null() {
-        tracing::info!("no Kerberos principal: {}", status(major, minor));
+        tracing::debug!("ldap: no Kerberos principal: {}", status(major, minor));
         return None;
     }
     let mut out = Buffer::EMPTY;
@@ -332,7 +339,7 @@ fn kerberos_principal() -> Option<String> {
     // SAFETY: `name` выдан выше и дальше не используется.
     unsafe { gss_release_name(&mut 0, &mut name) };
     if gss_error(major) {
-        tracing::info!("no Kerberos principal name: {}", status(major, minor));
+        tracing::debug!("ldap: no Kerberos principal name: {}", status(major, minor));
         return None;
     }
     String::from_utf8(text).ok()
@@ -374,7 +381,7 @@ const DNS_FLAGS_RETURN_INTERMEDIATES: u32 = 0x1000;
 const DNS_TYPE_SRV: u16 = 33;
 const DNS_CLASS_IN: u16 = 1;
 /// Ждать ответа DNS — не дольше.
-const DNS_TIMEOUT: Duration = Duration::from_secs(5);
+const DNS_TIMEOUT: Duration = super::DC_TIMEOUT;
 
 /// Ответы на запрос SRV: обработчик и цикл видят их только по общей ссылке.
 struct Answers {
@@ -435,14 +442,14 @@ fn srv_records(name: &str) -> Vec<Vec<u8>> {
         )
     };
     if rc != 0 || sd.is_null() {
-        tracing::info!("DNS SRV query failed: {rc}");
+        tracing::debug!(rc, "ldap: DNS SRV query failed");
         return Vec::new();
     }
     let deadline = Instant::now() + DNS_TIMEOUT;
     while !answers.done.get() {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            tracing::info!("DNS SRV query timed out");
+            tracing::debug!("ldap: DNS SRV query timed out");
             break;
         }
         // SAFETY: `sd` выдан выше и ещё не освобождён.
@@ -465,11 +472,15 @@ fn srv_records(name: &str) -> Vec<Vec<u8>> {
 /// Контроллер домена: домен — область билета Kerberos пользователя, сервер — по записям SRV
 /// `_ldap._tcp.dc._msdcs.<домен>`. Нет билета или записей — `None` (компьютер не в домене).
 pub(crate) fn domain_controller() -> Option<String> {
+    super::bounded(dc_lookup)
+}
+
+fn dc_lookup() -> Option<String> {
     let domain = crate::srv::realm_domain(&kerberos_principal()?)?;
     let records = srv_records(&crate::srv::query_name(&domain));
     let dc = crate::srv::choose(records.iter().filter_map(|r| crate::srv::parse(r)));
     if dc.is_none() {
-        tracing::info!("no domain controller in DNS for the Kerberos realm");
+        tracing::debug!("ldap: no domain controller in DNS for the Kerberos realm");
     }
     dc
 }

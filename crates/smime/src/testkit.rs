@@ -231,6 +231,8 @@ pub enum Eku {
     Server,
     /// Без расширения EKU (RFC 5280: любое назначение).
     None,
+    /// Только «Подпись OCSP» — делегат ответчика OCSP.
+    OcspSigning,
 }
 
 /// Что выпустить.
@@ -250,6 +252,8 @@ pub struct Spec {
     pub scheme: Option<Scheme>,
     /// Адрес CRL (расширение CRL Distribution Points).
     pub crl_url: Option<String>,
+    /// Адрес ответчика OCSP (расширение Authority Information Access).
+    pub ocsp_url: Option<String>,
 }
 
 impl Spec {
@@ -266,6 +270,7 @@ impl Spec {
             serial: 1,
             scheme: None,
             crl_url: None,
+            ocsp_url: None,
         }
     }
 
@@ -345,6 +350,9 @@ pub fn issue(spec: &Spec, key: &Key, issuer: Option<(&Issued, &Key)>) -> Issued 
             exts.push(ext(const_oid::db::rfc5280::ID_CE_EXT_KEY_USAGE, false, &ExtendedKeyUsage(vec![const_oid::db::rfc5280::ID_KP_SERVER_AUTH])))
         }
         Eku::None => {}
+        Eku::OcspSigning => {
+            exts.push(ext(const_oid::db::rfc5280::ID_CE_EXT_KEY_USAGE, false, &ExtendedKeyUsage(vec![const_oid::db::rfc5280::ID_KP_OCSP_SIGNING])))
+        }
     }
     if let Some(e) = &spec.email {
         exts.push(ext(
@@ -365,6 +373,19 @@ pub fn issue(spec: &Spec, key: &Key, issuer: Option<(&Issued, &Key)>) -> Issued 
         let value = wrap(0x30, wrap(0x30, wrap(0xA0, wrap(0xA0, uri))));
         exts.push(Extension {
             extn_id: const_oid::db::rfc5280::ID_CE_CRL_DISTRIBUTION_POINTS,
+            critical: false,
+            extn_value: OctetString::new(value).unwrap(),
+        });
+    }
+    if let Some(url) = &spec.ocsp_url {
+        // AuthorityInfoAccessSyntax ::= SEQUENCE OF SEQUENCE { id-ad-ocsp, [6] URI }
+        let mut uri = crate::ber::header(0x86, url.len());
+        uri.extend_from_slice(url.as_bytes());
+        let ad = [&[0x06u8, 0x08, 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x01][..], &uri].concat();
+        let one = [crate::ber::header(0x30, ad.len()), ad].concat();
+        let value = [crate::ber::header(0x30, one.len()), one].concat();
+        exts.push(Extension {
+            extn_id: const_oid::db::rfc5280::ID_PE_AUTHORITY_INFO_ACCESS,
             critical: false,
             extn_value: OctetString::new(value).unwrap(),
         });
@@ -423,6 +444,69 @@ pub fn crl(issuer: &Issued, key: &Key, revoked: &[u64], this_update: i64, next_u
     };
     let sig = key.sign(scheme, &tbs.to_der().unwrap());
     Crl { tbs, alg, sig: BitString::from_bytes(&sig).unwrap() }.to_der().unwrap()
+}
+
+/// Статус в ответе OCSP.
+#[derive(Clone, Copy, Debug)]
+pub enum OcspStatus {
+    Good,
+    /// Отозван в момент (Unix).
+    Revoked(i64),
+    Unknown,
+}
+
+/// Ответ OCSP для [`ocsp_response`].
+pub struct OcspReply<'a> {
+    pub cert: &'a Issued,
+    pub issuer: &'a Issued,
+    /// Кто подписывает: издатель или делегат (тогда он кладётся в `certs` ответа).
+    pub signer: (&'a Issued, &'a Key),
+    pub status: OcspStatus,
+    pub this_update: i64,
+    pub next_update: Option<i64>,
+    pub nonce: Option<&'a [u8]>,
+    /// `responderID` — по ключу (`byKey`), иначе по имени.
+    pub by_key: bool,
+}
+
+/// Ответ OCSP (`OCSPResponse` с `BasicOCSPResponse`, DER), подписанный `signer`.
+pub fn ocsp_response(r: &OcspReply<'_>) -> Vec<u8> {
+    let t = |tag: u8, body: &[u8]| [crate::ber::header(tag, body.len()), body.to_vec()].concat();
+    let gt = |secs: i64| der::asn1::GeneralizedTime::from_unix_duration(Duration::from_secs(secs as u64)).unwrap().to_der().unwrap();
+    let (signer, key) = r.signer;
+    let name_hash = sha1::Sha1::digest(r.cert.cert.tbs_certificate().issuer().to_der().unwrap()).to_vec();
+    let key_hash = sha1::Sha1::digest(r.issuer.cert.tbs_certificate().subject_public_key_info().subject_public_key.raw_bytes()).to_vec();
+    let alg = t(0x30, &[t(0x06, &[0x2B, 0x0E, 0x03, 0x02, 0x1A]), vec![0x05, 0x00]].concat());
+    let cert_id =
+        t(0x30, &[alg, t(0x04, &name_hash), t(0x04, &key_hash), t(0x02, r.cert.cert.tbs_certificate().serial_number().as_bytes())].concat());
+    let status = match r.status {
+        OcspStatus::Good => vec![0x80, 0x00],
+        OcspStatus::Revoked(at) => t(0xA1, &gt(at)),
+        OcspStatus::Unknown => vec![0x82, 0x00],
+    };
+    let mut single = [cert_id, status, gt(r.this_update)].concat();
+    if let Some(n) = r.next_update {
+        single.extend(t(0xA0, &gt(n)));
+    }
+    let responder = if r.by_key {
+        t(0xA2, &t(0x04, &sha1::Sha1::digest(signer.cert.tbs_certificate().subject_public_key_info().subject_public_key.raw_bytes())))
+    } else {
+        t(0xA1, &signer.cert.tbs_certificate().subject().to_der().unwrap())
+    };
+    let mut data = [responder, gt(r.this_update), t(0x30, &t(0x30, &single))].concat();
+    if let Some(n) = r.nonce {
+        let e = t(0x30, &[t(0x06, &[0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x01, 0x02]), t(0x04, &t(0x04, n))].concat());
+        data.extend(t(0xA1, &t(0x30, &e)));
+    }
+    let tbs = t(0x30, &data);
+    let scheme = key.default_scheme();
+    let sig = key.sign(scheme, &tbs);
+    let mut basic = [tbs, Key::cert_alg(scheme).to_der().unwrap(), t(0x03, &[&[0u8][..], &sig].concat())].concat();
+    if signer.der != r.issuer.der {
+        basic.extend(t(0xA0, &t(0x30, &signer.der)));
+    }
+    let bytes = t(0x30, &[t(0x06, &[0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x01, 0x01]), t(0x04, &t(0x30, &basic))].concat());
+    t(0x30, &[vec![0x0A, 0x01, 0x00], t(0xA0, &bytes)].concat())
 }
 
 /// Как подписывать (по умолчанию — как Outlook: подписанные атрибуты, сертификаты подписанта и CA в письме).

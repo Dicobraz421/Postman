@@ -4,7 +4,8 @@
 //! ярлык «Postman» в «Пуске», источник «Postman» журнала «Приложение» (как `install.ps1 -RegisterEventSource`).
 //! Новая версия снимает старую (большое обновление по `UPGRADE_CODE`), старую поверх новой не ставит.
 //! Права для песочниц не нужны: `Program Files` уже читаем для ALL APPLICATION PACKAGES.
-//! Данные пользователя (`%LOCALAPPDATA%\Postman`) и сохранённый вход удаление не трогает.
+//! Данные пользователя (`%LOCALAPPDATA%\Postman`) и сохранённый вход удаление не трогает; профиль песочницы
+//! (AppContainer `Postman.MailWorker`) снимает (PAR-05, ADR 0011).
 
 use std::fs;
 use std::io::{Cursor, Write};
@@ -29,6 +30,11 @@ const EVENT_MESSAGES: &str = r"#%%SystemRoot%\Microsoft.NET\Framework64\v4.0.303
 /// Компонент 64-битный: реестр и папки — без перенаправления WOW64.
 const COMPONENT_64BIT: i32 = 256;
 const FILE_VITAL: i32 = 512;
+/// 18 — exe из установленного файла (`Source` — ключ `File`), +64 — код возврата не важен: отказ не ломает удаление.
+/// Без флагов отложенного — immediate, от имени пользователя: профиль AppContainer в его HKCU, SYSTEM его не видит.
+const CA_EXE_IGNORE: i32 = 18 + 64;
+/// Только полное удаление; при обновлении (старую версию снимает новая) профиль нужен дальше.
+const ON_REMOVE: &str = "REMOVE~=\"ALL\" AND NOT UPGRADINGPRODUCTCODE";
 
 /// Файл комплекта: ключ в таблицах (идентификатор MSI), имя в комплекте и на диске (`короткое|длинное`).
 struct Item {
@@ -332,6 +338,7 @@ fn tables<F: std::io::Read + std::io::Write + std::io::Seek>(p: &mut Package<F>,
     p.insert_rows(Insert::into("CustomAction").rows(vec![
         vec![s("PreventDowngrade"), i(19), NULL, s("A newer version of Postman is already installed.")],
         vec![s("SetInstallLocation"), i(51), s("ARPINSTALLLOCATION"), s("[INSTALLDIR]")],
+        vec![s("RemoveAppContainer"), i(CA_EXE_IGNORE), s("worker.exe"), s("--remove-appcontainer")],
     ]))?;
 
     let ui = [
@@ -350,6 +357,8 @@ fn tables<F: std::io::Read + std::io::Write + std::io::Seek>(p: &mut Package<F>,
         ("CostFinalize", None, 1000),
         ("SetInstallLocation", None, 1001),
         ("InstallValidate", None, 1400),
+        // До сценария удаления: файл воркера ещё на месте.
+        ("RemoveAppContainer", Some(ON_REMOVE), 1450),
         ("InstallInitialize", None, 1500),
         ("RemoveExistingProducts", None, 1501),
         ("ProcessComponents", None, 1600),
@@ -453,6 +462,12 @@ mod tests {
         std::io::Read::read_to_string(&mut cabinet.read_file("README.txt").unwrap(), &mut readme).unwrap();
         assert_eq!(readme, "Postman\r\n");
         assert!(cabinet.read_file("worker.exe").is_ok());
+
+        // PAR-05: при полном удалении воркер снимает профиль AppContainer; отказ не ломает удаление.
+        let ca = p.select_rows(Select::table("CustomAction")).unwrap().find(|r| r[0].as_str() == Some("RemoveAppContainer")).unwrap();
+        assert_eq!((ca[1].as_int(), ca[2].as_str(), ca[3].as_str()), (Some(82), Some("worker.exe"), Some("--remove-appcontainer")));
+        let seq = p.select_rows(Select::table("InstallExecuteSequence")).unwrap().find(|r| r[0].as_str() == Some("RemoveAppContainer")).unwrap();
+        assert_eq!((seq[1].as_str(), seq[2].as_int()), (Some(ON_REMOVE), Some(1450)));
     }
 
     #[test]

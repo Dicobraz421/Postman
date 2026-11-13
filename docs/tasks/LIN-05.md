@@ -35,11 +35,11 @@ manual: docs/manual-tests/LIN-05.md
   добавленные администратором (`/usr/local/share/ca-certificates`, `…/ca-trust/source/anchors`), запрещённые —
   `blocklist`; свои ключи — `load_personal_files` (путь + пароль от приложения), `check_personal_file` для настроек;
   случайные числа — `/dev/urandom`.
-- Отзыв (решение 2026-10-22 «проверка отзыва — всегда»): CRL по CDP доверенной цепочки тем же путём, что ГОСТ без
-  СКЗИ (`crl.rs`, проверка CRL — в воркере), загрузка — свой HTTP в `smime/linux.rs` (перенаправления, прокси
-  `http_proxy`/`no_proxy`); итог — «отозван» / «не отозван» / «не удалось проверить» (`Unknown`, причина — в журнале).
-  Не сделано: OCSP (Windows его проверяет через CryptoAPI) — нужен запрос OCSP и проверка ответа в воркере; CDP по
-  `https` — нет TLS в загрузчике. Для AD CS (CRL всегда публикуется) итог совпадает с Windows.
+- Отзыв (решение 2026-10-22 «проверка отзыва — всегда»), как CryptoAPI: сначала OCSP по AIA (`x/lin-05d`: запрос с
+  nonce — ядро, `postman_smime::ocsp`; ответ — воркер, `SmimeOcsp`: подпись издателя или делегата с EKU
+  `OCSPSigning`, `CertID`, nonce, срок, статус), затем CRL по CDP тем же путём, что ГОСТ без СКЗИ (`crl.rs`). Сеть —
+  `smime/linux.rs`: HTTP и HTTPS (rustls с проверкой сертификата системы), перенаправления, `http(s)_proxy`/`no_proxy`.
+  Итог — «отозван» / «не отозван» / «не удалось проверить» (`Unknown`, причина — в журнале).
 - PAR-AUDIT (волна `x/lin-05c`): №5 — итог цепочки одним правилом на всех ОС (`smime::chain_verdict`, таблица
   `chain_verdicts_are_the_same_everywhere`): любая ошибка цепочки, кроме отзыва, — «отклонено», и вместе с «отзыв
   неизвестен» тоже (на Windows было `Unknown`). №6 — `seal::Ops::random` → `Result`: сбой генератора (Windows —

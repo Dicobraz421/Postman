@@ -1,7 +1,7 @@
 # Postman: install for the current user, no administrator rights (S4-01). Lies next to postman.exe in the zip.
 #
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1                     install or update
-#   powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall          remove files and the Start menu shortcut
+#   powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall          remove files, the Start menu shortcut, the AppContainer profile
 #   -Destination <dir>   install somewhere else (default %LOCALAPPDATA%\Programs\Postman)
 #   -NoShortcut          no Start menu shortcut
 #   -RegisterEventSource (elevated, optional) register the "Postman" source of the Windows Application log;
@@ -70,6 +70,12 @@ if ($Uninstall) {
   Assert-NotRunning $dest
   $link = Get-OurShortcut $dest
   if ($link) { Remove-Item -LiteralPath $link -Force; "shortcut: removed" }
+  # The worker's AppContainer profile (PAR-05): removed by the worker itself; a failure does not stop the removal.
+  $worker = Join-Path $dest "postman-worker.exe"
+  if (Test-Path -LiteralPath $worker) {
+    & $worker --remove-appcontainer
+    if ($LASTEXITCODE) { "kept: AppContainer profile Postman.MailWorker (worker exit $LASTEXITCODE)" } else { "AppContainer profile: removed" }
+  }
   foreach ($f in $Files) {
     $p = Join-Path $dest $f
     if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force }
