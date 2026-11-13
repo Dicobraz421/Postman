@@ -3,6 +3,7 @@
 //! фиксированного набора тегов). Без I/O.
 
 pub mod display;
+pub mod fragments;
 pub mod mailto;
 pub mod vcard;
 
@@ -72,6 +73,9 @@ pub struct Draft {
     /// Зашифровать S/MIME (S5-12 Ф4, «Конфиденциально»): подготовленные получатели, себя — тоже. Пусто — открыто.
     /// Черновик «Конфиденциально» — только себе (решение владельца №5).
     pub encrypt_to: Vec<postman_smime::seal::To>,
+    /// Ответ на фрагменты (`fragments`): реплики, с которыми открывается окно письма. Окно собирает их в `markdown`,
+    /// в письмо (`build`) они сами не попадают.
+    pub fragments: Vec<fragments::Fragment>,
 }
 
 /// Объект iCalendar в письме (RFC 6047): метод и текст VCALENDAR.

@@ -345,6 +345,8 @@ impl ReadingPane {
                 since = since
             )),
         );
+        // Порядок писем на экране — порядок чтения для выделения текста (`fragments.rs`).
+        let mut shown = 0u64;
         for item in &ordered(&f.conv.items, newest_first(cx)) {
             match *item {
                 Item::Day(day) => {
@@ -374,12 +376,16 @@ impl ReadingPane {
                     let body: AnyElement = match doc {
                         None => div().text_color(l.text2()).child("…").into_any_element(),
                         Some(d) => {
+                            shown += 1;
+                            hits.letter(&m.row.id, shown << 32);
                             let blocks = if whole { &d.blocks[..] } else { d.new_text() };
                             let hidden = !whole && blocks.len() < d.blocks.len();
                             div()
+                                .relative()
                                 .flex()
                                 .flex_col()
                                 .gap_1()
+                                .children(crate::screens::spot(("feed-body", n)))
                                 .children(ir_view::blocks_marked(blocks, &format!("feed{n}"), &images, hits, self.column.get(), cx))
                                 .when(hidden, |d| {
                                     d.child(
