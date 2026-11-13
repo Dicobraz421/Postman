@@ -14,8 +14,10 @@
 четыре — одна ревизия `pets` в `[patch.crates-io]`.
 
 С GMAC-01 (#642, pets #79) — патч macOS-платформы там же: `gpui-pre-macos` (`crates/pets-gpui-macos-platform` —
-кадры от CVDisplayLink вместо CAMetalDisplayLink: на macOS 14+ окно переставало получать кадры на 7–44 с; Metal —
-`GPUI_METAL_DISPLAY_LINK=1`). pets #80 — закрытие окна Windows без ложных ERROR в журнале.
+диагностика кадров, цель `gpui_macos::frames`; путь кадров — как у Apple и в исходнике: CAMetalDisplayLink на macOS 14+,
+CVDisplayLink на macOS 13, откат — `GPUI_CV_DISPLAY_LINK=1`). Паузы 7–55 с были у виртуального дисплея CI
+(`presentedTime=0`), на настоящем Mac их нет; снимки `--screens` на macOS просят систему перерисовать окно
+(`pets_gpui_macos::window::redraw`), не дожидаясь ссылки кадров. pets #80 — закрытие окна Windows без ложных ERROR в журнале.
 
 | Патч | Файлы | Зачем | Upstream |
 |---|---|---|---|

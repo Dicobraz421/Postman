@@ -110,17 +110,17 @@ panic = "deny"
 [patch.crates-io]
 # Патч Windows-платформы gpui (шейдеры в exe, кадры по запросу, живой ресайз) — общий для приложений Pets:
 # github.com/Dicobraz421/pets, crates/pets-gpui-windows.
-gpui-pre-windows = { git = "https://github.com/Dicobraz421/pets", rev = "0df0fe19023827d1ea31a47a998c335eebfa334c" }
+gpui-pre-windows = { git = "https://github.com/Dicobraz421/pets", rev = "cd5026adc28d93cc8360ebf4b044e76bb132d914" }
 # Патч gpui-kit (gpui-base 0.9.1): блоки в тексте поля, как в Zed, — таблица сеткой и картинки в письме (T3-06, T3-07):
 # github.com/Dicobraz421/pets, crates/pets-gpui-base.
-gpui-base = { git = "https://github.com/Dicobraz421/pets", rev = "0df0fe19023827d1ea31a47a998c335eebfa334c" }
+gpui-base = { git = "https://github.com/Dicobraz421/pets", rev = "cd5026adc28d93cc8360ebf4b044e76bb132d914" }
 # Linux-платформа gpui (GLIN-01): эмодзи цветным шрифтом (gpui-pre-wgpu), перетаскивание файлов наружу X11 XDND
 # (gpui-pre-linux, `gpui_linux::pets::drag`): github.com/Dicobraz421/pets, crates/pets-gpui-linux и pets-gpui-wgpu.
-gpui-pre-linux = { git = "https://github.com/Dicobraz421/pets", rev = "0df0fe19023827d1ea31a47a998c335eebfa334c" }
-gpui-pre-wgpu = { git = "https://github.com/Dicobraz421/pets", rev = "0df0fe19023827d1ea31a47a998c335eebfa334c" }
-# macOS-платформа gpui (GMAC-01): кадры — CVDisplayLink, как до gpui-kit 0.9.1; CAMetalDisplayLink (macOS 14+) окна
-# ставил на паузу до системной перерисовки — `GPUI_METAL_DISPLAY_LINK=1` включает его для разбора: crates/pets-gpui-macos-platform.
-gpui-pre-macos = { git = "https://github.com/Dicobraz421/pets", rev = "0df0fe19023827d1ea31a47a998c335eebfa334c" }
+gpui-pre-linux = { git = "https://github.com/Dicobraz421/pets", rev = "cd5026adc28d93cc8360ebf4b044e76bb132d914" }
+gpui-pre-wgpu = { git = "https://github.com/Dicobraz421/pets", rev = "cd5026adc28d93cc8360ebf4b044e76bb132d914" }
+# macOS-платформа gpui (GMAC-01): кадры — как у Apple и в исходнике (CAMetalDisplayLink на macOS 14+, CVDisplayLink на
+# macOS 13; откат — `GPUI_CV_DISPLAY_LINK=1`), диагностика кадров — цель `gpui_macos::frames`: crates/pets-gpui-macos-platform.
+gpui-pre-macos = { git = "https://github.com/Dicobraz421/pets", rev = "cd5026adc28d93cc8360ebf4b044e76bb132d914" }
 
 # Отладочная информация только для своего кода: target/debug не раздувается до десятков ГБ.
 [profile.dev]
