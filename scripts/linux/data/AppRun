@@ -1,0 +1,6 @@
+#!/bin/sh
+# AppImage entry (LIN-06, scripts/linux/package.sh): postman from usr/bin of the mounted image; the worker and the
+# viewer lie next to it. No AppArmor profile here: on Ubuntu 23.10+ the worker sandbox runs without user namespaces
+# (ADR 0010, mode optional) - the sandbox diagnostics say so.
+here="$(dirname "$(readlink -f "$0")")"
+exec "$here/usr/bin/postman" "$@"
