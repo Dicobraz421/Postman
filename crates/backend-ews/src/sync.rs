@@ -500,7 +500,10 @@ async fn run(
         notify(Event::Features(areas.with_import(true)));
         notify(Event::Me { address: address.clone(), signature: String::new() });
     }
-    notify(Event::Senders(vec![Sender { account: me.scope.clone(), address, signature: String::new() }]));
+    let senders = vec![Sender { account: me.scope.clone(), address, signature: String::new() }];
+    // Адрес ящика — в адреса бесед писем (ADR 0012, поиск `беседа:`).
+    postman_core::channel::mail::remember_senders(&me.cache, &senders);
+    notify(Event::Senders(senders));
     // Сервер письмо не держит: «Отправить позже» нет (интерфейс прячет его по `max_delay: 0`).
     notify(Event::Scheduled { list: Vec::new(), max_delay: 0 });
     let rows: Vec<AccountRow> = match &me.profile {
@@ -1394,6 +1397,23 @@ impl Ews {
         Ok(out)
     }
 
+    /// Письма с этим `Message-ID` во всех папках ящика: `FindItem` по `InternetMessageId` (ADR 0012, ссылка `mid:`);
+    /// найденное, которого нет в кэше, — в кэш.
+    async fn find_message(&mut self, message_id: &str) -> postman_ews::Result<Vec<String>> {
+        let wanted = format!("<{}>", message_id.trim().trim_start_matches('<').trim_end_matches('>'));
+        let scope = self.scope.clone();
+        let mut out = Vec::new();
+        for f in self.folders.clone() {
+            let ids = self.client.find_message_id(&f.at(), &wanted).await?;
+            let keys: Vec<String> = ids.iter().map(|i| email_key(scope.as_deref(), i)).collect();
+            let known: HashSet<String> = self.cache.rows_by_ids(&keys).map_err(db)?.into_iter().map(|r| r.id).collect();
+            let missing: Vec<ItemId> = ids.iter().zip(&keys).filter(|(_, k)| !known.contains(*k)).map(|(i, _)| i.clone()).collect();
+            self.headers_into(&missing, &f.key).await?;
+            out.extend(keys);
+        }
+        Ok(out)
+    }
+
     /// Следующая страница папки: письма старше уже загруженных (по дате получения).
     async fn load_more(&mut self, mailbox: &str) -> postman_ews::Result<usize> {
         let f = self.folder_by_key(mailbox).cloned().ok_or_else(|| postman_ews::Error::Xml(format!("no folder {mailbox}")))?;
@@ -1560,6 +1580,12 @@ impl Ews {
             Command::Search { query, mailbox, ticket } => {
                 let q = format!("\"{}\"", query.replace('"', " "));
                 let ids = self.query(&q, mailbox.as_deref()).await?;
+                let total = ids.len() as u64;
+                notify(Event::SearchResults { ticket, ids, total });
+                notify(Event::EmailsChanged);
+            }
+            Command::FindMessage { message_id, ticket } => {
+                let ids = self.find_message(&message_id).await?;
                 let total = ids.len() as u64;
                 notify(Event::SearchResults { ticket, ids, total });
                 notify(Event::EmailsChanged);

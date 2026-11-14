@@ -615,6 +615,11 @@ pub(crate) fn hovered_link() -> Option<String> {
 /// T2-07, макет `SettingsSecurity`): не открывать сразу, а показать настоящий адрес тостом с «Перейти» — без окна
 /// подтверждения. Выключено — как обычная ссылка.
 pub fn open_link(href: &str, suspicious: bool, visible: &str, cx: &mut App) {
+    // Ссылки самого Postman (`postman://`, `mid:`, ADR 0012) открывает Postman, не ОС: переход к беседе — CH-04,
+    // до него щелчок ничего не делает (ОС без обработчика схемы спросила бы «чем открыть»).
+    if is_own_link(href) {
+        return;
+    }
     if !(suspicious && crate::prefs::get(cx).reading.warn_link_mismatch) {
         cx.open_url(href);
         return;
@@ -624,6 +629,12 @@ pub fn open_link(href: &str, suspicious: bool, visible: &str, cx: &mut App) {
     let target = href.to_owned();
     let go = pets_ui::ToastAction::new(tr!("reading-link-go"), move |_, cx| cx.open_url(&target));
     crate::notices::push_action_anywhere(cx, pets_ui::Level::Warning, text, go);
+}
+
+/// `postman://…` или `mid:…` — адрес внутри Postman.
+fn is_own_link(href: &str) -> bool {
+    let h = href.trim().to_ascii_lowercase();
+    h.starts_with("postman:") || h.starts_with("mid:")
 }
 
 /// Хост адреса для показа; не разобрался — адрес целиком.

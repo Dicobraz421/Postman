@@ -52,6 +52,8 @@ const PAGE: u64 = 500;
 /// Писем в одном `Email/get` строк выборки: не больше `maxObjectsInGet`.
 const GET_CHUNK: usize = 500;
 const SEARCH_LIMIT: u64 = 1000;
+/// Писем с одним `Message-ID` за поиск (`Command::FindMessage`): копии в разных папках.
+const FIND_LIMIT: u64 = 50;
 /// Изменения календаря приходят пачкой (событие, уведомление, ответ участника): неделя — одним запросом.
 const CALENDAR_DEBOUNCE: Duration = Duration::from_millis(1500);
 /// Справочник целиком — не больше (подсказки адресов и раздел «Контакты»).
@@ -323,16 +325,17 @@ async fn run(
         }
     }
     let send_as = senders(&identities, &theirs, p);
-    notify(Event::Senders(
-        send_as
-            .iter()
-            .map(|f| Sender {
-                account: f.scope.clone(),
-                address: Address::new(&f.identity.name, &f.identity.email),
-                signature: f.identity.text_signature.clone(),
-            })
-            .collect(),
-    ));
+    let senders: Vec<Sender> = send_as
+        .iter()
+        .map(|f| Sender {
+            account: f.scope.clone(),
+            address: Address::new(&f.identity.name, &f.identity.email),
+            signature: f.identity.text_signature.clone(),
+        })
+        .collect();
+    // Адреса ящиков — в адреса бесед писем (ADR 0012, поиск `беседа:`).
+    postman_core::channel::mail::remember_senders(&cache, &senders);
+    notify(Event::Senders(senders));
     // Контакты, справочник, правила, автоответ, категории и задачи — у основной учётной записи (S7-03б).
     if main {
         // Контакты и справочник — до писем: один-два запроса, нужны подсказкам адресов с первого окна письма.
@@ -1030,6 +1033,22 @@ async fn handle(
             save_summaries(cache, index, &page.emails, acc.scope(), notify)?;
             let ids = page.ids.iter().map(|id| acc.key(id)).collect();
             notify(Event::SearchResults { ticket, ids, total: page.total });
+        }
+        Command::FindMessage { message_id, ticket } => {
+            // Свой аккаунт и общие ящики: ссылка `mid:` может вести в любой из них; общий ящик не ответил — без него.
+            let mut found = vec![(&accounts.own, accounts.own.client.by_message_id(&message_id, FIND_LIMIT).await?)];
+            for acc in &accounts.shared {
+                match acc.client.by_message_id(&message_id, FIND_LIMIT).await {
+                    Ok(page) => found.push((acc, page)),
+                    Err(e) => tracing::warn!("jmap: message id not searched in a shared mailbox: {e}"),
+                }
+            }
+            let mut ids = Vec::new();
+            for (acc, page) in &found {
+                save_summaries(cache, index, &page.emails, acc.scope(), notify)?;
+                ids.extend(page.ids.iter().map(|id| acc.key(id)));
+            }
+            notify(Event::SearchResults { ticket, total: ids.len() as u64, ids });
         }
         Command::Blob { blob_id, name, mime } => {
             let (acc, id) = accounts.locate(&blob_id)?;

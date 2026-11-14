@@ -170,13 +170,15 @@ impl Mailer {
     }
 
     /// События почты для связей каналов (CH-02в), в фоне: контакты и справочник — участники каналов связываются с ними
-    /// (только в базе); встречи — их ссылки в `xref` («Где на это сослались»).
+    /// (только в базе); встречи (неделя и поиск календаря) — их ссылки в `xref` («Где на это сослались»).
     pub(crate) fn on_links_sync(&mut self, ev: &Event, cx: &mut Context<Self>) {
         let cache = self.cache.clone();
         match ev {
             Event::ContactsLoaded(cards) => self.channels.cards = Arc::new(cards.clone()),
             Event::DirectoryLoaded(people) => self.channels.directory = Arc::new(people.clone()),
-            Event::EventsLoaded { events, .. } => {
+            // Встречи недели и найденные поиском календаря (на год назад и вперёд): кэша календаря нет — ссылки
+            // встреч, которые не приходили, не видны.
+            Event::EventsLoaded { events, .. } | Event::EventsFound { events, .. } => {
                 let texts: Vec<(String, String)> = events
                     .iter()
                     .map(|e| {

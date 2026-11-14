@@ -10,10 +10,13 @@
 //! Вложения (T3-10): имена — из тела, текст — от воркера ([`crate::extract`]); [`search_hits`] называет вложение, в
 //! котором совпало. Формат базы тот же: схема индекса сменилась — он пересоздаётся пустым и собирается в фоне заново.
 //!
-//! Индекс общий с каналами бесед (ADR 0012 п. 10): у письма — канал `mail` и адрес «От» в полях фильтров, поиск писем
-//! — только среди них; сообщения каналов пишет и ищет `crate::channel::index`, пересборка — вместе ([`rebuild`]).
+//! Индекс общий с каналами бесед (ADR 0012 п. 10): у письма — канал `mail`, адрес беседы `postman://mail/<ящик>/…`
+//! (`crate::channel::mail::conversation_of`; ящик ещё не известен — пусто) и адрес «От» в полях фильтров, поиск писем
+//! — только среди них ([`search_in`] — с `беседа:`); сообщения каналов пишет и ищет `crate::channel::index`,
+//! пересборка — вместе ([`rebuild`]). Адреса ящиков стали известны или сменились — документы писем без них:
+//! [`needs_rebuild`], индекс пересобирается в фоне при следующем запуске (до готовности — поиск по кэшу, как всегда).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use postman_cache::{BodyRow, Cache, EmailRow, LetterRow};
 pub use postman_search::AttachmentHit;
@@ -27,18 +30,43 @@ use crate::store::{self, cache_id};
 const READY: &str = "search.letters";
 /// Писем за одно чтение и один коммит при пересборке.
 const PAGE: usize = 500;
+/// Индекс собирался при этих адресах ящиков: отметку ставит [`rebuild`], снимает [`stale`] (адрес ящика сменился).
+const CONVS: &str = "search.letters.conv";
+
+/// Адреса бесед писем ([`crate::channel::mail::conversation_of`]) с запоминанием адреса ящика на проход.
+struct Convs<'a> {
+    cache: &'a Cache,
+    boxes: HashMap<Option<String>, Option<String>>,
+}
+
+impl<'a> Convs<'a> {
+    fn new(cache: &'a Cache) -> Self {
+        Self { cache, boxes: HashMap::new() }
+    }
+
+    /// Адрес беседы цепочки `thread_key`; ящик неизвестен — пусто.
+    fn of(&mut self, thread_key: &str) -> String {
+        let scope = postman_cache::account_of(thread_key);
+        let cache = self.cache;
+        let mailbox = self.boxes.entry(scope.map(str::to_owned)).or_insert_with(|| crate::channel::mail::mailbox(cache, scope));
+        mailbox.as_deref().and_then(|m| crate::channel::mail::conversation_in(m, thread_key)).map(|a| a.to_string()).unwrap_or_default()
+    }
+}
 
 /// Строки писем с сервера: тема, отправитель, превью. Письма, которого нет в базе, — нет и в индексе.
 pub fn rows(index: &SearchIndex, cache: &Cache, rows: &[EmailRow]) {
     let ids: Vec<Option<String>> = rows.iter().map(|r| store::letter_of_key(cache, &r.id).ok().flatten().map(store::letter_ref)).collect();
     let people: Vec<String> = rows.iter().map(|r| people(&r.from_name, &r.from_addr, None)).collect();
     let authors: Vec<[String; 1]> = rows.iter().map(|r| [r.from_addr.trim().to_lowercase()]).collect();
+    let mut convs = Convs::new(cache);
+    let conv: Vec<String> = rows.iter().map(|r| convs.of(&r.thread_id)).collect();
     let docs: Vec<Doc> = rows
         .iter()
         .zip(&ids)
         .zip(&people)
         .zip(&authors)
-        .filter_map(|(((r, id), p), a)| {
+        .zip(&conv)
+        .filter_map(|((((r, id), p), a), c)| {
             Some(Doc {
                 id: id.as_deref()?,
                 subject: &r.subject,
@@ -47,7 +75,7 @@ pub fn rows(index: &SearchIndex, cache: &Cache, rows: &[EmailRow]) {
                 attachments: &[],
                 received_at: r.received_at,
                 channel: crate::channel::MAIL,
-                conv: "",
+                conv: c,
                 authors: a,
             })
         })
@@ -69,12 +97,18 @@ fn people(name: &str, addr: &str, body: Option<&BodyRow>) -> String {
 }
 
 /// Письмо целиком, когда известен его текст: получатели, тело, вложения — имена и текст (`attached` — по порядку
-/// вложений тела, от воркера; нет текста — пусто или короче). Коммит — пакетно, у вызывающего.
-pub fn letter(index: &SearchIndex, id: LetterId, row: &LetterRow, body: &BodyRow, text: &str, attached: &[String]) {
+/// вложений тела, от воркера; нет текста — пусто или короче), адрес беседы — по ящику из хранилища. Коммит — пакетно,
+/// у вызывающего.
+pub fn letter(index: &SearchIndex, cache: &Cache, id: LetterId, row: &LetterRow, body: &BodyRow, text: &str, attached: &[String]) {
+    put_letter(index, &mut Convs::new(cache), id, row, body, text, attached);
+}
+
+fn put_letter(index: &SearchIndex, convs: &mut Convs<'_>, id: LetterId, row: &LetterRow, body: &BodyRow, text: &str, attached: &[String]) {
     let (key, people) = (store::letter_ref(id), people(&row.from_name, &row.from_addr, Some(body)));
     let attachments: Vec<Attachment> =
         body.attachments.iter().enumerate().map(|(i, a)| Attachment { name: &a.name, text: attached.get(i).map_or("", String::as_str) }).collect();
     let authors = [row.from_addr.trim().to_lowercase()];
+    let conv = convs.of(&row.thread_id);
     let doc = Doc {
         id: &key,
         subject: &row.subject,
@@ -83,7 +117,7 @@ pub fn letter(index: &SearchIndex, id: LetterId, row: &LetterRow, body: &BodyRow
         attachments: &attachments,
         received_at: row.received_at,
         channel: crate::channel::MAIL,
-        conv: "",
+        conv: &conv,
         authors: &authors,
     };
     let _ = index.upsert(&[doc]);
@@ -106,10 +140,25 @@ pub fn ready(cache: &Cache) -> bool {
     seen_up_to(cache).is_some()
 }
 
+/// Индекс надо собрать заново (в фоне, при запуске): не собран или собирался без нынешних адресов ящиков — у
+/// документов писем нет адреса беседы ([`stale`]). Пока не собран — поиск по тому, что есть ([`ready`]).
+pub fn needs_rebuild(cache: &Cache) -> bool {
+    !ready(cache) || !matches!(cache.state(CONVS), Ok(Some(_)))
+}
+
+/// Адрес ящика стал известен или сменился (`crate::channel::mail::remember_senders`): при следующем запуске
+/// [`needs_rebuild`]. Сейчас ничего не пересобирается — новые и изменённые письма получают адрес беседы сразу.
+pub fn stale(cache: &Cache) {
+    if let Err(e) = cache.remove_state(CONVS) {
+        tracing::warn!("search: rebuild mark not cleared: {e}");
+    }
+}
+
 /// Письма базы с номера `from`, которых нет в индексе, — в индекс: строки и тела, которые уже есть (текст; HTML — потом
 /// извлечением). Ответ — номер, с которого индекс базу ещё не видел; `None` — `stop`.
 fn walk(index: &SearchIndex, cache: &Cache, from: u64, stop: &dyn Fn() -> bool) -> postman_cache::Result<Option<u64>> {
     let mut next = from;
+    let mut convs = Convs::new(cache);
     loop {
         if stop() {
             return Ok(None);
@@ -123,7 +172,7 @@ fn walk(index: &SearchIndex, cache: &Cache, from: u64, stop: &dyn Fn() -> bool) 
             }
             let body = store::body(cache, id)?.unwrap_or_default();
             let text = body.text.as_deref().unwrap_or(&row.preview);
-            letter(index, id, row, &body, text, &[]);
+            put_letter(index, &mut convs, id, row, &body, text, &[]);
         }
         let _ = index.commit();
         if page.len() < PAGE {
@@ -140,6 +189,8 @@ pub fn rebuild(index: &SearchIndex, cache: &Cache, stop: &dyn Fn() -> bool) -> p
         return Ok(false);
     }
     cache.set_state(READY, "")?;
+    // До прохода: адрес ящика, ставший известным во время сборки, снимет отметку — соберётся ещё раз.
+    cache.set_state(CONVS, "")?;
     if index.clear().is_ok() {
         let _ = index.commit();
     }
@@ -194,12 +245,27 @@ pub fn search_hits(
     folder: Option<FolderId>,
     limit: usize,
 ) -> postman_cache::Result<Vec<Hit>> {
+    search_in(index, cache, query, &Scope::default(), folder, limit)
+}
+
+/// [`search_hits`] с фильтром ADR 0012 п. 10: `scope.convs` — `беседа:` (адреса `postman://mail/…`, со связанными —
+/// `crate::channel::index::scope_of`), `scope.authors` — `от:`; канал — всегда `mail`. Пустые слова при фильтре —
+/// письма фильтра, новые сверху.
+pub fn search_in(
+    index: Option<&SearchIndex>,
+    cache: &Cache,
+    query: &str,
+    scope: &Scope,
+    folder: Option<FolderId>,
+    limit: usize,
+) -> postman_cache::Result<Vec<Hit>> {
     let in_folder = |row: &LetterRow| folder.is_none_or(|f| row.folders.contains(&postman_cache::FolderId(f.0)));
+    let mail = Scope { channels: vec![crate::channel::MAIL.to_owned()], ..scope.clone() };
     if let Some(index) = index.filter(|_| ready(cache)) {
         if let Err(e) = catch_up(index, cache) {
             tracing::warn!("search: index not updated, searching what is indexed: {e}");
         }
-        if let Ok(hits) = index.hits_in(query, &Scope::channel(crate::channel::MAIL), limit.saturating_mul(4).max(limit)) {
+        if let Ok(hits) = index.hits_in(query, &mail, limit.saturating_mul(4).max(limit)) {
             let (mut out, mut gone) = (Vec::with_capacity(limit.min(hits.len())), Vec::new());
             for (id, matched_in) in hits.into_iter().filter_map(|h| Some((store::parse_ref(&h.id)?, h.attachment))) {
                 match cache.letter(cache_id(id))? {
@@ -218,9 +284,16 @@ pub fn search_hits(
         }
     }
     let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
-    if words.is_empty() {
+    let filtered = !scope.convs.is_empty() || !scope.authors.is_empty();
+    if words.is_empty() && !filtered {
         return Ok(Vec::new());
     }
+    let authors: Vec<String> = scope.authors.iter().map(|a| a.trim().to_lowercase()).collect();
+    let mut convs = Convs::new(cache);
+    let mut fits = |row: &LetterRow| {
+        (authors.is_empty() || authors.contains(&row.from_addr.trim().to_lowercase()))
+            && (scope.convs.is_empty() || scope.convs.contains(&convs.of(&row.thread_id)))
+    };
     let folders = match folder {
         Some(f) => vec![postman_cache::FolderId(f.0)],
         None => cache.folders()?.into_iter().map(|(f, _)| f).collect(),
@@ -233,7 +306,7 @@ pub fn search_hits(
                 continue;
             }
             let hay = format!("{} {} {} {}", row.subject, row.from_name, row.from_addr, row.preview).to_lowercase();
-            if words.iter().all(|w| hay.contains(w.as_str())) {
+            if words.iter().all(|w| hay.contains(w.as_str())) && fits(&row) {
                 hits.push((row.received_at, LetterId(id.0)));
             }
         }
@@ -306,7 +379,7 @@ mod tests {
         let row = LetterRow { subject: "Телеграмма запоздалая".into(), folders: vec![inbox], ..LetterRow::default() };
         let (late, indexed) = (cache.upsert_remote("", "late", &row).unwrap(), cache.upsert_remote("", "full", &row).unwrap());
         let (late, indexed) = (LetterId(late.0), LetterId(indexed.0));
-        super::letter(&index, indexed, &row, &BodyRow::default(), "квитанция", &[]);
+        super::letter(&index, &cache, indexed, &row, &BodyRow::default(), "квитанция", &[]);
         let _ = index.commit();
         let before = seen_up_to(&cache);
         let found = search(Some(&index), &cache, "телеграмма", None, 50).unwrap();
@@ -359,7 +432,15 @@ mod tests {
         let id = LetterId(cache.upsert_remote("", "attached", &row).unwrap().0);
         let file = |name: &str| postman_cache::AttachmentRow { name: name.into(), ..Default::default() };
         let body = BodyRow { attachments: vec![file("logo.png"), file("Договор.docx")], ..BodyRow::default() };
-        super::letter(&index, id, &row, &body, "Квитанция прилагается", &[String::new(), "Ставка аренды причала — 1200 рублей за метр".into()]);
+        super::letter(
+            &index,
+            &cache,
+            id,
+            &row,
+            &body,
+            "Квитанция прилагается",
+            &[String::new(), "Ставка аренды причала — 1200 рублей за метр".into()],
+        );
         let _ = index.commit();
         let hits = search_hits(Some(&index), &cache, "причал", None, 50).unwrap();
         let hit = AttachmentHit {

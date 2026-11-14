@@ -425,6 +425,14 @@ impl Client {
         self.query_page(filter, Some(0), None, limit).await
     }
 
+    /// Письма аккаунта с этим `Message-ID` (с угловыми скобками или без): `Email/query` с условием `header`
+    /// (RFC 8621 §4.4.1; значение — `<id>`, подстрока заголовка) и их краткие записи. Сервер без индекса заголовков
+    /// (Stalwart по умолчанию, `docs/STALWART-GAPS.md` п. 29) отвечает пусто.
+    pub async fn by_message_id(&self, message_id: &str, limit: u64) -> Result<EmailPage> {
+        let bare = message_id.trim().trim_start_matches('<').trim_end_matches('>');
+        self.query_page(json!({ "header": ["Message-ID", format!("<{bare}>")] }), Some(0), None, limit).await
+    }
+
     async fn query_page(&self, filter: Value, position: Option<u64>, anchor: Option<&str>, limit: u64) -> Result<EmailPage> {
         let acc = self.mail_account()?;
         let mut query = json!({

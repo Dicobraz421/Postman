@@ -535,7 +535,7 @@ pub(crate) fn local_hits(index: &Index, cache: &Cache, query: &str, mailbox: Opt
 /// Индекс не собран или пуст (кэш старше индекса): собрать в фоне — строки и тела, затем тексты HTML.
 fn build_index(index: Arc<postman_search::SearchIndex>, cache: Cache, extractor: Extractor) {
     let started = std::thread::Builder::new().name("index-build".into()).spawn(move || {
-        if !index.is_empty() && postman_core::indexer::ready(&cache) {
+        if !index.is_empty() && !postman_core::indexer::needs_rebuild(&cache) {
             return;
         }
         if let Err(e) = postman_core::indexer::rebuild(&index, &cache, &|| false) {
