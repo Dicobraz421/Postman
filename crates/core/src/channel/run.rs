@@ -328,7 +328,9 @@ async fn wait_offline(store: &ChannelStore, ctx: &mut RunCtx, wait: Duration) ->
                 }
                 // Без связи исходящее ждёт в очереди: уйдёт после подключения.
                 Some(Request::Send { outgoing, release }) => {
-                    let _ = enqueue(store, ctx, outgoing, release);
+                    if let Some(q) = enqueue(store, ctx, outgoing, release) {
+                        (ctx.notify)(Update::Queued { client_id: q.outgoing.client_id, due: q.due });
+                    }
                 }
                 Some(Request::Unsend { client_id }) => unsend(store, ctx, client_id, &HashSet::new()),
                 Some(r) => refuse(r, ChannelError::Network("offline".into()), &*ctx.notify),
@@ -380,7 +382,8 @@ fn applied_now(store: &ChannelStore, ctx: &RunCtx, a: &super::Applied) {
     }
 }
 
-/// «Отправить» через очередь: проверка пределов канала, строка очереди и «отправляется» в ленте → `Queued`.
+/// «Отправить» через очередь: проверка пределов канала, строка очереди и «отправляется» в ленте. `Queued` говорит
+/// вызывающий — после того, как поставил срок в свою очередь (счётчик выхода уже верен).
 fn enqueue(store: &ChannelStore, ctx: &RunCtx, o: Outgoing, release: Release) -> Option<Queued> {
     let client_id = o.client_id;
     let features = store.features().unwrap_or_default();
@@ -395,7 +398,6 @@ fn enqueue(store: &ChannelStore, ctx: &RunCtx, o: Outgoing, release: Release) ->
     match store.queue(&q, now) {
         Ok(a) => {
             applied_now(store, ctx, &a);
-            (ctx.notify)(Update::Queued { client_id, due: q.due });
             Some(q)
         }
         Err(error) => {
@@ -561,11 +563,14 @@ async fn connected(store: &ChannelStore, session: Rc<dyn ChannelSession>, incomi
                 Some(Request::Send { outgoing, release }) => {
                     if let Some(q) = enqueue(store, ctx, outgoing, release) {
                         queue.push(q.outgoing.client_id, q.due);
+                        (ctx.notify)(Update::Queued { client_id: q.outgoing.client_id, due: q.due });
                     }
                 }
                 Some(Request::Unsend { client_id }) => {
+                    if !queue.sending.contains(&client_id) {
+                        queue.remove(client_id);
+                    }
                     unsend(store, ctx, client_id, &queue.sending);
-                    queue.remove(client_id);
                 }
                 Some(Request::Reconnect) => {
                     flush(store, ctx, &session, &done_tx, &mut pending, &mut regap);
