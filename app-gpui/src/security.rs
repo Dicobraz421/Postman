@@ -3,7 +3,7 @@
 //! в Диспетчере учётных данных или не хранить; проверка отзыва — всегда. Политика — `Software\Policies\Pets\Postman`
 //! (HKLM, затем HKCU) или профиль конфигурации macOS; ключи и типы — одни для всех ОС (POL-01,
 //! `docs/tasks/POL-01.md`): `ExternalImages` = `never` | `ask`, `MinTls` = `1.2` | `1.3` (строка; macOS — и число),
-//! `StorePasswords`, `AllowUpdate` = `0` | `1` (строка, `REG_DWORD`, логическое) — закрепляет значение, в настройках
+//! `StorePasswords`, `AllowUpdate`, `AllowChannelTelegram` = `0` | `1` (строка, `REG_DWORD`, логическое) — закрепляет значение, в настройках
 //! оно недоступно. Неверный тип или значение — WARN в журнал, не закреплено. Linux (LIN-03) — файл
 //! `/etc/postman/policies.json` (JSON-объект, те же имена и типы; `sys::shell::POLICY_FILE`); там же
 //! `SandboxNamespaces` = `optional` | `required` ([`sandbox_namespaces`]).
@@ -20,6 +20,8 @@ pub(crate) struct Policy {
     pub(crate) images: Option<Images>,
     pub(crate) tls13: Option<bool>,
     pub(crate) store_password: Option<bool>,
+    /// `AllowChannelTelegram` (ADR 0012 п. 11): `0` — канала нет, `1` — включён без выбора.
+    pub(crate) telegram: Option<bool>,
 }
 
 impl Policy {
@@ -29,6 +31,7 @@ impl Policy {
             images: policy_images("ExternalImages", read("ExternalImages")),
             tls13: policy_tls13("MinTls", read("MinTls")),
             store_password: policy_flag("StorePasswords", read("StorePasswords")),
+            telegram: policy_flag("AllowChannelTelegram", read("AllowChannelTelegram")),
         }
     }
 }
@@ -175,7 +178,9 @@ mod tests {
     #[test]
     fn policy_pins_and_choice_follows() {
         let pol = values(text("Ask"), text("1.3"), text("0"));
-        assert_eq!(pol, Policy { images: Some(Images::Ask), tls13: Some(true), store_password: Some(false) });
+        assert_eq!(pol, Policy { images: Some(Images::Ask), tls13: Some(true), store_password: Some(false), telegram: None });
+        let tg = Policy::read_with(|n| (n == "AllowChannelTelegram").then_some(PolicyValue::Int(0)));
+        assert_eq!(tg.telegram, Some(false), "AllowChannelTelegram = 0 — канала нет");
         assert_eq!(values(text("always"), text("1.0"), text("maybe")), Policy::default(), "слабее — не бывает");
         assert_eq!(values(None, None, None), Policy::default());
         let mut p = Prefs::default();

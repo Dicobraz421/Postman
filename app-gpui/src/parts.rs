@@ -40,6 +40,7 @@ pub(crate) const PARTS: &[Part] = &[
     crate::notices::PART,
     crate::keytips::PART,
     crate::signin::PART,
+    crate::account_telegram::PART,
     crate::buttons::PART,
     crate::features::PART,
     crate::drill::PART,

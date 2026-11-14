@@ -11,6 +11,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod account;
+mod account_telegram;
 mod actions;
 mod attachments;
 mod backend;

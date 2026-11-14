@@ -1,7 +1,8 @@
 //! Пути к серверам (ADR 0004, S7-02б): композиционный корень. Здесь — какие плагины протоколов знает Postman и в
 //! каком порядке: почтовые пути — JMAP (путь по умолчанию: адрес без своей схемы), затем EWS Exchange (S7-06г:
 //! адрес — URL EWS; узел без схемы — EWS узла или `autodiscover.<узел>`), затем IMAP + SMTP; пути областей — CalDAV и
-//! CardDAV, EWS (у IMAP-учётки на Exchange). Новый протокол — плагин-крейт и строка здесь; `postman-core` и экраны не меняются.
+//! CardDAV, EWS (у IMAP-учётки на Exchange); каналы бесед — Telegram (признак `telegram`). Новый протокол — плагин-крейт
+//! и строка здесь; `postman-core` и экраны не меняются.
 
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -12,12 +13,17 @@ use postman_core::backend::Registry;
 pub(crate) fn registry() -> &'static Registry {
     static REGISTRY: OnceLock<Registry> = OnceLock::new();
     REGISTRY.get_or_init(|| {
-        Registry::default()
+        let r = Registry::default()
             .with_mail(postman_backend_jmap::JmapPlugin)
             .with_mail(postman_backend_ews::EwsPlugin)
             .with_mail(postman_backend_imap::ImapPlugin)
             .with_area(postman_backend_dav::DavPlugin)
-            .with_area(postman_backend_ews::EwsAreaPlugin)
+            .with_area(postman_backend_ews::EwsAreaPlugin);
+        // Каналы бесед (ADR 0012 п. 12): Telegram — признаком сборки `telegram`; включает настройка и политика
+        // (`account_telegram`), без учётки сети нет.
+        #[cfg(feature = "telegram")]
+        let r = r.with_channel(postman_backend_telegram::TelegramChannel::new());
+        r
     })
 }
 
