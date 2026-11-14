@@ -64,3 +64,15 @@ compose-group-suggestion = { $name } · { $n ->
     [one] { $n } member
    *[other] { $n } members
 }
+# An attachment was not downloaded before sending (sync code `attachment-missing:`).
+compose-attachment-missing = Not sent: the attachment “{ $name }” could not be downloaded from the server. The message does not go without it — check the connection and send again.
+# Conversation attachments for new participants of a reply (owner decision 2026-11-13).
+compose-share-on = New participants ({ $names }) will get the conversation attachments: { $n ->
+    [one] { $n } file
+   *[other] { $n } files
+}
+compose-share-off = New participants ({ $names }) will not get the conversation attachments
+compose-share-disable = Don't send
+compose-share-enable = Send
+# Text of the separate message with conversation attachments, where the server delivers to everyone in the headers.
+compose-share-letter = You were added to this conversation — here are its attachments.

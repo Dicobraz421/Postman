@@ -111,6 +111,19 @@ pub fn part(raw: &[u8], index: u32) -> Result<Vec<u8>, String> {
     let msg = mail_parser::MessageParser::default().parse(raw).ok_or("не письмо RFC 5322")?;
     let all = attachments(&msg);
     let a = all.get(index as usize).ok_or("нет такого вложения")?;
+    // Текст разборщик перекодирует в UTF-8 — вложение ушло бы при пересылке другими байтами. Байты как в письме:
+    // тело части, раскодированное из base64 или quoted-printable; не раскодировалось — как разобрал разборщик.
+    if matches!(a.body, PartType::Text(_) | PartType::Html(_)) {
+        let encoded = raw.get(a.offset_body as usize..a.offset_end as usize).unwrap_or_default();
+        let decoded = match a.encoding {
+            mail_parser::Encoding::Base64 => base64_decode(encoded),
+            mail_parser::Encoding::QuotedPrintable => quoted_printable_decode(encoded),
+            mail_parser::Encoding::None => Some(encoded.to_vec()),
+        };
+        if let Some(d) = decoded.filter(|d| !d.is_empty() || a.contents().is_empty()) {
+            return Ok(d);
+        }
+    }
     Ok(a.contents().to_vec())
 }
 
@@ -118,8 +131,9 @@ pub fn part(raw: &[u8], index: u32) -> Result<Vec<u8>, String> {
 pub const MAX_SPLIT: usize = 256 * 1024 * 1024;
 /// Больше частей MIME (контейнеры и вложенные письма — тоже) не разбираем.
 pub const MAX_SPLIT_PARTS: usize = 1000;
-/// Листовая часть меньше (закодированная, в письме) остаётся в скелете.
-pub const MIN_SPLIT_PART: usize = 64 * 1024;
+/// Листовая часть меньше (закодированная, в письме) остаётся в скелете; что из остального вынуть — решает хранилище
+/// по размеру и типу (мелкие картинки подписей — да, мелкий текст — нет; ADR 0006, дополнение 2026-11-14).
+pub const MIN_SPLIT_PART: usize = 1024;
 
 /// Кодировка листовой части в письме.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,13 +143,17 @@ pub enum Encoding {
 }
 
 /// Листовая часть: байты `range` письма — её тело в кодировке `encoding`; раскодированное — `decoded_len` байт в
-/// бинарной части ответа (части подряд, по порядку).
+/// бинарной части ответа (части подряд, по порядку); `mime` — её тип `type/subtype` строчными (не указан — пусто).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SplitPart {
     pub range: Range<u64>,
     pub encoding: Encoding,
     pub decoded_len: u64,
+    pub mime: String,
 }
+
+/// Длиннее тип части не отдаём.
+pub const MAX_MIME: usize = 127;
 
 /// Длиннее `Message-ID` не отдаём (предел строки заголовка RFC 5322).
 pub const MAX_MESSAGE_ID: usize = 998;
@@ -165,7 +183,7 @@ impl Split {
         let mut end = 0;
         let mut decoded = 0u64;
         for p in &self.parts {
-            if p.range.start < end || p.range.end < p.range.start || p.range.end > raw_len as u64 {
+            if p.range.start < end || p.range.end < p.range.start || p.range.end > raw_len as u64 || p.mime.len() > MAX_MIME {
                 return false;
             }
             end = p.range.end;
@@ -175,7 +193,7 @@ impl Split {
     }
 }
 
-/// Письмо целиком → крупные (от [`MIN_SPLIT_PART`]) листовые части в `base64` и `quoted-printable` и их
+/// Письмо целиком → листовые части (от [`MIN_SPLIT_PART`]) в `base64` и `quoted-printable` и их
 /// раскодированные байты подряд. Вложенные `message/rfc822` без кодировки — рекурсивно; закодированное вложенное
 /// письмо — одна часть; S/MIME (`application/pkcs7-mime`) — не разбирается. Часть, которая строго не
 /// раскодировалась, остаётся в скелете.
@@ -195,14 +213,14 @@ pub fn split(raw: &[u8]) -> Result<(Split, Vec<u8>), String> {
     drop(msg);
     let capacity = leaves
         .iter()
-        .map(|(r, e)| match e {
+        .map(|(r, e, _)| match e {
             Encoding::Base64 => r.len() / 4 * 3 + 3,
             Encoding::QuotedPrintable => r.len(),
         })
         .sum();
     let mut out = Vec::with_capacity(capacity);
     let mut parts = Vec::with_capacity(leaves.len());
-    for (range, encoding) in leaves {
+    for (range, encoding, mime) in leaves {
         let encoded = raw.get(range.clone()).ok_or("письмо повреждено: часть за его пределами")?;
         // Строгие декодеры: сомнительная часть остаётся в скелете (ядро всё равно сверяет обратным кодированием).
         let decoded = match encoding {
@@ -210,7 +228,7 @@ pub fn split(raw: &[u8]) -> Result<(Split, Vec<u8>), String> {
             Encoding::QuotedPrintable => quoted_printable_decode(encoded),
         };
         let Some(decoded) = decoded else { continue };
-        parts.push(SplitPart { range: range.start as u64..range.end as u64, encoding, decoded_len: decoded.len() as u64 });
+        parts.push(SplitPart { range: range.start as u64..range.end as u64, encoding, decoded_len: decoded.len() as u64, mime });
         out.extend_from_slice(&decoded);
     }
     if out.len() > MAX_SPLIT {
@@ -292,7 +310,7 @@ pub fn threads(bin: &[u8]) -> Result<Vec<Thread>, String> {
 }
 
 /// Листовые части `msg` (и вложенных писем без кодировки: их смещения — в том же письме) по порядку.
-fn collect_leaves(msg: &mail_parser::Message<'_>, out: &mut Vec<(Range<usize>, Encoding)>, count: &mut usize) -> Result<(), String> {
+fn collect_leaves(msg: &mail_parser::Message<'_>, out: &mut Vec<(Range<usize>, Encoding, String)>, count: &mut usize) -> Result<(), String> {
     for part in &msg.parts {
         *count += 1;
         if *count > MAX_SPLIT_PARTS {
@@ -317,10 +335,21 @@ fn collect_leaves(msg: &mail_parser::Message<'_>, out: &mut Vec<(Range<usize>, E
         };
         let range = part.offset_body as usize..part.offset_end as usize;
         if range.len() >= MIN_SPLIT_PART {
-            out.push((range, encoding));
+            out.push((range, encoding, mime_of(part)));
         }
     }
     Ok(())
+}
+
+/// Тип части `type/subtype` строчными, без параметров; не указан или негодный — пусто.
+fn mime_of(part: &mail_parser::MessagePart<'_>) -> String {
+    let Some(c) = part.content_type() else { return String::new() };
+    let mime = match c.subtype() {
+        Some(sub) => format!("{}/{sub}", c.ctype()),
+        None => c.ctype().to_string(),
+    };
+    let ok = mime.len() <= MAX_MIME && mime.bytes().all(|b| b.is_ascii_graphic());
+    if ok { mime.to_ascii_lowercase() } else { String::new() }
 }
 
 #[cfg(test)]
@@ -345,6 +374,25 @@ mod tests {
         assert_eq!(m.parts.len(), 1);
         assert_eq!((m.parts[0].name.as_str(), m.parts[0].mime.as_str(), m.parts[0].size), ("report.pdf", "application/pdf", 5));
         assert_eq!(part(SAMPLE.as_bytes(), 0).unwrap(), b"Hello");
+        // Текстовое вложение — байтами письма, без перекодирования в UTF-8: windows-1251 в quoted-printable, UTF-8
+        // в base64 и 8bit без кодирования.
+        let cp1251: &[u8] = &[0xCF, 0xF0, 0xE8, 0xE2, 0xE5, 0xF2, 0x0D, 0x0A, 0xEC, 0xE8, 0xF0];
+        let utf8 = "Привет, мир".as_bytes();
+        let letter = concat!(
+            "From: a@example.test\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n",
+            "--b\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nтело\r\n",
+            "--b\r\nContent-Type: text/plain; charset=windows-1251\r\nContent-Disposition: attachment; filename=\"a.txt\"\r\n",
+            "Content-Transfer-Encoding: quoted-printable\r\n\r\n=CF=F0=E8=E2=E5=F2=0D=0A=EC=E8=F0\r\n",
+            "--b\r\nContent-Type: text/csv; charset=utf-8\r\nContent-Disposition: attachment; filename=\"b.csv\"\r\n",
+            "Content-Transfer-Encoding: base64\r\n\r\n0J/RgNC40LLQtdGCLCDQvNC40YA=\r\n",
+            "--b\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Disposition: attachment; filename=\"c.txt\"\r\n",
+            "Content-Transfer-Encoding: 8bit\r\n\r\nПривет, мир\r\n--b--\r\n",
+        );
+        let names: Vec<String> = parse(letter.as_bytes()).unwrap().parts.into_iter().map(|p| p.name).collect();
+        assert_eq!(names, ["a.txt", "b.csv", "c.txt"]);
+        assert_eq!(part(letter.as_bytes(), 0).unwrap(), cp1251);
+        assert_eq!(part(letter.as_bytes(), 1).unwrap(), utf8);
+        assert_eq!(part(letter.as_bytes(), 2).unwrap(), utf8);
         assert!(part(SAMPLE.as_bytes(), 1).is_err());
         assert!(parse(b"").is_err() || parse(b"").unwrap().text.is_none());
     }
@@ -397,29 +445,36 @@ mod tests {
         format!("From: a@example.test\r\nTo: b@example.test\r\nSubject: test\r\nMIME-Version: 1.0\r\nContent-Type: {ctype}\r\n\r\n{body}")
     }
 
-    /// Два вложения: диапазоны — ровно их тела в письме, раскодированное — исходные файлы; мелкие части — в скелете.
+    /// Вложения и логотип: диапазоны — ровно их тела в письме, раскодированное — исходные файлы, тип — строчными;
+    /// части меньше [`super::MIN_SPLIT_PART`] — в скелете.
     #[test]
     fn split_gives_ranges_and_decoded_files() {
         let pdf = file(100_000, 1);
         // Текст в KOI8-R: байты — как в файле, без перекодировки в UTF-8.
         let koi = file(90_000, 2);
+        // Логотип подписи: мелкий, но вынимается (решает хранилище).
+        let logo = file(2_000, 4);
         let (b64, qp) = (base64(&pdf), quoted_printable(&koi));
         let body = "--b1\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nТело\r\n".to_owned()
             + &attachment("b1", "application/pdf; name=\"a.pdf\"", "base64", &b64)
             + &attachment("b1", "text/plain; charset=koi8-r; name=\"b.txt\"", "quoted-printable", &qp)
+            + &attachment("b1", "IMAGE/PNG; name=\"logo.png\"", "base64", &base64(&logo))
             + &attachment("b1", "application/octet-stream", "base64", &base64(b"small"))
             + "--b1--\r\n";
         let raw = letter("multipart/mixed; boundary=\"b1\"", &body);
         let (s, bin) = split(raw.as_bytes()).unwrap();
-        assert_eq!(s.parts.len(), 2, "{s:?}");
+        assert_eq!(s.parts.len(), 3, "{s:?}");
+        assert_eq!((s.parts[2].mime.as_str(), s.parts[2].decoded_len), ("image/png", 2_000));
         let (a, b) = (&s.parts[0], &s.parts[1]);
         assert_eq!((a.encoding, b.encoding), (Encoding::Base64, Encoding::QuotedPrintable));
         let range = |p: &super::SplitPart| &raw.as_bytes()[p.range.start as usize..p.range.end as usize];
         assert_eq!(range(a), b64.as_bytes());
         assert_eq!(range(b), qp.as_bytes());
         assert_eq!((a.decoded_len, b.decoded_len), (100_000, 90_000));
+        assert_eq!((a.mime.as_str(), b.mime.as_str()), ("application/pdf", "text/plain"));
         assert_eq!(&bin[..100_000], pdf.as_slice());
-        assert_eq!(&bin[100_000..], koi.as_slice());
+        assert_eq!(&bin[100_000..190_000], koi.as_slice());
+        assert_eq!(&bin[190_000..], logo.as_slice());
         assert!(s.fits(raw.len(), bin.len()));
         assert!(!s.fits(raw.len(), bin.len() + 1));
         assert!(!s.fits(a.range.end as usize, bin.len()));

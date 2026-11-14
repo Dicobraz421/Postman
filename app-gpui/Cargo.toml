@@ -39,16 +39,16 @@ postman-search.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 postman-compose.workspace = true
-pets-commands = { git = "https://github.com/Dicobraz421/pets", rev = "0df0fe19023827d1ea31a47a998c335eebfa334c" }
-pets-i18n = { git = "https://github.com/Dicobraz421/pets", rev = "0df0fe19023827d1ea31a47a998c335eebfa334c" }
+pets-commands = { git = "https://github.com/Dicobraz421/pets", rev = "bd68b87dd89618e059b582651a11d8bccd0fac47" }
+pets-i18n = { git = "https://github.com/Dicobraz421/pets", rev = "bd68b87dd89618e059b582651a11d8bccd0fac47" }
 # T3-06: `clipboard` (HTML буфера обмена, pets#44); MAC-02: Связка ключей, экземпляр и `mailto` на macOS (pets#48);
 # MAC-04: буфер HTML, объект входа, политики профиля, память процесса на macOS (pets#55); «Как в системе» (pets#57);
 # системный журнал по уровню настройки и правило уровней `LOGGING.md` (pets#58).
-pets-shell = { git = "https://github.com/Dicobraz421/pets", rev = "0df0fe19023827d1ea31a47a998c335eebfa334c" }
-pets-ui = { git = "https://github.com/Dicobraz421/pets", rev = "0df0fe19023827d1ea31a47a998c335eebfa334c" }
+pets-shell = { git = "https://github.com/Dicobraz421/pets", rev = "bd68b87dd89618e059b582651a11d8bccd0fac47" }
+pets-ui = { git = "https://github.com/Dicobraz421/pets", rev = "bd68b87dd89618e059b582651a11d8bccd0fac47" }
 # Обновление программы (решение 2026-11-11 «self-update», Postman#503): проверка GitHub Releases, подпись minisign,
 # установка MSI и portable. Единственная сеть интерфейса по своей инициативе — только модуль `update`.
-pets-update = { git = "https://github.com/Dicobraz421/pets", rev = "0df0fe19023827d1ea31a47a998c335eebfa334c" }
+pets-update = { git = "https://github.com/Dicobraz421/pets", rev = "bd68b87dd89618e059b582651a11d8bccd0fac47" }
 futures = "0.3"
 tracing = "0.1"
 # Снимки экранов (`--screens`, S2-05): запись PNG.
@@ -63,9 +63,10 @@ image = { version = "0.25", default-features = false }
 gpui-pre-windows = "=0.3.12"
 
 # macOS (MAC-02): окно, снимок, перетаскивание, уведомления — `pets_gpui_macos` (аналог `gpui_windows::pets`, pets#48);
-# MAC-04: снимок ScreenCaptureKit, щелчок по уведомлению (pets#55); MAC-07: бейдж в Dock (pets#66).
+# MAC-04: снимок ScreenCaptureKit, щелчок по уведомлению (pets#55); MAC-07: бейдж в Dock (pets#66);
+# MAC-09: значок в строке меню (pets#85).
 [target.'cfg(target_os = "macos")'.dependencies]
-pets-gpui-macos = { git = "https://github.com/Dicobraz421/pets", rev = "0df0fe19023827d1ea31a47a998c335eebfa334c" }
+pets-gpui-macos = { git = "https://github.com/Dicobraz421/pets", rev = "bd68b87dd89618e059b582651a11d8bccd0fac47" }
 
 # Linux (LIN-02): снимок окна для `--screens` — X11 `GetImage` своим соединением (`sys/x11.rs`); номер окна — из
 # `raw-window-handle`. Те же копии, что у gpui-pre-linux, своего `unsafe` нет.

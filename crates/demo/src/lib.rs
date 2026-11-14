@@ -1,5 +1,8 @@
 //! Синтетический ящик для замеров памяти/FPS без сервера.
 
+pub mod channel;
+pub mod media;
+pub mod rich;
 pub mod smime;
 pub mod store;
 
@@ -56,12 +59,13 @@ pub fn testdata_dir() -> PathBuf {
     root.unwrap_or_else(|| PathBuf::from(".")).join("Pets").join("testdata").join("postman")
 }
 
-/// Свежий ящик для `--bench`: копия шаблона `bench-template-<n>.redb` (создаётся один раз и переиспользуется:
-/// сид фиксирован) в `bench.redb`. Бенч помечает письма прочитанными; без свежей копии каждый следующий прогон
+/// Свежий ящик для `--bench`: копия шаблона `bench-template-<n>-f<формат>.redb` (создаётся один раз и
+/// переиспользуется: сид фиксирован; формат в имени — ветки с разными форматами хранилища не портят шаблоны друг
+/// другу) в `bench.redb`. Бенч помечает письма прочитанными; без свежей копии каждый следующий прогон
 /// делал бы меньше работы. Рабочую копию удаляет бенч после прогона (`bench::remove_on_finish`).
 pub fn bench_copy(dir: &Path, n: usize) -> postman_cache::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
-    let template = dir.join(format!("bench-template-{n}.redb"));
+    let template = dir.join(format!("bench-template-{n}-f{}.redb", postman_cache::FORMAT_VERSION));
     ensure(&template, n)?;
     let path = dir.join("bench.redb");
     std::fs::copy(&template, &path)?;
@@ -137,21 +141,30 @@ fn main_boxes() -> Vec<MailboxRow> {
 }
 
 pub fn ensure(path: &Path, n: usize) -> postman_cache::Result<()> {
-    let cache = Cache::open(path)?;
+    build(&Cache::open(path)?, n)
+}
+
+/// Демо-ящик на `n` писем в открытом хранилище `cache` (замер хранилища — со своим `Tuning`); уже собран — дописать
+/// то, чего в шаблоне ещё нет.
+pub fn build(cache: &Cache, n: usize) -> postman_cache::Result<()> {
     // Шаблон собран, если в нём есть последнее письмо: по папкам письма делятся 70/20/10 %, и сумма «Входящих» с
     // «Архивом» не доходила до `n` — шаблон собирался заново на каждом запуске бенча (S8-37).
     if n == 0 || !cache.rows_by_ids(&[format!("demo{}", n - 1)])?.is_empty() {
         // Шаблон старше беседы демо (S5-05) — дописать её.
         if cache.rows_by_ids(&[CHAIN[0].id.to_string()])?.is_empty() {
-            chain(&cache, jiff::Timestamp::now().as_second())?;
+            chain(cache, jiff::Timestamp::now().as_second())?;
+        }
+        // …и беседы для «Медиа беседы» (MED-01).
+        if cache.rows_by_ids(&[media::LETTERS[0].to_string()])?.is_empty() {
+            media::fill(cache, jiff::Timestamp::now().as_second())?;
         }
         // …и черновика (T2-11).
         if cache.rows_by_ids(&[DRAFT.to_string()])?.is_empty() {
-            draft(&cache, jiff::Timestamp::now().as_second())?;
+            draft(cache, jiff::Timestamp::now().as_second())?;
         }
         // …и писем-поручений (S6-11).
         if cache.rows_by_ids(&[delegations::letter_id(1)])?.is_empty() {
-            delegations::letters(&cache, jiff::Timestamp::now().as_second())?;
+            delegations::letters(cache, jiff::Timestamp::now().as_second())?;
         }
         // …вложенных папок (T1-04е)…
         let boxes = cache.mailboxes()?;
@@ -161,10 +174,14 @@ pub fn ensure(path: &Path, n: usize) -> postman_cache::Result<()> {
         // …и учёток «стандарты» и Exchange (S7-09а) с их вложенными папками.
         let exchange_nested = scoped(EXCHANGE.profile, EXCHANGE_NESTED[0].0);
         if !cache.accounts()?.iter().any(|a| Some(a.id.as_str()) == EXCHANGE.profile) || !boxes.iter().any(|m| m.id == exchange_nested) {
-            extra_accounts(&cache, jiff::Timestamp::now().as_second())?;
+            extra_accounts(cache, jiff::Timestamp::now().as_second())?;
         }
         // …и «На этом компьютере» с общим вложением (S8-14).
-        store::fill(&cache, jiff::Timestamp::now().as_second())?;
+        store::fill(cache, jiff::Timestamp::now().as_second())?;
+        // …и письма целиком с телами (замер хранилища, 2026-11-14).
+        if n >= rich::MIN_LETTERS && !rich::present(cache)? {
+            rich::fill(cache, n)?;
+        }
         return Ok(());
     }
     cache.replace_mailboxes(None, &main_boxes())?;
@@ -232,12 +249,14 @@ pub fn ensure(path: &Path, n: usize) -> postman_cache::Result<()> {
     }
     cache.upsert_emails(&batch)?;
     cache.set_recipients(&to)?;
-    shared(&cache, now)?;
-    extra_accounts(&cache, now)?;
-    chain(&cache, now)?;
-    draft(&cache, now)?;
-    delegations::letters(&cache, now)?;
-    store::fill(&cache, now)
+    shared(cache, now)?;
+    extra_accounts(cache, now)?;
+    chain(cache, now)?;
+    media::fill(cache, now)?;
+    draft(cache, now)?;
+    delegations::letters(cache, now)?;
+    store::fill(cache, now)?;
+    rich::fill(cache, n)
 }
 
 /// Ключевые слова демо-письма `i` (S5-02): категории по умолчанию (`postman_core::labels::DEFAULTS`) и метка
@@ -663,7 +682,7 @@ const SHARED_SUBJECTS: &[&str] = &["Заявка клиента №", "Комм�
 pub fn body(id: &str) -> BodyRow {
     // Письма общих ящиков демо — с префиксом аккаунта, тела — те же.
     let (account, id) = postman_cache::unscoped(id);
-    if let Some(b) = chain_body(id) {
+    if let Some(b) = chain_body(id).or_else(|| media::body(id)) {
         return b;
     }
     // Общее вложение (S8-14): одна и та же сводка в письмах трёх учёток.
@@ -903,7 +922,7 @@ pub fn blob(blob_id: &str) -> Option<Vec<u8>> {
         "photo" => Some(PHOTO.to_vec()),
         "xlsx" | "exe" | "rtlo" => Some(b"demo".to_vec()),
         store::SHARED_PDF_BLOB => Some(store::pdf().to_vec()),
-        other => other.strip_prefix("smime-").and_then(smime::raw).map(<[u8]>::to_vec),
+        other => other.strip_prefix("smime-").and_then(smime::raw).map(<[u8]>::to_vec).or_else(|| media::blob(other)),
     }
 }
 
@@ -1741,6 +1760,25 @@ pub mod contacts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Пересылка в демо берёт байты вложений сразу (`blob`): у каждого вложения писем демо они есть — переслать можно
+    /// целиком. Кроме подписи и конверта S/MIME образцов (`smime.p7s`, `smime.p7m`): это части самого письма, а не
+    /// файлы, и демо их байты не нужны.
+    #[test]
+    fn every_attachment_has_its_bytes() {
+        let ids = (0..300).map(|n| format!("demo{n}")).chain(CHAIN.iter().map(|m| m.id.to_string())).chain(["share1".to_string(), DRAFT.to_string()]);
+        let mut missing = Vec::new();
+        for id in ids {
+            for a in body(&id).attachments.iter().filter(|a| a.size > 0 && !a.mime.contains("pkcs7")) {
+                match blob(&a.blob_id) {
+                    Some(d) if !d.is_empty() => {}
+                    _ => missing.push(format!("{id}: {} ({})", a.name, a.blob_id)),
+                }
+            }
+        }
+        missing.dedup();
+        assert!(missing.is_empty(), "{missing:#?}");
+    }
 
     #[test]
     fn chart_letter_has_a_large_inline_png() {

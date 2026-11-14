@@ -177,6 +177,7 @@ impl Entry {
             free_busy: None,
             group: false,
             members: Vec::new(),
+            services: Vec::new(),
         };
         let mut e = Self::new(card, Kind::of_principal(&p.kind));
         e.office = Office { manager: p.manager.trim().to_owned(), room: p.office.trim().to_owned() };
@@ -621,6 +622,7 @@ impl FormText {
             free_busy: None,
             group: false,
             members: Vec::new(),
+            services: Vec::new(),
         };
         if card.name.is_empty() && card.emails.is_empty() {
             return Err(FormError::NeedName);
@@ -1649,7 +1651,7 @@ impl ContactsView {
             return;
         }
         let id = form.old.as_ref().map(|c| c.id.clone()).unwrap_or_default();
-        let card = match form.text(cx).card(&id) {
+        let mut card = match form.text(cx).card(&id) {
             Ok(c) => c,
             Err(e) => {
                 form.error = Some(e.text());
@@ -1657,6 +1659,10 @@ impl ContactsView {
                 return;
             }
         };
+        // Адресов в мессенджерах в форме нет (ADR 0012, их пишет «Связать с контактом»): правка их не снимает.
+        if let Some(old) = &form.old {
+            card.services.clone_from(&old.services);
+        }
         form.error = None;
         let old = form.old.clone();
         if !self.live {
@@ -3168,6 +3174,7 @@ fn demo_mine() -> Vec<Entry> {
                 free_busy: None,
                 group: false,
                 members: Vec::new(),
+                services: Vec::new(),
             };
             Entry::new(card, Kind::Contact)
         })
@@ -4343,6 +4350,7 @@ mod tests {
             free_busy: None,
             group: false,
             members: Vec::new(),
+            services: Vec::new(),
         };
         let mut text = FormText::of(&old);
         assert_eq!((text.last.as_str(), text.first.as_str()), ("Петров", "Алексей"), "фамилия и имя — отдельно (T2-44)");

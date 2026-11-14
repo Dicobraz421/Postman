@@ -4,7 +4,8 @@
 //!
 //! - [`Prefs`] — общие для пользователя: тема, плотность, язык, быстрые фильтры, сроки и жизненный цикл, чтение,
 //!   календарь ([`Calendar`], S5-20), свои клавиши. Файл [`FILE`] в каталоге данных (`%LOCALAPPDATA%\Postman`).
-//! - [`AccountPrefs`] — у учётной записи: подписи и шаблоны. Файл рядом с её кэшем ([`AccountPrefs::beside`]).
+//! - [`AccountPrefs`] — у учётной записи: подписи и шаблоны. В базе профиля (`crate::local::account_prefs`, решение
+//!   2026-11-14); файл рядом с кэшем прежних версий ([`AccountPrefs::beside`]) переносится в базу.
 //!   Хранение на сервере (FileNode, как таблица категорий) — [проверить].
 //!
 //! Без UI и без gpui: интерфейс читает файл до первого окна (микросекунды), пишет — в фоне ([`Writer`]).
@@ -74,6 +75,46 @@ pub struct Prefs {
     pub favorites: Option<Vec<String>>,
     /// Свои быстрые фильтры (T2-38, решение владельца 2026-11-10): сохранённые поиски — закладками после пяти своих.
     pub saved_filters: Vec<SavedFilter>,
+    /// «Ответы и пересылка» (#655): цитировать ли исходное письмо в ответе.
+    pub replies: Replies,
+}
+
+/// «Ответы и пересылка» (#655), как «Почта → Ответы и пересылка» Outlook. Пересылка цитирует всегда.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Replies {
+    /// «При ответе на сообщение» — для «Ответить» и «Ответить всем».
+    pub quote: ReplyQuote,
+    /// «Отмена отправки» (CMF-03): сколько секунд письмо ждёт после «Отправить» (`send_later::UNDO_DELAYS`); 0 — сразу.
+    pub undo_secs: u8,
+}
+
+impl Default for Replies {
+    fn default() -> Self {
+        Self { quote: ReplyQuote::default(), undo_secs: crate::send_later::UNDO_DEFAULT }
+    }
+}
+
+impl Replies {
+    /// Задержка «Отменить» из настройки (чужое число — по умолчанию).
+    pub fn undo(&self) -> u8 {
+        crate::send_later::undo_delay(self.undo_secs)
+    }
+}
+
+/// Текст исходного письма в ответе.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplyQuote {
+    /// «Включать исходное сообщение» (по умолчанию).
+    #[default]
+    Include,
+    /// «Не включать исходное сообщение»: в ответе только подпись.
+    Omit,
+}
+
+impl ReplyQuote {
+    pub const ALL: [ReplyQuote; 2] = [ReplyQuote::Include, ReplyQuote::Omit];
 }
 
 /// Свой быстрый фильтр (T2-38): имя закладки и запрос поиска (язык строки поиска).
@@ -116,6 +157,7 @@ impl Default for Prefs {
             session: Session::default(),
             favorites: None,
             saved_filters: Vec::new(),
+            replies: Replies::default(),
         }
     }
 }
@@ -150,6 +192,8 @@ pub struct General {
     pub on_close: OnClose,
     /// Уведомление «Postman работает в фоне» при первом сворачивании в трей уже показано.
     pub tray_hint_shown: bool,
+    /// Значок в строке меню (macOS, MAC-09): число непрочитанных и меню «Открыть / Новое письмо / Выйти».
+    pub menu_bar_icon: bool,
     /// Канал обновлений.
     pub channel: Channel,
     /// Проверять обновления раз в сутки в фоне (решение 2026-11-11 «self-update»). Выключено — сетевых запросов по
@@ -175,6 +219,7 @@ impl Default for General {
             sound: false,
             on_close: OnClose::Tray,
             tray_hint_shown: false,
+            menu_bar_icon: true,
             channel: Channel::for_build(env!("CARGO_PKG_VERSION")),
             auto_update: true,
             log: LogLevel::Info,
@@ -1320,7 +1365,8 @@ impl Default for AccountPrefs {
 }
 
 impl AccountPrefs {
-    /// Файл настроек для кэша учётной записи `cache`: `<кэш>.settings.json`.
+    /// Файл настроек прежних версий для кэша учётной записи `cache`: `<кэш>.settings.json` (перенос в базу,
+    /// `crate::local::adopt`; запись файлом — только тесты переноса).
     pub fn beside(cache: &Path) -> PathBuf {
         let mut name = cache.file_name().unwrap_or_default().to_os_string();
         name.push(".settings.json");
@@ -1482,7 +1528,7 @@ impl Writer {
 
     /// Записать (в фоновом потоке): `save` выполняется, только если номер `seq` новее записанного. `Ok(false)` —
     /// пропущено.
-    pub fn write(&self, seq: u64, save: impl FnOnce() -> Result<(), Error>) -> Result<bool, Error> {
+    pub fn write<E>(&self, seq: u64, save: impl FnOnce() -> Result<(), E>) -> Result<bool, E> {
         let mut written = self.written.lock().unwrap_or_else(PoisonError::into_inner);
         if seq <= *written {
             return Ok(false);
@@ -1531,6 +1577,18 @@ mod tests {
         assert_eq!(old.session, Session::default());
     }
 
+    /// CMF-03: «Отмена отправки» — 10 с по умолчанию и в старом файле (поля нет); чужое число — по умолчанию.
+    #[test]
+    fn undo_delay_defaults_to_ten_seconds() {
+        assert_eq!(Prefs::default().replies.undo(), 10);
+        let old: Replies = serde_json::from_str(r#"{"quote":"omit"}"#).unwrap();
+        assert_eq!((old.quote, old.undo()), (ReplyQuote::Omit, 10));
+        let off: Replies = serde_json::from_str(r#"{"undo_secs":0}"#).unwrap();
+        assert_eq!(off.undo(), 0);
+        let odd: Replies = serde_json::from_str(r#"{"undo_secs":12}"#).unwrap();
+        assert_eq!(odd.undo(), 10);
+    }
+
     #[test]
     fn prefs_round_trip() {
         let d = dir();
@@ -1558,6 +1616,8 @@ mod tests {
         p.keys.insert("mail.reply".into(), vec!["ctrl-shift-y".into()]);
         p.keys.insert("tab.close".into(), vec![]);
         p.key_scheme = KeyScheme::Single;
+        p.replies.quote = ReplyQuote::Omit;
+        p.replies.undo_secs = 30;
         p.keytips = false;
         p.general.autostart = true;
         p.general.notify = Notify::Important;
@@ -1593,6 +1653,16 @@ mod tests {
         let g = General { on_close: OnClose::Quit, tray_hint_shown: true, ..General::default() };
         let back: General = serde_json::from_str(&serde_json::to_string(&g).unwrap()).unwrap();
         assert_eq!((back.on_close, back.tray_hint_shown), (OnClose::Quit, true));
+    }
+
+    /// Значок в строке меню (MAC-09): включён по умолчанию и в старом файле без поля; «выключен» сохраняется.
+    #[test]
+    fn menu_bar_icon_defaults_on_and_round_trips() {
+        let old: General = serde_json::from_str(r#"{"sound":true}"#).unwrap();
+        assert!(old.menu_bar_icon);
+        let g = General { menu_bar_icon: false, ..General::default() };
+        let back: General = serde_json::from_str(&serde_json::to_string(&g).unwrap()).unwrap();
+        assert!(!back.menu_bar_icon);
     }
 
     #[test]
@@ -1964,7 +2034,7 @@ mod tests {
         let mut out = Vec::new();
         let mut push = |n: u64| {
             out.push(n);
-            Ok(())
+            Ok::<(), Error>(())
         };
         assert!(w.write(b, || push(b)).unwrap());
         assert!(!w.write(a, || push(a)).unwrap());

@@ -23,7 +23,7 @@ send-scheduled-row = ⏱ { $time }
 send-scheduled-cancel = Отменить отправку
 # Окно «Отменить» после отправки.
 send-sent = Письмо отправлено
-send-undo = Отменить
+send-undo-left = Отменить · { $s } с
 send-undoing = Отменяем…
 send-unsent = Отправка отменена: письмо снова в окне.
 send-unsent-drafts = Отправка отменена: письмо — в «Черновиках».

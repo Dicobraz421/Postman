@@ -4,12 +4,13 @@
 //! Логика: флажки панели (непрочитанные, упоминания, вложения, флаг, внешние) — И; категории панели — ИЛИ между
 //! собой, И с флажками; закладки быстрых фильтров — ИЛИ между собой, И с панелью.
 //!
-//! Что значит условие — по данным кэша, без чтения тела:
-//! - «Упоминания» — в тексте письма (начало тела, `preview`) есть `@` и сразу за ним моё имя, любое слово имени
-//!   или имя ящика до `@` (`@Анна`, `@Смирнова Анна`, `@me`), либо мой полный адрес вне `<…>` (адрес в угловых
-//!   скобках — строка цитаты «…, Анна <me@corp.example>:», это не упоминание). Обращение без `@` («Анна, добрый
-//!   день») — не упоминание: так начинается почти каждое письмо мне, это закладка «Мне». На сервере («Все папки»)
-//!   — то же `@имя` во всём теле (`body`).
+//! Что значит условие — по данным кэша:
+//! - «Упоминания» — в тексте письма есть `@` и сразу за ним моё имя, любое слово имени или имя ящика до `@`
+//!   (`@Анна`, `@Смирнова Анна`, `@me`), либо мой полный адрес вне `<…>` (адрес в угловых скобках — строка цитаты
+//!   «…, Анна <me@corp.example>:», это не упоминание). Обращение без `@` («Анна, добрый день») — не упоминание: так
+//!   начинается почти каждое письмо мне, это закладка «Мне». Текст — начало тела (`preview`), а у письма с телом в
+//!   кэше — всё тело без цитаты истории ([`Me::mentioned_in_body`]; тела ради этого с сервера не грузятся). На
+//!   сервере («Все папки») — то же `@имя` во всём теле (`body`).
 //! - «Мне» — мой адрес среди To (не Cc).
 //! - «Внешние» — домен отправителя не мой и не поддомен моего (домены — из моих адресов отправителя).
 //! - «Угрозы» — ключевое слово `$phishing` (IANA) или подсказка безопасности `pm.threat` (поставит S5-08).
@@ -19,7 +20,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::model::Filter;
-use postman_cache::{EmailRow, Recipients};
+use postman_cache::{BodyRow, Cache, EmailRow, Recipients};
 
 /// Фишинг: ключевое слово IANA (RFC 8621 §4.1.1, реестр ключевых слов IMAP/JMAP).
 pub const PHISHING: &str = "$phishing";
@@ -134,10 +135,86 @@ impl Me {
         self.addresses.iter().any(|a| lower.match_indices(a.as_str()).any(|(i, _)| !lower[..i].ends_with('<')))
     }
 
+    /// Меня упомянули в теле письма (из кэша): свой текст письма, без цитаты истории — строк `>`, пересланного и
+    /// исходного письма под чертой; HTML без `<blockquote>` и цитаты под ответом. Нет текста — нет упоминания.
+    pub fn mentioned_in_body(&self, body: &BodyRow) -> bool {
+        if self.is_empty() {
+            return false;
+        }
+        match (body.text.as_deref(), body.html.as_deref()) {
+            (Some(t), _) if !t.trim().is_empty() => self.mentioned(&own_text(t)),
+            (_, Some(h)) => self.mentioned(&own_html(h)),
+            _ => false,
+        }
+    }
+
     /// Письмо мне напрямую: мой адрес в To.
     pub fn to_me(&self, r: &Recipients) -> bool {
         r.to.iter().any(|t| self.addresses.iter().any(|a| t.eq_ignore_ascii_case(a)))
     }
+}
+
+/// Упомянули ли меня в телах писем `ids` из кэша ([`Me::mentioned_in_body`]); тела нет — нет.
+pub fn body_mentions(cache: &Cache, me: &Me, ids: &[String]) -> postman_cache::Result<Vec<(String, bool)>> {
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        let hit = cache.body(id)?.is_some_and(|b| me.mentioned_in_body(&b));
+        out.push((id.clone(), hit));
+    }
+    Ok(out)
+}
+
+/// Свой текст письма: до черты исходного или пересланного письма, без строк цитаты `>`.
+fn own_text(t: &str) -> String {
+    let mut out = String::with_capacity(t.len());
+    for line in t.lines() {
+        let l = line.trim_start();
+        if l.starts_with("-----") || l.starts_with("________________") {
+            break;
+        }
+        if !l.starts_with('>') {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Свой текст HTML-письма: до цитаты под ответом (Outlook, Gmail, Thunderbird, черта), без `<blockquote>` и тегов.
+fn own_html(h: &str) -> String {
+    let lower = h.to_lowercase();
+    let cut = ["id=\"divrplyfwdmsg\"", "class=\"gmail_quote", "class=\"moz-cite-prefix", "-----original message-----", "<hr"]
+        .iter()
+        .filter_map(|m| lower.find(m))
+        .min()
+        .unwrap_or(lower.len());
+    let (h, lower) = (&h[..cut], &lower[..cut]);
+    let mut out = String::with_capacity(h.len());
+    let (mut depth, mut i) = (0usize, 0usize);
+    while i < h.len() {
+        let rest = &lower[i..];
+        if rest.starts_with("<blockquote") {
+            depth += 1;
+        } else if rest.starts_with("</blockquote") {
+            depth = depth.saturating_sub(1);
+        }
+        if rest.starts_with('<') {
+            match rest.find('>') {
+                Some(end) => {
+                    out.push(' ');
+                    i += end + 1;
+                    continue;
+                }
+                None => break,
+            }
+        }
+        let c = h[i..].chars().next().unwrap_or(' ');
+        if depth == 0 {
+            out.push(c);
+        }
+        i += c.len_utf8();
+    }
+    out.replace("&lt;", "<").replace("&gt;", ">").replace("&nbsp;", " ").replace("&#64;", "@").replace("&amp;", "&")
 }
 
 fn push(list: &mut Vec<String>, v: &str) {
@@ -508,12 +585,16 @@ impl Days {
 }
 
 /// Группа строк списка: дата (одна папка, по дате) или папка («Все папки»); в одной папке над ними — «Срочное»
-/// (S5-04: просроченный срок, сработавшее напоминание — `crate::lifecycle::on_top`).
+/// (S5-04: просроченный срок, сработавшее напоминание — `crate::lifecycle::on_top`), а выше всех — «Закреплённые»
+/// (CMF-02, `crate::pin`), в любой сортировке, и в «Все папки», и в найденном; не по дате под ними — «Остальные».
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Group {
+    Pinned,
     Top,
     Day(Day),
     Folder(String),
+    /// Письма под «Закреплёнными», когда сортировка не по дате (без неё последняя группа взяла бы весь хвост).
+    Rest,
 }
 
 /// Письмо, прошедшее фильтры: что нужно для порядка и групп.
@@ -528,12 +609,14 @@ pub struct Hit {
     pub folder: usize,
     /// Наверху списка одной папки (группа [`Group::Top`]).
     pub top: bool,
+    /// Закреплено (CMF-02): выше всех, группа [`Group::Pinned`], в любой сортировке; в «Все папки» — над папками.
+    pub pinned: bool,
 }
 
 impl Hit {
     pub fn of(row: &EmailRow, folder: usize) -> Hit {
         let sender = if row.from_name.is_empty() { &row.from_addr } else { &row.from_name };
-        Hit { id: row.id.clone(), received_at: row.received_at, sender: sender.to_lowercase(), size: row.size, folder, top: false }
+        Hit { id: row.id.clone(), received_at: row.received_at, sender: sender.to_lowercase(), size: row.size, folder, top: false, pinned: false }
     }
 }
 
@@ -542,7 +625,8 @@ pub type Arranged = (Vec<String>, Vec<(Group, usize)>);
 
 /// Расставить письма: порядок `sort`; «Все папки» (`folders` — id папок по номеру `Hit::folder`) — группы по папкам,
 /// одна папка по дате — группы по датам, иначе без групп. В одной папке по дате письма `Hit::top` — первыми, группой
-/// [`Group::Top`].
+/// [`Group::Top`]; ещё выше, в любой сортировке, — закреплённые (`Hit::pinned`, [`Group::Pinned`]), а под ними не по
+/// дате — [`Group::Rest`]. В «Все папки» закреплённые — тоже первыми, группой над папками.
 pub fn arrange(mut hits: Vec<Hit>, sort: Sort, folders: Option<&[String]>, days: &Days) -> Arranged {
     let by_sort = |a: &Hit, b: &Hit| {
         match sort {
@@ -552,16 +636,20 @@ pub fn arrange(mut hits: Vec<Hit>, sort: Sort, folders: Option<&[String]>, days:
         }
         .then_with(|| a.id.cmp(&b.id))
     };
+    let pinned = folders.is_none() && hits.iter().any(|h| h.pinned);
     hits.sort_by(|a, b| match folders {
-        Some(_) => a.folder.cmp(&b.folder).then_with(|| by_sort(a, b)),
-        None if sort == Sort::Date => b.top.cmp(&a.top).then_with(|| by_sort(a, b)),
-        None => by_sort(a, b),
+        Some(_) => b.pinned.cmp(&a.pinned).then(a.folder.cmp(&b.folder)).then_with(|| by_sort(a, b)),
+        None if sort == Sort::Date => b.pinned.cmp(&a.pinned).then(b.top.cmp(&a.top)).then_with(|| by_sort(a, b)),
+        None => b.pinned.cmp(&a.pinned).then_with(|| by_sort(a, b)),
     });
     let key = |h: &Hit| -> Option<Group> {
         match (folders, sort) {
+            (Some(_), _) if h.pinned => Some(Group::Pinned),
             (Some(f), _) => Some(Group::Folder(f.get(h.folder).cloned().unwrap_or_default())),
+            (None, _) if h.pinned => Some(Group::Pinned),
             (None, Sort::Date) if h.top => Some(Group::Top),
             (None, Sort::Date) => Some(Group::Day(days.of(h.received_at))),
+            (None, _) if pinned => Some(Group::Rest),
             (None, _) => None,
         }
     };
@@ -616,6 +704,42 @@ mod tests {
         assert!(!me.mentioned("@Аннушка, привет"));
         assert!(!me.mentioned("пн, 3 нояб., Смирнова Анна <me@corp.example>:"));
         assert!(!Me::default().mentioned("@анна"));
+    }
+
+    /// Упоминание, как его ставит окно письма (`postman_compose::mention`): `**@Имя**` в text/plain, полужирное `@Имя` —
+    /// в HTML; имя — из адресной книги, в любом порядке слов.
+    #[test]
+    fn mention_from_the_composer_is_caught() {
+        let me = me();
+        assert!(me.mentioned("Коллеги, **@Анна Смирнова** посмотрите раздел 3"));
+        assert!(me.mentioned("**@Смирнова Анна** — к пятнице"));
+        assert!(me.mentioned("Коллеги, @Анна Смирнова посмотрите раздел 3"));
+        assert!(me.mentioned("(**@me**) по задаче"));
+        assert!(!me.mentioned("**@Иван Петров** посмотрите"));
+    }
+
+    /// Упоминание глубже начала письма — по телу из кэша; упоминание в цитате истории (строки `>`, исходное письмо
+    /// под чертой, `<blockquote>`) — не моё новое; письма без тела — по `preview`, как раньше.
+    #[test]
+    fn mention_deep_in_the_body() {
+        let me = me();
+        let long = format!("Коллеги,\n\n{}\n\n@Анна, раздел 7 — на тебе.", "Текст отчёта. ".repeat(40));
+        let text = |t: &str| BodyRow { text: Some(t.into()), ..Default::default() };
+        assert!(me.mentioned_in_body(&text(&long)));
+        assert!(!me.mentioned_in_body(&text("Спасибо!\n\n17.10.2026, Иван пишет:\n> @Анна, посмотри")));
+        assert!(!me.mentioned_in_body(&text("Спасибо!\n\n-----Original Message-----\nFrom: Иван\n@Анна, посмотри")));
+        let html = |h: &str| BodyRow { html: Some(h.into()), ..Default::default() };
+        assert!(me.mentioned_in_body(&html("<p>Коллеги,</p><p><strong>@Анна Смирнова</strong> — к пятнице</p>")));
+        assert!(!me.mentioned_in_body(&html("<p>Ок</p><blockquote><p>@Анна, посмотри</p></blockquote>")));
+        assert!(!me.mentioned_in_body(&html("<p>Ок</p><div id=\"divRplyFwdMsg\">От: Иван</div><p>@Анна</p>")));
+        assert!(!me.mentioned_in_body(&html("<p>От: Анна &lt;me@corp.example&gt;:</p>")));
+        assert!(!me.mentioned_in_body(&BodyRow::default()));
+
+        let c = Cache::open_in_memory().unwrap();
+        c.put_body("m1", &text(&long)).unwrap();
+        c.put_body("m2", &text("Без упоминаний")).unwrap();
+        let got = body_mentions(&c, &me, &["m1".into(), "m2".into(), "m3".into()]).unwrap();
+        assert_eq!(got, [("m1".to_string(), true), ("m2".to_string(), false), ("m3".to_string(), false)]);
     }
 
     #[test]
@@ -759,6 +883,7 @@ mod tests {
             size,
             folder,
             top: false,
+            pinned: false,
         };
         let hits = vec![
             hit("a", today - 86_400 * 30, "борис", 10, 1),
@@ -787,6 +912,41 @@ mod tests {
         assert_eq!((ids, groups), (vec!["c".to_string(), "a".into(), "b".into(), "d".into()], vec![]), "не по дате — без «Срочного»");
         let (_, groups) = arrange(pinned, Sort::Date, Some(&folders), &d);
         assert!(!groups.iter().any(|(g, _)| *g == Group::Top));
+    }
+
+    /// CMF-02: закреплённые — первыми, группой «Закреплённые», при любой сортировке, над «Срочным» и датами; не по дате
+    /// под ними — «Остальные»; «Все папки» — по папкам, как было.
+    #[test]
+    fn pinned_go_first_in_any_sort() {
+        let d = Days::at(&zoned("2026-10-22T15:00:00+00:00[UTC]"));
+        let today = zoned("2026-10-22T10:00:00+00:00[UTC]").timestamp().as_second();
+        let hit = |id: &str, at: i64, sender: &str, size: u64| Hit {
+            id: id.into(),
+            received_at: at,
+            sender: sender.into(),
+            size,
+            folder: 0,
+            top: false,
+            pinned: false,
+        };
+        let mut hits = vec![hit("new", today, "борис", 10), hit("old", today - 86_400 * 30, "яков", 1), hit("mid", today - 3600, "анна", 50)];
+        hits[1].pinned = true;
+        hits[0].top = true;
+        let (ids, groups) = arrange(hits.clone(), Sort::Date, None, &d);
+        assert_eq!(ids, ["old", "new", "mid"]);
+        assert_eq!(groups, [(Group::Pinned, 1), (Group::Top, 1), (Group::Day(Day::Today), 1)]);
+        let (ids, groups) = arrange(hits.clone(), Sort::Sender, None, &d);
+        assert_eq!(ids, ["old", "mid", "new"]);
+        assert_eq!(groups, [(Group::Pinned, 1), (Group::Rest, 2)]);
+        let (ids, groups) = arrange(hits.clone(), Sort::Size, None, &d);
+        assert_eq!(ids, ["old", "mid", "new"]);
+        assert_eq!(groups, [(Group::Pinned, 1), (Group::Rest, 2)]);
+        // «Все папки»: закреплённые — над папками.
+        let folders = ["in".to_string(), "arch".to_string()];
+        hits[2].folder = 1;
+        let (ids, groups) = arrange(hits, Sort::Size, Some(&folders), &d);
+        assert_eq!(ids, ["old", "new", "mid"]);
+        assert_eq!(groups, [(Group::Pinned, 1), (Group::Folder("in".into()), 1), (Group::Folder("arch".into()), 1)]);
     }
 
     /// Закладки по настройкам (S5-09): тот же порядок по срочности; скрытая полоса — без закладок.

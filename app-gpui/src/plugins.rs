@@ -27,15 +27,18 @@ pub(crate) fn autoreply_limited(error: &str) -> bool {
     error == postman_backend_jmap::settings::ONE_TEXT_ONLY
 }
 
-/// Выход: письма в окне «Отменить» держат потоки IMAP и Exchange: они уходят сейчас, процесс их дожидается. Окна уже нет: не
-/// дольше [`LEAVE_LIMIT`], сервер без ответа не держит процесс вечно.
+/// Выход: письма в окне «Отменить» держат потоки IMAP и Exchange, сообщения каналов — очереди отправки потоков
+/// каналов (ADR 0012 п. 11): они уходят сейчас, процесс их дожидается. Окна уже нет: не дольше [`LEAVE_LIMIT`], сервер
+/// без ответа не держит процесс вечно.
 pub(crate) fn finish_sends() {
-    let left = || postman_backend_imap::holding() + postman_backend_ews::sync::holding();
+    use postman_core::channel::outbox;
+    let left = || postman_backend_imap::holding() + postman_backend_ews::sync::holding() + outbox::holding();
     if left() == 0 {
         return;
     }
     postman_backend_imap::leave();
     postman_backend_ews::sync::leave();
+    outbox::leave();
     let start = Instant::now();
     while left() > 0 && start.elapsed() < LEAVE_LIMIT {
         std::thread::sleep(Duration::from_millis(50));

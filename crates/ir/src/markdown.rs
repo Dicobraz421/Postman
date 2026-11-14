@@ -1,5 +1,7 @@
 //! IR -> Markdown (цитирование, text/plain) и Markdown -> HTML из фиксированного набора тегов.
 
+use std::borrow::Cow;
+
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd, html};
 
 use crate::{Block, Document, Inline, Marks};
@@ -115,6 +117,8 @@ fn write_inlines(inlines: &[Inline], out: &mut String) {
         match i {
             Inline::Text { text, marks } => write_text(text, *marks, out),
             Inline::LineBreak => out.push_str("  \n"),
+            // Упоминание — видимым текстом («@Имя»): канал без упоминаний получает то же, что видит пользователь.
+            Inline::Mention { text, .. } => write_text(text, Marks::default(), out),
             // Внешняя картинка в цитате ответа — подписью, как до загрузки: адрес слежения дальше не уходит.
             Inline::Remote { alt, .. } if !alt.is_empty() => write_text(&format!("[{alt}]"), Marks::default(), out),
             Inline::Remote { .. } => {}
@@ -204,13 +208,108 @@ fn trim_trailing_newlines(s: &mut String) {
     }
 }
 
+/// Перестановка [`tidy_markers`]: с байта `at` шли `space` пробелов и маркер длиной `marker`, стали — маркер и пробелы.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Move {
+    pub at: usize,
+    pub space: usize,
+    pub marker: usize,
+}
+
+/// Пробел перед закрывающим маркером (`**Почта **`, #654): по CommonMark такой маркер не закрывает выделение и
+/// остаётся знаками, хотя человек имел в виду жирный — так его понял бы и Outlook. Маркер встаёт к тексту, пробел —
+/// за него: `**Почта** `. Байты те же, только переставлены ([`Move`]) — поле ввода красит по ним исходный текст.
+/// Маркеры — `*`, `**`, `***`, `~~`, открытые раньше в том же абзаце; строки с кодом и блоки кода не трогаются.
+pub fn tidy_markers(md: &str) -> (Cow<'_, str>, Vec<Move>) {
+    let mut moves = Vec::new();
+    let mut open: Vec<(u8, usize)> = Vec::new();
+    let (mut fence, mut at) = (false, 0);
+    for line in md.split_inclusive('\n') {
+        let body = line.trim_end_matches(['\n', '\r']);
+        let t = body.trim_start();
+        let fence_line = t.starts_with("```") || t.starts_with("~~~");
+        fence ^= fence_line;
+        if t.is_empty() || fence_line {
+            open.clear();
+        } else if !fence && !body.contains('`') && !body.starts_with("    ") && !body.starts_with('\t') {
+            loose_closers(body.as_bytes(), at, &mut open, &mut moves);
+        }
+        at += line.len();
+    }
+    if moves.is_empty() {
+        return (Cow::Borrowed(md), moves);
+    }
+    let mut bytes = md.as_bytes().to_vec();
+    for m in &moves {
+        bytes[m.at..m.at + m.space + m.marker].rotate_left(m.space);
+    }
+    // Переставлены только ASCII-знаки — UTF-8 цел.
+    match String::from_utf8(bytes) {
+        Ok(s) => (Cow::Owned(s), moves),
+        Err(_) => (Cow::Borrowed(md), Vec::new()),
+    }
+}
+
+/// Маркеры строки: открывающие — в стек абзаца, закрывающий после пробела при открытом таком же — в `moves`.
+fn loose_closers(b: &[u8], base: usize, open: &mut Vec<(u8, usize)>, moves: &mut Vec<Move>) {
+    let ws = |c: u8| c == b' ' || c == b'\t';
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if c == b'\\' {
+            i += 2;
+            continue;
+        }
+        if c != b'*' && c != b'~' {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j < b.len() && b[j] == c {
+            j += 1;
+        }
+        let n = j - i;
+        let marker = if c == b'*' { n <= 3 } else { n == 2 };
+        let (prev_ws, next_ws) = (i == 0 || ws(b[i - 1]), j == b.len() || ws(b[j]));
+        let matches = open.last() == Some(&(c, n));
+        if !marker {
+            i = j;
+            continue;
+        }
+        if !prev_ws {
+            if matches {
+                open.pop();
+            } else if !next_ws {
+                open.push((c, n));
+            }
+        } else if !next_ws {
+            open.push((c, n));
+        } else if matches {
+            let mut k = i;
+            while k > 0 && ws(b[k - 1]) {
+                k -= 1;
+            }
+            // Маркер после одних пробелов в начале строки — пункт списка, не выделение.
+            if k > 0 {
+                moves.push(Move { at: base + k, space: i - k, marker: n });
+                open.pop();
+            }
+        }
+        i = j;
+    }
+}
+
 /// Markdown композера -> HTML исходящего письма. Сырой HTML экранируется (кроме `<u>`/`</u>`: подчёркивания в
 /// Markdown нет, кнопка «Ч» композера вставляет их), ссылки — только http(s)/mailto, картинки — только cid:.
+/// Перевод строки — `<br>`, как Enter в Outlook (#654): письмо пишут строками, а не абзацами Markdown; маркер после
+/// пробела понимается ([`tidy_markers`]).
 pub fn markdown_to_html(md: &str) -> String {
     let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH;
     let mut link_stack: Vec<bool> = Vec::new();
     let mut image_depth = 0usize;
-    let events = Parser::new_ext(md, opts).filter_map(|ev| match ev {
+    let (md, _) = tidy_markers(md);
+    let events = Parser::new_ext(&md, opts).filter_map(|ev| match ev {
+        Event::SoftBreak => Some(Event::HardBreak),
         Event::InlineHtml(s) if s.eq_ignore_ascii_case("<u>") || s.eq_ignore_ascii_case("</u>") => Some(Event::InlineHtml(s)),
         Event::Html(s) | Event::InlineHtml(s) => Some(Event::Text(s)),
         Event::Start(Tag::Link { link_type, dest_url, title, id }) => {
@@ -245,6 +344,18 @@ mod tests {
     use super::*;
     use crate::{from_html, from_plain};
 
+    /// Дополнения IR каналов (ADR 0012 п. 4) добавочны: старые марки без `spoiler` читаются; упоминание — видимым
+    /// текстом в тексте и Markdown.
+    #[test]
+    fn channel_additions() {
+        let old: Marks = serde_json::from_str(r#"{"bold":true,"italic":false,"underline":false,"strike":false,"code":false}"#).unwrap();
+        assert!(old.bold && !old.spoiler);
+        let mention = Inline::Mention { id: "u-anna".into(), text: "@Анна".into() };
+        assert_eq!(crate::plain_text(&[Inline::text("Привет, "), mention.clone()]), "Привет, @Анна");
+        let d = Document { blocks: vec![Block::Paragraph { align: crate::Align::Start, content: vec![mention] }], ..Document::default() };
+        assert_eq!(to_markdown(&d), "@Анна");
+    }
+
     #[test]
     fn roundtrip_markup() {
         let d = from_html(
@@ -268,6 +379,25 @@ mod tests {
         assert!(h.contains(r#"href="https://ok.ru""#));
         assert!(!h.contains("track/p.gif"));
         assert!(h.contains(r#"src="cid:logo""#));
+    }
+
+    /// Подпись тестера (#654): строки остаются строками, курсив через перенос — курсивом, жирный с пробелом перед
+    /// `**` — жирным; `*` с пробелами вокруг и пункт списка — не выделение.
+    #[test]
+    fn lines_and_loose_markers() {
+        let md = "*Какой то текст\r\nКакой то текст*\r\n**Ссылка | Почта **\r\n\r\n*ООО Компания | Сайт компании*";
+        assert_eq!(
+            markdown_to_html(md),
+            "<p><em>Какой то текст<br />\nКакой то текст</em><br />\n<strong>Ссылка | Почта</strong></p>\n<p><em>ООО Компания | Сайт компании</em></p>\n"
+        );
+        let (t, moves) = tidy_markers("a **b ** c ~~d ~~ `x **` * e *");
+        assert_eq!(t, "a **b ** c ~~d ~~ `x **` * e *", "строка с кодом — как есть");
+        assert_eq!(moves.len(), 0);
+        let (t, moves) = tidy_markers("a **b ** c ~~d ~~ e");
+        assert_eq!(t, "a **b**  c ~~d~~  e");
+        assert_eq!(moves, [Move { at: 5, space: 1, marker: 2 }, Move { at: 14, space: 1, marker: 2 }]);
+        assert_eq!(tidy_markers("2 * 3 * 4\n* пункт *").0, "2 * 3 * 4\n* пункт *");
+        assert_eq!(tidy_markers("**a\nb **\n\n**c\n\nd **").0, "**a\nb** \n\n**c\n\nd **", "в другом абзаце — не пара");
     }
 
     /// Подчёркивание композера (S5-06б): `<u>` проходит, остальной HTML и атрибуты — текстом.

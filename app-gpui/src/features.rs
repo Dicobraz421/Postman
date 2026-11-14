@@ -68,8 +68,9 @@ pub(crate) fn needs(id: &str) -> &'static [Feature] {
         "contacts.new" | "contacts.edit" | "contacts.delete" => &[Feature::Contacts],
         "settings.rules" => &[Feature::Rules],
         "settings.vacation" => &[Feature::Autoreply],
-        // Категории, сроки, «Напомнить», «Ждать ответа», «Исчезнет» — ключевые слова письма на сервере.
-        "mail.categorize" | "mail.due" | "mail.remind" | "mail.wait" | "mail.expire" => &[Feature::Keywords],
+        // Категории, сроки, «Напомнить», «Ждать ответа», «Исчезнет», «Заглушить», «Закрепить» — ключевые слова письма
+        // на сервере.
+        "mail.categorize" | "mail.due" | "mail.remind" | "mail.wait" | "mail.expire" | "mail.mute" | "mail.pin" => &[Feature::Keywords],
         _ => &[],
     }
 }

@@ -63,10 +63,12 @@ pub(crate) enum Place {
     Inline,
 }
 
-/// Экрану: закрыть письмо (отправлено, «Нет», удалён черновик) или развернуть ответ во вкладку.
+/// Экрану: закрыть письмо (отправлено, «Нет», удалён черновик), развернуть ответ во вкладку, записать в базу, как
+/// устроен черновик на сервере `id` (`None` — черновика больше нет), вместо прежних версий `old`.
 pub(crate) enum ComposerEvent {
     Close,
     Expand,
+    Kept { id: Option<String>, layout: Option<postman_core::local::DraftLayout>, old: Vec<String> },
 }
 
 impl EventEmitter<ComposerEvent> for Composer {}
@@ -144,13 +146,13 @@ pub(crate) struct Composer {
     subject: Entity<InputState>,
     /// Текст письма — поле с живым отображением Markdown (S5-27): разметка — `postman_compose::display`, оформление —
     /// украшения поля ([`Composer::paint_markdown`]).
-    body: Entity<EditorState>,
+    pub(crate) body: Entity<EditorState>,
     /// Украшения текста письма и тема, в которой они посчитаны (сменилась — заново).
     marks: Option<TextDecorationCollection>,
     marks_look: Option<Rc<crate::roles::Look>>,
-    focus: FocusHandle,
-    mailer: WeakEntity<Mailer>,
-    book: Book,
+    pub(crate) focus: FocusHandle,
+    pub(crate) mailer: WeakEntity<Mailer>,
+    pub(crate) book: Book,
     lists: std::collections::HashSet<String>,
     /// «Кому…» (T3-03): панель адресной книги и подписка на её итог.
     pub(crate) picker: Option<Entity<Picker>>,
@@ -187,6 +189,10 @@ pub(crate) struct Composer {
     line_h: Rc<std::cell::Cell<f32>>,
     /// `--screens`: сколько раз письмо нарисовано.
     screens: Option<u32>,
+    /// Ответ на фрагменты (`fragments.rs`): поля ответов реплик.
+    pub(crate) board: crate::fragments::Board,
+    /// @упоминания (`mentions.rs`): подсказка у набранного `@`.
+    pub(crate) mention: crate::mentions::Mentions,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -200,7 +206,7 @@ pub(crate) struct TplAsk {
 }
 
 /// Профиль для полей подписи: имя — из адреса «От», если в профиле его нет.
-fn profile_for(prefs: &AccountPrefs, from: &Address) -> postman_core::prefs::Profile {
+pub(crate) fn profile_for(prefs: &AccountPrefs, from: &Address) -> postman_core::prefs::Profile {
     let mut p = prefs.profile.clone();
     if p.name.trim().is_empty() {
         p.name = from.name.clone();
@@ -223,6 +229,7 @@ impl Composer {
         // «Подписать» — по «Подписывать все письма», если для адреса «От» есть сертификат (решение владельца №7).
         let signable = open.signable.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains(&model.from().email.to_lowercase());
         model.sign = crate::prefs::get(cx).security.sign_all && signable;
+        model.undo_secs = crate::prefs::with(cx, |p| p.replies.undo());
         // Демо: Identity нет — «От» — первый адрес списка.
         if model.from().email.is_empty()
             && let Some(first) = open.senders.first()
@@ -273,6 +280,7 @@ impl Composer {
             if matches!(ev, InputEvent::Change) {
                 this.paint_markdown(cx);
                 this.slash_template(&value, window, cx);
+                this.mention_changed(state.read(cx).cursor(), cx);
             }
         }));
         // Enter в строке «Отправить позже» — «Запланировать».
@@ -332,6 +340,8 @@ impl Composer {
             block_zones: Vec::new(),
             block_zone: None,
             line_h: Rc::new(std::cell::Cell::new(13.0 * 1.5)),
+            board: Default::default(),
+            mention: Default::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -611,7 +621,7 @@ impl Composer {
     }
 
     /// Таймер автосохранения — только при изменениях: в простое письмо не просыпается.
-    fn schedule_autosave(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn schedule_autosave(&mut self, cx: &mut Context<Self>) {
         if self.autosave_armed {
             return;
         }
@@ -633,7 +643,7 @@ impl Composer {
 
     /// Черновик — в синхронизацию через шов экрана. Нет сервера — строка в письме (и тост, если просил
     /// пользователь), текст остаётся.
-    fn dispatch(&mut self, purpose: Purpose, cx: &mut Context<Self>) {
+    pub(crate) fn dispatch(&mut self, purpose: Purpose, cx: &mut Context<Self>) {
         if self.model.busy() {
             return;
         }
@@ -641,6 +651,8 @@ impl Composer {
         if matches!(purpose, Purpose::Send | Purpose::SendLater(_)) {
             self.find_in_directory(false, cx);
         }
+        // Задержка «Отменить» — из настройки на момент отправки (CMF-03).
+        self.model.undo_secs = crate::prefs::with(cx, |p| p.replies.undo());
         let Some(command) = self.model.begin(purpose, next_ticket(), Instant::now()) else {
             cx.notify();
             return;
@@ -668,13 +680,20 @@ impl Composer {
             Event::Sent { ticket, .. } => {
                 let later = self.model.sending_later();
                 let draft = self.model.draft(false).ok();
+                let undo_secs = self.model.undo_secs;
+                let kept = self.model.pending_layout(*ticket);
                 if self.model.on_sent(*ticket) {
                     cx.emit(ComposerEvent::Close);
-                    sent = draft.map(|draft| SentDraft { draft, later });
+                    let (layout, old) = kept.unwrap_or_default();
+                    sent = draft.map(|draft| SentDraft { draft, layout, old, later, undo_secs });
                 }
             }
             Event::Scheduled { max_delay, .. } => self.later.max_delay = *max_delay,
             Event::DraftSaved { ticket, id } => {
+                // Как устроен черновик (реплики, «Не отправлять» вложения беседы) — в базу профиля под ключом версии.
+                if let Some((layout, old)) = self.model.pending_layout(*ticket) {
+                    cx.emit(ComposerEvent::Kept { id: Some(id.clone()), layout: Some(layout), old: old.into_iter().collect() });
+                }
                 let at = jiff::Zoned::now().strftime("%H:%M").to_string();
                 if self.model.on_saved(*ticket, id.clone(), at) {
                     cx.emit(ComposerEvent::Close);
@@ -836,6 +855,7 @@ impl Composer {
     fn discard(&mut self, cx: &mut Context<Self>) {
         self.model.confirm_delete = false;
         if let Some(id) = self.model.server_id().map(str::to_owned) {
+            cx.emit(ComposerEvent::Kept { id: None, layout: None, old: vec![id.clone()] });
             let _ = self.mailer.update(cx, |m, cx| {
                 if !m.backend.send(Command::Destroy(id)) {
                     m.needs_server(cx);
@@ -1288,6 +1308,12 @@ fn default_signature(model: &mut Model, prefs: &AccountPrefs, reply: bool) -> bo
     if model.signature == text {
         return false;
     }
+    // Черновик, открытый снова: подпись уже в своём тексте — она и есть подпись письма (второй не добавлять).
+    let own = &model.body[..crate::compose::own_end(&model.body)];
+    if !model.has_fragments() && own.contains(text.trim()) && !text.trim().is_empty() {
+        model.signature = text.trim_end().to_owned();
+        return false;
+    }
     model.set_default_signature(&text);
     // Картинки подписи (T3-07): логотип — вложением inline, текст ссылается на него `cid:`.
     model.attach_inline(prefs.sign_images());
@@ -1393,11 +1419,11 @@ impl Composer {
             Status::Attach { name, error } => (tr!("compose-attach-failed", name = name.clone(), error = error.clone()), true),
             Status::Large(total) => (tr!("compose-large", size = size_text(*total)), true),
         };
-        // Окно «Отменить» после отправки — если сервер держит письма.
-        if error || self.later.max_delay == 0 {
+        // Окно «Отменить» после отправки — если сервер держит письма и задержка не 0 (CMF-03).
+        let secs = self.model.undo_secs;
+        if error || self.later.max_delay == 0 || secs == 0 {
             return (text, error);
         }
-        let secs = send_later::UNDO_WINDOW.as_secs();
         if text.is_empty() {
             (tr!("compose-undo-hint", s = secs), false)
         } else {
@@ -1882,6 +1908,37 @@ impl Composer {
     }
 
     /// Строка полей шаблона над текстом письма.
+    /// Строка над текстом (решение владельца 2026-11-13): новым участникам ответа уйдут вложения беседы — или нет,
+    /// если это отключили для письма. Команда `compose.share_attachments` — то же переключение.
+    fn share_row(&self, l: &Look, cx: &mut Context<Self>) -> Option<Div> {
+        let (names, count, off) = self.model.share_line()?;
+        let names = names.join(", ");
+        let (text, button) = if off {
+            (tr!("compose-share-off", names = names), tr!("compose-share-enable"))
+        } else {
+            (tr!("compose-share-on", names = names, n = count), tr!("compose-share-disable"))
+        };
+        Some(
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_3()
+                .px(px(16.))
+                .py(px(6.))
+                .bg(l.fill_passive())
+                .border_b_1()
+                .border_color(l.border())
+                .child(div().flex_1().min_w_0().text_color(if off { l.text2() } else { l.text() }).child(text))
+                .child(crate::buttons::button("share-toggle", button, false, l).on_click(cx.listener(|this, _, _, cx| this.toggle_share(cx)))),
+        )
+    }
+
+    fn toggle_share(&mut self, cx: &mut Context<Self>) {
+        self.model.toggle_share();
+        cx.notify();
+    }
+
     fn template_ask_row(&self, l: &Look, cx: &mut Context<Self>) -> Option<Div> {
         let a = self.tpl_ask.as_ref()?;
         let fields = a.fields.iter().enumerate().map(|(i, (name, input))| {
@@ -1983,30 +2040,27 @@ impl Composer {
                 let plain = item.text();
                 weak.update(cx, |c, cx| c.paste_html(html, plain, window, cx)).is_ok()
             });
-        div()
+        let head = div()
             .flex_1()
             .min_h_0()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .px(px(16.))
-                    .py(px(8.))
-                    .child(editor)
-                    .capture_action(cx.listener(|this, _: &IndentInline, window, cx| {
-                        if this.table_tab(false, window, cx) {
-                            cx.stop_propagation();
-                        }
-                    }))
-                    .capture_action(cx.listener(|this, _: &OutdentInline, window, cx| {
-                        if this.table_tab(true, window, cx) {
-                            cx.stop_propagation();
-                        }
-                    })),
-            )
-            .into_any_element()
+            .px(px(16.))
+            .py(px(8.))
+            .child(editor)
+            .capture_action(cx.listener(|this, _: &IndentInline, window, cx| {
+                if this.table_tab(false, window, cx) {
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &OutdentInline, window, cx| {
+                if this.table_tab(true, window, cx) {
+                    cx.stop_propagation();
+                }
+            }));
+        // @упоминания (`mentions.rs`): ↑ / ↓ / Enter подсказки — раньше поля; подсказка — под текстом.
+        let head = crate::mentions::capture(div().flex_1().min_h_0().flex().flex_col().child(head), cx).into_any_element();
+        let mention = crate::mentions::composer_panel(self, cx);
+        // Ответ на фрагменты: свой текст — невысоким полем, под ним реплики и подпись.
+        crate::fragments::split_view(self, head, mention, cx)
     }
 
     /// Строки вопросов в письме: «Сохранить черновик?» и «Удалить черновик?».
@@ -2657,9 +2711,12 @@ impl Render for Composer {
             self.subject.update(cx, |s, cx| s.set_value(subject, window, cx));
             let body = self.model.body.clone();
             self.body.update(cx, |s, cx| s.set_value(body, window, cx));
+            // Новый текст поля — оформление Markdown заново (прежние отрезки — от прежнего текста).
+            self.paint_markdown(cx);
             self.show_cc |= !self.model.cc.trim().is_empty();
             self.show_bcc |= !self.model.bcc.trim().is_empty();
         }
+        crate::fragments::prepare(self, window, cx);
         self.refresh_recipient_checks();
         self.decode_inline_images(cx);
         self.refresh_zone(cx);
@@ -2699,6 +2756,7 @@ impl Render for Composer {
             .children(self.later_picker(&l, cx))
             .when(inline, |d| d.children(self.attachment_chips(&l, cx)))
             .children(self.template_ask_row(&l, cx))
+            .children(self.share_row(&l, cx))
             .child(self.content(window, cx))
             .when(inline, |d| d.children(self.inline_checks(&l, cx)))
             // Ответ на письмо общего ящика (S5-28): «От» — свой адрес или письмо у коллеги.
@@ -2725,6 +2783,7 @@ impl Render for Composer {
                 }
             }))
             .on_action(cx.listener(|this, _: &compose::AddressBook, window, cx| this.open_recipients(Field::To, window, cx)))
+            .on_action(cx.listener(|this, _: &compose::ShareAttachments, _, cx| this.toggle_share(cx)))
             .on_action(cx.listener(|this, _: &compose::Discard, _, cx| {
                 this.model.confirm_close = false;
                 this.model.confirm_delete = true;
@@ -2739,6 +2798,7 @@ impl Render for Composer {
             .flex()
             .text_color(l.text())
             .text_size(px(13.));
+        let root = crate::fragments::actions(root, cx);
         if inline {
             return root.bg(l.panel()).border_b_1().border_color(l.c(Role::StrokeCard)).child(editor);
         }
@@ -2995,6 +3055,10 @@ pub(crate) fn md_style(m: &postman_compose::display::Look, l: &Look) -> Highligh
 
 /// Строка ошибки отправки; подпись S/MIME (код `smime-sign:…` от ядра) — своими словами.
 fn failed_text(e: &str) -> String {
+    // Вложение не скачалось перед отправкой (код синхронизации): письмо без него не ушло.
+    if let Some(at) = e.find(postman_compose::MISSING) {
+        return tr!("compose-attachment-missing", name = e[at + postman_compose::MISSING.len()..].to_owned());
+    }
     if let Some(at) = e.find("smime-seal:") {
         let rest = &e[at + "smime-seal:".len()..];
         let (code, detail) = rest.split_once(':').unwrap_or((rest, ""));

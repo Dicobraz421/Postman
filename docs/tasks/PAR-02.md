@@ -1,7 +1,7 @@
 # PAR-02: S/MIME и LDAP — одно поведение на Windows, macOS и Linux
 
 lane: x
-status: review
+status: done
 deps: [PAR-AUDIT]
 class: B
 files: [crates/core/src/smime/, crates/backend-ldap/src/sys.rs, crates/backend-ldap/src/sys/, docs/tasks/PAR-02.md]

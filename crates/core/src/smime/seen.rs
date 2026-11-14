@@ -4,11 +4,13 @@
 //!
 //! Только для построения цепочки — не доверие: воркер берёт их кандидатами между подписантом и якорем, корни
 //! и запреты — из системы. Ядро байты не разбирает: DER — из цепочки, которую воркер уже довёл до доверенного корня
-//! (подписант и корень не берутся). Файл — в каталоге данных (`smime-intermediates.bin`, только владелец), формат —
-//! длина (u32, big-endian) + DER подряд, новые — в конце; пределы — [`MAX_ITEMS`], [`MAX_ONE`], [`MAX_BYTES`]:
-//! сверх — вытесняются самые старые. Без каталога данных — только память процесса.
+//! (подписант и корень не берутся). Хранятся в базе профиля (`crate::local::SMIME_SEEN`, решение 2026-11-14; прежде —
+//! файл `smime-intermediates.bin` в каталоге данных, переносится в базу), формат — длина (u32, big-endian) + DER подряд,
+//! новые — в конце; пределы — [`MAX_ITEMS`], [`MAX_ONE`], [`MAX_BYTES`]: сверх — вытесняются самые старые.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+use postman_cache::{Cache, LocalPut};
 
 /// Сколько сертификатов держать.
 pub(crate) const MAX_ITEMS: usize = 256;
@@ -16,13 +18,8 @@ pub(crate) const MAX_ITEMS: usize = 256;
 pub(crate) const MAX_ONE: usize = 16 * 1024;
 /// Всего байтов DER.
 pub(crate) const MAX_BYTES: usize = 1 << 20;
-/// Имя файла в каталоге данных.
-const FILE: &str = "smime-intermediates.bin";
-
-/// Файл кэша в каталоге данных.
-pub(crate) fn path() -> PathBuf {
-    crate::paths::data_dir().join(FILE)
-}
+/// Имя прежнего файла в каталоге данных.
+pub(crate) const FILE: &str = "smime-intermediates.bin";
 
 /// Разбор своего файла: до первой нецелой записи, с пределами.
 pub(crate) fn decode(bytes: &[u8]) -> Vec<Vec<u8>> {
@@ -82,8 +79,8 @@ pub(crate) fn middle(chain: &[Vec<u8>]) -> &[Vec<u8>] {
     if chain.len() < 3 { &[] } else { &chain[1..chain.len() - 1] }
 }
 
-/// Прочитать файл; нет или не читается — пусто.
-pub(crate) fn load(path: &Path) -> Vec<Vec<u8>> {
+/// Прочитать прежний файл; нет или не читается — пусто.
+pub(crate) fn load_file(path: &Path) -> Vec<Vec<u8>> {
     let max = (MAX_BYTES + 4 * MAX_ITEMS) as u64;
     match std::fs::metadata(path) {
         Ok(m) if m.len() <= max => std::fs::read(path).map(|b| decode(&b)).unwrap_or_default(),
@@ -91,22 +88,20 @@ pub(crate) fn load(path: &Path) -> Vec<Vec<u8>> {
     }
 }
 
-/// Записать атомарно (временный файл рядом и переименование), права — только владелец.
-pub(crate) fn save(path: &Path, list: &[Vec<u8>]) -> std::io::Result<()> {
-    use std::io::Write;
-    let tmp = path.with_extension("tmp");
-    let mut o = std::fs::OpenOptions::new();
-    o.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        o.mode(0o600);
+/// Список из базы профиля; записи нет или база не читается — пусто.
+pub(crate) fn load(cache: &Cache) -> Vec<Vec<u8>> {
+    match cache.local(crate::local::SMIME_SEEN) {
+        Ok(doc) => doc.map(|d| decode(&d.value)).unwrap_or_default(),
+        Err(e) => {
+            tracing::warn!("smime: intermediate certificates not read: {e}");
+            Vec::new()
+        }
     }
-    let mut f = o.open(&tmp)?;
-    f.write_all(&encode(list))?;
-    f.sync_all()?;
-    drop(f);
-    std::fs::rename(&tmp, path)
+}
+
+/// Записать список в базу профиля.
+pub(crate) fn save(cache: &Cache, list: &[Vec<u8>]) -> postman_cache::Result<()> {
+    cache.put_local(&LocalPut { key: crate::local::SMIME_SEEN.into(), value: encode(list), parts: Vec::new() })
 }
 
 #[cfg(test)]
@@ -155,18 +150,15 @@ mod tests {
     }
 
     #[test]
-    fn file_round_trip() {
-        let dir = std::env::temp_dir().join(format!("postman-seen-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join(FILE);
-        assert!(load(&p).is_empty());
-        save(&p, &[der(7, 30)]).unwrap();
-        assert_eq!(load(&p), vec![der(7, 30)]);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
-        }
-        std::fs::remove_dir_all(&dir).unwrap();
+    fn store_round_trip() {
+        let c = Cache::open_in_memory().unwrap();
+        assert!(load(&c).is_empty());
+        save(&c, &[der(7, 30)]).unwrap();
+        assert_eq!(load(&c), vec![der(7, 30)]);
+        let dir = tempfile::Builder::new().prefix("postman-seen-").tempdir().unwrap();
+        let p = dir.path().join(FILE);
+        assert!(load_file(&p).is_empty());
+        std::fs::write(&p, encode(&[der(8, 20)])).unwrap();
+        assert_eq!(load_file(&p), vec![der(8, 20)]);
     }
 }

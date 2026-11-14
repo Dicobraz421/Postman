@@ -27,6 +27,10 @@ impl Backend {
     /// вызывающий говорит об этом тостом и не теряет данные пользователя (черновик остаётся в окне).
     pub(crate) fn send(&self, command: Command) -> bool {
         let Backend::Live { commands, extra, senders } = self else { return false };
+        // Учётки каналов бесед — свои потоки (`Mailer::send_channel`), не синхронизация почты.
+        if matches!(command, Command::Channel { .. }) {
+            return false;
+        }
         let line = |profile: Option<&str>| match profile {
             None => Some(commands),
             Some(p) => extra.iter().find(|(q, _)| q == p).map(|(_, tx)| tx),

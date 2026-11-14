@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use postman_cache::{AccountRow, Addr, AttachmentRow, BodyRow, Cache, EmailRow, MailboxRow, Recipients, Rights, in_profile, scoped, unscoped};
 use postman_calendar::{Invitation, Partstat};
-use postman_compose::{Address, Draft};
+use postman_compose::{Address, Attachment, Draft};
 use postman_core::backend::BoxFuture;
 use postman_core::invite::Delivery;
 use postman_core::lifecycle;
@@ -378,7 +378,7 @@ async fn run(
     }
     accounts.shared = opened;
     notify(Event::Status(Status::Synced));
-    notify_scheduled(&accounts, &send_as, notify).await;
+    notify_scheduled(&accounts, &cache, &send_as, notify).await;
     let mut poll = tokio::time::interval(POLL);
     poll.tick().await;
     let (push_tx, mut push_rx) = unbounded_channel::<Changed>();
@@ -976,7 +976,7 @@ async fn handle(
             });
             // Запланированное — в список отложенных («Отправится в …»); окно «Отменить» закроется само.
             if later {
-                notify_scheduled(accounts, send_as, notify).await;
+                notify_scheduled(accounts, cache, send_as, notify).await;
             }
         }
         Command::Unsend { scheduled, ticket } => {
@@ -985,9 +985,9 @@ async fn handle(
                 Err(UnsendError::TooLate) => Event::UnsendFailed { ticket, too_late: true, error: String::new() },
                 Err(UnsendError::Jmap(e)) => Event::UnsendFailed { ticket, too_late: false, error: e.to_string() },
             });
-            notify_scheduled(accounts, send_as, notify).await;
+            notify_scheduled(accounts, cache, send_as, notify).await;
         }
-        Command::Scheduled => notify_scheduled(accounts, send_as, notify).await,
+        Command::Scheduled => notify_scheduled(accounts, cache, send_as, notify).await,
         Command::LoadMore { mailbox } => {
             // Ответ — всегда: интерфейс ждёт его, прежде чем просить следующую страницу.
             let added = match accounts.locate(&mailbox) {
@@ -1255,14 +1255,14 @@ async fn handle(
         Command::Withhold { scheduled, ticket } => {
             let (mut too_late, mut error) = (false, None);
             for s in &scheduled {
-                match withhold(accounts, s).await {
+                match withhold(accounts, cache, s).await {
                     Ok(()) => {}
                     Err(UnsendError::TooLate) => too_late = true,
                     Err(UnsendError::Jmap(e)) => error = Some(e.to_string()),
                 }
             }
             notify(Event::Withheld { ticket, too_late, error });
-            notify_scheduled(accounts, send_as, notify).await;
+            notify_scheduled(accounts, cache, send_as, notify).await;
         }
         // «Повторить сейчас» и «Синхронизировать» — забота цикла синхронизации.
         Command::Reconnect | Command::SyncNow => {}
@@ -1295,13 +1295,15 @@ async fn handle(
         Command::DestroyLetters { job, account, letters } => {
             destroy_letters(accounts, cache, job, &account, &letters).await.into_iter().for_each(notify);
         }
-        // Перенос в базе, задания и экспорт — в потоке ядра (`Command::routes_by`), сюда не приходят.
+        // Перенос в базе, задания и экспорт — в потоке ядра, каналы бесед — в своих потоках (`Command::routes_by`), сюда
+        // не приходят.
         cmd @ (Command::MoveLetters { .. }
         | Command::Migration(_)
         | Command::Sweep { .. }
         | Command::StopSweep { .. }
         | Command::Export { .. }
-        | Command::StopExport { .. }) => cmd.unsupported().into_iter().for_each(notify),
+        | Command::StopExport { .. }
+        | Command::Channel { .. }) => cmd.unsupported().into_iter().for_each(notify),
     }
     Ok(())
 }
@@ -1908,18 +1910,41 @@ fn raw_message(draft: &Draft) -> postman_jmap::Result<Vec<u8>> {
         .map_err(|e| postman_jmap::Error::Protocol(format!("building the message: {e}")))
 }
 
-/// Догрузить вложения оригинала (пересылка), у которых есть только blob_id (ключ кэша: оригинал мог быть в
-/// общем ящике, а уходит письмо из своего).
-async fn fill_attachments(accounts: &Accounts, cache: &Cache, draft: &mut Draft) -> postman_jmap::Result<()> {
-    for a in draft.attachments.iter_mut().filter(|a| a.data.is_empty()) {
+/// Догрузить вложения, у которых есть только blob_id (пересылка, вложения беседы новым участникам; ключ кэша:
+/// оригинал мог быть в общем ящике, а уходит письмо из своего). Не скачалось или пришло пустым — ошибка с кодом
+/// `attachment-missing:<имя>`: письмо без вложения не уходит.
+async fn fill_attachments(accounts: &Accounts, cache: &Cache, list: &mut [Attachment]) -> postman_jmap::Result<()> {
+    for a in list.iter_mut().filter(|a| a.data.is_empty()) {
         let Some(blob) = a.blob_id.clone() else { continue };
-        a.data = match cache.blob(&blob).map_err(db_err)? {
-            Some(d) => d,
-            None => {
-                let (acc, id) = accounts.locate(&blob)?;
-                acc.client.download(&acc.id, id, &a.name, &a.mime).await?
-            }
+        let got = match cache.blob(&blob).map_err(db_err)? {
+            Some(d) if !d.is_empty() => Ok(d),
+            _ => match accounts.locate(&blob) {
+                Ok((acc, id)) => acc.client.download(&acc.id, id, &a.name, &a.mime).await,
+                Err(e) => Err(e),
+            },
         };
+        match got {
+            Ok(d) if !d.is_empty() => a.data = d,
+            Ok(_) => {
+                tracing::warn!("jmap: attachment came empty before sending, the letter is not sent");
+                return Err(postman_jmap::Error::Protocol(postman_compose::missing_code(&a.name)));
+            }
+            Err(e) => {
+                tracing::warn!("jmap: attachment not downloaded before sending, the letter is not sent: {e}");
+                return Err(postman_jmap::Error::Protocol(postman_compose::missing_code(&a.name)));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Вложения черновика и — если в ответе есть новые участники — вложения беседы для них: все байты до отправки
+/// первой копии (не скачалось — не уходит ни одна).
+async fn fill_draft(accounts: &Accounts, cache: &Cache, draft: &mut Draft) -> postman_jmap::Result<()> {
+    fill_attachments(accounts, cache, &mut draft.attachments).await?;
+    let newcomers = !draft.newcomers().is_empty();
+    if let Some(share) = draft.share.as_mut().filter(|_| newcomers) {
+        fill_attachments(accounts, cache, &mut share.attachments).await?;
     }
     Ok(())
 }
@@ -1934,31 +1959,8 @@ fn sender_of<'a>(send_as: &'a [SendAs], draft: &Draft) -> postman_jmap::Result<&
         .ok_or_else(|| postman_jmap::Error::Protocol("no Identity on the server to send from".into()))
 }
 
-/// Отправить из аккаунта отправителя: черновик — в его «Черновики», копия — в его «Отправленные». Сервер держит
-/// письмо до срока (`release`) — отправка, которую можно отменить.
-async fn send(
-    accounts: &Accounts,
-    cache: &Cache,
-    send_as: &[SendAs],
-    draft: &Draft,
-    replace: Option<&str>,
-    release: Release,
-) -> postman_jmap::Result<Option<Scheduled>> {
-    let mut draft = draft.clone();
-    fill_attachments(accounts, cache, &mut draft).await?;
-    let draft = &draft;
-    let sender = sender_of(send_as, draft)?;
-    let acc = accounts.by_scope(sender.scope.as_deref()).ok_or_else(|| postman_jmap::Error::Protocol("the sender's account is gone".into()))?;
-    let envelope = Envelope { mail_from: sender.identity.email.clone(), rcpt_to: draft.recipients().map(|a| a.email.clone()).collect() };
-    let (drafts, sent) = (mailbox_by_role(cache, acc.scope(), "drafts")?, mailbox_by_role(cache, acc.scope(), "sent")?);
-    // Без FUTURERELEASE окна «Отменить» нет — письмо уходит сразу; «Отправить позже» — ошибка, а не отправка.
-    let release = match release {
-        Release::After(_) if send_later::max_delay(acc.client.max_delayed_send()) == 0 => Release::Now,
-        Release::At(_) if send_later::max_delay(acc.client.max_delayed_send()) == 0 => {
-            return Err(postman_jmap::Error::Protocol("the server does not support delayed sending".into()));
-        }
-        r => r,
-    };
+/// Письмо копии в байты: подпись и шифрование S/MIME, как у черновика.
+fn sealed(draft: &Draft) -> postman_jmap::Result<Vec<u8>> {
     let mut raw = raw_message(draft)?;
     // Подпись S/MIME (S5-12 Ф3) — молча: нужен PIN, нет карты или сертификата — письмо не уходит, ошибка с кодом
     // (`smime-sign:<код>`) — строкой во вкладке письма.
@@ -1970,47 +1972,181 @@ async fn send(
     if !draft.encrypt_to.is_empty() {
         raw = postman_core::smime::seal_outgoing(&raw, &draft.encrypt_to).map_err(|e| postman_jmap::Error::Protocol(seal_code(&e)))?;
     }
-    let sub = acc.client.submit(raw, &sender.identity.id, &envelope, &drafts, &sent, release.to_jmap(), &server_words(&draft.keywords)).await?;
+    Ok(raw)
+}
+
+/// Конверты копий письма ([`Draft::outgoing`]): письмо, конверт и класть ли копию в «Отправленные». Копии новым
+/// участникам — первыми: не ушли они — не уходит и основная.
+fn envelopes(draft: &Draft, mail_from: &str) -> Vec<(Draft, Envelope, bool)> {
+    let mut out: Vec<(Draft, Envelope, bool)> =
+        draft.outgoing().into_iter().map(|c| (c.draft, Envelope { mail_from: mail_from.to_owned(), rcpt_to: c.rcpt }, c.keep)).collect();
+    out.sort_by_key(|c| c.2);
+    out
+}
+
+/// Отправить из аккаунта отправителя: черновик — в его «Черновики», копия — в его «Отправленные». Сервер держит
+/// письмо до срока (`release`) — отправка, которую можно отменить. В ответе с новыми участниками — две копии
+/// (решение владельца 2026-11-13): копия с вложениями беседы — только им (`envelope.rcptTo`), у себя не хранится;
+/// её отправка отменяется вместе с основной ([`COMPANIONS`]).
+async fn send(
+    accounts: &Accounts,
+    cache: &Cache,
+    send_as: &[SendAs],
+    draft: &Draft,
+    replace: Option<&str>,
+    release: Release,
+) -> postman_jmap::Result<Option<Scheduled>> {
+    let mut draft = draft.clone();
+    fill_draft(accounts, cache, &mut draft).await?;
+    let draft = &draft;
+    let sender = sender_of(send_as, draft)?;
+    let acc = accounts.by_scope(sender.scope.as_deref()).ok_or_else(|| postman_jmap::Error::Protocol("the sender's account is gone".into()))?;
+    let (drafts, sent) = (mailbox_by_role(cache, acc.scope(), "drafts")?, mailbox_by_role(cache, acc.scope(), "sent")?);
+    // Без FUTURERELEASE окна «Отменить» нет — письмо уходит сразу; «Отправить позже» — ошибка, а не отправка.
+    let release = match release {
+        Release::After(_) if send_later::max_delay(acc.client.max_delayed_send()) == 0 => Release::Now,
+        Release::At(_) if send_later::max_delay(acc.client.max_delayed_send()) == 0 => {
+            return Err(postman_jmap::Error::Protocol("the server does not support delayed sending".into()));
+        }
+        r => r,
+    };
+    // Все копии — в байты до первой отправки: ошибка сборки или подписи — до того, как что-то ушло.
+    let copies = envelopes(draft, &sender.identity.email)
+        .into_iter()
+        .map(|(d, env, keep)| Ok((sealed(&d)?, env, keep)))
+        .collect::<postman_jmap::Result<Vec<_>>>()?;
+    let mut companions: Vec<String> = Vec::new();
+    let mut main = None;
+    for (raw, envelope, keep) in copies {
+        let r = if keep {
+            acc.client.submit(raw, &sender.identity.id, &envelope, &drafts, &sent, release.to_jmap(), &server_words(&draft.keywords)).await
+        } else {
+            acc.client.submit_unsaved(raw, &sender.identity.id, &envelope, &drafts, release.to_jmap()).await
+        };
+        let sub = match r {
+            Ok(s) => s,
+            Err(e) => {
+                // Основная не ушла — копию новым участникам, которую сервер ещё держит, не отправлять.
+                for c in &companions {
+                    if let Ok((a, id)) = accounts.locate(c) {
+                        let _ = a.client.cancel_submission(id).await;
+                    }
+                }
+                return Err(e);
+            }
+        };
+        if keep {
+            main = Some(sub);
+        } else if sub.pending {
+            companions.push(acc.key(&sub.submission_id));
+        }
+    }
+    let sub = main.ok_or_else(|| postman_jmap::Error::Protocol("no copy of the letter to keep".into()))?;
     if let Some(old) = replace {
         let (acc, id) = accounts.locate(old)?;
         acc.client.destroy_email(id).await?;
     }
-    Ok((sub.pending && release != Release::Now).then(|| Scheduled {
+    let scheduled = (sub.pending && release != Release::Now).then(|| Scheduled {
         submission: acc.key(&sub.submission_id),
         email: acc.key(&sub.email_id),
         send_at: sub.send_at.unwrap_or_else(|| jiff::Timestamp::now().as_second()),
-    }))
+    });
+    if let Some(s) = scheduled.as_ref().filter(|_| !companions.is_empty()) {
+        let mut all = read_companions(cache);
+        all.insert(s.submission.clone(), companions);
+        write_companions(cache, &all);
+    }
+    Ok(scheduled)
+}
+
+/// Состояние кэша: отправка письма → отправки его копий новым участникам, которые сервер ещё держит. «Отменить» и
+/// отмена отложенного отменяют их вместе с основной; в список отложенных они не попадают. В кэше, а не в памяти:
+/// «Отправить позже» переживает перезапуск.
+const COMPANIONS: &str = "jmap.companions";
+
+fn read_companions(cache: &Cache) -> BTreeMap<String, Vec<String>> {
+    cache.state(COMPANIONS).ok().flatten().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+fn write_companions(cache: &Cache, all: &BTreeMap<String, Vec<String>>) {
+    let r = if all.is_empty() {
+        cache.remove_state(COMPANIONS)
+    } else {
+        match serde_json::to_string(all) {
+            Ok(s) => cache.set_state(COMPANIONS, &s),
+            Err(e) => return tracing::warn!("jmap: companion submissions not stored: {e}"),
+        }
+    };
+    if let Err(e) = r {
+        tracing::warn!("jmap: companion submissions not stored: {e}");
+    }
+}
+
+/// Отменить копии новым участникам вместе с основной отправкой `submission`.
+async fn cancel_companions(accounts: &Accounts, cache: &Cache, submission: &str) {
+    let mut all = read_companions(cache);
+    let Some(list) = all.remove(submission) else { return };
+    for c in &list {
+        let cancelled = match accounts.locate(c) {
+            Ok((acc, id)) => acc.client.cancel_submission(id).await.map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        };
+        if let Err(e) = cancelled {
+            tracing::warn!("jmap: companion submission not cancelled: {e}");
+        }
+    }
+    write_companions(cache, &all);
 }
 
 /// Не отправлять письмо шага поручения, которое держит сервер, и удалить его (в «Черновики» оно не нужно).
-async fn withhold(accounts: &Accounts, s: &Scheduled) -> Result<(), UnsendError> {
+async fn withhold(accounts: &Accounts, cache: &Cache, s: &Scheduled) -> Result<(), UnsendError> {
     let (acc, submission) = accounts.locate(&s.submission)?;
     acc.client.cancel_submission(submission).await?;
+    cancel_companions(accounts, cache, &s.submission).await;
     let (acc, email) = accounts.locate(&s.email)?;
     acc.client.destroy_email(email).await?;
     Ok(())
 }
 
-/// Отменить отправку, которую держит сервер: письмо — обратно в «Черновики» аккаунта отправителя.
+/// Отменить отправку, которую держит сервер: письмо — обратно в «Черновики» аккаунта отправителя; копии новым
+/// участникам — отменить.
 async fn unsend(accounts: &Accounts, cache: &Cache, s: &Scheduled) -> Result<(), UnsendError> {
     let (acc, submission) = accounts.locate(&s.submission)?;
     let email = unscoped(&s.email).1;
     let (drafts, sent) = (mailbox_by_role(cache, acc.scope(), "drafts")?, mailbox_by_role(cache, acc.scope(), "sent")?);
-    acc.client.unsend(submission, email, &drafts, &sent).await
+    acc.client.unsend(submission, email, &drafts, &sent).await?;
+    cancel_companions(accounts, cache, &s.submission).await;
+    Ok(())
 }
 
-/// Отложенные отправки своего аккаунта и общих ящиков, от которых можно отправлять → `Event::Scheduled`.
-async fn notify_scheduled(accounts: &Accounts, send_as: &[SendAs], notify: &impl Fn(Event)) {
+/// Отложенные отправки своего аккаунта и общих ящиков, от которых можно отправлять → `Event::Scheduled`. Копии
+/// новым участникам — не отдельными строками: они отменяются вместе с основной.
+async fn notify_scheduled(accounts: &Accounts, cache: &Cache, send_as: &[SendAs], notify: &impl Fn(Event)) {
     let mut list = Vec::new();
+    let mut complete = true;
     let sending = std::iter::once(&accounts.own).chain(accounts.shared.iter().filter(|a| send_as.iter().any(|f| f.scope.as_deref() == a.scope())));
     for acc in sending {
         // Не прочиталось — списка этого аккаунта нет; письма всё равно уйдут в срок (их держит сервер).
-        let Ok(pending) = acc.client.pending_submissions().await else { continue };
+        let Ok(pending) = acc.client.pending_submissions().await else {
+            complete = false;
+            continue;
+        };
         list.extend(
             pending
                 .into_iter()
                 .filter_map(|p| Some(Scheduled { send_at: p.send_at_unix()?, submission: acc.key(&p.id), email: acc.key(&p.email_id) })),
         );
+    }
+    let mut companions = read_companions(cache);
+    let hidden: HashSet<String> = companions.values().flatten().cloned().collect();
+    list.retain(|s| !hidden.contains(&s.submission));
+    // Основная уже ушла или отменена — её копии больше не нужны.
+    if complete {
+        let before = companions.len();
+        companions.retain(|main, _| list.iter().any(|s| &s.submission == main));
+        if companions.len() != before {
+            write_companions(cache, &companions);
+        }
     }
     list.sort_by_key(|s| s.send_at);
     notify(Event::Scheduled { list, max_delay: send_later::max_delay(accounts.own.client.max_delayed_send()) });
@@ -2063,7 +2199,7 @@ async fn respond_invite(
 /// Черновик — в «Черновики» аккаунта отправителя; id — ключ кэша.
 async fn save_draft(accounts: &Accounts, cache: &Cache, send_as: &[SendAs], draft: &Draft, replace: Option<&str>) -> postman_jmap::Result<String> {
     let mut draft = draft.clone();
-    fill_attachments(accounts, cache, &mut draft).await?;
+    fill_attachments(accounts, cache, &mut draft.attachments).await?;
     let draft = &draft;
     // Нет Identity (сервер не дал) — черновик всё равно в свой аккаунт.
     let scope = sender_of(send_as, draft).ok().and_then(|f| f.scope.clone());
@@ -2228,6 +2364,50 @@ fn row_keywords(e: &EmailSummary) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ответ с новым участником (решение владельца 2026-11-13): две копии, конверт каждой — свои адреса; копия с
+    /// вложениями беседы — первой и не в «Отправленные»; связь отправок для «Отменить» — в кэше.
+    #[test]
+    fn reply_with_newcomers_splits_the_envelope() {
+        let file = |name: &str| Attachment {
+            name: name.into(),
+            mime: "application/pdf".into(),
+            data: b"%PDF".to_vec(),
+            inline_cid: None,
+            blob_id: Some(format!("B-{name}")),
+        };
+        let draft = Draft {
+            from: Address::new("Я", "me@x.example"),
+            to: vec![Address::new("", "ivan@x.example")],
+            cc: vec![Address::new("", "olga@x.example")],
+            bcc: vec![Address::new("", "petr@x.example")],
+            subject: "RE: Отчёт".into(),
+            share: Some(postman_compose::Share {
+                known: vec!["ivan@x.example".into(), "petr@x.example".into(), "me@x.example".into()],
+                attachments: vec![file("Отчёт.pdf")],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let env = envelopes(&draft, "me@x.example");
+        let got: Vec<_> = env.iter().map(|(d, e, keep)| (e.rcpt_to.clone(), *keep, d.attachments.len())).collect();
+        assert_eq!(got, [(vec!["olga@x.example".to_owned()], false, 1), (vec!["ivan@x.example".to_owned(), "petr@x.example".to_owned()], true, 0)]);
+        assert!(env.iter().all(|(_, e, _)| e.mail_from == "me@x.example"));
+        // Без новых — одна копия всем, как раньше.
+        let mut plain = draft.clone();
+        plain.cc.clear();
+        let env = envelopes(&plain, "me@x.example");
+        assert_eq!(env.len(), 1);
+        assert_eq!(env[0].1.rcpt_to, ["ivan@x.example", "petr@x.example"]);
+
+        let cache = Cache::open_in_memory().unwrap();
+        assert!(read_companions(&cache).is_empty());
+        let all = BTreeMap::from([("s1".to_owned(), vec!["s2".to_owned()])]);
+        write_companions(&cache, &all);
+        assert_eq!(read_companions(&cache), all);
+        write_companions(&cache, &BTreeMap::new());
+        assert!(cache.state(COMPANIONS).unwrap().is_none());
+    }
 
     #[test]
     fn push_tells_mail_from_calendar() {

@@ -166,6 +166,12 @@ const SCENES: &[Scene] = &[
     scene("mail-40-reply", |_, m, cx| m.compose.inline_view().is_some_and(|c| c.read(cx).model.body.contains("**важно**")), MD_REPLY), // i18n-ok: ввод сценария
     // T1-14, T1-15: «Вид беседы» в меню письма: «Как Outlook» перестраивает список, «По умолчанию» возвращает.
     scene("mail-t114-view", |_, m, cx| view_of(m, cx).is_none() && m.list.read(cx).flat_mode(cx), VIEW),
+    // BUG-conv-view: «Вид беседы» мышью: наведение на пункт, щелчок по «Как Outlook» и «По умолчанию» меняет список.
+    // BUG-cat-button: «+ категория» в шапке письма — только список категорий у кнопки; щелчок меняет категорию (тост).
+    scene("mail-bug-cat-button", |_, m, cx| m.menu.is_none() && m.toasts.read(cx).on_screen() > 0, CAT_BUTTON),
+    scene("mail-bug-view-mouse", |_, m, cx| view_of(m, cx).is_none() && m.list.read(cx).flat_mode(cx) && m.menu.is_none(), VIEW_MOUSE),
+    // BUG-conv-preview: «Стопка» в «Настройки → Чтение» — карточка «Предпросмотр» рисует стопку (снимок).
+    scene("mail-bug-conv-preview", |_, _, cx| crate::prefs::get(cx).reading.conversation == Conversation::Stack, CONV_PREVIEW),
     // T1-16б, шаги 2, 3: при «Сначала новые» Ctrl+→ ведёт к более старому письму; кнопка порядка меняет настройку.
     from("mail-t116-order", newest, |_, _, cx| crate::prefs::get(cx).reading.thread_order == ThreadOrder::OldestFirst, ORDER),
     // Раздел 31, шаги 5, 7: «как Outlook»: → разворачивает, ещё → — к письму, ← обратно; Ctrl+щелчок выбирает всю беседу.
@@ -1304,6 +1310,45 @@ const VIEW: &[Input] = &[
     Input::Keys(&["down", "down", "down", "enter"]),
 ];
 
+const CONV_PREVIEW: &[Input] = &[
+    READY,
+    Input::Run(settings_reading),
+    until!(|m, cx| screens::settings_on(m, SettingsPage::Reading, cx)),
+    until!(|_, _| screens::spotted("settings-conv-1").is_some()),
+    Input::Click(at!("settings-conv-1"), Held::No),
+];
+
+const CAT_BUTTON: &[Input] = &[
+    READY,
+    LEFT,
+    OPENED,
+    Input::Press("reading-add-category"),
+    until!(|m, _| m.menu.as_ref().is_some_and(|x| x.picker() && x.sub() == Some(Sub::Category))),
+    until!(|_, _| screens::spotted("menu-cat-0").is_some()),
+    Input::Click(at!("menu-cat-0"), Held::No),
+];
+
+const VIEW_MOUSE: &[Input] = &[
+    READY,
+    RIGHT,
+    MENU,
+    until!(|_, _| screens::spotted("menu-item-15").is_some()),
+    Input::Move(at!("menu-item-15")),
+    until!(|m, _| m.menu.as_ref().is_some_and(|x| x.sub() == Some(Sub::View))),
+    until!(|_, _| screens::spotted("menu-view-2").is_some()),
+    Input::Move(at!("menu-view-2")),
+    Input::Click(at!("menu-view-2"), Held::No),
+    until!(|m, cx| view_of(m, cx) == Some(Conversation::Outlook) && !m.list.read(cx).flat_mode(cx) && m.menu.is_none()),
+    RIGHT,
+    MENU,
+    until!(|_, _| screens::spotted("menu-item-15").is_some()),
+    Input::Move(at!("menu-item-15")),
+    until!(|m, _| m.menu.as_ref().is_some_and(|x| x.sub() == Some(Sub::View))),
+    until!(|_, _| screens::spotted("menu-view-3").is_some()),
+    Input::Move(at!("menu-view-3")),
+    Input::Click(at!("menu-view-3"), Held::No),
+];
+
 fn view_of(m: &Mailer, cx: &App) -> Option<Conversation> {
     let mailbox = m.list.read(cx).mailbox.clone()?;
     crate::prefs::get(cx).reading.folders.get(&mailbox).copied()
@@ -1825,7 +1870,7 @@ fn reminder_done(_: &Scene, m: &Mailer, cx: &App) -> bool {
 /// Пункты меню письма (порядок — `menu.rs`).
 const ITEM_FIRST_MANY: usize = 3;
 const ITEM_CATEGORY: usize = 6;
-const ITEM_PHISHING: usize = 16;
+const ITEM_PHISHING: usize = 18;
 
 const MENU_MOUSE: &[Input] = &[
     READY,

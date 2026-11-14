@@ -98,6 +98,9 @@ enum Item {
     /// Правила из письма (T2-50, макет `Bulk`): «Всегда перемещать от этого отправителя ▸», «Заблокировать отправителя».
     AlwaysMove,
     Block,
+    /// «Закрепить / открепить» (CMF-02) и «Заглушить беседу / вернуть звук» (CMF-01).
+    Pin,
+    Mute,
 }
 
 /// Пункты группами (разделитель между группами), порядок — S5-08.
@@ -106,6 +109,7 @@ const GROUPS: &[&[Item]] = &[
     &[Item::Seen, Item::Flag, Item::Category],
     &[Item::Due, Item::Remind, Item::Wait, Item::Expire],
     &[Item::Move, Item::Archive, Item::Delete],
+    &[Item::Pin, Item::Mute],
     &[Item::Export],
     &[Item::View],
     &[Item::AlwaysMove, Item::Block, Item::Phishing],
@@ -166,6 +170,8 @@ impl Item {
             Item::Export => crate::export::EXPORT,
             Item::AlwaysMove => glyph::RULES,
             Item::Block => BLOCK,
+            Item::Pin => glyph::PIN,
+            Item::Mute => glyph::MUTED,
         }
     }
 
@@ -188,6 +194,8 @@ impl Item {
             Item::Delete => "mail.delete",
             Item::Phishing => "mail.report_phishing",
             Item::Export => "mail.export",
+            Item::Pin => "mail.pin",
+            Item::Mute => "mail.mute",
             // Правила из письма — там, где у сервера есть правила.
             Item::AlwaysMove | Item::Block => "settings.rules",
             Item::Category | Item::View => return None,
@@ -214,12 +222,19 @@ pub(crate) struct Menu {
     focus: FocusHandle,
     /// Фокус — меню (на следующем кадре: ему нужно окно).
     focus_pending: bool,
+    /// Только подменю у кнопки («+ категория» в панели чтения), без пунктов меню письма.
+    picker: bool,
 }
 
 impl Menu {
     /// Открытое подменю (сценарии).
     pub(crate) fn sub(&self) -> Option<Sub> {
         self.sub
+    }
+
+    /// Открыто только подменю (без пунктов меню письма).
+    pub(crate) fn picker(&self) -> bool {
+        self.picker
     }
 
     /// Над сколькими письмами меню (сценарии).
@@ -299,7 +314,20 @@ impl Mailer {
     ) {
         let features = crate::features::get(cx);
         let cursor = sub.and_then(|s| items(features).position(|it| it.sub() == Some(s))).unwrap_or(0);
-        let mut menu = Menu { at, ids, row, unread, unflagged, cursor, sub, sub_cursor: 0, features, focus: cx.focus_handle(), focus_pending: true };
+        let mut menu = Menu {
+            at,
+            ids,
+            row,
+            unread,
+            unflagged,
+            cursor,
+            sub,
+            sub_cursor: 0,
+            features,
+            focus: cx.focus_handle(),
+            focus_pending: true,
+            picker: false,
+        };
         if !menu.item().is_some_and(|it| menu.enabled(it)) {
             menu.step(1);
         }
@@ -334,6 +362,15 @@ impl Mailer {
             m.sub = Some(Sub::Category);
             m.cursor = items(m.features).position(|it| it == Item::Category).unwrap_or(0);
             m.sub_cursor = 0;
+        }
+    }
+
+    /// «+ категория» в панели чтения: только список категорий у кнопки (`at`), над открытым письмом.
+    pub(crate) fn category_picker(&mut self, at: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(row) = self.reading.read(cx).reading.as_ref().map(|r| r.row.clone()) else { return };
+        self.open_menu(at, vec![row.id.clone()], None, !row.seen, !row.flagged, Some(Sub::Category), cx);
+        if let Some(m) = &mut self.menu {
+            m.picker = true;
         }
     }
 
@@ -404,6 +441,8 @@ impl Mailer {
             Item::Delete => self.ask(ids, Ask::Trash, cx),
             Item::Phishing => self.ask(ids, Ask::Phishing, cx),
             Item::Export => self.export_ask(crate::export::What::Letters(ids), cx),
+            Item::Pin => self.pin_ids(ids, cx),
+            Item::Mute => self.mute_ids(ids, cx),
             Item::Block => {
                 if let Some((_, r)) = row {
                     self.block_sender(r, cx);
@@ -502,6 +541,11 @@ impl Mailer {
                     m.sub_cursor = 0;
                 }
             }
+            "left" if m.picker => {
+                self.close_menu(cx);
+                cx.stop_propagation();
+                return;
+            }
             "left" => m.sub = None,
             "enter" | "space" => {
                 if in_sub {
@@ -580,6 +624,17 @@ impl Mailer {
                     Item::Export => tr!("export-menu"),
                     Item::AlwaysMove => tr!("menu-always-move"),
                     Item::Block => tr!("menu-block"),
+                    // Одна строка — по её признаку; выделение — оба действия в названии.
+                    Item::Pin => match &m.row {
+                        Some((_, r)) if postman_core::pin::is_pinned(r) => tr!("comfort-menu-unpin"),
+                        Some(_) => tr!("comfort-menu-pin"),
+                        None => tr!("cmd-mail-pin"),
+                    },
+                    Item::Mute => match &m.row {
+                        Some((_, r)) if postman_core::mute::is_muted(r) => tr!("comfort-menu-unmute"),
+                        Some(_) => tr!("comfort-menu-mute"),
+                        None => tr!("cmd-mail-mute"),
+                    },
                 };
                 let key = it.command(m.unread).map(|c| key_hint(c, cx)).unwrap_or_default();
                 let glyph_el = if it == Item::Phishing {
@@ -634,7 +689,9 @@ impl Mailer {
             let extra = if s == Sub::Category { SEP_H } else { 0. };
             let h = (n as f32 * ITEM_H + extra + 8.).min(SUB_MAX_H);
             let left = if sub_right { x + WIDTH + 6. } else { x - SUB_WIDTH - 6. };
-            Bounds::new(point(px(left), px(y + at - 5.)), size(px(SUB_WIDTH), px(h)))
+            // Внизу окна — выше пункта (BUG-conv-view): нижние пункты не уходят за край.
+            let top = (y + at - 5.).min(vh - h - 8.).max(8.);
+            Bounds::new(point(px(left), px(top)), size(px(SUB_WIDTH), px(h)))
         });
         let sub = m.sub.zip(sub_top).map(|(s, at)| {
             let mut sc = div().flex().flex_col();
@@ -721,7 +778,7 @@ impl Mailer {
                 .occlude()
                 .absolute()
                 .left(px(left))
-                .top(px(at - 5.))
+                .top(px(sub_bounds.map_or(at - 5., |b| f32::from(b.origin.y) - y)))
                 .w(px(SUB_WIDTH))
                 .max_h(px(SUB_MAX_H))
                 .overflow_y_scroll()
@@ -734,6 +791,32 @@ impl Mailer {
                 .child(sc)
         });
         let focus = m.focus.clone();
+        if m.picker {
+            // Только подменю — у кнопки, в пределах окна.
+            let h = sub_bounds.map_or(0., |b| f32::from(b.size.height));
+            let left = f32::from(m.at.x).min(vw - SUB_WIDTH - 8.).max(8.);
+            let top = f32::from(m.at.y).min(vh - h - 8.).max(8.);
+            return Some(
+                div()
+                    .id("context-menu")
+                    .key_context("ContextMenu")
+                    .track_focus(&focus)
+                    .occlude()
+                    .absolute()
+                    .left(px(left))
+                    .top(px(top))
+                    .w(px(SUB_WIDTH))
+                    .h(px(h))
+                    .text_size(px(13.))
+                    .text_color(l.text())
+                    .children(sub.map(|s| s.left(px(0.)).top(px(0.))))
+                    .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| this.menu_key(ev, cx)))
+                    .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                        this.close_menu(cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
         Some(
             div()
                 .id("context-menu")

@@ -70,6 +70,9 @@ pub(crate) mod glyph {
     pub(crate) const FORWARD: char = '\u{E89C}';
     pub(crate) const DELETE: char = '\u{E74D}';
     pub(crate) const FLAG: char = '\u{E7C1}';
+    /// Беседа без звука (CMF-01) — «RingerSilent»; закреплённое письмо (CMF-02) — «Pin» Segoe Fluent Icons.
+    pub(crate) const MUTED: char = '\u{E7ED}';
+    pub(crate) const PIN: char = '\u{E718}';
     pub(crate) const MORE: char = '\u{E712}';
     pub(crate) const SEARCH: char = '\u{E721}';
     pub(crate) const RULES: char = '\u{E71C}';
@@ -149,14 +152,29 @@ pub(crate) const TITLEBAR_H: f32 = 44.0;
 /// Значок приложения: 12 px слева, 20 px значок, 14 px до разделов.
 #[cfg(not(target_os = "macos"))]
 const W_APP_ICON: f32 = 46.0;
-/// Кнопка раздела, зазор между кнопками; от последней до разделителя и от него до вкладок.
+/// Кнопка раздела, зазор между кнопками; от последней до разделителя и от него до вкладок. macOS (макет
+/// `MainMacFull`, разделы в заголовке в полноэкранном режиме) — 36 × 32.
+#[cfg(not(target_os = "macos"))]
 const W_SECTION: f32 = 34.0;
+#[cfg(not(target_os = "macos"))]
 const H_SECTION: f32 = 30.0;
+#[cfg(target_os = "macos")]
+const W_SECTION: f32 = 36.0;
+#[cfg(target_os = "macos")]
+const H_SECTION: f32 = 32.0;
+/// macOS (макет `MainMac`): разделы над деревом папок — высота кнопки и зазор.
+#[cfg(target_os = "macos")]
+const H_SECTION_BAR: f32 = 32.0;
+#[cfg(target_os = "macos")]
+const SECTION_BAR_GAP: f32 = 4.0;
 const SECTION_GAP: f32 = 2.0;
 const SECTIONS_END: f32 = 10.0;
 const TABS_START: f32 = 8.0;
-/// Высота вкладки в заголовке (макет `MainNav_title`).
+/// Высота вкладки в заголовке (макет `MainNav_title`; macOS — `MainMac`, вкладка по середине заголовка).
+#[cfg(not(target_os = "macos"))]
 const H_TAB: f32 = 34.0;
+#[cfg(target_os = "macos")]
+const H_TAB: f32 = 32.0;
 /// Шестерёнка «Настройки».
 const W_SETTINGS: f32 = 40.0;
 /// Вкладка: ширина и скругление верха.
@@ -389,12 +407,16 @@ impl Mailer {
     }
 
     /// Заголовок окна: [значок][разделы][вкладки][перетаскивание][настройки][─ □ ✕].
-    pub(crate) fn titlebar(&self, l: &Look, window: &Window, cx: &mut Context<Self>) -> Div {
+    /// Заголовок окна. `bar_sections` — macOS (макет `MainMac`): разделы стоят над деревом папок в строке команд,
+    /// в заголовке их нет; иначе (полный экран, вкладка без строки команд, другие ОС) — в заголовке.
+    pub(crate) fn titlebar(&self, l: &Look, window: &Window, bar_sections: bool, cx: &mut Context<Self>) -> Div {
         let active = self.tabs.active().id;
+        let mac = cfg!(target_os = "macos");
         // «Закрыть вкладку (Ctrl+W)»: подсказка и плашка KeyTips у активной (S5-18).
         let close_tip = crate::keytips::tip("tab.close", cx);
         let close_key = crate::keytips::key("tab.close", cx);
-        let tabs = self.tabs.iter().map(|t| {
+        // macOS (макет `MainMac`): вкладки — только объекты; главную вкладку представляют разделы.
+        let tabs = self.tabs.iter().filter(|t| !(mac && t.kind == TabKind::Main)).map(|t| {
             let on = t.id == active;
             let id = t.id;
             let close = t.kind.closable().then(|| {
@@ -429,7 +451,7 @@ impl Mailer {
             let (title, dirty) = self.tab_title(t, cx);
             let full = title.clone();
             let letter = matches!(t.kind, TabKind::Compose(_));
-            div()
+            let tab = div()
                 .id(("tab", id as usize))
                 .group(group)
                 .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(full.clone()).build(window, cx))
@@ -438,7 +460,9 @@ impl Mailer {
                 .max_w(px(W_TAB_MAX))
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(px(8.));
+            #[cfg(not(target_os = "macos"))]
+            let tab = tab
                 .pl(px(14.))
                 .pr(px(if close.is_some() { 6. } else { 14. }))
                 .rounded_t(l.px(Metric::RadiusOverlay))
@@ -446,8 +470,23 @@ impl Mailer {
                 .when(!on, |d| d.text_color(l.text2()).hover(|d| d.bg(l.hover())))
                 .when(letter, |d| d.child(icon(glyph::NEW_MAIL, 12.)))
                 .when(t.kind == TabKind::Meeting, |d| d.child(icon(crate::calendar::g::CALENDAR, 13.)))
-                .when(t.kind == TabKind::Mail, |d| d.child(icon(glyph::MAIL, 12.)))
-                .child(div().flex_1().min_w_0().truncate().child(title))
+                .when(t.kind == TabKind::Mail, |d| d.child(icon(glyph::MAIL, 12.)));
+            // macOS (макет `MainMac`): без плашки, активная — полужирная и подчёркнута акцентом; значок 16 px по типу.
+            #[cfg(target_os = "macos")]
+            let tab = {
+                let (ico, tint) = match t.kind {
+                    TabKind::Meeting => (icons::CALENDAR, Some(Pm::IconPink)),
+                    TabKind::Settings => (icons::SETTINGS, None),
+                    _ => (icons::MAIL, Some(Pm::IconBlue)),
+                };
+                let _ = letter;
+                tab.pl(px(12.))
+                    .pr(px(if close.is_some() { 6. } else { 10. }))
+                    .when(on, |d| d.font_weight(FontWeight::SEMIBOLD).text_color(l.text()).border_b_2().border_color(l.accent_text()))
+                    .when(!on, |d| d.text_color(l.text2()).hover(|d| d.bg(l.hover())))
+                    .child(icons::icon(ico, 16., tint.map_or(l.text2(), |p| l.pm(p))))
+            };
+            tab.child(div().flex_1().min_w_0().truncate().child(title))
                 // Несохранённый черновик — точка (DESIGN «Новое письмо», макет вкладки).
                 .when(dirty, |d| {
                     d.child(
@@ -489,11 +528,17 @@ impl Mailer {
             d
         };
         let max = if window.is_maximized() { glyph::RESTORE } else { glyph::MAX };
-        // macOS (MAC-02): слева — место «светофоров» системы вместо значка приложения, справа своих «─ □ ✕» нет.
-        let mac = cfg!(target_os = "macos");
+        // macOS (MAC-02, макеты `MainMac`, `MainMacFull`): слева — место «светофоров» системы вместо значка приложения,
+        // справа своих «─ □ ✕» и шестерёнки нет (настройки — меню приложения, ⌘,). В полном экране «светофоров» нет:
+        // на их месте — разделы.
         #[cfg(target_os = "macos")]
-        let leading =
-            drag_area(div().id("traffic-lights").children(crate::screens::spot("traffic-lights")).w(px(W_TRAFFIC_LIGHTS)).h_full().flex_none());
+        let leading = if window.is_fullscreen() {
+            drag_gap("traffic-lights", TABS_START)
+        } else {
+            drag_area(div().id("traffic-lights").children(crate::screens::spot("traffic-lights")).w(px(W_TRAFFIC_LIGHTS)).h_full().flex_none())
+        };
+        #[cfg(not(target_os = "macos"))]
+        let _ = bar_sections;
         #[cfg(not(target_os = "macos"))]
         let leading = drag_area(
             div()
@@ -515,9 +560,20 @@ impl Mailer {
             .items_center()
             .text_size(px(13.))
             .child(leading)
-            .children(self.sections(l, cx))
+            .when(!bar_sections, |d| d.children(self.sections(l, cx)))
+            .when(bar_sections, |d| d.child(drag_gap("nav-tabs", TABS_START)))
             // Обрезка только по ширине: плашка KeyTips «×» активной вкладки выходит за низ строки.
-            .child(div().h_full().flex().items_end().gap(px(2.)).min_w_0().overflow_x_hidden().children(tabs))
+            .child(
+                div()
+                    .h_full()
+                    .flex()
+                    .when(!mac, |d| d.items_end())
+                    .when(mac, |d| d.items_center())
+                    .gap(px(2.))
+                    .min_w_0()
+                    .overflow_x_hidden()
+                    .children(tabs),
+            )
             // «+» — новая вкладка почты (T2-24, макет `Main`, Ctrl+T).
             .child({
                 let tip = crate::keytips::tip("tab.new", cx);
@@ -539,7 +595,7 @@ impl Mailer {
             })
             // Пустое место — заголовок окна: перетаскивание, двойной щелчок — развернуть.
             .child(drag_area(div().id("drag").children(crate::screens::spot("drag")).flex_1().min_w(px(48.)).h_full()))
-            .children(self.settings_button(l, cx))
+            .children(self.settings_button(l, cx).filter(|_| !mac))
             .when(!mac, |d| {
                 d.child(caption("caption-min", glyph::MIN, WindowControlArea::Min, false))
                     .child(caption("caption-max", max, WindowControlArea::Max, false))
@@ -559,21 +615,45 @@ impl Mailer {
         if self.first_run() {
             return Vec::new();
         }
-        // «Нет у сервера — нет на экране» (S7-03): раздела, которого у сервера нет, в заголовке нет.
-        let features = crate::features::get(cx);
         let mut out = Vec::new();
-        for (i, s) in SECTIONS.into_iter().filter(|s| crate::features::available(s.command, features)).enumerate() {
-            let on = self.tabs.active().kind.shows_mail() && self.section == s.section;
+        for (i, b) in self.section_buttons(l, cx).into_iter().enumerate() {
             if i > 0 {
                 out.push(drag_gap(("nav-gap", i), SECTION_GAP).into_any_element());
             }
+            out.push(b.w(px(W_SECTION)).h(px(H_SECTION)).flex_none().into_any_element());
+        }
+        // Разделитель 1 px: в тёмной теме макет берёт цвет разделителей панелей, в светлых — рамки контролов.
+        let line = if l.dark() { l.border() } else { l.stroke() };
+        out.push(
+            drag_gap("nav-end", SECTIONS_END + 1.)
+                .flex()
+                .items_center()
+                .justify_end()
+                .child(div().w(px(1.)).h(px(H_SECTION)).bg(line))
+                .into_any_element(),
+        );
+        out.push(drag_gap("nav-tabs", TABS_START).into_any_element());
+        out
+    }
+
+    /// macOS (макет `MainMac`): разделы над деревом папок, в строке команд — кнопки поровну на ширину `w`.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn bar_sections(&self, l: &Look, w: f32, cx: &App) -> Div {
+        let buttons = self.section_buttons(l, cx).into_iter().map(|b| b.flex_1().h(px(H_SECTION_BAR)));
+        div().flex_none().w(px(w)).flex().items_center().gap(px(SECTION_BAR_GAP)).children(buttons)
+    }
+
+    /// Кнопки разделов, которые есть у сервера, без размера: его задаёт место (заголовок, строка над папками).
+    fn section_buttons(&self, l: &Look, cx: &App) -> Vec<Stateful<Div>> {
+        // «Нет у сервера — нет на экране» (S7-03): раздела, которого у сервера нет, на экране нет.
+        let features = crate::features::get(cx);
+        let mut out = Vec::new();
+        for s in SECTIONS.into_iter().filter(|s| crate::features::available(s.command, features)) {
+            let on = self.tabs.active().kind.shows_mail() && self.section == s.section;
             let action = s.action;
             let b = div()
                 .id(s.id)
                 .children(crate::screens::spot(s.id))
-                .w(px(W_SECTION))
-                .h(px(H_SECTION))
-                .flex_none()
                 .flex()
                 .items_center()
                 .justify_center()
@@ -588,19 +668,8 @@ impl Mailer {
                 .when(!on, |d| d.hover(|d| d.bg(l.hover())))
                 .child(icons::icon(s.icon, 20., l.pm(s.tint)))
                 .on_click(move |_, window, cx| window.dispatch_action(action(), cx));
-            out.push(crate::keytips::command(b, s.command, Some(tr!(s.key)), l, cx).into_any_element());
+            out.push(crate::keytips::command(b, s.command, Some(tr!(s.key)), l, cx));
         }
-        // Разделитель 1 px: в тёмной теме макет берёт цвет разделителей панелей, в светлых — рамки контролов.
-        let line = if l.dark() { l.border() } else { l.stroke() };
-        out.push(
-            drag_gap("nav-end", SECTIONS_END + 1.)
-                .flex()
-                .items_center()
-                .justify_end()
-                .child(div().w(px(1.)).h(px(H_SECTION)).bg(line))
-                .into_any_element(),
-        );
-        out.push(drag_gap("nav-tabs", TABS_START).into_any_element());
         out
     }
 

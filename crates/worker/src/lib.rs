@@ -1710,6 +1710,11 @@ mod tests {
         assert_eq!(g["kind"], "group", "{g}");
         assert_eq!(g["members"]["mailto:a@example.test"], true, "{g}");
         assert_eq!(g["members"]["urn:uuid:f81d4fae"], true, "{g}");
+        // Адреса в мессенджерах (ADR 0012): `IMPP` — JSContact `onlineServices` (их читает `ContactCard`).
+        let im = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:c2\r\nFN:Анна\r\nIMPP:https://t.me/anna\r\nEND:VCARD\r\n";
+        let c = &super::parse_contacts(im.as_bytes()).unwrap()[0];
+        let services: Vec<&str> = c["onlineServices"].as_object().into_iter().flatten().filter_map(|(_, s)| s["uri"].as_str()).collect();
+        assert_eq!(services, ["https://t.me/anna"], "{c}");
         assert!(super::parse_contacts(b"BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n").is_err());
         assert!(super::parse_contacts(b"").is_err());
     }

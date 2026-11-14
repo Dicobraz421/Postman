@@ -565,6 +565,10 @@ pub fn drive(m: &mut Mailer, window: &mut Window, cx: &mut Context<Mailer>) {
     // Следующий кадр — целиком, без кэша частей: `ready` читает часть (`m.reading`) раньше её отрисовки, gpui не
     // засчитывает части её же сущность, и `notify` части теряется — снимок показал бы прошлое письмо.
     window.on_next_frame(|window, _| window.refresh());
+    // macOS (GMAC-01): и попросить систему перерисовать окно — кадр придёт через `displayLayer:`, не дожидаясь ссылки
+    // кадров (на виртуальном дисплее CI `CAMetalDisplayLink` надолго замолкает). Без таймеров.
+    #[cfg(target_os = "macos")]
+    sys::redraw(window);
 }
 
 /// Сцена не дошла: ошибка прогона. С `POSTMAN_SCREENS_SHOT_ON_FAIL` — сообщение и снимок как есть (разбор падения сценария).
@@ -872,6 +876,9 @@ fn capture(m: &Mailer, scene: &'static Scene, window: &Window, cx: &mut Context<
             }
             cx.notify();
         });
+        // macOS (GMAC-01): кадр следующей сцены — по просьбе к системе, как в `drive`.
+        #[cfg(target_os = "macos")]
+        let _ = cx.update_window(handle, |_, window, _| sys::redraw(window));
     })
     .detach();
 }

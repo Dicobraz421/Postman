@@ -597,6 +597,7 @@ impl Dav {
                 title: &card.title,
                 group: card.group,
                 members: &card.members,
+                services: &card.services,
             };
             match old.and_then(|o| self.stored(&o.id)) {
                 Some(s) => postman_compose::vcard::patch(&s.data, &c),

@@ -7,14 +7,24 @@
 //!
 //! Здесь — без UI и сети: варианты времени в местном поясе, проверка срока, разбор введённой даты и состояние окна
 //! «Отменить» ([`Undo`]); тексты — у интерфейса.
+//!
+//! Задержка «Отменить» (CMF-03, `docs/decisions/2026-11-14-messenger-comforts.md`) — настройка 0 / 5 / 10 / 30 с
+//! ([`UNDO_DELAYS`]); путь отправки один: [`undo_release`] — что сказать серверу, [`Undo::offer`] — окно на столько же.
+//! Пути, которые держат письмо сами (IMAP, Exchange), при выходе отпускают его сразу ([`release_now`]).
 
 use std::time::{Duration, Instant};
 
 use jiff::civil::{Date, Time};
 use jiff::{ToSpan, Zoned};
 
-/// Сколько виден тост «Письмо отправлено · Отменить» (позже — настройка).
-pub const UNDO_WINDOW: Duration = Duration::from_secs(10);
+use crate::model::Release;
+
+/// Задержка «Отменить» на выбор, секунды; 0 — письмо уходит сразу, без окна.
+pub const UNDO_DELAYS: [u8; 4] = [0, 5, 10, 30];
+/// Задержка по умолчанию, секунды.
+pub const UNDO_DEFAULT: u8 = 10;
+/// Окно «Отменить» по умолчанию ([`UNDO_DEFAULT`]).
+pub const UNDO_WINDOW: Duration = Duration::from_secs(UNDO_DEFAULT as u64);
 /// Запас сервера сверх окна: тост появляется после ответа сервера, отмена в последнюю секунду окна ещё успевает.
 pub const UNDO_MARGIN: Duration = Duration::from_secs(3);
 /// Сколько сервер держит обычную отправку (`HOLDFOR`), секунды.
@@ -27,6 +37,31 @@ pub const MIN_LEAD_SECS: i64 = 60;
 /// Утро и день в вариантах меню.
 pub const MORNING: i8 = 9;
 pub const AFTERNOON: i8 = 13;
+
+/// Задержка из настройки: значение не из [`UNDO_DELAYS`] (правили файл руками) — по умолчанию.
+pub fn undo_delay(secs: u8) -> u8 {
+    if UNDO_DELAYS.contains(&secs) { secs } else { UNDO_DEFAULT }
+}
+
+/// Окно «Отменить» для задержки `secs` ([`undo_delay`]).
+pub fn undo_window(secs: u8) -> Duration {
+    Duration::from_secs(u64::from(undo_delay(secs)))
+}
+
+/// Как отправить письмо по «Отправить» с задержкой `secs`: 0 — сразу, иначе сервер (или путь) держит его окно и запас
+/// [`UNDO_MARGIN`].
+pub fn undo_release(secs: u8) -> Release {
+    match undo_delay(secs) {
+        0 => Release::Now,
+        s => Release::After(u32::from(s) + UNDO_MARGIN.as_secs() as u32),
+    }
+}
+
+/// Удержанное путём письмо уходит сейчас: срок `at` наступил или приложение выходит (`leaving`) — закрыли Postman в
+/// окне «Отменить», письмо не теряется.
+pub fn release_now<T: PartialOrd>(at: T, now: T, leaving: bool) -> bool {
+    leaving || at <= now
+}
 
 /// Сколько сервер на деле позволяет задержать письмо (секунды); 0 — отложенной отправки нет.
 pub fn max_delay(advertised: u64) -> u64 {
@@ -167,6 +202,14 @@ pub struct Offer<D> {
     pub state: OfferState,
 }
 
+impl<D> Offer<D> {
+    /// Секунд до конца окна, с округлением вверх: обратный отсчёт «Отменить (7)».
+    pub fn left(&self, now: Instant) -> u64 {
+        let d = self.until.saturating_duration_since(now);
+        d.as_secs() + u64::from(d.subsec_nanos() > 0)
+    }
+}
+
 /// Окно «Отменить» отправки: по предложению на отправленное письмо, на экране — последнее.
 #[derive(Debug)]
 pub struct Undo<D> {
@@ -181,10 +224,10 @@ impl<D> Default for Undo<D> {
 }
 
 impl<D> Undo<D> {
-    /// Письмо отправлено с задержкой: предложить «Отменить» на [`UNDO_WINDOW`].
-    pub fn offer(&mut self, scheduled: Scheduled, content: D, now: Instant) -> u64 {
+    /// Письмо отправлено с задержкой: предложить «Отменить» на `window` ([`undo_window`]).
+    pub fn offer(&mut self, scheduled: Scheduled, content: D, now: Instant, window: Duration) -> u64 {
         self.next += 1;
-        self.offers.push(Offer { id: self.next, scheduled, content, until: now + UNDO_WINDOW, state: OfferState::Open });
+        self.offers.push(Offer { id: self.next, scheduled, content, until: now + window, state: OfferState::Open });
         self.next
     }
 
@@ -307,7 +350,7 @@ mod tests {
     fn undo_offer_is_cancelled_within_the_window() {
         let t0 = Instant::now();
         let mut u = Undo::default();
-        let id = u.offer(sched("1"), "draft 1", t0);
+        let id = u.offer(sched("1"), "draft 1", t0, UNDO_WINDOW);
         assert_eq!(u.shown(t0).map(|o| o.id), Some(id));
         assert_eq!(u.next_deadline(), Some(t0 + UNDO_WINDOW));
         // «Отменить» — команда с этой отправкой; повторное нажатие — ничего.
@@ -325,8 +368,8 @@ mod tests {
     fn undo_offer_expires_and_failed_cancel_drops_it() {
         let t0 = Instant::now();
         let mut u = Undo::default();
-        let a = u.offer(sched("a"), 1, t0);
-        let b = u.offer(sched("b"), 2, t0 + Duration::from_secs(5));
+        let a = u.offer(sched("a"), 1, t0, UNDO_WINDOW);
+        let b = u.offer(sched("b"), 2, t0 + Duration::from_secs(5), UNDO_WINDOW);
         // На экране — последнее.
         assert_eq!(u.shown(t0 + Duration::from_secs(6)).map(|o| o.id), Some(b));
         // Окно первого закрылось: отменить нельзя, оно убирается; второе ещё открыто.
@@ -340,5 +383,40 @@ mod tests {
         assert!(!u.failed(2));
         assert!(u.shown(late).is_none());
         assert_eq!(u.next_deadline(), None);
+    }
+
+    /// CMF-03: задержка из настройки — что сказать серверу и сколько держать окно; 0 — сразу и без окна; чужое число —
+    /// по умолчанию.
+    #[test]
+    fn undo_delay_drives_the_release_and_the_window() {
+        assert_eq!(undo_release(0), Release::Now, "задержка 0 — сразу");
+        assert_eq!(undo_release(5), Release::After(8));
+        assert_eq!(undo_release(UNDO_DEFAULT), Release::After(UNDO_HOLD_SECS));
+        assert_eq!(undo_release(30), Release::After(33));
+        assert_eq!(undo_release(17), Release::After(UNDO_HOLD_SECS), "не из списка — по умолчанию");
+        assert_eq!(undo_window(30), Duration::from_secs(30));
+        assert_eq!(undo_window(0), Duration::ZERO);
+        // Окно на 30 с: отмена на 29-й секунде возвращает черновик, на 30-й — уже нет (письмо ушло).
+        let t0 = Instant::now();
+        let mut u = Undo::default();
+        let id = u.offer(sched("1"), "draft", t0, undo_window(30));
+        let o = u.shown(t0 + Duration::from_millis(22_500)).unwrap();
+        assert_eq!(o.left(t0 + Duration::from_millis(22_500)), 8, "отсчёт — вверх");
+        assert_eq!(o.left(t0 + Duration::from_secs(40)), 0);
+        assert!(u.cancel(id, 1, t0 + Duration::from_secs(29)).is_some());
+        assert_eq!(u.unsent(1), Some("draft"), "черновик — как был");
+        let id = u.offer(sched("2"), "late", t0, undo_window(30));
+        assert_eq!(u.cancel(id, 2, t0 + Duration::from_secs(30)), None, "по истечении — ушло");
+        assert!(u.expire(t0 + Duration::from_secs(30)));
+    }
+
+    /// CMF-03: путь держит письмо до срока; закрыли Postman раньше — уходит при выходе, а не теряется.
+    #[test]
+    fn held_letter_leaves_on_time_or_on_exit() {
+        let t0 = Instant::now();
+        let at = t0 + undo_window(10);
+        assert!(!release_now(at, t0, false), "в окне — ждёт");
+        assert!(release_now(at, at, false), "срок — уходит");
+        assert!(release_now(at, t0, true), "выход — уходит сразу");
     }
 }

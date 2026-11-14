@@ -38,6 +38,8 @@ tray-quit = Выход
 tray-tip-unread = Postman — непрочитанных: { $n }
 tray-hint-title = Postman работает в фоне
 tray-hint-body = Окно закрыто, почта синхронизируется. Значок — в области уведомлений; выход — в его меню.
+# Значок в строке меню (MAC-09): «Открыть Postman» — tray-open, «Новое письмо» — frame-new.
+menubar-quit = Выйти
 
 # Сбой запуска (журнал Windows и stderr).
 fatal-data-dir = каталог данных

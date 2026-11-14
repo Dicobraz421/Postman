@@ -414,6 +414,14 @@ pub enum Command {
     StopExport {
         job: export::ExportId,
     },
+    /// Запрос интерфейса учётке канала бесед (ADR 0012 п. 6) — в её поток ([`Route::Channel`]); ответ —
+    /// [`Event::Channel`]. Почта (`mail`) — адаптером: `channel::mail::MailSource::plan` переводит запрос в команды
+    /// выше.
+    Channel {
+        account: crate::channel::ChanAccount,
+        /// В коробке: исходящее с телом в IR не раздувает каждую команду.
+        request: Box<crate::channel::Request>,
+    },
 }
 
 impl Command {
@@ -490,6 +498,8 @@ pub enum Route {
     Core,
     /// Поток синхронизации учётной записи.
     Sync(Target),
+    /// Поток учётки канала бесед (ADR 0012 п. 6): `channel::spawn`.
+    Channel(crate::channel::ChanAccount),
 }
 
 impl Command {
@@ -500,6 +510,7 @@ impl Command {
     /// кэша, как [`Command::routes`].
     pub fn routes_by(self, homes: &dyn Homes) -> Vec<(Route, Command)> {
         let route = match &self {
+            Command::Channel { account, .. } => Route::Channel(account.clone()),
             Command::FetchRaw { letter } => homes.letter(*letter).route(),
             Command::Import { folder, .. } => homes.folder(*folder).route(),
             Command::ServerCopy { to, .. } => homes.folder(*to).route(),
@@ -519,6 +530,10 @@ impl Command {
     /// ключам кэша (префикс учётной записи); команды над [`LetterId`] здесь — в основную, их маршрут —
     /// [`Command::routes_by`].
     pub fn routes(self) -> Vec<(Target, Command)> {
+        // Учётке канала — не синхронизация почты: маршрут — [`Route::Channel`] ([`Command::routes_by`]).
+        if matches!(self, Command::Channel { .. }) {
+            return Vec::new();
+        }
         let one = |key: &str| Target::Profile(profile_of_key(key));
         let scope = |mailbox: &Option<String>| mailbox.as_deref().map_or(Target::All, one);
         let target = match &self {
@@ -1017,6 +1032,8 @@ pub enum Event {
         error: String,
     },
     Error(SyncError),
+    /// Ответ потока учётки канала бесед (ADR 0012 п. 6): чей и что.
+    Channel(crate::channel::ChanAccount, crate::channel::Update),
 }
 
 /// Путь не умеет команду ([`Command::unsupported`]): над папками, письмо целиком, выгрузку.
@@ -1120,6 +1137,19 @@ impl Notifier {
         let _ = self.events.send(e);
         (self.repaint)();
     }
+}
+
+/// Поток учётки канала бесед (ADR 0012 п. 2) с ответами в общий канал событий: `channel::Update` —
+/// [`Event::Channel`] этой учётки, затем пробуждение интерфейса. Команды — `Command::Channel` с той же учёткой.
+pub fn spawn_channel(
+    plugin: Arc<dyn crate::channel::ChannelPlugin>,
+    start: crate::channel::Start,
+    events: mpsc::Sender<Event>,
+    repaint: Box<dyn Fn() + Send>,
+) -> UnboundedSender<crate::channel::Request> {
+    let account = crate::channel::ChanAccount::new(plugin.id(), start.account.0.clone());
+    let notify = Notifier::new(events, repaint);
+    crate::channel::spawn(plugin, start, Box::new(move |u| notify.send(Event::Channel(account.clone(), u))))
 }
 
 /// Поток синхронизации учётной записи: свой рантайм tokio (один поток) и `body` в нём. Поток или рантайм не
@@ -1444,6 +1474,11 @@ mod tests {
         let sync = |s: Option<&str>| Route::Sync(Target::Profile(s.map(str::to_owned)));
         let raw = |n: u64| Command::FetchRaw { letter: LetterId(n) };
         assert_eq!(route(raw(1)), [Route::Core], "письмо «На этом компьютере» — без сети");
+        // Учётка канала бесед — своим потоком (ADR 0012 п. 6), не синхронизацией почты.
+        let chan = crate::channel::ChanAccount::new("demo", "me@example.test");
+        let to_chan = || Command::Channel { account: chan.clone(), request: Box::new(crate::channel::Request::Reconnect) };
+        assert_eq!(route(to_chan()), [Route::Channel(chan.clone())]);
+        assert!(to_chan().routes().is_empty());
         assert_eq!(route(raw(2)), [sync(Some("@2"))]);
         assert_eq!(route(raw(3)), [sync(None)], "основная учётка");
         assert_eq!(route(raw(4)), [sync(Some("@2"))], "общий ящик учётки @2");

@@ -2,7 +2,9 @@
 //! уведомлений; закрытие окна прячет его в трей, синхронизация и уведомления живут. Щелчок по значку или уведомлению
 //! Windows возвращает окно. Значок — только Windows: на macOS окно прячет система (`mac_app`), а щелчок по уведомлению
 //! возвращает окно и открывает письмо ([`mac`], MAC-04); непрочитанные «Входящих» там — бейдж на значке в Dock
-//! (MAC-07, [`badge`]). Linux (PAR-06) — значок StatusNotifierItem, как на Windows; нет хоста значков — значка нет.
+//! (MAC-07, [`badge`]) и число рядом со значком в строке меню (MAC-09, [`menu_bar_title`]): у значка меню
+//! [`menu_bar_menu`], убрать его можно настройкой «Значок в строке меню». Linux (PAR-06) — значок
+//! StatusNotifierItem, как на Windows; нет хоста значков — значка нет.
 //!
 //! Значок и уведомление сообщают о щелчке не из задачи интерфейса (оконная процедура значка, поток Windows) —
 //! событие уходит каналом ([`send`]) в задачу интерфейса.
@@ -28,13 +30,15 @@ pub(crate) enum Signal {
     Quit,
     /// Показать окно и письмо; `None` — «Входящие».
     Letter(Option<String>),
+    /// Показать окно и новое письмо (команда `mail.new`; меню значка в строке меню, MAC-09).
+    Compose,
 }
 
-#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code, reason = "tray icon exists on Windows and Linux only"))]
+#[cfg_attr(not(any(windows, target_os = "macos", target_os = "linux")), allow(dead_code, reason = "no tray icon on this OS"))]
 static TX: OnceLock<UnboundedSender<Signal>> = OnceLock::new();
 
 /// Передать событие задаче интерфейса; значка нет — никуда.
-#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code, reason = "tray icon exists on Windows and Linux only"))]
+#[cfg_attr(not(any(windows, target_os = "macos", target_os = "linux")), allow(dead_code, reason = "no tray icon on this OS"))]
 pub(crate) fn send(signal: Signal) {
     if let Some(tx) = TX.get() {
         let _ = tx.unbounded_send(signal);
@@ -42,7 +46,7 @@ pub(crate) fn send(signal: Signal) {
 }
 
 /// Подсказка значка: непрочитанные «Входящих».
-#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code, reason = "tray icon exists on Windows and Linux only"))]
+#[cfg_attr(not(any(windows, target_os = "macos", target_os = "linux")), allow(dead_code, reason = "no tray icon on this OS"))]
 pub(crate) fn tip(unread: u32) -> String {
     if unread == 0 { "Postman".to_owned() } else { tr!("tray-tip-unread", n = unread) }
 }
@@ -56,6 +60,24 @@ pub(crate) fn badge(unread: u32) -> Option<String> {
         1..=999 => Some(unread.to_string()),
         _ => Some("999+".to_owned()),
     }
+}
+
+/// Число рядом со значком в строке меню (MAC-09) — как бейдж в Dock: нет непрочитанных — только значок, больше 999
+/// — «999+».
+#[cfg_attr(not(target_os = "macos"), allow(dead_code, reason = "menu bar icon is macOS only; tested on every OS"))]
+pub(crate) fn menu_bar_title(unread: u32) -> Option<String> {
+    badge(unread)
+}
+
+/// Пункт меню значка в строке меню: что просит и ключ текста; `None` — разделитель.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code, reason = "menu bar icon is macOS only; tested on every OS"))]
+pub(crate) type MenuBarEntry = Option<(Signal, &'static str)>;
+
+/// Меню значка в строке меню (MAC-09): «Открыть Postman», «Новое письмо», разделитель, «Выйти». Номер пункта для
+/// `pets_gpui_macos::status_item` — его место в списке.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code, reason = "menu bar icon is macOS only; tested on every OS"))]
+pub(crate) fn menu_bar_menu() -> [MenuBarEntry; 4] {
+    [Some((Signal::Open, "tray-open")), Some((Signal::Compose, "frame-new")), None, Some((Signal::Quit, "menubar-quit"))]
 }
 
 /// Непрочитанные «Входящих» всех учётных записей — подсказка значка в трее и бейдж в Dock.
@@ -122,6 +144,10 @@ mod os {
                     Signal::Letter(id) => {
                         show(window);
                         events_mailer.update(cx, |m, cx| m.open_new_mail(id, cx));
+                    }
+                    Signal::Compose => {
+                        show(window);
+                        events_mailer.update(cx, |m, cx| m.open_compose(Default::default(), cx));
                     }
                 });
             }
@@ -199,12 +225,31 @@ mod os {
 }
 
 /// macOS (MAC-04): значка в трее нет, окно скрывает система; щелчок по уведомлению — вернуть окно и открыть письмо.
-/// Непрочитанные «Входящих» — бейдж на значке в Dock (MAC-07), там же, где Windows меняет подсказку значка.
+/// Непрочитанные «Входящих» — бейдж на значке в Dock (MAC-07) и число рядом со значком в строке меню (MAC-09), там
+/// же, где Windows меняет подсказку значка. Значок в строке меню — по настройке «Значок в строке меню»: настройки
+/// изменились — значок ставится или убирается сразу; сменился язык — меню собирается заново.
 #[cfg(target_os = "macos")]
 mod mac {
     use futures::StreamExt as _;
+    use pets_gpui_macos::status_item::{Item, StatusItem};
 
     use super::*;
+
+    /// Значок-шаблон «Ленты» (`postman.svg` по сетке 36 px — 18 точек вдвое): система берёт только прозрачность и
+    /// красит его под строку меню.
+    const ICON: &[u8] = include_bytes!("../res/menubar.png");
+
+    /// Значок в строке меню и что на нём показано.
+    #[derive(Default)]
+    struct MenuBar {
+        /// `None` — настройка выключена или значок не поставлен; `Drop` убирает значок.
+        item: Option<StatusItem>,
+        unread: u32,
+        /// Язык, на котором собрано меню.
+        lang: Option<String>,
+    }
+
+    impl Global for MenuBar {}
 
     pub(crate) fn init(window: &mut Window, mailer: &Entity<Mailer>, cx: &mut App) {
         let (tx, mut rx) = futures::channel::mpsc::unbounded();
@@ -213,8 +258,18 @@ mod mac {
         }
         let folders = mailer.read(cx).folders.clone();
         let mut shown = 0;
-        set_badge(&mut shown, inbox_unread(&folders, cx));
-        cx.observe(&folders, move |folders, cx| set_badge(&mut shown, inbox_unread(&folders, cx))).detach();
+        let unread = inbox_unread(&folders, cx);
+        set_badge(&mut shown, unread);
+        cx.set_global(MenuBar::default());
+        sync_menu_bar(cx);
+        set_unread(unread, cx);
+        cx.observe(&folders, move |folders, cx| {
+            let unread = inbox_unread(&folders, cx);
+            set_badge(&mut shown, unread);
+            set_unread(unread, cx);
+        })
+        .detach();
+        crate::prefs::observe_app(cx, sync_menu_bar).detach();
         let handle = window.window_handle();
         let mailer = mailer.clone();
         cx.spawn(async move |cx| {
@@ -226,6 +281,7 @@ mod mac {
                         Signal::Open => {}
                         Signal::Quit => cx.quit(),
                         Signal::Letter(id) => mailer.update(cx, |m, cx| m.open_new_mail(id, cx)),
+                        Signal::Compose => mailer.update(cx, |m, cx| m.open_compose(Default::default(), cx)),
                     }
                 });
             }
@@ -241,6 +297,63 @@ mod mac {
         *shown = unread;
         if let Err(e) = crate::sys::set_dock_badge(badge(unread).as_deref()) {
             tracing::warn!("tray: dock badge not updated: {e}");
+        }
+    }
+
+    /// Число и подсказка значка в строке меню — только когда число сменилось.
+    fn set_unread(unread: u32, cx: &mut App) {
+        let bar = cx.global_mut::<MenuBar>();
+        if bar.unread == unread {
+            return;
+        }
+        bar.unread = unread;
+        if let Some(item) = &bar.item {
+            item.set_title(menu_bar_title(unread).as_deref());
+            item.set_tip(&tip(unread));
+        }
+    }
+
+    /// Значок в строке меню по настройке: включена — поставить (или собрать меню заново на новом языке), выключена —
+    /// убрать.
+    fn sync_menu_bar(cx: &mut App) {
+        let (on, lang) = crate::prefs::with(cx, |p| (p.general.menu_bar_icon, p.general.language.clone()));
+        let bar = cx.global_mut::<MenuBar>();
+        if !on {
+            bar.item = None;
+            return;
+        }
+        if bar.item.is_some() && bar.lang == lang {
+            return;
+        }
+        if bar.item.is_none() {
+            let on_menu = |id: u32| {
+                if let Some(Some((signal, _))) = menu_bar_menu().get(id as usize) {
+                    send(signal.clone());
+                }
+            };
+            match StatusItem::new(ICON, &tip(bar.unread), on_menu) {
+                Ok(item) => {
+                    item.set_title(menu_bar_title(bar.unread).as_deref());
+                    bar.item = Some(item);
+                }
+                Err(e) => {
+                    tracing::warn!("tray: menu bar icon not created: {e}");
+                    return;
+                }
+            }
+        }
+        bar.lang = lang;
+        let items: Vec<Item> = menu_bar_menu()
+            .iter()
+            .enumerate()
+            .map(|(id, entry)| match entry {
+                Some((_, key)) => Item::Command(id as u32, tr!(key)),
+                None => Item::Separator,
+            })
+            .collect();
+        if let Some(item) = &bar.item {
+            item.set_menu(&items);
+            item.set_tip(&tip(bar.unread));
         }
     }
 }
@@ -285,7 +398,7 @@ pub(crate) fn show(window: &mut Window) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Fresh, badge, target, tip};
+    use super::{Fresh, Signal, badge, menu_bar_menu, menu_bar_title, target, tip};
 
     fn f(n: usize) -> Fresh {
         Fresh { id: n.to_string(), from: String::new(), subject: String::new(), received_at: 0, important: false }
@@ -307,5 +420,29 @@ mod tests {
         assert_eq!(badge(999).as_deref(), Some("999"));
         assert_eq!(badge(1000).as_deref(), Some("999+"));
         assert_eq!(badge(u32::MAX).as_deref(), Some("999+"));
+    }
+
+    /// Значок в строке меню (MAC-09): число — как бейдж Dock (0 — пусто, больше 999 — «999+»).
+    #[test]
+    fn menu_bar_count_text() {
+        assert_eq!(menu_bar_title(0), None);
+        assert_eq!(menu_bar_title(7).as_deref(), Some("7"));
+        assert_eq!(menu_bar_title(999).as_deref(), Some("999"));
+        assert_eq!(menu_bar_title(1000).as_deref(), Some("999+"));
+    }
+
+    /// Меню значка в строке меню (MAC-09): «Открыть Postman», «Новое письмо», разделитель, «Выйти» — на обоих языках.
+    #[test]
+    fn menu_bar_menu_items() {
+        let menu = menu_bar_menu();
+        let signals: Vec<Option<Signal>> = menu.iter().map(|e| e.as_ref().map(|(s, _)| s.clone())).collect();
+        assert_eq!(signals, [Some(Signal::Open), Some(Signal::Compose), None, Some(Signal::Quit)]);
+        let texts = crate::parts::texts();
+        for (lang, want) in [("ru", ["Открыть Postman", "Новое письмо", "Выйти"]), ("en", ["Open Postman", "New mail", "Quit"])]
+        {
+            let (i18n, _) = pets_i18n::I18n::new(&texts, lang);
+            let labels: Vec<String> = menu.iter().flatten().map(|(_, key)| i18n.get(key)).collect();
+            assert_eq!(labels, want, "{lang}");
+        }
     }
 }

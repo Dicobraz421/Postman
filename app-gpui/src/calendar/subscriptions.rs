@@ -1,15 +1,15 @@
-//! Подписки на календари `.ics` (S8-44): календарь по ссылке, только для чтения. Скачанный файл лежит рядом с данными
-//! Postman — без сети показываются прежние события; разбирает его только воркер, под показанный период. В модели
+//! Подписки на календари `.ics` (S8-44): календарь по ссылке, только для чтения. Скачанный файл и его ETag лежат в базе
+//! профиля (`postman_core::local`, решение 2026-11-14) — без сети показываются прежние события; разбирает файл только
+//! воркер, под показанный период. В модели
 //! подписка — как календарь коллеги: `Owner` с ключом `ics:…` даёт цвет, скрытие и запрет ответа; в список коллег
 //! слева не попадает, у неё своя группа.
 
-use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 use postman_calendar::{Event, EventStatus, FreeBusy, Owner, Span};
+use postman_core::local;
 use postman_core::prefs::CalendarSubscription;
 use postman_worker::{Client, IcsCalendar, IcsEvent, MAX_ICS};
 
@@ -59,11 +59,9 @@ fn is_sub_owner(o: &Owner) -> bool {
     o.email.starts_with(PREFIX)
 }
 
-/// Имя файла подписки: по ссылке.
+/// Ключ подписки в модели: по ссылке.
 fn id_of(url: &str) -> String {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    url.trim().hash(&mut h);
-    format!("{:016x}", h.finish())
+    local::subscription_id(url)
 }
 
 /// Имя подписки с ключом `key` (`ics:…`) для строк настроек: ключ пользователю ничего не говорит.
@@ -71,11 +69,6 @@ pub(crate) fn name_of_key(cal: &postman_core::prefs::Calendar, key: &str) -> Opt
     let id = key.strip_prefix(PREFIX)?;
     let sub = cal.subscriptions.iter().find(|s| id_of(&s.url) == id);
     Some(sub.map(|s| s.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| pets_i18n::tr!("cal-sub-new")))
-}
-
-/// Каталог файлов подписок; демо и снимки — временный: данные Postman они не трогают.
-fn dir(live: bool) -> PathBuf {
-    if live { crate::data_dir().join("subscriptions") } else { std::env::temp_dir().join("postman-demo-subscriptions") }
 }
 
 fn event_of(sub: &Sub, e: IcsEvent) -> Event {
@@ -102,28 +95,12 @@ fn event_of(sub: &Sub, e: IcsEvent) -> Event {
     }
 }
 
-/// Записать файл подписки и его ETag: сначала во временный — сбой не портит прежний.
-fn store(live: bool, id: &str, body: &[u8], etag: Option<&str>) -> Result<(), String> {
-    let dir = dir(live);
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let (file, tmp) = (dir.join(format!("{id}.ics")), dir.join(format!("{id}.tmp")));
-    std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &file).map_err(|e| e.to_string())?;
-    let tag = dir.join(format!("{id}.etag"));
-    match etag {
-        Some(t) => std::fs::write(tag, t).map_err(|e| e.to_string()),
-        None => {
-            let _ = std::fs::remove_file(tag);
-            Ok(())
-        }
-    }
-}
-
-/// Подписки из настроек: первая загрузка — по файлам, затем обновление по времени.
+/// Подписки из настроек: первая загрузка — из базы, затем обновление по времени.
 impl CalendarView {
     /// Воркер — у области чтения, она создаётся раньше; подписки и таймер обновления — отсюда.
-    pub(crate) fn start_subscriptions(&mut self, worker: Arc<Mutex<Client>>, cx: &mut Context<Self>) {
+    pub(crate) fn start_subscriptions(&mut self, worker: Arc<Mutex<Client>>, store: postman_cache::Cache, cx: &mut Context<Self>) {
         self.worker = Some(worker);
+        self.store = Some(store);
         self.subs = crate::prefs::get(cx).calendar.subscriptions.into_iter().map(Sub::new).collect();
         self.load_opened_prefs(cx);
         self.start_reminders(cx);
@@ -156,16 +133,22 @@ impl CalendarView {
         self.fetch_subs(false, cx);
     }
 
-    /// События подписок — за показанный период, из файлов.
+    /// События подписок — за показанный период, из базы (демо — из своей).
     pub(super) fn load_subs(&mut self, cx: &mut Context<Self>) {
-        let Some(worker) = self.worker.clone() else { return };
+        let (Some(worker), Some(store)) = (self.worker.clone(), self.store.clone()) else { return };
         let (from, to) = self.range();
         let tz = self.tz.iana_name().unwrap_or("UTC").to_owned();
-        let live = self.live;
-        for id in self.subs.iter().map(|s| s.id.clone()).collect::<Vec<_>>() {
-            let (worker, tz, name) = (worker.clone(), tz.clone(), id.clone());
+        for (id, url) in self.subs.iter().map(|s| (s.id.clone(), s.url.clone())).collect::<Vec<_>>() {
+            let (worker, tz, db) = (worker.clone(), tz.clone(), store.clone());
             let task = cx.background_spawn(async move {
-                let Ok(bytes) = std::fs::read(dir(live).join(format!("{name}.ics"))) else { return None };
+                let bytes = match local::subscription(&db, &url) {
+                    Ok(Some(s)) => s.body,
+                    Ok(None) => return None,
+                    Err(e) => {
+                        tracing::error!("calendar: subscription not read from the store: {e}");
+                        return None;
+                    }
+                };
                 let mut w = worker.lock().unwrap_or_else(PoisonError::into_inner);
                 let parsed = w.ics(&bytes, from, to, &tz);
                 if let Some(cut) = w.take_cut() {
@@ -228,18 +211,19 @@ impl CalendarView {
     /// Обновить подписки: `force` — все сразу (добавлена, «Обновить»), иначе — чей срок вышел.
     pub(super) fn fetch_subs(&mut self, force: bool, cx: &mut Context<Self>) {
         let every = Duration::from_secs(u64::from(crate::prefs::get(cx).calendar.subscription_minutes) * 60);
+        let Some(store) = self.store.clone() else { return };
         let (live, from) = (self.live, self.range().0);
         for sub in self.subs.iter_mut().filter(|s| !s.fetching && (force || s.checked.is_none_or(|t| t.elapsed() >= every))) {
             sub.fetching = true;
-            let (id, url, name) = (sub.id.clone(), sub.url.clone(), sub.id.clone());
+            let (id, url, db) = (sub.id.clone(), sub.url.clone(), store.clone());
             let task = cx.background_spawn(async move {
+                let stored = |body: Vec<u8>, etag: Option<String>| local::set_subscription(&db, &url, body, etag).map_err(|e| e.to_string());
                 if !live {
-                    return store(live, &name, &postman_demo::calendar::holidays(from), None);
+                    return stored(postman_demo::calendar::holidays(from), None);
                 }
-                let tag = dir(live).join(format!("{name}.etag"));
-                let etag = std::fs::read_to_string(tag).ok();
+                let etag = local::subscription_etag(&db, &url).map_err(|e| e.to_string())?;
                 match postman_backend_dav::fetch_changed(&url, MAX_ICS, etag.as_deref())? {
-                    Some((body, etag)) => store(live, &name, &body, etag.as_deref()),
+                    Some((body, etag)) => stored(body, etag),
                     None => Ok(()),
                 }
             });
@@ -280,7 +264,7 @@ impl CalendarView {
         true
     }
 
-    /// Удалить подписку: события уходят, файл — тоже.
+    /// Удалить подписку: события уходят, её файл — из базы.
     pub(super) fn remove_subscription(&mut self, id: &str, cx: &mut Context<Self>) {
         let Some(i) = self.subs.iter().position(|s| s.id == id) else { return };
         let sub = self.subs.remove(i);
@@ -290,8 +274,13 @@ impl CalendarView {
             p.calendar.calendar_colors.remove(&key);
         });
         self.color_menu = None;
-        for ext in ["ics", "etag"] {
-            let _ = std::fs::remove_file(dir(self.live).join(format!("{}.{ext}", sub.id)));
+        if let Some(db) = self.store.clone() {
+            cx.background_spawn(async move {
+                if let Err(e) = local::remove_subscription(&db, &sub.url) {
+                    tracing::warn!("calendar: removed subscription left in the store: {e}");
+                }
+            })
+            .detach();
         }
         self.apply_subs(cx);
     }

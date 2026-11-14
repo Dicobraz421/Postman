@@ -39,6 +39,7 @@ use crate::cal_model::{self as model, MonthItem};
 use crate::chrome::icon;
 use crate::roles::{Look, Pm};
 
+mod event_menu;
 mod opened;
 mod reminders;
 mod subscriptions;
@@ -400,6 +401,8 @@ pub(crate) enum CalendarAction {
     FindPeople(String),
     /// Напоминание о встрече (T2-08б): тост, при неактивном окне — и уведомление Windows.
     Remind(Box<Event>),
+    /// Новая встреча с этим началом (#661: двойной щелчок по пустому месту сетки).
+    NewMeeting(jiff::civil::DateTime),
 }
 
 /// Что спрашиваем о своей встрече строкой у подробностей (S7-07б).
@@ -437,6 +440,8 @@ pub(crate) struct CalendarView {
     /// Подписки `.ics` (S8-44): воркер для разбора, календари, строка «Добавить по ссылке».
     worker: Option<std::sync::Arc<std::sync::Mutex<postman_worker::Client>>>,
     subs: Vec<subscriptions::Sub>,
+    /// База экрана: скачанные подписки (решение 2026-11-14); `None` — до `start_subscriptions`.
+    store: Option<postman_cache::Cache>,
     sub_input: Entity<InputState>,
     sub_open: bool,
     sub_bad: bool,
@@ -520,6 +525,10 @@ pub(crate) struct CalendarView {
     results_open: bool,
     cursor: usize,
     pub(crate) scroll: ScrollHandle,
+    /// Меню события по правой кнопке (#660).
+    event_menu: Option<event_menu::EventMenu>,
+    /// Нажатие пришлось на событие: сетка и клетка месяца под ним не считают его щелчком по пустому месту (#661).
+    event_hit: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -645,6 +654,7 @@ impl CalendarView {
             side_scroll: ScrollHandle::new(),
             worker: None,
             subs: Vec::new(),
+            store: None,
             sub_input,
             sub_open: false,
             sub_bad: false,
@@ -653,6 +663,8 @@ impl CalendarView {
             picker: opened::Picker::default(),
             pick_input,
             upcoming: reminders::Upcoming::default(),
+            event_menu: None,
+            event_hit: false,
             _subscriptions: vec![on_share, on_search, on_sub, on_prefs, on_pick],
         }
     }
@@ -1086,8 +1098,12 @@ impl CalendarView {
         cx.notify();
     }
 
-    /// Esc: очистить поиск. `false` — нечего.
+    /// Esc: закрыть меню события, иначе очистить поиск. `false` — нечего.
     pub(crate) fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.event_menu.is_some() {
+            self.close_event_menu(window, cx);
+            return true;
+        }
         if self.query.is_empty() && !self.results_open {
             return false;
         }
@@ -2542,7 +2558,8 @@ impl CalendarView {
                         .children(lines)
                         .children(blocks)
                         .children(now_line)
-                        .children(now_dot),
+                        .children(now_dot)
+                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, ev: &MouseDownEvent, _, cx| this.grid_down(date, ev, cx))),
                 );
             }
             groups.push(div().flex_1().min_w_0().flex().children(columns));
@@ -2805,6 +2822,14 @@ impl CalendarView {
                     .when(e.recurring, |d| d.child(icon(g::REPEAT, 10.).opacity(0.8))),
             )
             .when(h >= 36., |d| d.child(div().truncate().text_size(px(11.)).opacity(0.9).child(sub)))
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, _| this.event_down()))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.open_event_menu(i, ev.position, window, cx);
+                }),
+            )
             .on_click(cx.listener(move |this, _, _, cx| this.select(i, cx)))
     }
 
@@ -2874,8 +2899,10 @@ impl CalendarView {
                                     } else {
                                         date.day().to_string()
                                     })
+                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, _| this.event_down()))
                                     .on_click(cx.listener(move |this, _, _, cx| this.open_day(date, cx))),
                             )
+                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, ev: &MouseDownEvent, _, cx| this.month_down(date, ev, cx)))
                             .when(hidden > 0, |d| {
                                 d.child(
                                     div()
@@ -2891,6 +2918,7 @@ impl CalendarView {
                                         .cursor_pointer()
                                         .hover(|d| d.bg(l.hover()))
                                         .child(tr!("cal-month-more", n = hidden))
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, _| this.event_down()))
                                         .on_click(cx.listener(move |this, _, _, cx| this.open_day(date, cx))),
                                 )
                             })
@@ -2978,6 +3006,14 @@ impl CalendarView {
             .cursor_pointer()
             .child(inner.when(selected, |d| d.shadow(glow(bar))))
             .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx))
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, _| this.event_down()))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.open_event_menu(i, ev.position, window, cx);
+                }),
+            )
             .on_click(cx.listener(move |this, _, _, cx| this.select(i, cx)))
             .into_any_element()
     }
@@ -2988,6 +3024,8 @@ impl CalendarView {
         self.anchor = date;
         self.month = date.first_of_month();
         self.view = View::Day;
+        // Второе нажатие двойного щелчка по числу приходится уже на сетку дня — это не щелчок по пустому месту.
+        self.event_hit = true;
         self.period_changed(before, cx);
         cx.notify();
     }
@@ -3485,7 +3523,8 @@ impl CalendarView {
 }
 
 impl Render for CalendarView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let menu = self.event_menu_layer(window, cx);
         // Приглашение в подробностях (T2-22): когда пришло письмо — спросить один раз (хранилище — в фоне, у экрана).
         if let Some(e) = self.selected.and_then(|i| self.events.get(i))
             && my_part(e, self.me.as_deref()).is_some_and(|p| !p.owner)
@@ -3496,7 +3535,7 @@ impl Render for CalendarView {
         }
         let days = self.days();
         let middle = if self.view == View::Month { self.month_grid(cx).into_any_element() } else { self.grid(&days, cx).into_any_element() };
-        div().size_full().flex().min_w_0().text_size(px(13.)).child(self.side(cx)).child(middle).child(self.details(cx))
+        div().size_full().flex().min_w_0().text_size(px(13.)).child(self.side(cx)).child(middle).child(self.details(cx)).children(menu)
     }
 }
 
@@ -3754,6 +3793,11 @@ impl crate::Mailer {
                 self.meeting_reminder(event, cx);
                 return;
             }
+            CalendarAction::NewMeeting(start) => {
+                let duration = crate::prefs::get(cx).calendar.duration_secs();
+                self.open_meeting(Some(crate::meeting::MeetingModel::new(*start, duration)), cx);
+                return;
+            }
         };
         let respond = matches!(action, CalendarAction::Respond { .. });
         let cancel = matches!(action, CalendarAction::Cancel { .. });
@@ -3927,6 +3971,10 @@ fn handlers(root: Div, cx: &mut Context<crate::Mailer>) -> Div {
     .on_action(cx.listener(|this, _: &calendar::SideBySide, _, cx| this.calendar_side_by_side(cx)))
     .on_action(cx.listener(|this, _: &calendar::WriteParticipants, _, cx| this.cal.update(cx, |c, cx| c.write_participants(cx))))
     .on_action(cx.listener(|this, _: &calendar::OpenEvent, _, cx| this.cal.update(cx, |c, cx| c.open_selected(cx))))
+    .on_action(cx.listener(|this, _: &calendar::Accept, _, cx| this.cal.update(cx, |c, cx| c.answer_selected(Partstat::Accepted, cx))))
+    .on_action(cx.listener(|this, _: &calendar::Tentative, _, cx| this.cal.update(cx, |c, cx| c.answer_selected(Partstat::Tentative, cx))))
+    .on_action(cx.listener(|this, _: &calendar::Decline, _, cx| this.cal.update(cx, |c, cx| c.answer_selected(Partstat::Declined, cx))))
+    .on_action(cx.listener(|this, _: &calendar::CancelMeeting, _, cx| this.cal.update(cx, |c, cx| c.cancel_selected(cx))))
 }
 
 /// Тексты части (`i18n/<язык>/<часть>.ftl`).
@@ -3937,7 +3985,23 @@ const TEXTS: &[pets_i18n::Resource] = &[("ru", include_str!("../i18n/ru/calendar
 pub(crate) mod calendar {
     gpui_kit::actions!(
         calendar,
-        [NewMeeting, PrevWeek, NextWeek, Today, ViewDay, ViewWorkWeek, ViewWeek, ViewMonth, SideBySide, WriteParticipants, OpenEvent]
+        [
+            NewMeeting,
+            PrevWeek,
+            NextWeek,
+            Today,
+            ViewDay,
+            ViewWorkWeek,
+            ViewWeek,
+            ViewMonth,
+            SideBySide,
+            WriteParticipants,
+            OpenEvent,
+            Accept,
+            Tentative,
+            Decline,
+            CancelMeeting
+        ]
     );
 }
 
@@ -3962,6 +4026,12 @@ const COMMANDS: &[pets_commands::Command] = {
         cmd("calendar.write_participants", &["ctrl-shift-r"], CALENDAR),
         // «Открыть» выбранного события (T2-21, макет `Calendar`): своя встреча — на правку, приглашение — письмо.
         cmd("calendar.open_event", &["enter"], CALENDAR),
+        // Ответ на выбранное приглашение и отмена своей встречи (#660: меню события по правой кнопке; в Outlook — без
+        // клавиш). Отмена — строкой подтверждения в подробностях.
+        cmd("calendar.accept", &[], CALENDAR),
+        cmd("calendar.tentative", &[], CALENDAR),
+        cmd("calendar.decline", &[], CALENDAR),
+        cmd("calendar.cancel_meeting", &[], CALENDAR),
     ]
 };
 

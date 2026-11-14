@@ -459,8 +459,13 @@ impl PptxPart {
             Ev::Start(Pn::A, b"r" | b"fld", _) => self.marks = Marks::default(),
             Ev::Start(Pn::A, b"rPr", a) => {
                 let on = |key: &[u8], off: &str| attr(a, key).is_some_and(|v| v != off && v != "0" && v != "false");
-                self.marks =
-                    Marks { bold: on(b"b", "0"), italic: on(b"i", "0"), underline: on(b"u", "none"), strike: on(b"strike", "noStrike"), code: false };
+                self.marks = Marks {
+                    bold: on(b"b", "0"),
+                    italic: on(b"i", "0"),
+                    underline: on(b"u", "none"),
+                    strike: on(b"strike", "noStrike"),
+                    ..Marks::default()
+                };
             }
             Ev::Start(Pn::A, b"t", _) => self.in_t = true,
             Ev::End(Pn::A, b"t") => self.in_t = false,
@@ -482,12 +487,18 @@ pub(super) fn odf_marks(a: &[(Vec<u8>, String)]) -> Marks {
         italic: matches!(attr(a, b"font-style"), Some("italic" | "oblique")),
         underline: on(b"text-underline-style"),
         strike: on(b"text-line-through-style"),
-        code: false,
+        ..Marks::default()
     }
 }
 
 pub(super) fn or(a: Marks, b: Marks) -> Marks {
-    Marks { bold: a.bold || b.bold, italic: a.italic || b.italic, underline: a.underline || b.underline, strike: a.strike || b.strike, code: false }
+    Marks {
+        bold: a.bold || b.bold,
+        italic: a.italic || b.italic,
+        underline: a.underline || b.underline,
+        strike: a.strike || b.strike,
+        ..Marks::default()
+    }
 }
 
 /// `content.xml` презентации в разборе: автоматические стили (имя → марки), глубина списка, марки абзаца и фрагмента.

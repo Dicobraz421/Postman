@@ -3,8 +3,8 @@
 //! Главная копия почты — на сервере; здесь то, что нужно для мгновенного старта,
 //! чтения без сети и списка без держания ящика в памяти. Порядок писем в папке
 //! задаёт составной ключ `(папка, -дата, id)`: страница списка — чтение диапазона.
-//! Файл формата старше 5 пересоздаётся и заполняется синхронизацией; с признаком `store6` формат 5 переносится в 6
-//! ([`Cache::open_with`]); файл новее своей версии не открывается ([`Error::is_newer_format`]).
+//! Файл формата старше 5 пересоздаётся и заполняется синхронизацией; с признаком `store6` форматы 5 и 6 переносятся
+//! в 7 ([`Cache::open_with`]); файл новее своей версии не открывается ([`Error::is_newer_format`]).
 //!
 //! Несколько аккаунтов (S4-06): ключи основного аккаунта — id сервера как есть, ключи общего ящика — с префиксом
 //! аккаунта (`<аккаунт>/<id>`, [`scoped`]): id JMAP у разных аккаунтов совпадают (у Stalwart — `a`, `b`…). Префикс
@@ -12,7 +12,8 @@
 //!
 //! Формат 6 (ADR 0006, признак `store6` до приёмки S8): письмо — строка с локальным [`LetterId`], связь с сервером —
 //! отдельно ([`RemoteRef`]), папки — с владельцем (учётка или «На этом компьютере»), содержимое — по хэшу
-//! ([`Cache::put_content`]). Прежний API писем — обёртка над ним до S8-09.
+//! ([`Cache::put_content`]). Прежний API писем — обёртка над ним до S8-09. Формат 7 (ADR 0006, дополнение
+//! 2026-11-14): мелкие части и картинки — тоже по хэшу, скелеты, тела и сжимаемые части — сжатыми zstd.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -67,6 +68,8 @@ from_err!(
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(feature = "store6")]
+mod channel;
+#[cfg(feature = "store6")]
 mod compat;
 #[cfg(feature = "store6")]
 mod content;
@@ -77,18 +80,26 @@ mod job;
 #[cfg(feature = "store6")]
 mod letter;
 #[cfg(feature = "store6")]
+mod local;
+#[cfg(feature = "store6")]
 mod migrate;
+#[cfg(feature = "store6")]
+mod migrate7;
 #[cfg(feature = "store6")]
 mod remote;
 
 #[cfg(feature = "store6")]
-pub use content::{CHUNK, ContentReader, Encoding, Hash, MIN_PART, SplitPart};
+pub use channel::{ChanAccount, ChanBatch, ChanDownload, ChanKey, ConvDoc, ConvKey, FORGET_BATCH, MsgDoc, MsgKey, MsgPut, Stored};
+#[cfg(feature = "store6")]
+pub use content::{CHUNK, ContentReader, Encoding, Hash, LEVEL, MIN_IMAGE, MIN_PART, SplitPart, StoreStats, Tuning};
 #[cfg(feature = "store6")]
 pub use folder::{FolderId, FolderRow, Owner, Scope};
 #[cfg(feature = "store6")]
 pub use job::{JobRow, MigrationMode, MigrationState};
 #[cfg(feature = "store6")]
 pub use letter::{JobId, LetterId, LetterRow, MOVE_BATCH, MoveTicket, Outbound, Place, Refused, Step};
+#[cfg(feature = "store6")]
+pub use local::{LocalDoc, LocalPut};
 #[cfg(feature = "store6")]
 pub use migrate::{Migration, Split};
 #[cfg(feature = "store6")]
@@ -374,10 +385,12 @@ pub const MAX_CACHED_BLOB: usize = 16 * 1024 * 1024;
 /// 3 — ключевые слова писем и их индекс (S5-02); 4 — получатели писем (S5-03, [`Recipients`]); 5 — S/MIME (S5-12):
 /// `blobId` письма в теле, итоги проверки подписи и сертификаты адресатов.
 #[cfg(not(feature = "store6"))]
-const FORMAT_VERSION: u64 = 5;
-/// 6 — единое хранилище (ADR 0006): письма по [`LetterId`], связь с сервером, папки с владельцем, содержимое по хэшу.
+pub const FORMAT_VERSION: u64 = 5;
+/// 6 — единое хранилище (ADR 0006): письма по [`LetterId`], связь с сервером, папки с владельцем, содержимое по хэшу;
+/// 7 — мелкие части и картинки по хэшу, сжатие zstd скелетов, тел и частей, счётчики ссылок отдельными таблицами
+/// (ADR 0006, дополнение 2026-11-14).
 #[cfg(feature = "store6")]
-const FORMAT_VERSION: u64 = 6;
+pub const FORMAT_VERSION: u64 = 7;
 
 const META: TableDefinition<&str, u64> = TableDefinition::new("meta");
 const MAILBOX: TableDefinition<&str, &[u8]> = TableDefinition::new("mailbox");
@@ -458,6 +471,17 @@ fn dec<T: DeserializeOwned>(b: &[u8]) -> Result<T> {
     Ok(postcard::from_bytes(b)?)
 }
 
+/// Значение в байты формата хранилища (postcard): для значений, формат которых знает ядро, а хранит эта база —
+/// беседы и сообщения каналов (ADR 0012 п. 9, `ChanBatch`).
+pub fn encode<T: Serialize>(v: &T) -> Result<Vec<u8>> {
+    enc(v)
+}
+
+/// Обратно к [`encode`].
+pub fn decode<T: DeserializeOwned>(b: &[u8]) -> Result<T> {
+    dec(b)
+}
+
 /// Верхняя граница диапазона ключей папки.
 const MAX_ID: &str = "\u{10ffff}";
 
@@ -465,6 +489,9 @@ const MAX_ID: &str = "\u{10ffff}";
 #[derive(Clone)]
 pub struct Cache {
     db: Arc<Database>,
+    /// Как резать и жать содержимое ([`Tuning`]).
+    #[cfg(feature = "store6")]
+    tuning: Tuning,
 }
 
 /// Как открылось хранилище ([`Cache::open_with`]).
@@ -472,7 +499,7 @@ pub struct Cache {
 pub enum Migrated {
     /// Файл своего формата (или новый).
     Current,
-    /// Формат 5 перенесён в 6.
+    /// Прежний формат (5 или 6) перенесён в свой.
     Done,
     /// Прежнего содержимого нет — база пустая, её наполняет синхронизация: файл не хранилище, формат старше 5 или
     /// перенос не удался. Причина — по-английски, для журнала.
@@ -512,6 +539,14 @@ fn remove_if_exists(path: &Path) -> Result<()> {
 }
 
 impl Cache {
+    fn wrap(db: Database) -> Self {
+        Self {
+            db: Arc::new(db),
+            #[cfg(feature = "store6")]
+            tuning: Tuning::default(),
+        }
+    }
+
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         #[cfg(feature = "store6")]
         let opened = Self::open_with(path, &mut Migration::default());
@@ -520,13 +555,15 @@ impl Cache {
         Ok(opened?.0)
     }
 
-    /// Открыть хранилище; файл формата 5 — перенести в формат 6 ([`Migration`]: ход и разбиение писем на части).
+    /// Открыть хранилище; файл формата 5 или 6 — перенести в формат 7 ([`Migration`]: ход и разбиение писем на
+    /// части; формат 6 — на месте, прерванный перенос продолжается при следующем открытии).
     /// Перенос долгий: ядро зовёт это не из потока интерфейса.
     #[cfg(feature = "store6")]
     pub fn open_with(path: impl AsRef<Path>, how: &mut Migration) -> Result<(Self, Migrated)> {
-        // Следующие смены формата — шагами `migrate_6_to_7` и т. д. от формата 6, без пересоздания.
+        // Следующие смены формата — шагами от формата 6 (`migrate7` и далее), без пересоздания.
         Self::open_or(path.as_ref(), |path, v| match v {
             5 => migrate::run(path, how),
+            6 => migrate7::run(path, how),
             _ => Self::fresh(path, format!("format {v} is not migrated")),
         })
     }
@@ -547,13 +584,19 @@ impl Cache {
             }
         }
         let c = match Self::create(path) {
-            Ok(db) => Self { db: Arc::new(db) },
+            Ok(db) => Self::wrap(db),
             // Файл другого формата (например, старый кэш SQLite): пересоздаём.
             Err(redb::DatabaseError::Storage(e)) => return Self::fresh(path, format!("not a store file: {e}")),
             Err(e) => return Err(e.into()),
         };
         match version(&*c.db)? {
             Some(FORMAT_VERSION) => {
+                // Перенос формата 6 прерван (файл уже помечен форматом 7) — продолжить.
+                #[cfg(feature = "store6")]
+                if migrate7::pending(&*c.db)? {
+                    drop(c);
+                    return older(path, 6);
+                }
                 c.init()?;
                 remove_if_exists(&beside(path, BACKUP))?;
                 Ok((c, Migrated::Current))
@@ -577,14 +620,14 @@ impl Cache {
     /// Файл `path` — пустой базой своего формата.
     fn fresh(path: &Path, reason: String) -> Result<(Self, Migrated)> {
         remove_if_exists(path)?;
-        let c = Self { db: Arc::new(Self::create(path)?) };
+        let c = Self::wrap(Self::create(path)?);
         c.init()?;
         Ok((c, Migrated::Fresh(reason)))
     }
 
     pub fn open_in_memory() -> Result<Self> {
         let db = Database::builder().create_with_backend(redb::backends::InMemoryBackend::new())?;
-        let c = Self { db: Arc::new(db) };
+        let c = Self::wrap(db);
         c.init()?;
         Ok(c)
     }
@@ -605,6 +648,10 @@ impl Cache {
         tx.open_table(TASK_ID)?;
         #[cfg(feature = "store6")]
         letter::init(&tx)?;
+        #[cfg(feature = "store6")]
+        local::init(&tx)?;
+        #[cfg(feature = "store6")]
+        channel::init(&tx)?;
         #[cfg(not(feature = "store6"))]
         {
             let threads_indexed = tx.list_tables()?.any(|t| t.name() == BY_THREAD.name());
@@ -1178,10 +1225,17 @@ impl Cache {
 impl Cache {
     pub fn body(&self, id: &str) -> Result<Option<BodyRow>> {
         let tx = self.db.begin_read()?;
+        #[cfg(feature = "store6")]
+        return tx.open_table(BODY)?.get(id)?.map(|v| content::unpack_body(v.value())).transpose();
+        #[cfg(not(feature = "store6"))]
         tx.open_table(BODY)?.get(id)?.map(|v| dec(v.value())).transpose()
     }
 
+    /// Разобранное тело письма; в формате 7 — сжатым.
     pub fn put_body(&self, id: &str, b: &BodyRow) -> Result<()> {
+        #[cfg(feature = "store6")]
+        return self.put(BODY, id, &content::pack_body(b, self.tuning.level)?);
+        #[cfg(not(feature = "store6"))]
         self.put(BODY, id, &enc(b)?)
     }
 

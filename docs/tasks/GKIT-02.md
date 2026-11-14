@@ -1,7 +1,7 @@
 # GKIT-02: Postman на gpui-kit 0.9.1 / gpui-pre 0.3.12
 
 lane: x/gkit-09             # app-gpui, Cargo.toml/lock, crates/{export,worker}/Cargo.toml (cfb) — класс B, согласовано
-status: review
+status: done
 deps: [pets GKIT-01]        # форки gpui-base, gpui-pre-windows и pets-крейты на 0.9.1 — один коммит pets
 class: B
 files: [Cargo.toml, Cargo.lock, app-gpui/Cargo.toml, crates/export/Cargo.toml, crates/worker/Cargo.toml, app-gpui/src/commands.rs, app-gpui/src/settings_keys.rs, app-gpui/src/mailer.rs, app-gpui/src/screens.rs]

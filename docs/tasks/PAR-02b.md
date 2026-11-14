@@ -1,7 +1,7 @@
 # PAR-02b: «ещё не действует» и промежуточные из писем
 
 lane: x
-status: review
+status: done
 deps: [PAR-02]
 class: B
 files: [crates/core/src/smime/, crates/smime/src/lib.rs, crates/smime/src/chain.rs, crates/smime/tests/verify.rs, app-gpui/src/smime.rs, app-gpui/i18n/ru/smime.ftl, app-gpui/i18n/en/smime.ftl, docs/tasks/PAR-02b.md, docs/manual-tests/PAR-02.md]

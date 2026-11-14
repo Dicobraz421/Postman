@@ -85,6 +85,10 @@ const TEXT: f32 = 13.0;
 const GAP: f32 = 2.0;
 /// Тихая кнопка без подписи: поля 10 + значок 20 + зазор 6 + поля 10.
 const BUTTON_PAD: f32 = 46.0;
+/// macOS (макет `MainMac`): ответы — значком без подписи, поля 7 + значок 20 + поля 7.
+const ICON_ONLY_W: f32 = 34.0;
+/// Ответы (вторая группа) — без подписи: только на macOS.
+const ANSWERS_ICON_ONLY: bool = cfg!(target_os = "macos");
 /// Разделитель групп: 1 px и поля 8 по бокам.
 const SEP_W: f32 = 17.0;
 /// «…»: поля 10 + значок 16 + поля 10.
@@ -130,6 +134,9 @@ pub(crate) struct CommandBar {
     pub(crate) take: Option<crate::shared::Act>,
     /// Идёт «Отправить и получить» (T3-02): кнопка недоступна, подсказка — «Отправка и получение…».
     pub(crate) syncing: bool,
+    /// Ширина слева от строки в окне (macOS, макет `MainMac`: разделы над деревом папок) — для места под кнопки и
+    /// положения меню «…». Иначе 0.
+    pub(crate) lead: f32,
 }
 
 impl CommandBar {
@@ -144,6 +151,7 @@ impl CommandBar {
             focused: false,
             take: None,
             syncing: false,
+            lead: 0.,
         }
     }
 
@@ -184,11 +192,13 @@ impl CommandBar {
     }
 
     /// Тихая кнопка: значок, подпись, подсказка «Название (клавиша)» и плашка KeyTips.
-    fn button(&self, b: Button, l: &Look, cx: &mut Context<Self>) -> Stateful<Div> {
+    /// `icon_only` — без подписи (macOS, ответы): название — в подсказке.
+    fn button(&self, b: Button, icon_only: bool, l: &Look, cx: &mut Context<Self>) -> Stateful<Div> {
         let el = chrome::quiet_button(b.id, l)
             .flex_none()
+            .when(icon_only, |d| d.px(px(7.)))
             .child(icons::icon(b.ico, 20., b.tint.map_or(l.text(), |t| l.pm(t))))
-            .child(tr!(b.label))
+            .when(!icon_only, |d| d.child(tr!(b.label)))
             .on_click(cx.listener(move |_, _, window, cx| match b.run {
                 Run::Action(action) => window.dispatch_action(action(), cx),
                 Run::Category => cx.emit(BarEvent::Category),
@@ -269,18 +279,20 @@ impl Render for CommandBar {
         let new_w = 14. + 20. + 8. + text_w(&tr!("frame-new"), window) + 14. + 12. + GAP;
         let take_w = take_label.as_deref().map_or(0., |t| 12. + 20. + 6. + text_w(t, window) + 12. + 8. + GAP);
         let fixed = 12. + new_w + take_w + SYNC_W + GAP + 12. + search_w + GAP + VIEW_W + 12.;
-        let room = window.viewport_size().width / px(1.) - fixed;
-        let widths: Vec<f32> = shown.iter().map(|(_, b)| BUTTON_PAD + text_w(&tr!(b.label), window)).collect();
+        let room = window.viewport_size().width / px(1.) - self.lead - fixed;
+        let icon_only = |i: usize| ANSWERS_ICON_ONLY && i >= FIRST_GROUP;
+        let widths: Vec<f32> =
+            shown.iter().map(|(i, b)| if icon_only(*i) { ICON_ONLY_W } else { BUTTON_PAD + text_w(&tr!(b.label), window) }).collect();
         let fit = fitting(&widths, first, room);
         self.hidden = shown[fit..].iter().map(|(_, b)| *b).collect();
         let sep = if fit > first && first > 0 { SEP_W + GAP } else { 0. };
-        self.overflow_x = 12. + new_w + take_w + widths[..fit].iter().map(|w| w + GAP).sum::<f32>() + sep;
+        self.overflow_x = self.lead + 12. + new_w + take_w + widths[..fit].iter().map(|w| w + GAP).sum::<f32>() + sep;
         let mut row: Vec<AnyElement> = Vec::new();
-        for (k, (_, b)) in shown[..fit].iter().enumerate() {
+        for (k, (i, b)) in shown[..fit].iter().enumerate() {
             if k == first && k > 0 {
                 row.push(div().flex_none().w(px(1.)).h(px(20.)).mx(px(8.)).bg(l.stroke()).into_any_element());
             }
-            row.push(self.button(*b, &l, cx).into_any_element());
+            row.push(self.button(*b, icon_only(*i), &l, cx).into_any_element());
         }
         let pressed = |overflow: bool| self.more_open && self.overflow_open == overflow;
         let overflow = (fit < shown.len()).then(|| {

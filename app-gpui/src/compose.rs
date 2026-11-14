@@ -17,10 +17,11 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 use pets_i18n::tr;
-use postman_compose::{Address, Attachment, Draft, parse_addresses};
+use postman_compose::{Address, Attachment, Draft, Share, parse_addresses};
 use postman_core::checks::{self, Check};
 use postman_core::contacts::AddressBook;
 use postman_core::labels::{self, Keyword};
+use postman_core::local::{DraftLayout, Reply};
 use postman_core::marks;
 use postman_core::send_later;
 use postman_core::sync::{Command, Event, Release, Sender};
@@ -55,7 +56,7 @@ impl Field {
 /// Зачем черновик уходит на сервер.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Purpose {
-    /// Отправить с окном «Отменить» (сервер держит письмо `send_later::UNDO_HOLD_SECS`).
+    /// Отправить с окном «Отменить» (сервер держит письмо задержку настройки и запас, `send_later::undo_release`).
     Send,
     /// «Отправить позже»: сервер выпустит письмо в этот момент (Unix-секунды).
     SendLater(i64),
@@ -112,6 +113,9 @@ struct Pending {
     ticket: u64,
     snapshot: u64,
     purpose: Purpose,
+    /// Как устроено письмо, которое уходит на сервер, и версия, которую оно заменяет: в базу после ответа сервера.
+    layout: DraftLayout,
+    old: Option<String>,
 }
 
 pub(crate) struct Model {
@@ -156,6 +160,13 @@ pub(crate) struct Model {
     dismissed: HashSet<String>,
     /// Личные группы письма (T2-47): чип группы в поле — `"Имя" <group:N>`, N — номер здесь ([`Model::add_group`]).
     groups: Vec<Group>,
+    /// «Отмена отправки» (CMF-03): сколько секунд письмо ждёт после «Отправить»; 0 — сразу. Ставит окно письма из
+    /// настройки перед отправкой (`Prefs::replies`).
+    pub(crate) undo_secs: u8,
+    /// Ответ на фрагменты (`fragments.rs`): реплики «цитата → мой ответ» между своим текстом и подписью.
+    pub(crate) fragments: crate::fragments::Pairs,
+    /// Черновик открыт снова с «Не отправлять» вложения беседы: вложения, пришедшие потом, — отключёнными.
+    share_off: bool,
 }
 
 /// Личная группа в письме (T2-47): чип «Имя · N»; при отправке и сохранении черновика — адреса участников, адреса
@@ -232,6 +243,7 @@ impl Model {
             false
         });
         let body = if base.markdown.is_empty() { signature_block(signature) } else { base.markdown.clone() };
+        let fragments = std::mem::take(&mut base.fragments);
         let mut m = Self {
             to: join(&base.to),
             cc: join(&base.cc),
@@ -257,11 +269,17 @@ impl Model {
             recipient_checks: Vec::new(),
             cert_checks: Vec::new(),
             encrypt_to: Vec::new(),
+            undo_secs: send_later::UNDO_DEFAULT,
             dismissed: HashSet::new(),
             groups: Vec::new(),
+            fragments: Default::default(),
+            share_off: false,
         };
-        // Нетронутое новое письмо — не «изменения»: закрывается без вопроса.
+        // Нетронутое новое письмо — не «изменения»: закрывается без вопроса. Ответ на фрагмент — уже изменение.
         m.saved = m.snapshot();
+        for f in fragments {
+            m.add_fragment(f);
+        }
         m.refresh_text_checks();
         m
     }
@@ -288,6 +306,43 @@ impl Model {
     /// Другой отправитель из списка «От» (свой адрес или общий ящик, S4-06). Текст письма не меняется.
     pub(crate) fn set_from(&mut self, from: Address) {
         self.base.from = from;
+    }
+
+    /// Окно ответа на письмо `in_reply_to`, которому ещё не пришли вложения беседы (`Mailer::share_for`).
+    pub(crate) fn wants_share(&self, in_reply_to: &str) -> bool {
+        self.base.share.is_none() && self.base.in_reply_to.as_deref() == Some(in_reply_to)
+    }
+
+    /// Вложения беседы новым участникам (решение владельца 2026-11-13): участники и файлы беседы.
+    pub(crate) fn set_share(&mut self, mut share: Share) {
+        share.off |= self.share_off;
+        self.base.share = Some(share);
+    }
+
+    /// Отправлять ли вложения беседы новым участникам этого письма (строка над текстом): переключить.
+    pub(crate) fn toggle_share(&mut self) {
+        if let Some(s) = &mut self.base.share {
+            s.off = !s.off;
+        }
+    }
+
+    /// Строка над текстом: новые участники (имя или адрес) — адресаты полей, которых нет ни в одном письме беседы, —
+    /// сколько файлов беседы им уйдёт и не отключено ли это. Новых нет или файлов нет — `None`.
+    pub(crate) fn share_line(&self) -> Option<(Vec<String>, usize, bool)> {
+        let share = self.base.share.as_ref().filter(|s| !s.attachments.is_empty())?;
+        let mut seen: Vec<String> = Vec::new();
+        let mut names = Vec::new();
+        for text in [&self.to, &self.cc, &self.bcc] {
+            for a in parse_addresses(&self.expanded(text)).0 {
+                let email = a.email.to_lowercase();
+                if email == self.base.from.email.to_lowercase() || share.knows(&email) || seen.contains(&email) {
+                    continue;
+                }
+                seen.push(email);
+                names.push(if a.name.is_empty() { a.email } else { a.name });
+            }
+        }
+        (!names.is_empty()).then_some((names, share.attachments.len(), share.off))
     }
 
     /// Письмо — ответ или пересылка (есть In-Reply-To): в области чтения тема не показывается.
@@ -322,6 +377,7 @@ impl Model {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (&self.to, &self.cc, &self.bcc, &self.subject, &self.body).hash(&mut h);
         (self.confidential, self.wait, &self.category).hash(&mut h);
+        self.fragments.hash(&mut h);
         // Картинки текста (подпись, T3-07) идут за текстом: их ссылки `cid:` уже в нём.
         for a in self.base.attachments.iter().filter(|a| a.inline_cid.is_none()) {
             (&a.name, a.data.len(), &a.blob_id).hash(&mut h);
@@ -449,9 +505,9 @@ impl Model {
             return Err(Status::NoRecipients);
         }
         d.subject = self.subject.clone();
-        d.markdown = self.body.clone();
+        d.markdown = self.markdown();
         // Картинка текста, на которую текст больше не ссылается (сменили подпись), — не уходит.
-        d.attachments.retain(|a| a.inline_cid.as_ref().is_none_or(|cid| self.body.contains(&format!("cid:{cid}"))));
+        d.attachments.retain(|a| a.inline_cid.as_ref().is_none_or(|cid| d.markdown.contains(&format!("cid:{cid}"))));
         d.keywords = self.keywords(jiff::Zoned::now().date());
         d.sign = for_send && self.sign;
         // «Конфиденциально» = шифрование (S5-12 Ф4); черновик — только себе (решение владельца №5).
@@ -477,11 +533,11 @@ impl Model {
         }
         match self.draft(purpose.sends()) {
             Ok(d) => {
-                self.pending = Some(Pending { ticket, snapshot: self.snapshot(), purpose });
+                self.pending = Some(Pending { ticket, snapshot: self.snapshot(), purpose, layout: self.layout(), old: self.server_id.clone() });
                 self.status = Status::Busy(purpose);
                 let (draft, replace) = (Box::new(d), self.server_id.clone());
                 Some(match purpose {
-                    Purpose::Send => Command::Send { draft, replace, ticket, release: Release::After(send_later::UNDO_HOLD_SECS) },
+                    Purpose::Send => Command::Send { draft, replace, ticket, release: send_later::undo_release(self.undo_secs) },
                     Purpose::SendLater(at) => Command::Send { draft, replace, ticket, release: Release::At(at) },
                     Purpose::Save | Purpose::Autosave => Command::SaveDraft { draft, replace, ticket },
                 })
@@ -514,6 +570,50 @@ impl Model {
         self.saved = p.snapshot;
         self.status = Status::Saved { at };
         std::mem::take(&mut self.close_after_save)
+    }
+
+    /// Как устроено письмо (реплики, хвост, «Не отправлять» вложения беседы) — для базы профиля: на сервере черновик —
+    /// уже собранный текст.
+    pub(crate) fn layout(&self) -> DraftLayout {
+        DraftLayout {
+            head: self.body.clone(),
+            replies: self.fragments.list.items().iter().map(Reply::from).collect(),
+            tail: self.fragments.tail.clone(),
+            signature: self.signature.clone(),
+            // Вложения беседы ещё не пришли — как было при открытии.
+            share_off: self.base.share.as_ref().map_or(self.share_off, |s| s.off),
+            markdown: self.markdown(),
+        }
+    }
+
+    /// Черновик открыт снова (из «Черновиков», после «Отменить»): реплики, хвост и «Не отправлять» вложения беседы —
+    /// как были. Письмо остаётся нетронутым.
+    pub(crate) fn restore(&mut self, l: &DraftLayout) {
+        let clean = !self.is_dirty();
+        let mut pairs = crate::fragments::Pairs::default();
+        for r in &l.replies {
+            pairs.list.add(r.into());
+        }
+        pairs.tail = if l.replies.is_empty() { String::new() } else { l.tail.clone() };
+        self.body = if l.replies.is_empty() { self.body.clone() } else { l.head.clone() };
+        self.fragments = pairs;
+        if !l.replies.is_empty() {
+            self.signature = l.signature.trim_end().to_owned();
+        }
+        self.share_off = l.share_off;
+        if let Some(s) = &mut self.base.share {
+            s.off |= l.share_off;
+        }
+        self.refresh_text_checks();
+        if clean {
+            self.saved = self.snapshot();
+        }
+    }
+
+    /// Ответ сервера на отправку или сохранение `ticket` этого письма: как устроено ушедшее и какую версию оно
+    /// заменило. Чужой тикет — `None`.
+    pub(crate) fn pending_layout(&self, ticket: u64) -> Option<(DraftLayout, Option<String>)> {
+        self.pending.as_ref().filter(|p| p.ticket == ticket).map(|p| (p.layout.clone(), p.old.clone()))
     }
 
     /// Версия на сервере (письмо вернулось в «Черновики» после отмены отправки): её заменит следующее сохранение.
@@ -715,6 +815,10 @@ impl Model {
 
     /// Сменить подпись в тексте: прежняя заменяется, нет её — новая встаёт в конец своего текста.
     pub(crate) fn set_signature(&mut self, signature: &str) {
+        // Реплики фрагментов (`fragments.rs`): подпись — под ними, в хвосте письма.
+        if self.swap_tail_signature(signature) {
+            return;
+        }
         let next = swap_signature(&self.body, &self.signature, signature);
         self.signature = signature.trim_end().to_owned();
         self.set(Field::Body, next);
@@ -728,6 +832,22 @@ impl Model {
             self.saved = self.snapshot();
         }
     }
+}
+
+/// Черновик без записи в базе: реплики — запасным разбором текста (`postman_compose::fragments::parse`); их нет —
+/// `None`.
+pub(crate) fn parsed_layout(draft: &Draft, signature: &str) -> Option<DraftLayout> {
+    draft.in_reply_to.as_ref()?;
+    let p = postman_compose::fragments::parse(&draft.markdown, signature)?;
+    let sig = if p.tail.starts_with(signature.trim()) { signature.trim_end().to_owned() } else { String::new() };
+    Some(DraftLayout {
+        head: p.head,
+        replies: p.fragments.iter().map(Reply::from).collect(),
+        tail: p.tail,
+        signature: sig,
+        share_off: false,
+        markdown: draft.markdown.clone(),
+    })
 }
 
 // --- текст письма: подпись, разметка, адреса ---
@@ -1324,8 +1444,13 @@ fn demo_eml(row: &postman_cache::EmailRow) -> Vec<u8> {
 /// Отправленное письмо: что вернуть в композер, если отправку отменят (S5-06).
 pub(crate) struct SentDraft {
     pub(crate) draft: Draft,
+    /// Как оно было устроено (реплики, «Не отправлять» вложения беседы) и какую версию на сервере заменило.
+    pub(crate) layout: DraftLayout,
+    pub(crate) old: Option<String>,
     /// «Отправить позже», а не обычная отправка с окном «Отменить».
     pub(crate) later: bool,
+    /// Окно «Отменить» — задержка, с которой письмо ушло (CMF-03).
+    pub(crate) undo_secs: u8,
 }
 
 impl Composers {
@@ -1456,6 +1581,8 @@ pub(crate) struct OpenAs {
     pub(crate) behind: bool,
     /// Личная группа (T2-47) — чипом в «Кому» («Написать» группе из «Контактов»).
     pub(crate) group: Option<Group>,
+    /// Черновик открыт снова: как он был устроен (реплики, «Не отправлять» вложения беседы).
+    pub(crate) layout: Option<DraftLayout>,
 }
 
 impl Mailer {
@@ -1532,6 +1659,13 @@ impl Mailer {
         if let Some(server_id) = how.server_id {
             view.update(cx, |c, _| c.model.set_server_id(server_id));
         }
+        if let Some(layout) = how.layout {
+            view.update(cx, |c, cx| {
+                c.model.restore(&layout);
+                c.sync_inputs = true;
+                cx.notify();
+            });
+        }
         if let Some(g) = how.group {
             view.update(cx, |c, cx| {
                 c.model.add_group_to(Field::To, g);
@@ -1541,6 +1675,7 @@ impl Mailer {
         let events = cx.subscribe(&view, move |this, _, ev: &ComposerEvent, cx| match ev {
             ComposerEvent::Close => this.close_composer(id, cx),
             ComposerEvent::Expand => this.expand_composer(id, cx),
+            ComposerEvent::Kept { id, layout, old } => this.keep_layout(id.clone(), layout.clone(), old.clone(), cx),
         });
         self.compose.open.push(Opened { id, view, _events: events });
         match how.letter {
@@ -1578,14 +1713,80 @@ impl Mailer {
             Some(body) => {
                 self.compose.edit_wait = None;
                 let id = row.id.clone();
-                let draft = crate::send_later::draft_of(self, row, body);
-                self.open_draft(draft, OpenAs { server_id: Some(id), ..Default::default() }, cx);
+                let draft = crate::send_later::draft_of(self, row.clone(), body);
+                self.reopen_draft(draft, id, Some(row), None, cx);
             }
             None => {
                 self.compose.edit_wait = Some(row.id.clone());
                 self.open_letter(row, cx);
             }
         }
+    }
+
+    /// Черновик на сервере `server_id` — снова в окно (из «Черновиков», после «Отменить»): как он был устроен —
+    /// `known` (из этого запуска) или запись базы профиля, если текст на сервере тот же; записи нет — запасной разбор
+    /// реплик (`fragments::parse`). Ответу без вложений беседы — собрать их заново по беседе черновика `row`.
+    pub(crate) fn reopen_draft(
+        &mut self,
+        draft: Draft,
+        server_id: String,
+        row: Option<postman_cache::EmailRow>,
+        known: Option<DraftLayout>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(layout) = known {
+            return self.open_reopened(draft, server_id, row, Some(layout), cx);
+        }
+        let (cache, key) = (self.cache.clone(), server_id.clone());
+        let task = cx.background_spawn(async move { postman_core::local::draft_layout(&cache, &key) });
+        cx.spawn(async move |this, cx| {
+            let stored = task.await.unwrap_or_else(|e| {
+                tracing::warn!("compose: draft layout not read: {e}");
+                None
+            });
+            let _ = this.update(cx, |m, cx| {
+                let signature = m.reopen_signature(&draft);
+                let layout = stored.filter(|l| l.fits(&draft.markdown)).or_else(|| parsed_layout(&draft, &signature));
+                m.open_reopened(draft, server_id, row, layout, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn open_reopened(
+        &mut self,
+        draft: Draft,
+        server_id: String,
+        row: Option<postman_cache::EmailRow>,
+        layout: Option<DraftLayout>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(row) = row.filter(|_| draft.share.is_none() && draft.in_reply_to.is_some()) {
+            self.share_for(&row, &draft, cx);
+        }
+        self.open_draft(draft, OpenAs { server_id: Some(server_id), layout, ..Default::default() }, cx);
+    }
+
+    /// Подпись адреса «От» черновика из настроек учётки (для запасного разбора: с неё начинается хвост).
+    fn reopen_signature(&self, draft: &Draft) -> String {
+        let prefs = &self.compose.prefs;
+        let reply = draft.in_reply_to.is_some();
+        prefs
+            .signature(&draft.from.email, reply)
+            .map(|s| postman_core::fill::signature(s.text.trim_end(), &crate::composer::profile_for(prefs, &draft.from)))
+            .unwrap_or_default()
+    }
+
+    /// Записать в базу профиля, как устроен черновик `id`, и убрать записи версий `old` (в фоне).
+    pub(crate) fn keep_layout(&mut self, id: Option<String>, layout: Option<DraftLayout>, old: Vec<String>, cx: &mut Context<Self>) {
+        let cache = self.cache.clone();
+        cx.background_spawn(async move {
+            let old: Vec<&str> = old.iter().map(String::as_str).collect();
+            if let Err(e) = postman_core::local::keep_draft_layout(&cache, id.as_deref(), layout.as_ref(), &old) {
+                tracing::warn!("compose: draft layout not stored: {e}");
+            }
+        })
+        .detach();
     }
 
     /// Тело письма пришло: черновик ждал его — во вкладку (T2-11).
@@ -1839,7 +2040,10 @@ const TEXTS: &[pets_i18n::Resource] = &[
 // Имя — область действий (`compose::…`), как в id команд: так обработчики читаются и их находит `docs/PARITY.md`.
 #[allow(clippy::module_inception)]
 pub(crate) mod compose {
-    gpui_kit::actions!(compose, [Send, Attach, Close, Bold, Italic, Underline, Bullets, Numbers, Link, Quote, Table, Expand, Discard, AddressBook]);
+    gpui_kit::actions!(
+        compose,
+        [Send, Attach, Close, Bold, Italic, Underline, Bullets, Numbers, Link, Quote, Table, Expand, Discard, AddressBook, ShareAttachments]
+    );
 }
 
 /// Команды части (`commands.rs`: контексты и `cmd`).
@@ -1867,6 +2071,9 @@ const COMMANDS: &[pets_commands::Command] = {
         // «Кому…» (T3-03): адресная книга письма панелью — щелчком по «Кому», «Копия», «Скрытая» или отсюда (в «Кому»).
         // Без клавиши: Ctrl+Shift+B Outlook — у встречи (S5-23).
         cmd("compose.address_book", &[], COMPOSER),
+        // Вложения беседы новым участникам ответа (решение владельца 2026-11-13): отключить или вернуть для письма —
+        // кнопкой строки над текстом, без клавиши.
+        cmd("compose.share_attachments", &[], COMPOSER),
     ]
 };
 
@@ -1907,6 +2114,9 @@ pub(crate) mod scenes {
         Scene::new("compose-t306-paste", table_letter, table_pasted).input(PASTE).on_request(),
         // T3-07: новое письмо с подписью по умолчанию с логотипом: картинка под текстом, вложение inline.
         Scene::new("compose-t307-sign-image", sign_letter, sign_image_shown).on_request(),
+        // Ответ всем с новым участником (решение владельца 2026-11-13): над текстом — «Новым участникам (Ольга
+        // Смирнова) уйдут вложения беседы: 2 файла» и «Не отправлять».
+        Scene::new("compose-share", share_letter, share_shown),
     ];
 
     /// Письмо сцен T3-06: адресат есть — курсор в тексте.
@@ -2015,6 +2225,41 @@ pub(crate) mod scenes {
                     && c.graphics().0 == 1
                     && c.graphics().1.is_none()
             })
+    }
+
+    /// Ответ всем с новым участником (решение владельца 2026-11-13): в «Копии» — Ольга, её нет в беседе.
+    fn share_letter(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
+        m.cal.update(cx, |c, cx| c.close_details(cx));
+        m.set_section(Section::Mail, cx);
+        screens::remember_composer(m, cx);
+        let file = |name: &str, mime: &str, blob: &str| postman_compose::Attachment {
+            name: name.into(),
+            mime: mime.into(),
+            data: postman_demo::blob(blob).unwrap_or_default(),
+            inline_cid: None,
+            blob_id: Some(blob.into()),
+        };
+        let draft = postman_compose::Draft {
+            to: vec![postman_compose::Address::new("Иван Петров", "i.petrov@corp.example")], // i18n-ok: образец
+            cc: vec![postman_compose::Address::new("Ольга Смирнова", "o.smirnova@corp.example")], // i18n-ok: образец
+            subject: "RE: Итоги квартала".into(),                                            // i18n-ok: образец
+            markdown: "Добавляю Ольгу — ей нужны отчёт и смета.\n\n".into(),                 // i18n-ok: образец
+            in_reply_to: Some("q3@corp.example".into()),
+            references: vec!["q3@corp.example".into()],
+            share: Some(postman_compose::Share {
+                known: vec!["i.petrov@corp.example".into(), postman_demo::ME.into()],
+                attachments: vec![file("Отчёт.pdf", "application/pdf", "pdf"), file("Бюджет.xlsm", "application/vnd.ms-excel", "xlsm")], // i18n-ok: образец
+                note: String::new(),
+                off: false,
+            }),
+            ..Default::default()
+        };
+        m.open_compose(draft, cx);
+        Ok(())
+    }
+
+    fn share_shown(s: &Scene, m: &Mailer, cx: &App) -> bool {
+        letter_drawn(s, m, cx) && screens::compose_tab(m).is_some_and(|c| c.read(cx).model.share_line().is_some_and(|(_, n, off)| n == 2 && !off))
     }
 
     fn drafts(_: &Scene, m: &mut Mailer, _: &mut Window, cx: &mut Context<Mailer>) -> Result<(), String> {
@@ -2291,6 +2536,17 @@ mod tests {
         let Some(Command::Send { release, .. }) = m.begin(Purpose::Send, 1, Instant::now()) else { panic!("send") };
         assert_eq!(release, Release::After(send_later::UNDO_HOLD_SECS));
         assert!(!m.sending_later());
+        // CMF-03: задержка 0 — письмо уходит сразу, без окна «Отменить»; 30 — сервер держит 30 с и запас.
+        let mut now = model();
+        fill(&mut now);
+        now.undo_secs = 0;
+        let Some(Command::Send { release, .. }) = now.begin(Purpose::Send, 9, Instant::now()) else { panic!("send") };
+        assert_eq!(release, Release::Now);
+        let mut long = model();
+        fill(&mut long);
+        long.undo_secs = 30;
+        let Some(Command::Send { release, .. }) = long.begin(Purpose::Send, 10, Instant::now()) else { panic!("send") };
+        assert_eq!(release, Release::After(33));
         assert!(m.on_sent(1));
         m.set_server_id("draft-1".into());
         let Some(Command::Send { release, replace, .. }) = m.begin(Purpose::SendLater(1_792_562_400), 2, Instant::now()) else {

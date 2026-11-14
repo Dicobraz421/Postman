@@ -1,6 +1,7 @@
 //! «Отправить позже» и отмена отправки в интерфейсе (S5-06): тексты сроков, окно «Отменить» поверх экрана почты,
 //! отмена запланированного письма из области чтения. Сроки и состояние окна — `postman_core::send_later`; держит
-//! письма сервер (FUTURERELEASE), поэтому закрытый Postman ничего не теряет: письмо уходит в свой срок.
+//! письма сервер (FUTURERELEASE), поэтому закрытый Postman ничего не теряет: письмо уходит в свой срок (IMAP и Exchange
+//! держат его сами и при выходе отпускают сразу). Окно — на задержку настройки, с обратным отсчётом (CMF-03).
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -10,23 +11,30 @@ use gpui_kit::*;
 use jiff::Zoned;
 use pets_i18n::tr;
 use pets_ui::Level as Toast;
-use postman_compose::{Address, Attachment, Draft};
+use postman_compose::{Address, Draft};
+use postman_core::local::DraftLayout;
 use postman_core::send_later::{Choice, OfferState, Reject, Scheduled, Undo};
 use postman_core::sync::{Command, Event};
 
 use crate::Mailer;
 use crate::compose::SentDraft;
 
+/// Шаг обратного отсчёта окна «Отменить».
+const TICK: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Что вернуть в окно при отмене: письмо и как оно было устроено (реплики, «Не отправлять» вложения беседы).
+type Back = (Draft, DraftLayout);
+
 /// Состояние экрана: окно «Отменить», отложенные отправки с сервера и черновики запланированных писем.
 #[derive(Default)]
 pub(crate) struct SendLater {
-    undo: Undo<Draft>,
+    undo: Undo<Back>,
     /// Таймер скрытия окна «Отменить» запущен.
     armed: bool,
     /// Отправки, которые держит сервер (`Event::Scheduled`).
     pub(crate) scheduled: Vec<Scheduled>,
     /// Запланированные в этом запуске: письмо (ключ кэша) → что вернуть в окно при отмене.
-    drafts: HashMap<String, Draft>,
+    drafts: HashMap<String, Back>,
     /// Отмены из области чтения: тикет → письмо.
     cancels: HashMap<u64, String>,
     ticket: u64,
@@ -36,6 +44,17 @@ impl SendLater {
     fn next_ticket(&mut self) -> u64 {
         self.ticket += 1;
         self.ticket
+    }
+
+    /// Сцена `comfort-undo-send` (CMF-03): окно «Отменить» письма, ушедшего с задержкой `secs`, — без сервера.
+    pub(crate) fn screen_offer(&mut self, secs: u8) {
+        let scheduled = Scheduled { submission: "screen".into(), email: "screen".into(), send_at: 0 };
+        self.undo.offer(scheduled, Back::default(), Instant::now(), postman_core::send_later::undo_window(secs));
+    }
+
+    /// Перед сценой: окна «Отменить» прошлых сцен — нет.
+    pub(crate) fn screen_clear(&mut self) {
+        self.undo = Undo::default();
     }
 }
 
@@ -87,10 +106,10 @@ pub(crate) fn reject_text(r: Reject, max_delay: u64) -> String {
 
 /// Черновик из письма в кэше (запланировано в прошлом запуске): адреса, тема, текст, вложения ссылками. Скрытых
 /// получателей в письме нет — их в окне не будет.
-fn draft_from_cache(m: &Mailer, key: &str) -> Option<Draft> {
+fn draft_from_cache(m: &Mailer, key: &str) -> Option<(Draft, postman_cache::EmailRow)> {
     let row = m.cache.rows_by_ids(&[key.to_owned()]).ok()?.pop()?;
     let body = m.cache.body(key).ok()??;
-    Some(draft_of(m, row, body))
+    Some((draft_of(m, row.clone(), body), row))
 }
 
 /// Черновик из письма и его тела (T2-11: письмо из «Черновиков» — во вкладку на правку).
@@ -103,19 +122,19 @@ pub(crate) fn draft_of(m: &Mailer, row: postman_cache::EmailRow, body: postman_c
         .map(|(a, _)| a)
         .unwrap_or_else(|| Address::new(&row.from_name, &row.from_addr));
     let addresses = |list: &[postman_cache::Addr]| list.iter().map(|a| Address::new(&a.name, &a.email)).collect();
+    let markdown = body.text.unwrap_or_default();
+    // Картинка, на которую ссылается текст, — частью письма; остальное (и пустые файлы) — как при пересылке.
+    let in_text = |a: &postman_cache::AttachmentRow| a.cid.as_ref().is_some_and(|c| markdown.contains(&format!("cid:{c}")));
+    let attachments = body.attachments.iter().map(|a| crate::actions::attachment(a, in_text(a), &|_| None)).collect();
     Draft {
         from,
         to: addresses(&body.to),
         cc: addresses(&body.cc),
         subject: row.subject,
-        markdown: body.text.unwrap_or_default(),
         in_reply_to: body.references.last().cloned(),
         references: body.references,
-        attachments: body
-            .attachments
-            .into_iter()
-            .map(|a| Attachment { inline_cid: a.cid.filter(|_| a.inline), name: a.name, mime: a.mime, data: Vec::new(), blob_id: Some(a.blob_id) })
-            .collect(),
+        attachments,
+        markdown,
         ..Default::default()
     }
 }
@@ -126,28 +145,47 @@ impl Mailer {
         match ev {
             Event::Sent { scheduled: Some(s), .. } => {
                 let Some(sent) = sent else { return };
+                // Письмо ждёт на сервере: как оно устроено — в базу под его ключом (отмена в другом запуске), прежние
+                // версии черновика — из базы.
+                self.keep_layout(Some(s.email.clone()), Some(sent.layout.clone()), sent.old.iter().cloned().collect(), cx);
+                let back = (sent.draft, sent.layout);
                 if sent.later {
-                    self.send_later.drafts.insert(s.email.clone(), sent.draft);
+                    self.send_later.drafts.insert(s.email.clone(), back);
                     let text = tr!("send-scheduled-toast", when = when(s.send_at));
                     self.toasts.update(cx, |t, cx| t.push(Toast::Success, text, cx));
                 } else {
-                    self.send_later.undo.offer(s.clone(), sent.draft, Instant::now());
+                    let window = postman_core::send_later::undo_window(sent.undo_secs);
+                    self.send_later.undo.offer(s.clone(), back, Instant::now(), window);
                     self.arm_undo(cx);
                     cx.notify();
+                }
+            }
+            // Письмо ушло сразу: черновика на сервере больше нет — его записи в базе тоже.
+            Event::Sent { scheduled: None, .. } => {
+                if let Some(old) = sent.and_then(|s| s.old) {
+                    self.keep_layout(None, None, vec![old], cx);
                 }
             }
             Event::Unsent { ticket, email } => {
                 let offered = self.send_later.undo.unsent(*ticket);
                 self.send_later.cancels.remove(ticket);
                 let kept = self.send_later.drafts.remove(email);
-                let draft = offered.or(kept).or_else(|| draft_from_cache(self, email));
-                let text = match draft {
-                    Some(d) => {
-                        let how = crate::compose::OpenAs { server_id: Some(email.clone()), ..Default::default() };
-                        self.open_draft(d, how, cx);
+                // Письмо этого запуска — с репликами и правилом вложений как было; из кэша — из базы профиля.
+                let text = match offered.or(kept) {
+                    Some((d, layout)) => {
+                        // Вложения беседы ушли вместе с письмом; нет их (ответ без новых) — собрать по беседе.
+                        let wants = d.share.is_none() && d.in_reply_to.is_some();
+                        let row = wants.then(|| self.cache.rows_by_ids(std::slice::from_ref(email)).ok()?.pop()).flatten();
+                        self.reopen_draft(d, email.clone(), row, Some(layout), cx);
                         tr!("send-unsent")
                     }
-                    None => tr!("send-unsent-drafts"),
+                    None => match draft_from_cache(self, email) {
+                        Some((d, row)) => {
+                            self.reopen_draft(d, email.clone(), Some(row), None, cx);
+                            tr!("send-unsent")
+                        }
+                        None => tr!("send-unsent-drafts"),
+                    },
                 };
                 self.toasts.update(cx, |t, cx| t.push(Toast::Info, text, cx));
                 cx.notify();
@@ -174,21 +212,21 @@ impl Mailer {
         }
     }
 
-    /// Таймер скрытия окна «Отменить»: только пока оно на экране (в простое кадров нет).
+    /// Таймер окна «Отменить»: раз в секунду — обратный отсчёт, в срок — скрыть. Только пока окно на экране (в простое
+    /// кадров нет).
     fn arm_undo(&mut self, cx: &mut Context<Self>) {
         if self.send_later.armed {
             return;
         }
         let Some(due) = self.send_later.undo.next_deadline() else { return };
         self.send_later.armed = true;
-        let wait = due.saturating_duration_since(Instant::now());
+        let wait = due.saturating_duration_since(Instant::now()).min(TICK);
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(wait).await;
             let _ = this.update(cx, |m, cx| {
                 m.send_later.armed = false;
-                if m.send_later.undo.expire(Instant::now()) {
-                    cx.notify();
-                }
+                m.send_later.undo.expire(Instant::now());
+                cx.notify();
                 m.arm_undo(cx);
             });
         })
@@ -223,8 +261,10 @@ impl Mailer {
 
     /// Окно «Письмо отправлено · Отменить» внизу экрана почты (тосты `pets-ui` без кнопок действия).
     pub(crate) fn undo_card(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let offer = self.send_later.undo.shown(Instant::now())?;
+        let now = Instant::now();
+        let offer = self.send_later.undo.shown(now)?;
         let id = offer.id;
+        let left = offer.left(now);
         let l = crate::roles::look(cx);
         let action = match offer.state {
             OfferState::Open => div()
@@ -236,7 +276,7 @@ impl Mailer {
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(l.accent_text())
                 .hover(|d| d.bg(l.hover()))
-                .child(tr!("send-undo"))
+                .child(tr!("send-undo-left", s = left))
                 .on_click(cx.listener(move |this, _, _, cx| this.undo_send(id, cx)))
                 .into_any_element(),
             OfferState::Canceling(_) => div().text_color(l.text3()).child(tr!("send-undoing")).into_any_element(),

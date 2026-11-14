@@ -1,7 +1,7 @@
 # MAC-07: строка меню macOS и бейдж непрочитанных в Dock
 
 lane: x
-status: in-progress
+status: done
 deps: [MAC-02, MAC-04]
 class: B
 files: [app-gpui/src/mac_app.rs, app-gpui/src/mac_menu.rs, app-gpui/src/commands.rs, app-gpui/src/tray.rs, app-gpui/src/sys/mod.rs, app-gpui/src/main.rs, app-gpui/i18n/ru/frame.ftl, app-gpui/i18n/en/frame.ftl, app-gpui/Cargo.toml, Cargo.lock, pets: crates/pets-gpui-macos/]
@@ -31,6 +31,9 @@ manual: docs/manual-tests/MAC-07.md
 ## Приёмка
 - Тесты `mac_menu_items_have_commands_and_texts`, `dock_badge_text`; CI `macOS` зелёный.
 - `docs/manual-tests/MAC-07.md` на M1.
+
+## Сделано
+PR #615 (выпуск beta.6): меню по таблице команд, бейдж Dock, тесты из «Приёмки».
 
 ## Зависимости
 MAC-02 (меню приложения), MAC-04 (щелчок по уведомлению в `tray.rs`).

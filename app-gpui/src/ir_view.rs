@@ -46,6 +46,8 @@ pub struct Hits<'a> {
     seen: Cell<usize>,
     /// Прокрутить к текущему (после перехода F3 / Shift+F3).
     reveal: Option<Reveal>,
+    /// Текст выделяется мышью (`fragments.rs`): письмо и порядок абзацев.
+    select: Option<crate::fragments::Origin>,
 }
 
 /// Куда прокручивать: прокрутка области чтения и её view (перерисовать со сдвигом).
@@ -58,11 +60,23 @@ pub struct Reveal {
 impl<'a> Hits<'a> {
     /// `start` — совпадений до текста (в теме письма).
     pub fn new(words: &'a [String], current: usize, start: usize) -> Self {
-        Hits { words, current, seen: Cell::new(start), reveal: None }
+        Hits { words, current, seen: Cell::new(start), reveal: None, select: None }
     }
 
     pub fn with_reveal(self, reveal: Option<Reveal>) -> Self {
         Hits { reveal, ..self }
+    }
+
+    /// Текст выделяется мышью; выделение перерисовывает view `view` (кнопка «Ответить на фрагмент»).
+    pub fn selectable(self, view: EntityId) -> Self {
+        Hits { select: Some(crate::fragments::Origin::new(view)), ..self }
+    }
+
+    /// Дальше — текст письма `id`, абзацы по порядку чтения — с номера `base`.
+    pub fn letter(&self, id: &str, base: u64) {
+        if let Some(o) = &self.select {
+            o.letter(id, base);
+        }
     }
 
     pub fn seen(&self) -> usize {
@@ -286,6 +300,12 @@ fn flatten(
                 }
             }
             Inline::LineBreak => text.push('\n'),
+            // Упоминание человека канала (ADR 0012): видимый текст цветом ссылки; лента каналов — CH-04.
+            Inline::Mention { text: t, .. } => {
+                let start = text.len();
+                text.push_str(t);
+                hl.push((start..text.len(), HighlightStyle { color: Some(l.accent_text()), ..Default::default() }));
+            }
             // Внешняя картинка, не загруженная (T3-04): подпись, как прежде выброшенная картинка.
             Inline::Remote { alt, .. } if !alt.is_empty() => text.push_str(&format!("[{alt}]")),
             Inline::Remote { .. } => {}
@@ -352,7 +372,7 @@ fn image_of(item: &Inline) -> Option<(&str, Want)> {
 /// Видно ли что-то из инлайнов: текст не из одних пробелов, картинка `cid:` (подпись), внешняя с подписью.
 fn visible(items: &[Inline]) -> bool {
     items.iter().any(|i| match i {
-        Inline::Text { text, .. } => !text.trim().is_empty(),
+        Inline::Text { text, .. } | Inline::Mention { text, .. } => !text.trim().is_empty(),
         Inline::LineBreak => false,
         Inline::Remote { alt, .. } => !alt.is_empty(),
         Inline::Link { content, .. } => visible(content),
@@ -419,9 +439,11 @@ fn paragraph(items: &[Inline], key: &str, images: &Images, hits: &Hits, col: Pix
                         .cursor_pointer()
                         .child(picture(image, want, col))
                         .on_click(move |_, _, cx| open_link(&target, suspicious, "", cx))
-                        .on_hover(move |on, window, _| {
-                            if set_hovered(on.then(|| over.clone())) {
-                                window.refresh();
+                        .on_hover(move |on, _, cx| {
+                            if *on {
+                                hover_link(Some(over.clone()), cx);
+                            } else {
+                                leave_link(std::slice::from_ref(&over), cx);
                             }
                         })
                         .into_any_element()
@@ -479,6 +501,7 @@ fn text(items: &[Inline], key: &str, hits: &Hits, l: &Look) -> AnyElement {
     let (mut text, mut hl, mut links) = (String::new(), Vec::new(), Vec::new());
     flatten(items, &mut text, &mut hl, &mut links, l);
     let visible: Vec<String> = links.iter().map(|(r, _, _)| text.get(r.clone()).unwrap_or_default().to_owned()).collect();
+    let plain = hits.select.as_ref().map(|_| text.clone());
     let (styled, at) = hit_text(text, hl, hits, l);
     let layout = styled.layout().clone();
     let el = if links.is_empty() {
@@ -487,20 +510,32 @@ fn text(items: &[Inline], key: &str, hits: &Hits, l: &Look) -> AnyElement {
         let ranges: Vec<_> = links.iter().map(|(r, _, _)| r.clone()).collect();
         let hrefs: Vec<(String, bool)> = links.into_iter().map(|(_, h, s)| (h, s)).collect();
         let (over, targets) = (ranges.clone(), hrefs.iter().map(|(h, _)| h.clone()).collect::<Vec<_>>());
-        InteractiveText::new(SharedString::from(key.to_string()), styled)
+        let left = targets.clone();
+        let text = InteractiveText::new(SharedString::from(key.to_string()), styled)
             .on_click(ranges, move |ix, _window, cx| {
                 if let Some((h, suspicious)) = hrefs.get(ix) {
                     open_link(h, *suspicious, visible.get(ix).map(String::as_str).unwrap_or_default(), cx);
                 }
             })
             // Адрес ссылки под курсором — внизу панели чтения (T2-54, «Показывать адрес ссылки при наведении»).
-            .on_hover(move |ix, _, window, _| {
+            .on_hover(move |ix, _, _, cx| {
                 let href = ix.and_then(|i| over.iter().position(|r| r.contains(&i))).and_then(|k| targets.get(k).cloned());
-                if set_hovered(href) {
-                    window.refresh();
+                hover_link(href, cx);
+            });
+        // gpui сообщает о наведении на текст, только пока курсор над ним: уход с абзаца — отдельным `on_hover` обёртки.
+        div()
+            .id(SharedString::from(format!("{key}.links")))
+            .child(text)
+            .on_hover(move |on, _, cx| {
+                if !*on {
+                    leave_link(&left, cx);
                 }
             })
             .into_any_element()
+    };
+    let el = match (&hits.select, plain) {
+        (Some(origin), Some(plain)) => crate::fragments::selectable(el, plain, layout.clone(), key, origin),
+        _ => el,
     };
     match at {
         Some(at) => reveal_at(el, layout, at, hits),
@@ -508,24 +543,72 @@ fn text(items: &[Inline], key: &str, hits: &Hits, l: &Look) -> AnyElement {
     }
 }
 
+/// Сколько держится адрес ссылки под курсором (как строка состояния браузера: курсор замер — строка уходит).
+pub(crate) const LINK_SHOWN: std::time::Duration = std::time::Duration::from_secs(4);
+
 thread_local! {
-    /// Адрес ссылки письма под курсором.
-    static HOVERED: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    /// Адрес ссылки письма под курсором и номер наведения (таймер снимает только своё).
+    static HOVERED: std::cell::RefCell<Option<(String, u64)>> = const { std::cell::RefCell::new(None) };
+    static HOVER_SEQ: Cell<u64> = const { Cell::new(0) };
 }
 
-/// Ссылка под курсором сменилась: `true` — перерисовать.
-fn set_hovered(href: Option<String>) -> bool {
+/// Ссылка под курсором сменилась: номер нового наведения (`None` — адрес не сменился или снят).
+fn set_hovered(href: Option<String>) -> Option<Option<u64>> {
     HOVERED.with(|h| {
         let mut h = h.borrow_mut();
-        let changed = *h != href;
-        *h = href;
-        changed
+        if h.as_ref().map(|(s, _)| s) == href.as_ref() {
+            return None;
+        }
+        let seq = href.as_ref().map(|_| {
+            HOVER_SEQ.with(|n| {
+                n.set(n.get() + 1);
+                n.get()
+            })
+        });
+        *h = href.zip(seq);
+        Some(seq)
     })
+}
+
+/// Снять адрес, если он всё ещё от наведения `seq` (таймер) или один из `targets` (курсор ушёл с абзаца).
+fn clear_hovered(seq: Option<u64>, targets: &[String]) -> bool {
+    HOVERED.with(|h| {
+        let mut h = h.borrow_mut();
+        let ours = h.as_ref().is_some_and(|(s, n)| seq == Some(*n) || targets.contains(s));
+        if ours {
+            *h = None;
+        }
+        ours
+    })
+}
+
+/// Курсор над ссылкой `href` (`None` — мимо ссылок): строка внизу панели и её таймер.
+fn hover_link(href: Option<String>, cx: &mut App) {
+    let Some(seq) = set_hovered(href) else { return };
+    cx.refresh_windows();
+    if let Some(seq) = seq {
+        cx.spawn(async move |cx| {
+            cx.background_executor().timer(LINK_SHOWN).await;
+            cx.update(|cx| {
+                if clear_hovered(Some(seq), &[]) {
+                    cx.refresh_windows();
+                }
+            });
+        })
+        .detach();
+    }
+}
+
+/// Курсор ушёл с абзаца или картинки со ссылками `targets`.
+fn leave_link(targets: &[String], cx: &mut App) {
+    if clear_hovered(None, targets) {
+        cx.refresh_windows();
+    }
 }
 
 /// Адрес ссылки письма под курсором (строка внизу панели чтения).
 pub(crate) fn hovered_link() -> Option<String> {
-    HOVERED.with(|h| h.borrow().clone())
+    HOVERED.with(|h| h.borrow().as_ref().map(|(s, _)| s.clone()))
 }
 
 /// Переход по ссылке письма. Текст ссылки похож на другой адрес («Предупреждать о несовпадении текста и адреса»,
@@ -576,8 +659,26 @@ fn normalize(mut hl: Vec<(std::ops::Range<usize>, HighlightStyle)>) -> Vec<(std:
 #[cfg(test)]
 mod tests {
     // Не `use super::*`: вместе с gpui пришёл бы атрибут `gpui::test`, он перекрывает `#[test]`.
-    use super::{Piece, cids, fit, intended, pieces};
+    use super::{Piece, cids, clear_hovered, fit, hovered_link, intended, pieces, set_hovered};
     use postman_ir::{Align, Block, Document, Inline};
+
+    /// Адрес ссылки под курсором (BUG-link-hover): уход с абзаца снимает его, таймер — только своё наведение.
+    #[test]
+    fn hovered_link_goes_away() {
+        let a = "https://example.org/a".to_owned();
+        let first = set_hovered(Some(a.clone())).flatten();
+        assert_eq!(hovered_link().as_deref(), Some(a.as_str()));
+        assert_eq!(set_hovered(Some(a.clone())), None, "тот же адрес — без перерисовки");
+        // Курсор ушёл с другого абзаца — адрес этого не трогаем; ушёл с этого — снят.
+        assert!(!clear_hovered(None, &["https://example.org/b".to_owned()]));
+        assert!(clear_hovered(None, std::slice::from_ref(&a)));
+        assert_eq!(hovered_link(), None);
+        // Таймер прежнего наведения не снимает новое; своё — снимает.
+        let second = set_hovered(Some(a.clone())).flatten();
+        assert!(!clear_hovered(first, &[]));
+        assert!(clear_hovered(second, &[]));
+        assert_eq!(hovered_link(), None);
+    }
 
     fn image(cid: &str) -> Inline {
         Inline::Image { cid: cid.into(), alt: String::new(), width: None, height: None }

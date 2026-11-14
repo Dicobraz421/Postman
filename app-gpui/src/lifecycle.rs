@@ -408,6 +408,8 @@ impl Mailer {
             return;
         }
         let local: Vec<Patch> = patches.iter().map(lifecycle::for_cache).collect();
+        // Заглушили беседу (CMF-01) — непрочитанные папок и значков считаются без неё.
+        let muted = patches.iter().any(|p| p.keywords.iter().any(|(k, _)| k.eq_ignore_ascii_case(postman_core::mute::MUTED)));
         if self.backend.is_live() {
             let archive_name = tr!("lifecycle-archive-folder");
             if !self.backend.send(Command::Patch { patches, archive_name }) {
@@ -419,7 +421,12 @@ impl Mailer {
         cx.spawn(async move |this, cx| {
             let rows = task.await;
             let _ = this.update(cx, |m, cx| match rows {
-                Ok(rows) => m.patched(rows, cx),
+                Ok(rows) => {
+                    m.patched(rows, cx);
+                    if muted {
+                        m.reload_folders(cx);
+                    }
+                }
                 Err(e) => tracing::error!("lifecycle: letter changes not written to the cache: {e}"),
             });
         })

@@ -74,6 +74,8 @@ pub struct ContactData {
     pub department: String,
     /// Заметки — тело карточки текстом.
     pub notes: String,
+    /// Адреса в мессенджерах (`ImAddress1`…`3`, ADR 0012 п. 4), не больше трёх.
+    pub im: Vec<String>,
 }
 
 /// Контакт или список рассылки папки.
@@ -89,6 +91,9 @@ pub struct Contact {
 /// Адресов в карточке Exchange.
 pub const MAX_EMAILS: usize = 3;
 const EMAIL_KEYS: [&str; MAX_EMAILS] = ["EmailAddress1", "EmailAddress2", "EmailAddress3"];
+/// Адресов в мессенджерах в карточке Exchange.
+pub const MAX_IM: usize = 3;
+const IM_KEYS: [&str; MAX_IM] = ["ImAddress1", "ImAddress2", "ImAddress3"];
 /// Ключи телефонов при записи: по два рабочих и домашних, мобильный, другой.
 const PHONE_KEYS: [(&str, PhoneKind); 6] = [
     ("BusinessPhone", PhoneKind::Business),
@@ -137,6 +142,10 @@ impl ContactData {
     fn emails(&self) -> impl Iterator<Item = (&'static str, &str)> {
         self.emails.iter().map(|e| e.trim()).filter(|e| !e.is_empty()).take(MAX_EMAILS).zip(EMAIL_KEYS).map(|(e, k)| (k, e))
     }
+
+    fn ims(&self) -> impl Iterator<Item = (&'static str, &str)> {
+        self.im.iter().map(|e| e.trim()).filter(|e| !e.is_empty()).take(MAX_IM).zip(IM_KEYS).map(|(e, k)| (k, e))
+    }
 }
 
 /// Адрес из записи `EmailAddresses`: без `SMTP:`; не SMTP (X500 и т. п.) — `None`.
@@ -159,6 +168,8 @@ fn contact(el: &El) -> Option<Contact> {
             let mut emails: Vec<(&str, String)> = entries(el.child("EmailAddresses")).filter_map(|(k, v)| Some((k, smtp(v)?))).collect();
             emails.sort_by_key(|(k, _)| EMAIL_KEYS.iter().position(|x| x == k).unwrap_or(usize::MAX));
             let phones = entries(el.child("PhoneNumbers")).map(|(k, v)| Phone { kind: phone_kind(k), number: v.to_owned() }).collect();
+            let mut im: Vec<(&str, &str)> = entries(el.child("ImAddresses")).collect();
+            im.sort_by_key(|(k, _)| IM_KEYS.iter().position(|x| x == k).unwrap_or(usize::MAX));
             Some(Contact {
                 id,
                 folder_id,
@@ -172,6 +183,7 @@ fn contact(el: &El) -> Option<Contact> {
                     job_title: el.str_at(&["JobTitle"]),
                     department: el.str_at(&["Department"]),
                     notes,
+                    im: im.into_iter().map(|(_, v)| v.to_owned()).take(MAX_IM).collect(),
                 },
                 members: None,
             })
@@ -311,6 +323,10 @@ pub(crate) mod req {
             c.push_str(&format!("<t:PhoneNumbers>{phones}</t:PhoneNumbers>"));
         }
         c.push_str(&opt("t:Department", &d.department));
+        let im: String = d.ims().map(|(k, a)| format!(r#"<t:Entry Key="{k}">{}</t:Entry>"#, esc(a))).collect();
+        if !im.is_empty() {
+            c.push_str(&format!("<t:ImAddresses>{im}</t:ImAddresses>"));
+        }
         c.push_str(&opt("t:JobTitle", &d.job_title));
         c.push_str(&opt("t:Surname", &d.surname));
         format!(
@@ -359,6 +375,13 @@ pub(crate) mod req {
             u.push_str(&match emails.iter().find(|(k, _)| *k == key) {
                 Some((_, e)) => set_indexed("contacts:EmailAddress", key, "EmailAddresses", e),
                 None => delete_indexed("contacts:EmailAddress", key),
+            });
+        }
+        let im: Vec<(&str, &str)> = d.ims().collect();
+        for key in IM_KEYS {
+            u.push_str(&match im.iter().find(|(k, _)| *k == key) {
+                Some((_, a)) => set_indexed("contacts:ImAddress", key, "ImAddresses", a),
+                None => delete_indexed("contacts:ImAddress", key),
             });
         }
         let phones = d.phone_slots();
@@ -534,6 +557,7 @@ mod tests {
             ],
             company: "Пример".into(),
             job_title: "Инженер".into(),
+            im: Vec::new(),
             department: String::new(),
             notes: "Звонить после <10>".into(),
         }

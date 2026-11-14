@@ -227,6 +227,11 @@ pub(crate) struct ReadingPane {
     pub(crate) scroll: ScrollHandle,
     /// Ширина колонки текста по последней раскладке (T1-10, `ir_view::column_probe`): картинки не шире неё.
     pub(crate) column: std::rc::Rc<std::cell::Cell<Pixels>>,
+    /// Меню правой кнопки над выделенным текстом письма (`fragments.rs`): где открыто.
+    pub(crate) fragment_menu: Option<Point<Pixels>>,
+    /// Быстрый ответ под лентой беседы (`quick.rs`) и адресная книга для его @упоминаний (общая с окнами писем).
+    pub(crate) quick: crate::quick::Quick,
+    pub(crate) book: Option<crate::compose::Book>,
 }
 
 /// Поля области письма слева и справа (`px(24.)` у `#reading`).
@@ -235,8 +240,12 @@ const READING_INSET: f32 = 48.;
 /// Итог разбора и действий: уровень песочницы (строка состояния), тосты, запросы к серверу.
 pub(crate) enum ReadingEvent {
     Sandbox(Level),
-    /// «+ категория» в шапке письма (T2-25): меню категорий, как кнопка «Категория».
-    Categorize,
+    /// «+ категория» в шапке письма (T2-25): список категорий у кнопки (точка щелчка), без меню письма.
+    Categorize(Point<Pixels>),
+    /// Быстрый ответ ленты (`quick.rs`): ответ всем на письмо с набранным — отправить или развернуть.
+    QuickReply(Box<(EmailRow, crate::fragments::Prepared)>),
+    /// Подсказке упоминаний нужна адресная книга: загрузить (один раз).
+    LoadBook,
     /// Ответ на приглашение поставлен (T2-22): тост с «Отменить» на [`ANSWER_UNDO`].
     AnswerQueued(String),
     /// Время встреч писем-приглашений (T2-18): в строки списка вместо превью.
@@ -346,6 +355,9 @@ impl ReadingPane {
             reveal: false,
             scroll: ScrollHandle::new(),
             column: Default::default(),
+            fragment_menu: None,
+            quick: Default::default(),
+            book: None,
         }
     }
 
@@ -1173,6 +1185,7 @@ impl Render for ReadingPane {
             let _ = window.drop_image(image);
         }
         let reveal = std::mem::take(&mut self.reveal);
+        self.quick_prepare(window, cx);
         let l = look(cx);
         let Some(r) = &self.reading else {
             return div().flex().size_full().items_center().justify_center().text_color(l.text2()).child(tr!("reading-empty")).into_any_element();
@@ -1222,7 +1235,8 @@ impl Render for ReadingPane {
         // Лента беседы — тоже (T3-11): тема, затем показанный текст писем ленты; прокрутка — та же.
         let words: &[String] = self.marks.as_ref().map_or(&[], |(_, m)| m.as_slice());
         let target = (reveal && r.preview.is_none()).then(|| ir_view::Reveal { scroll: self.scroll.clone(), view: cx.entity_id() });
-        let hits = ir_view::Hits::new(words, self.hit, 0).with_reveal(target);
+        // Текст письма и ленты выделяется мышью (ответ на фрагмент, `fragments.rs`).
+        let hits = ir_view::Hits::new(words, self.hit, 0).with_reveal(target).selectable(cx.entity_id());
         let subject = {
             let (styled, at) = ir_view::hit_text(r.row.subject.clone(), Vec::new(), &hits, &l);
             let layout = styled.layout().clone();
@@ -1282,7 +1296,7 @@ impl Render for ReadingPane {
                             .cursor_pointer()
                             .hover(|d| d.bg(l.hover()))
                             .child(tr!("reading-add-category"))
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(ReadingEvent::Categorize))),
+                            .on_click(cx.listener(|_, ev: &ClickEvent, _, cx| cx.emit(ReadingEvent::Categorize(ev.position())))),
                     ),
             )
             .child(
@@ -1377,8 +1391,9 @@ impl Render for ReadingPane {
                 .children(card)
                 .children(matches)
                 .child(feed)
-                .children((!draft).then(|| quick_reply(&r.row, self.me.as_deref(), &l, cx)));
-            return with_side(main, side);
+                // Быстрый ответ всем (MSGR-02): поле под лентой вместо строки «Ответить — Имя».
+                .children(if draft { None } else { self.quick_view(window, cx) });
+            return with_side(crate::fragments::decorate(main, self.fragment_menu, cx), side);
         }
         // Открыт просмотр вложения — он на месте текста письма и карточки приглашения (DESIGN «Вложения»).
         if let Some(p) = &r.preview {
@@ -1408,7 +1423,9 @@ impl Render for ReadingPane {
             Some(doc) => {
                 // Внешние картинки (T3-04): строка «не загружаются (N)» с «Загрузить» и «Всегда для домена».
                 let col = div().flex().flex_col().gap_2().children(remote);
-                col.children(ir_view::blocks_marked(&doc.blocks, "doc", &r.images, &hits, self.column.get(), cx)).into_any_element()
+                hits.letter(&r.row.id, 1);
+                let text = div().relative().flex().flex_col().gap_2().children(crate::screens::spot("reading-body"));
+                col.child(text.children(ir_view::blocks_marked(&doc.blocks, "doc", &r.images, &hits, self.column.get(), cx))).into_any_element()
             }
         };
         let quick_reply = (r.doc.is_some() && !draft).then(|| quick_reply(&r.row, self.me.as_deref(), &l, cx));
@@ -1437,7 +1454,7 @@ impl Render for ReadingPane {
             .children(lock_line)
             .child(body)
             .children(quick_reply);
-        with_side(main, side)
+        with_side(crate::fragments::decorate(main, self.fragment_menu, cx), side)
     }
 }
 

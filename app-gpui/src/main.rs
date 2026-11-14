@@ -19,7 +19,9 @@ mod bulk;
 mod buttons;
 mod cal_model;
 mod calendar;
+mod channels;
 mod chrome;
+mod comfort;
 mod commands;
 mod compose;
 mod composer;
@@ -37,6 +39,7 @@ mod export;
 mod features;
 mod filters;
 mod folders;
+mod fragments;
 mod icons;
 mod invite_card;
 mod ir_view;
@@ -57,6 +60,7 @@ mod mac_menu;
 mod mailer;
 mod meeting;
 mod meeting_row;
+mod mentions;
 mod menu;
 mod migration;
 mod newmail;
@@ -68,6 +72,7 @@ mod parts;
 mod plugins;
 mod prefs;
 mod preview;
+mod quick;
 mod reading;
 mod recipients;
 mod remote_images;
@@ -92,6 +97,7 @@ mod settings_security;
 mod settings_sign;
 mod settings_tab;
 mod settings_viewers;
+mod share;
 mod shared;
 mod signin;
 mod smime;
@@ -380,6 +386,8 @@ fn main() {
             cx.new(|cx| {
                 let mut m = Mailer { screens, ..Mailer::new(cache, bench, window, cx) };
                 match start_with {
+                    // Демо-канал бесед (ADR 0012) — только в демо: замер и снимки — без него.
+                    account::Start::Demo if m.bench.is_none() && m.screens.is_none() => m.start_demo_channel(cx),
                     account::Start::Demo => {}
                     account::Start::Live(a) => match upgrading {
                         Some(rx) => m.await_store(rx, a, window, cx),
@@ -414,8 +422,9 @@ fn main() {
                     if keep_tabs {
                         mailer.update(cx, |m, cx| {
                             m.meeting_drafts = true;
-                            // История уведомлений — 7 дней на диске (T2-34r).
-                            m.toasts.update(cx, |t, cx| t.persist_to(crate::data_dir().join("notices.jsonl"), cx));
+                            // История уведомлений — 7 дней в базе профиля (T2-34r, решение 2026-11-14).
+                            let store = m.cache.clone();
+                            m.toasts.update(cx, |t, cx| t.persist_to(store, cx));
                             if restore_tabs { m.restore_session(window, cx) } else { m.session_ready = true }
                         });
                     }

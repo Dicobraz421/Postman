@@ -502,6 +502,15 @@ pub fn window_id(_window: &Window) -> Result<isize, String> {
     Err("window id is not supported on this OS".into())
 }
 
+/// macOS (GMAC-01, только снимки `--screens`): попросить систему перерисовать окно — `setNeedsDisplay:` и
+/// `displayIfNeeded` на ближайшем проходе главной очереди; gpui рисует кадр синхронно через `displayLayer:`.
+#[cfg(target_os = "macos")]
+pub fn redraw(window: &Window) {
+    if let Err(e) = pets_gpui_macos::window::redraw(window) {
+        tracing::debug!(target: "screens", "redraw: {e}");
+    }
+}
+
 /// Снимок клиентской области окна. Вызывать не из потока окна.
 #[cfg(windows)]
 pub fn capture(window: isize) -> Result<Image, String> {

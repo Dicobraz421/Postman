@@ -88,6 +88,8 @@ pub(crate) struct Mailer {
     pub(crate) offline_ticking: bool,
     /// Сервер или демо (S3-04 подключает живой ящик).
     pub(crate) backend: Backend,
+    /// Потоки учёток каналов бесед (ADR 0012, `channels.rs`).
+    pub(crate) channels: crate::channels::Channels,
     /// Живой ящик: статус синхронизации, строка входа, поиск на сервере (`live.rs`).
     pub(crate) live: crate::live::Live,
     /// Уведомления о новых письмах (T2-10).
@@ -100,6 +102,8 @@ pub(crate) struct Mailer {
     pub(crate) window: AnyWindowHandle,
     /// Ответ, пересылка, удаление (S3-02).
     pub(crate) actions: crate::actions::Actions,
+    /// Ответ на фрагмент ждёт тела письма (`fragments.rs`).
+    pub(crate) fragments: crate::fragments::Pending,
     /// Уровень песочницы последнего разбора; о слабой песочнице — один тост за запуск.
     pub(crate) sandbox: Option<Level>,
     /// Последнее нажатие и сработавшее действие — проверка хоткеев в любой раскладке (S1-01).
@@ -209,7 +213,7 @@ impl Mailer {
         let summary = cx.new(|_| crate::bulk::SummaryView::new());
         let cal = cx.new(|cx| calendar::CalendarView::new(window, cx));
         let worker = reading.read(cx).worker.clone();
-        cal.update(cx, |c, cx| c.start_subscriptions(worker, cx));
+        cal.update(cx, |c, cx| c.start_subscriptions(worker, cache.clone(), cx));
         let contacts = cx.new(|cx| crate::contacts::ContactsView::new(window, cx));
         let cal_bar = cx.new(|cx| calendar::CalendarBar::new(cal.clone(), cx));
         let contacts_bar = cx.new(|cx| crate::contacts::ContactsBar::new(contacts.clone(), cx));
@@ -305,7 +309,7 @@ impl Mailer {
                 }
                 ReadingEvent::Error(text) => this.toasts.update(cx, |t, cx| t.push(Toast::Error, text.clone(), cx)),
                 ReadingEvent::Toast(level, text) => this.toasts.update(cx, |t, cx| t.push(*level, text.clone(), cx)),
-                ReadingEvent::Categorize => this.category_key(cx),
+                ReadingEvent::Categorize(at) => this.category_picker(*at, cx),
                 ReadingEvent::AnswerQueued(text) => {
                     let reading = this.reading.downgrade();
                     let action = pets_ui::ToastAction::new(tr!("bulk-undo"), move |_, cx| {
@@ -323,6 +327,8 @@ impl Mailer {
                     cx.notify();
                 }),
                 ReadingEvent::Respond(row, mode) => this.respond_to(row.clone(), *mode, cx),
+                ReadingEvent::QuickReply(q) => this.quick_reply(q.0.clone(), q.1.clone(), cx),
+                ReadingEvent::LoadBook => this.load_address_book(cx),
                 ReadingEvent::TaskMail(inc, letter, files) => this.tasks.update(cx, |t, cx| t.receive_mail(inc, letter, files.clone(), cx)),
                 ReadingEvent::TaskAction { uid, action } => {
                     let found = this.tasks.update(cx, |t, cx| t.mail_action(uid, *action, cx));
@@ -392,6 +398,8 @@ impl Mailer {
         .detach();
         // Кто я и имена коллег — строке списка и шапке письма общего ящика (S5-28, `shared.rs`).
         let compose = crate::compose::Composers::default();
+        // Быстрый ответ ленты (`quick.rs`): @упоминания — по той же адресной книге, что у окон писем.
+        reading.update(cx, |r, _| r.book = Some(compose.book.clone()));
         cx.set_global(crate::shared::People { book: compose.book.clone(), me: Some(postman_demo::ME.to_owned()) });
         Self {
             cache,
@@ -413,12 +421,14 @@ impl Mailer {
             offline: Default::default(),
             offline_ticking: false,
             backend: Backend::Demo,
+            channels: Default::default(),
             live: Default::default(),
             newmail: Default::default(),
             rules_run: Default::default(),
             compose,
             window: window.window_handle(),
             actions: Default::default(),
+            fragments: Default::default(),
             sandbox: None,
             last_key: String::new(),
             bench,
@@ -707,6 +717,19 @@ impl Render for Mailer {
         let first_run = self.section == Section::Mail && self.live.signin.is_some();
         // Командная строка и полоса автоответа — у почты; во вкладках «Настройки», письма и при первом запуске их нет.
         let bars = free && !first_run && letter.is_none() && meeting.is_none();
+        // macOS (макет `MainMac`): разделы — над деревом папок, в строке команд; в полном экране (`MainMacFull`) и без
+        // строки команд — в заголовке.
+        #[cfg(target_os = "macos")]
+        let bar_sections = bars && !window.is_fullscreen();
+        #[cfg(not(target_os = "macos"))]
+        let bar_sections = false;
+        let lead = if bar_sections { self.panes.0 } else { 0. };
+        if self.bar.read(cx).lead != lead {
+            self.bar.update(cx, |b, cx| {
+                b.lead = lead;
+                cx.notify();
+            });
+        }
         // Контекст раздела: клавиши писем (j/k, Delete, Ctrl+R…) — только в «Почте» без открытых настроек (`commands.rs`).
         let context = match self.section {
             _ if letter.is_some() => "Mailer ComposeView",
@@ -742,8 +765,8 @@ impl Render for Mailer {
             .text_color(l.text())
             // Размер шрифта (S5-30, «Внешний вид»): список, письма и панели.
             .text_size(px(f32::from(crate::prefs::with(cx, |p| p.look.font_px()))))
-            .child(self.titlebar(&l, window, cx))
-            .when(bars, |d| d.child(self.section_bar(free)))
+            .child(self.titlebar(&l, window, bar_sections, cx))
+            .when(bars, |d| d.child(self.section_bar(&l, free, bar_sections, cx)))
             .when_some(self.settings.bar.clone().filter(|_| bars), |d, bar| {
                 d.child(bar.cached(StyleRefinement::default().w_full().h(px(crate::vacation::BAR_HEIGHT)).flex_none()))
             })
@@ -769,13 +792,14 @@ impl Render for Mailer {
             // Окно «Отменить» отправки — внизу, над строкой состояния; над ним — напоминания (S5-04).
             .children(self.undo_card(cx))
             .children(self.reminder_cards(cx))
-            // Контекстное меню письма (S5-08) и папки (S5-05б) — над всем, кроме тостов.
-            .children(menu)
-            .children(self.export_menu(&l, cx))
             // Образцы кнопок — только снимок `buttons` (S5-19).
             .children(self.screens.as_ref().filter(|d| d.gallery()).map(|_| crate::buttons::gallery(&l)))
-            // Тосты — поверх всего, последним ребёнком.
-            .child(self.toasts.clone());
+            // Тосты — поверх экрана.
+            .child(self.toasts.clone())
+            // Контекстное меню письма (S5-08) и папки (S5-05б) — над всем, и над тостами: тост у края окна не
+            // перекрывает подменю, щелчок доходит до пункта (BUG-conv-view).
+            .children(menu)
+            .children(self.export_menu(&l, cx));
         if let Some(b) = &mut self.bench {
             b.ui_time(started.elapsed());
         }
@@ -918,6 +942,12 @@ pub(crate) const W_FOLDERS: f32 = postman_core::prefs::Layout::FOLDERS as f32;
 pub(crate) const W_LIST: f32 = postman_core::prefs::Layout::LIST as f32;
 /// Доля высоты области чтения под ответом (остальное — письмо, на которое отвечают).
 const INLINE_SHARE: f32 = 0.6;
+/// Ответ с репликами фрагментов (`fragments.rs`): им нужно больше места.
+const INLINE_SHARE_FRAGMENTS: f32 = 0.8;
+
+fn inline_share(reply: &Entity<crate::composer::Composer>, cx: &App) -> f32 {
+    if reply.read(cx).model.has_fragments() { INLINE_SHARE_FRAGMENTS } else { INLINE_SHARE }
+}
 
 /// Карточка на фоне каркаса: скругление сверху, рамка без нижней стороны.
 pub(crate) fn card(l: &crate::roles::Look) -> Div {
@@ -974,7 +1004,7 @@ impl Mailer {
                     _ if picked => card(l).flex_1().child(self.summary.clone().cached(full())),
                     Some(reply) => card(l)
                         .flex_1()
-                        .child(reply.clone().cached(StyleRefinement::default().w_full().h(relative(INLINE_SHARE)).flex_none()))
+                        .child(reply.clone().cached(StyleRefinement::default().w_full().h(relative(inline_share(reply, cx))).flex_none()))
                         .child(self.reading.clone().cached(StyleRefinement::default().w_full().flex_1().min_h_0())),
                     None => card(l).flex_1().child(self.reading.clone().cached(full())),
                 }
@@ -1011,7 +1041,26 @@ impl Mailer {
     }
 
     /// Командная строка: своя у календаря и контактов (вкладка «Почта»), иначе — строка почты.
-    fn section_bar(&self, free: bool) -> AnyElement {
+    /// macOS (`lead`, макет `MainMac`): слева — разделы над деревом папок, по его ширине с полями 8.
+    fn section_bar(&self, l: &crate::roles::Look, free: bool, lead: bool, cx: &App) -> AnyElement {
+        #[cfg(target_os = "macos")]
+        if lead {
+            let w = (self.panes.0 - 16.).max(0.);
+            return div()
+                .w_full()
+                .h(px(BAR_HEIGHT))
+                .flex_none()
+                .flex()
+                .items_center()
+                .child(self.bar_sections(l, w, cx).mx(px(8.)))
+                .child(div().flex_1().min_w_0().h_full().child(self.command_bar(free)))
+                .into_any_element();
+        }
+        let _ = (l, lead, cx);
+        self.command_bar(free)
+    }
+
+    fn command_bar(&self, free: bool) -> AnyElement {
         let style = StyleRefinement::default().w_full().h(px(BAR_HEIGHT)).flex_none();
         match self.section {
             Section::Calendar if free => self.cal_bar.clone().cached(style).into_any_element(),

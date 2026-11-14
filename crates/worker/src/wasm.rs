@@ -186,6 +186,11 @@ impl Budget {
                     }
                 }
                 Inline::LineBreak => out.push(Inline::LineBreak),
+                // Упоминаний у модуля нет (людей канала он не знает): видимым текстом.
+                Inline::Mention { text, .. } => {
+                    self.chars(&text)?;
+                    out.push(Inline::text(text));
+                }
             }
         }
         Ok(out)

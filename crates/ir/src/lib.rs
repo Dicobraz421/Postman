@@ -16,7 +16,7 @@ mod style;
 pub use autolink::{autolink, find_links};
 pub use html::from_html;
 pub use link::{LinkCheck, check_link};
-pub use markdown::{markdown_to_html, quote, to_markdown};
+pub use markdown::{Move, markdown_to_html, quote, tidy_markers, to_markdown};
 pub use plain::from_plain;
 pub use style::MAX_IMAGE_SIDE;
 
@@ -121,6 +121,9 @@ pub struct Marks {
     pub underline: bool,
     pub strike: bool,
     pub code: bool,
+    /// Скрытый текст (Telegram `spoiler`, ADR 0012 п. 4): показывается по щелчку. Добавочно — последним полем.
+    #[serde(default)]
+    pub spoiler: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -161,6 +164,12 @@ pub enum Inline {
         #[serde(default)]
         height: Option<u32>,
     },
+    /// Упоминание человека канала (ADR 0012 п. 4: Telegram `mention_name`, Matrix `m.mentions`): id участника в
+    /// канале и видимый текст («@Имя»). Вариант — последним: старые IR читаются как были.
+    Mention {
+        id: String,
+        text: String,
+    },
 }
 
 /// Адрес внешней картинки, годный для [`Inline::Remote`]: `http`/`https` с именем сервера, без имени и пароля в
@@ -196,6 +205,7 @@ pub fn plain_text(inlines: &[Inline]) -> String {
             }
             Inline::Remote { .. } => {}
             Inline::LineBreak => out.push('\n'),
+            Inline::Mention { text, .. } => out.push_str(text),
         }
     }
     out

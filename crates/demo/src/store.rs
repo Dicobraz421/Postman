@@ -229,7 +229,8 @@ fn shared_raw(n: usize, i: usize, at: i64) -> (Vec<u8>, SplitPart) {
     .join("\r\n");
     let body = base64(pdf(), 76);
     let raw = format!("{head}{body}--{BOUNDARY}--\r\n").into_bytes();
-    let part = SplitPart { range: head.len()..head.len() + body.len(), encoding: Encoding::Base64, decoded: pdf().to_vec() };
+    let part =
+        SplitPart { range: head.len()..head.len() + body.len(), encoding: Encoding::Base64, decoded: pdf().to_vec(), mime: "application/pdf".into() };
     (raw, part)
 }
 
@@ -448,6 +449,10 @@ mod tests {
             }
         }
         drop(cache);
+        // Размер после уплотнения: без него файл растёт ступенями redb, и лишняя пустая таблица меняет ступень.
+        let mut db = redb::Database::create(&path).unwrap();
+        while db.compact().unwrap() {}
+        drop(db);
         std::fs::metadata(&path).unwrap().len()
     }
 
@@ -485,7 +490,8 @@ mod tests {
 
         let (split, whole) = (shared_file(&dir, true), shared_file(&dir, false));
         let pdf = pdf().len() as u64;
-        assert!(whole - split > 20 * pdf, "одна часть: {split} байт против {whole} без частей (PDF {pdf})");
+        // Уплотнённые файлы, части сжаты zstd: тридцать копий PDF без частей — втрое больше, чем с одной частью.
+        assert!(whole > 3 * split && whole - split > 10 * pdf, "одна часть: {split} байт против {whole} без частей (PDF {pdf})");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -2780,7 +2780,7 @@ dependencies = [
 [[package]]
 name = "gpui-base"
 version = "0.9.1"
-source = "git+https://github.com/Dicobraz421/pets?rev=0df0fe19023827d1ea31a47a998c335eebfa334c#0df0fe19023827d1ea31a47a998c335eebfa334c"
+source = "git+https://github.com/Dicobraz421/pets?rev=bd68b87dd89618e059b582651a11d8bccd0fac47#bd68b87dd89618e059b582651a11d8bccd0fac47"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -3077,7 +3077,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-linux"
 version = "0.3.12"
-source = "git+https://github.com/Dicobraz421/pets?rev=0df0fe19023827d1ea31a47a998c335eebfa334c#0df0fe19023827d1ea31a47a998c335eebfa334c"
+source = "git+https://github.com/Dicobraz421/pets?rev=bd68b87dd89618e059b582651a11d8bccd0fac47#bd68b87dd89618e059b582651a11d8bccd0fac47"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -3121,7 +3121,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-macos"
 version = "0.3.12"
-source = "git+https://github.com/Dicobraz421/pets?rev=0df0fe19023827d1ea31a47a998c335eebfa334c#0df0fe19023827d1ea31a47a998c335eebfa334c"
+source = "git+https://github.com/Dicobraz421/pets?rev=bd68b87dd89618e059b582651a11d8bccd0fac47#bd68b87dd89618e059b582651a11d8bccd0fac47"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -3330,7 +3330,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-wgpu"
 version = "0.3.12"
-source = "git+https://github.com/Dicobraz421/pets?rev=0df0fe19023827d1ea31a47a998c335eebfa334c#0df0fe19023827d1ea31a47a998c335eebfa334c"
+source = "git+https://github.com/Dicobraz421/pets?rev=bd68b87dd89618e059b582651a11d8bccd0fac47#bd68b87dd89618e059b582651a11d8bccd0fac47"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -3356,7 +3356,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-windows"
 version = "0.3.12"
-source = "git+https://github.com/Dicobraz421/pets?rev=0df0fe19023827d1ea31a47a998c335eebfa334c#0df0fe19023827d1ea31a47a998c335eebfa334c"
+source = "git+https://github.com/Dicobraz421/pets?rev=bd68b87dd89618e059b582651a11d8bccd0fac47#bd68b87dd89618e059b582651a11d8bccd0fac47"
 dependencies = [
  "accesskit",
  "accesskit_windows",
@@ -5988,7 +5988,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 [[package]]
 name = "pets-commands"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz421/pets?rev=0df0fe19023827d1ea31a47a998c335eebfa334c#0df0fe19023827d1ea31a47a998c335eebfa334c"
+source = "git+https://github.com/Dicobraz421/pets?rev=bd68b87dd89618e059b582651a11d8bccd0fac47#bd68b87dd89618e059b582651a11d8bccd0fac47"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -5996,7 +5996,7 @@ dependencies = [
 [[package]]
 name = "pets-gpui-macos"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz421/pets?rev=0df0fe19023827d1ea31a47a998c335eebfa334c#0df0fe19023827d1ea31a47a998c335eebfa334c"
+source = "git+https://github.com/Dicobraz421/pets?rev=bd68b87dd89618e059b582651a11d8bccd0fac47#bd68b87dd89618e059b582651a11d8bccd0fac47"
 dependencies = [
  "block2 0.6.2",
  "objc2 0.6.5",
@@ -6012,7 +6012,7 @@ dependencies = [
 [[package]]
 name = "pets-i18n"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz421/pets?rev=0df0fe19023827d1ea31a47a998c335eebfa334c#0df0fe19023827d1ea31a47a998c335eebfa334c"
+source = "git+https://github.com/Dicobraz421/pets?rev=bd68b87dd89618e059b582651a11d8bccd0fac47#bd68b87dd89618e059b582651a11d8bccd0fac47"
 dependencies = [
  "fluent-bundle",
  "fluent-syntax",
@@ -6025,7 +6025,7 @@ dependencies = [
 [[package]]
 name = "pets-shell"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz421/pets?rev=0df0fe19023827d1ea31a47a998c335eebfa334c#0df0fe19023827d1ea31a47a998c335eebfa334c"
+source = "git+https://github.com/Dicobraz421/pets?rev=bd68b87dd89618e059b582651a11d8bccd0fac47#bd68b87dd89618e059b582651a11d8bccd0fac47"
 dependencies = [
  "core-foundation 0.10.1",
  "libc",
@@ -6046,7 +6046,7 @@ dependencies = [
 [[package]]
 name = "pets-ui"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz421/pets?rev=0df0fe19023827d1ea31a47a998c335eebfa334c#0df0fe19023827d1ea31a47a998c335eebfa334c"
+source = "git+https://github.com/Dicobraz421/pets?rev=bd68b87dd89618e059b582651a11d8bccd0fac47#bd68b87dd89618e059b582651a11d8bccd0fac47"
 dependencies = [
  "futures",
  "gpui-kit",
@@ -6062,7 +6062,7 @@ dependencies = [
 [[package]]
 name = "pets-update"
 version = "0.1.0"
-source = "git+https://github.com/Dicobraz421/pets?rev=0df0fe19023827d1ea31a47a998c335eebfa334c#0df0fe19023827d1ea31a47a998c335eebfa334c"
+source = "git+https://github.com/Dicobraz421/pets?rev=bd68b87dd89618e059b582651a11d8bccd0fac47#bd68b87dd89618e059b582651a11d8bccd0fac47"
 dependencies = [
  "minisign-verify",
  "semver",
@@ -6326,7 +6326,7 @@ dependencies = [
 
 [[package]]
 name = "postman-backend-dav"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "jiff",
  "percent-encoding",
@@ -6343,7 +6343,7 @@ dependencies = [
 
 [[package]]
 name = "postman-backend-ews"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "jiff",
  "postman-cache",
@@ -6359,7 +6359,7 @@ dependencies = [
 
 [[package]]
 name = "postman-backend-imap"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "jiff",
  "postman-backend-dav",
@@ -6378,7 +6378,7 @@ dependencies = [
 
 [[package]]
 name = "postman-backend-jmap"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "jiff",
  "postman-cache",
@@ -6401,7 +6401,7 @@ dependencies = [
 
 [[package]]
 name = "postman-backend-ldap"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "ldap3",
  "postman-core",
@@ -6418,18 +6418,19 @@ dependencies = [
 
 [[package]]
 name = "postman-cache"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "postcard",
  "redb",
  "serde",
  "sha2 0.11.1",
  "tempfile",
+ "zstd",
 ]
 
 [[package]]
 name = "postman-calendar"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "jiff",
  "postman-worker",
@@ -6439,7 +6440,7 @@ dependencies = [
 
 [[package]]
 name = "postman-compose"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "mail-builder",
  "mail-parser",
@@ -6450,7 +6451,7 @@ dependencies = [
 
 [[package]]
 name = "postman-core"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "core-foundation 0.10.1",
  "cpu-time",
@@ -6482,7 +6483,7 @@ dependencies = [
 
 [[package]]
 name = "postman-dav"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "jiff",
  "percent-encoding",
@@ -6498,19 +6499,21 @@ dependencies = [
 
 [[package]]
 name = "postman-demo"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "jiff",
  "png 0.17.16",
  "postman-cache",
  "postman-calendar",
+ "postman-core",
  "postman-smime",
  "postman-worker",
+ "redb",
 ]
 
 [[package]]
 name = "postman-ews"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -6540,7 +6543,7 @@ dependencies = [
 
 [[package]]
 name = "postman-export"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "cfb",
  "msg_parser",
@@ -6549,7 +6552,7 @@ dependencies = [
 
 [[package]]
 name = "postman-gpui"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "ashpd",
  "embed-resource",
@@ -6594,7 +6597,7 @@ dependencies = [
 
 [[package]]
 name = "postman-imap"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "async-imap",
  "encoding_rs",
@@ -6609,7 +6612,7 @@ dependencies = [
 
 [[package]]
 name = "postman-ir"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "html5ever",
  "markup5ever_rcdom",
@@ -6621,7 +6624,7 @@ dependencies = [
 
 [[package]]
 name = "postman-jmap"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "reqwest",
  "serde",
@@ -6634,7 +6637,7 @@ dependencies = [
 
 [[package]]
 name = "postman-pack"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "anyhow",
  "cab",
@@ -6646,7 +6649,7 @@ dependencies = [
 
 [[package]]
 name = "postman-search"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "tantivy",
  "tempfile",
@@ -6654,7 +6657,7 @@ dependencies = [
 
 [[package]]
 name = "postman-smime"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "aes 0.9.4",
  "aes-gcm",
@@ -6687,7 +6690,7 @@ dependencies = [
 
 [[package]]
 name = "postman-worker"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "calcard",
  "cfb",
@@ -11292,6 +11295,34 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[package]]
+name = "zstd"
+version = "0.14.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad5020ab8f27bfc0024ad0a07aed6bf022a16208f479686fbed4fdd0c85eb0b3"
+dependencies = [
+ "zstd-safe",
+]
+
+[[package]]
+name = "zstd-safe"
+version = "8.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a9ea9cc2576c2fcc104e9cec04f46e3ede564f4fbc206831e4ef7e859a4140d"
+dependencies = [
+ "zstd-sys",
+]
+
+[[package]]
+name = "zstd-sys"
+version = "2.1.3+zstd.1.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f729a06d0257428fd9d997ac8db7e1407bd0262ab016b085b36bc52957c0052d"
+dependencies = [
+ "cc",
+ "pkg-config",
+]
 
 [[package]]
 name = "zune-core"
