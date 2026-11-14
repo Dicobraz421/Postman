@@ -265,6 +265,8 @@ pub fn authors(cache: &Cache, value: &str, contact: &[String]) -> Result<Vec<Str
             }
         }
     }
+    // Один человек во всех каналах: участники, связанные с тем же контактом (`person_link`), — тоже.
+    out.extend(super::person::same_people(cache, &out)?);
     out.sort();
     out.dedup();
     Ok(out)
@@ -306,13 +308,13 @@ pub fn search(index: &SearchIndex, cache: &Cache, words: &str, scope: &Scope, li
 }
 
 /// Фильтр индекса по запросу (`канал:`, `беседа:`, `от:`): `от:` — через [`authors`]; `contact` — адреса карточки
-/// контакта значения `от:` (пусто — не контакт).
+/// контакта значения `от:` (пусто — не контакт); `беседа:` — со связанными беседами (`super::linked::scope`).
 pub fn scope_of(cache: &Cache, q: &crate::query::Query, contact: &dyn Fn(&str) -> Vec<String>) -> Result<Scope> {
     let mut authors_all = Vec::new();
     for v in &q.from {
         authors_all.extend(authors(cache, v, &contact(v))?);
     }
-    Ok(Scope { channels: q.channels.clone(), convs: q.conversations.clone(), authors: authors_all })
+    Ok(Scope { channels: q.channels.clone(), convs: super::linked::scope(cache, &q.conversations)?, authors: authors_all })
 }
 
 #[cfg(test)]

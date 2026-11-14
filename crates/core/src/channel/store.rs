@@ -656,10 +656,16 @@ impl ChannelStore {
         Ok(d.0.finish(key, &source.0, mime)?)
     }
 
-    /// «Выйти»: все строки учётки, её `local`-ключи и отметки бесед в базе (заглушить, закрепить).
+    /// «Выйти»: все строки учётки, её `local`-ключи, отметки бесед в базе (заглушить, закрепить), ссылки из её
+    /// сообщений, связи её бесед и её людей с контактами.
     pub fn forget(&self) -> Result<()> {
         self.cache.forget_chan_account(self.key, &super::LocalStore::prefix(&self.channel, &self.account))?;
-        self.cache.remove_local_prefix(&super::smart::marks_prefix(&self.chan()))?;
+        let chan = self.chan();
+        self.cache.remove_local_prefix(&super::smart::marks_prefix(&chan))?;
+        let prefix = super::account_prefix(&chan);
+        self.cache.xref_drop_prefix(&prefix)?;
+        self.cache.conv_unlink_prefix(&prefix)?;
+        self.cache.person_unlink_account(&self.channel.0, &self.account.0)?;
         Ok(())
     }
 }

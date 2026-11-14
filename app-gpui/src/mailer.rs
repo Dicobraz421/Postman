@@ -493,6 +493,7 @@ impl Mailer {
         self.on_send_sync(ev, sent, cx);
         self.cal.update(cx, |c, cx| c.on_sync(ev, cx));
         self.contacts.update(cx, |c, cx| c.on_sync(ev, cx));
+        self.on_links_sync(ev, cx);
         // Папку не создать, не переименовать, не перенести (T1-04д) — тостом.
         if let postman_core::sync::Event::FolderFailed { error, .. } = ev {
             self.toast(pets_ui::Level::Error, crate::folders::failed_text(error), cx);

@@ -54,7 +54,7 @@ fn mark_key(at: &Address, what: &str) -> String {
 
 /// Префикс отметок бесед учётки канала (`ChannelStore::forget` их убирает).
 pub fn marks_prefix(chan: &super::ChanAccount) -> String {
-    format!("conv/{}{}/{}/", super::SCHEME, super::encode_segment(&chan.channel.0), super::encode_segment(&chan.account.0))
+    format!("conv/{}", super::account_prefix(chan))
 }
 
 fn local_i64(cache: &Cache, key: &str) -> Result<Option<i64>> {

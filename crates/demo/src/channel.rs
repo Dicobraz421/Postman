@@ -47,6 +47,8 @@ pub const NEWS: &str = "b-news";
 
 /// Ссылка демо-канала на сообщение: `https://chat.example.test/<беседа>/<сообщение>`.
 const LINK: &str = "https://chat.example.test/";
+/// Ссылка демо-канала на человека (для карточки контакта): `https://chat.example.test/@<ник>`.
+pub const PEOPLE: &str = "https://chat.example.test/@";
 
 /// Всё, что умеет договор.
 pub fn all_features() -> ChannelFeatures {
@@ -422,6 +424,17 @@ impl ChannelPlugin for DemoChannel {
             conversation: ConversationId::new(conv),
             message: msg.filter(|m| !m.is_empty()).map(MessageId::new),
         })
+    }
+
+    fn link(&self, at: &Address) -> Option<String> {
+        (at.channel.0 == ID).then(|| match &at.message {
+            Some(m) => format!("{LINK}{}/{}", at.conversation, m),
+            None => format!("{LINK}{}", at.conversation),
+        })
+    }
+
+    fn person_url(&self, p: &Participant) -> Option<String> {
+        Some(format!("{PEOPLE}{}", p.handle.as_deref().unwrap_or(&p.id.0)))
     }
 
     fn sign_in<'a>(&'a self, _ctx: FlowCtx) -> BoxFuture<'a, Result<Box<dyn Flow + 'a>, ChannelError>> {

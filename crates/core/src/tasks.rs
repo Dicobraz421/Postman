@@ -234,6 +234,7 @@ pub fn save_local(cache: &Cache, task: Task) -> postman_cache::Result<Task> {
         deleted: false,
     };
     cache.put_tasks(std::slice::from_ref(&row))?;
+    index_links(cache, std::slice::from_ref(&row));
     Ok(from_row(&row).unwrap_or(task))
 }
 
@@ -261,6 +262,22 @@ pub enum Reply {
     Removed(Vec<String>),
     /// Сервер отклонил правку задачи `uid` — у неё снова серверная версия (или её нет).
     Failed { uid: Option<String>, error: String },
+}
+
+/// Ссылки из названия и заметок задач (`postman://`, `mid:`, ссылки каналов) — в `xref` (ADR 0012 п. 11): у
+/// сообщения видно, что на него ссылается задача. Сбой — в журнал, задаче не мешает.
+fn index_links(cache: &Cache, rows: &[TaskRow]) {
+    let links = crate::channel::Links::installed();
+    for t in rows.iter().filter_map(from_row) {
+        let text = format!(
+            "{}
+{}",
+            t.title, t.notes
+        );
+        if let Err(e) = crate::channel::xref::index_task(cache, &links, &t.uid, &text) {
+            tracing::warn!("tasks: links not stored: {e}");
+        }
+    }
 }
 
 /// Модель из строки кэша (битую — пропустить с записью в журнал).
@@ -423,6 +440,7 @@ async fn refresh(store: &impl TaskStore, cache: &Cache, notify: &impl Fn(Reply))
         changed.push(row);
     }
     cache.put_tasks(&changed).map_err(db)?;
+    index_links(cache, &changed);
     let mut removed = Vec::new();
     for id in &delta.destroyed {
         if let Some(uid) = cache.task_uid(id).map_err(db)? {
@@ -452,6 +470,7 @@ async fn flush(store: &impl TaskStore, cache: &Cache, notify: &impl Fn(Reply)) -
                     continue;
                 }
                 cache.put_tasks(std::slice::from_ref(&fresh)).map_err(db)?;
+                index_links(cache, std::slice::from_ref(&fresh));
                 notify(Reply::Changed(from_row(&fresh).into_iter().collect()));
             }
             Ok(None) => {

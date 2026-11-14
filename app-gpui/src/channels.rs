@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use gpui_kit::Context;
+use gpui_kit::{AppContext as _, Context};
 use postman_core::channel::{self, AccountId, ChanAccount, ChannelError, ChannelId, ChannelState, Request, Secret, Secrets, Start, Update};
 use postman_core::sync::{Command, Event, Index, UnboundedSender};
 
@@ -21,6 +21,9 @@ pub(crate) struct Channels {
     lines: Vec<(ChanAccount, UnboundedSender<Request>)>,
     /// Последнее состояние каждой учётки (строка состояния, «Проблема → причина → исправление» — CH-04).
     pub(crate) states: Vec<(ChanAccount, ChannelState)>,
+    /// Последние личные контакты и справочник: участники каналов связываются с ними (`channel::person::auto`).
+    cards: Arc<Vec<postman_core::model::ContactCard>>,
+    directory: Arc<Vec<postman_core::model::Principal>>,
 }
 
 impl Channels {
@@ -76,8 +79,18 @@ fn render() -> channel::Render {
 }
 
 impl Mailer {
-    /// Потоки учёток каналов из базы профиля, чей канал есть в реестре (живой ящик).
+    /// Потоки учёток каналов из базы профиля, чей канал есть в реестре (живой ящик). Плагины каналов — ссылкам ядра
+    /// (`channel::Links`: кросс-ссылки в письмах, задачах, сообщениях); тела, записанные до индекса `Message-ID`, —
+    /// в него, в фоне.
     pub(crate) fn start_channels(&mut self, index: Index, cx: &mut Context<Self>) {
+        channel::Links::of(crate::plugins::registry()).install();
+        let cache = self.cache.clone();
+        cx.background_spawn(async move {
+            if let Err(e) = channel::mail::index_message_ids(&cache, &|| false) {
+                tracing::warn!("channel: message ids not indexed: {e}");
+            }
+        })
+        .detach();
         let stores = match channel::ChannelStore::all(&self.cache) {
             Ok(s) => s,
             Err(e) => return tracing::warn!("channel: accounts not read: {e}"),
@@ -106,6 +119,7 @@ impl Mailer {
             return tracing::warn!("channel: demo session not stored: {e}");
         }
         let plugin: Arc<dyn channel::ChannelPlugin> = Arc::new(demo::DemoChannel::new(demo::DemoServer::new()));
+        channel::Links::new(vec![plugin.clone()]).install();
         let start = Start { cache: self.cache.clone(), secrets, account, name: postman_demo::ME_NAME.into(), render: Some(render()), index: None };
         self.spawn_channel(plugin, start, cx);
     }
@@ -153,6 +167,51 @@ impl Mailer {
     pub(crate) fn send_channel(&self, command: Command) -> bool {
         let Command::Channel { account, request } = command else { return false };
         self.channels.send(&account, *request)
+    }
+
+    /// События почты для связей каналов (CH-02в), в фоне: контакты и справочник — участники каналов связываются с ними
+    /// (только в базе); встречи — их ссылки в `xref` («Где на это сослались»).
+    pub(crate) fn on_links_sync(&mut self, ev: &Event, cx: &mut Context<Self>) {
+        let cache = self.cache.clone();
+        match ev {
+            Event::ContactsLoaded(cards) => self.channels.cards = Arc::new(cards.clone()),
+            Event::DirectoryLoaded(people) => self.channels.directory = Arc::new(people.clone()),
+            Event::EventsLoaded { events, .. } => {
+                let texts: Vec<(String, String)> = events
+                    .iter()
+                    .map(|e| {
+                        (
+                            e.uid.clone(),
+                            format!(
+                                "{}
+{}
+{}",
+                                e.title, e.location, e.description
+                            ),
+                        )
+                    })
+                    .collect();
+                cx.background_spawn(async move {
+                    let links = channel::Links::installed();
+                    for (uid, text) in texts {
+                        if let Err(e) = channel::xref::index_event(&cache, &links, &uid, &text) {
+                            tracing::warn!("channel: meeting links not stored: {e}");
+                        }
+                    }
+                })
+                .detach();
+                return;
+            }
+            _ => return,
+        }
+        let (cards, directory) = (self.channels.cards.clone(), self.channels.directory.clone());
+        cx.background_spawn(async move {
+            match channel::person::auto(&cache, &channel::Links::installed(), &cards, &directory) {
+                Ok(n) => tracing::debug!(linked = n, "channel: people linked to contacts"),
+                Err(e) => tracing::warn!("channel: people not linked to contacts: {e}"),
+            }
+        })
+        .detach();
     }
 
     /// Ответ потока учётки канала. Интерфейса каналов ещё нет (CH-04): состояние — в память окна и журнал.
