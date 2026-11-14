@@ -539,6 +539,8 @@ async fn connected(store: &ChannelStore, session: Rc<dyn ChannelSession>, incomi
     let mut queue = Queue::load(store);
     // Запросов больше нет (окно закрыто): то, что в окне «Отменить», уходит, поток ждёт ответов не дольше `CLOSING`.
     let mut closing: Option<Instant> = None;
+    // Выход отправил то, что в окне, — один раз: «позже» остаётся в очереди и выход больше не ждёт.
+    let mut left = outbox::leaving();
     catch_up(&session, store, &done_tx);
     loop {
         if let Some(until) = closing
@@ -620,7 +622,8 @@ async fn connected(store: &ChannelStore, session: Rc<dyn ChannelSession>, incomi
             }
             () = crate::sync::retry_at(pending.deadline) => flush(store, ctx, &session, &done_tx, &mut pending, &mut regap),
             () = crate::sync::retry_at(due) => queue.fire(store, &session, &done_tx, now_ms()),
-            () = outbox::left(), if !queue.due.is_empty() && closing.is_none() => {
+            () = outbox::left(), if !left && !queue.due.is_empty() && closing.is_none() => {
+                left = true;
                 queue.fire(store, &session, &done_tx, now_ms().saturating_add(outbox::UNDO_MAX_MS));
             }
             () = crate::sync::retry_at(expire) => {
