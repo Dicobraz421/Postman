@@ -154,6 +154,15 @@ pub enum Command {
         mailbox: Option<String>,
         ticket: u64,
     },
+    /// Письмо по `Message-ID` на сервере (ADR 0012 п. 3: адрес `mid:` или `postman://mail/…`, письма нет в базе) —
+    /// во всех учётках профиля и их общих ящиках: найденные строки — в кэш → `SearchResults` (ключи кэша, тело —
+    /// `Body` по ключу). JMAP — `Email/query` с условием `header`, IMAP — `SEARCH HEADER Message-ID`, EWS —
+    /// `FindItem` по `InternetMessageId`. `message_id` — без угловых скобок. Путь без поиска — пустой ответ
+    /// ([`Command::unsupported`]).
+    FindMessage {
+        message_id: String,
+        ticket: u64,
+    },
     /// Скачать вложение/картинку.
     Blob {
         blob_id: String,
@@ -555,7 +564,12 @@ impl Command {
             }
             Command::CancelMeeting { from, .. } => from.clone().map_or(Target::Profile(None), Target::Sender),
             Command::Availability { sender, .. } => sender.clone().map_or(Target::Profile(None), Target::Sender),
-            Command::Events { .. } | Command::Scheduled | Command::Reconnect | Command::SyncNow | Command::Newsletters { .. } => Target::All,
+            Command::Events { .. }
+            | Command::Scheduled
+            | Command::Reconnect
+            | Command::SyncNow
+            | Command::Newsletters { .. }
+            | Command::FindMessage { .. } => Target::All,
             Command::SetKeywords { .. } | Command::Patch { .. } | Command::ReportPhishing { .. } => return self.split(),
             _ => Target::Profile(None),
         };
@@ -601,6 +615,7 @@ impl Command {
             Command::Query { filter, mailbox, ticket } => Command::Query { filter: filter.clone(), mailbox: mailbox.clone(), ticket: *ticket },
             Command::Counts { filters, mailbox, ticket } => Command::Counts { filters: filters.clone(), mailbox: mailbox.clone(), ticket: *ticket },
             Command::Search { query, mailbox, ticket } => Command::Search { query: query.clone(), mailbox: mailbox.clone(), ticket: *ticket },
+            Command::FindMessage { message_id, ticket } => Command::FindMessage { message_id: message_id.clone(), ticket: *ticket },
             Command::Events { from, to } => Command::Events { from: *from, to: *to },
             Command::Scheduled => Command::Scheduled,
             Command::Reconnect => Command::Reconnect,
@@ -1063,6 +1078,7 @@ impl Command {
             Command::ListLetters { sweep, .. } | Command::StoreLetters { sweep, .. } => {
                 return vec![Event::ListFailed { sweep: *sweep, error: not() }];
             }
+            Command::FindMessage { ticket, .. } => return vec![Event::SearchResults { ticket: *ticket, ids: Vec::new(), total: 0 }],
             _ => return Vec::new(),
         };
         vec![Event::FolderFailed { mailbox, error: not() }]
@@ -1352,6 +1368,9 @@ mod tests {
         assert_eq!(target(Command::Body("@2.shared/e1".into())), [p(Some("@2"))]);
         assert_eq!(target(Command::Move { id: "@3/e".into(), from: "@3/a".into(), to: "@3/b".into() }), [p(Some("@3"))]);
         assert_eq!(target(Command::Search { query: "q".into(), mailbox: None, ticket: 1 }), [Target::All]);
+        let find = Command::FindMessage { message_id: "m1@example.test".into(), ticket: 2 };
+        assert_eq!(target(Command::FindMessage { message_id: "m1@example.test".into(), ticket: 2 }), [Target::All]);
+        assert!(matches!(find.for_each_account(), Some(Command::FindMessage { ticket: 2, .. })), "во все учётки профиля");
         assert_eq!(target(Command::Search { query: "q".into(), mailbox: Some("@2/inbox".into()), ticket: 1 }), [p(Some("@2"))]);
         assert_eq!(target(Command::Events { from: 0, to: 1 }), [Target::All]);
         assert_eq!(target(Command::Contacts), [p(None)]);
@@ -1395,6 +1414,8 @@ mod tests {
         assert!(matches!(&no[..], [Event::FolderFailed { mailbox: Some(m), error }] if m == "@2/f" && error == FOLDER_UNSUPPORTED));
         assert!(matches!(&create(None, None).unsupported()[..], [Event::FolderFailed { mailbox: None, .. }]));
         assert!(Command::Contacts.unsupported().is_empty());
+        let find = Command::FindMessage { message_id: "m1@example.test".into(), ticket: 7 }.unsupported();
+        assert!(matches!(&find[..], [Event::SearchResults { ticket: 7, ids, total: 0 }] if ids.is_empty()), "путь без поиска — пустой ответ");
     }
 
     /// Перенос папки в саму себя, в подпапку или в другой аккаунт — отказ ядра, плагин команды не получает; прочее —

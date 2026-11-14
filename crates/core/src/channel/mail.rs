@@ -39,6 +39,15 @@ pub fn local_letter(id: &MessageId) -> Option<crate::model::LetterId> {
     id.0.strip_prefix(LOCAL)?.parse().ok().map(crate::model::LetterId)
 }
 
+/// Письма адреса нет в базе ([`MailSource::find`] — `None`): поиск на сервере по `Message-ID` во всех учётках
+/// профиля → `SearchResults` с ключами найденного (тело — `Command::Body`, затем адрес разрешается по
+/// `by_message_id`). Не почта, адрес беседы и `~<LetterId>` (письмо только этого компьютера) — `None`.
+pub fn find_on_server(at: &Address, ticket: u64) -> Option<Command> {
+    let id = at.message.as_ref().filter(|_| at.channel.0 == super::MAIL)?;
+    let message_id = bare(&id.0);
+    (!is_local(id) && !message_id.is_empty()).then(|| Command::FindMessage { message_id: message_id.to_owned(), ticket })
+}
+
 /// Отметка в состоянии хранилища: тела, записанные до индекса `by_message_id`, в него дописаны.
 const MID_INDEXED: &str = "channel.message_ids";
 /// Тел за один проход дописывания.
@@ -67,6 +76,56 @@ pub fn index_message_ids(cache: &Cache, stop: &dyn Fn() -> bool) -> Result<bool>
             }
         }
     }
+}
+
+/// Состояние хранилища с адресом ящика учётки кэша: `pm.mailbox` у основной, `<учётка>/pm.mailbox` у
+/// дополнительной и общего ящика — уходит вместе с учёткой (`Cache::forget_account`).
+const MAILBOX: &str = "pm.mailbox";
+
+/// Адреса ящиков для адресов бесед ([`conversation_of`]): первый адрес «От» каждой учётки кэша из `Event::Senders`
+/// (его шлёт путь после входа — JMAP, IMAP, EWS). Сменился или появился адрес — индекс поиска писем пересоберётся
+/// при следующем запуске (`crate::indexer::needs_rebuild`): у документов писем адрес беседы ([`conversation_of`]).
+pub fn remember_senders(cache: &Cache, senders: &[crate::sync::Sender]) {
+    let mut changed = false;
+    let mut seen: Vec<Option<&str>> = Vec::new();
+    for s in senders {
+        let scope = s.account.as_deref();
+        let address = s.address.email.trim().to_lowercase();
+        if seen.contains(&scope) || address.is_empty() {
+            continue;
+        }
+        seen.push(scope);
+        let key = postman_cache::scoped(scope, MAILBOX);
+        match cache.state(&key) {
+            Ok(Some(old)) if old == address => {}
+            Ok(_) => match cache.set_state(&key, &address) {
+                Ok(()) => changed = true,
+                Err(e) => tracing::warn!("mail: mailbox address not stored: {e}"),
+            },
+            Err(e) => tracing::warn!("mail: mailbox address not read: {e}"),
+        }
+    }
+    if changed {
+        crate::indexer::stale(cache);
+    }
+}
+
+/// Адрес ящика учётки кэша `scope` (`None` — основная), если путь его уже называл ([`remember_senders`]).
+pub fn mailbox(cache: &Cache, scope: Option<&str>) -> Option<String> {
+    cache.state(&postman_cache::scoped(scope, MAILBOX)).ok().flatten().filter(|a| !a.is_empty())
+}
+
+/// Адрес беседы письма по ключу его цепочки в кэше (`EmailRow::thread_id`, `LetterRow::thread_id`):
+/// `postman://mail/<ящик>/<цепочка>`, как у [`MailSource::address_of`]. Адрес ящика ещё неизвестен — `None`.
+pub fn conversation_of(cache: &Cache, thread_key: &str) -> Option<Address> {
+    conversation_in(&mailbox(cache, postman_cache::account_of(thread_key))?, thread_key)
+}
+
+/// [`conversation_of`] при известном адресе ящика `mailbox` учётки ключа.
+pub fn conversation_in(mailbox: &str, thread_key: &str) -> Option<Address> {
+    let thread = postman_cache::unscoped(thread_key).1;
+    (!thread.is_empty() && !mailbox.is_empty())
+        .then(|| Address::conversation(&ChannelId::new(super::MAIL), &AccountId(mailbox.to_owned()), &ConversationId::new(thread)))
 }
 
 /// Ящик почты в адресах каналов: учётка кэша (`None` — основная, `@<n>` — дополнительная, id общего ящика) и адрес.
@@ -561,6 +620,56 @@ mod tests {
         assert!(s.resolve(&Address { message: Some(MessageId::new("none@example.test")), ..wrong }).unwrap().is_none());
         assert!(index_message_ids(&s.cache, &|| false).unwrap());
         assert!(index_message_ids(&s.cache, &|| true).unwrap(), "уже дописано — сразу");
+        // Нет в базе — поиск на сервере по `Message-ID`; письмо только этого компьютера и беседа — не ищутся.
+        let missing = Address { message: Some(MessageId::new("none@example.test")), ..at("me@example.test", "t1") };
+        assert!(matches!(find_on_server(&missing, 4), Some(Command::FindMessage { message_id, ticket: 4 }) if message_id == "none@example.test"));
+        assert!(find_on_server(&by_letter, 4).is_none());
+        assert!(find_on_server(&at("me@example.test", "t1"), 4).is_none());
+    }
+
+    /// Адреса ящиков из `Senders` (первый адрес учётки) — адреса бесед писем в индексе поиска: `беседа:` находит письма
+    /// почтовой беседы, по индексу и до его сборки; сменился адрес — индекс пересоберётся при запуске.
+    #[test]
+    fn mail_conversations_in_search() {
+        use postman_search::SearchIndex;
+        let s = source();
+        let cache = &s.cache;
+        let sender = |account: Option<&str>, email: &str| crate::sync::Sender {
+            account: account.map(str::to_owned),
+            address: postman_compose::Address::new("", email),
+            signature: String::new(),
+        };
+        assert!(conversation_of(cache, "t1").is_none(), "ящик ещё не назван");
+        remember_senders(cache, &[sender(None, "Me@Example.test"), sender(None, "alias@example.test"), sender(Some("@2"), "me@corp.example")]);
+        assert_eq!(mailbox(cache, None).as_deref(), Some("me@example.test"));
+        let row9 = cache.rows_by_ids(&["@2/e9".to_owned()]).unwrap().remove(0);
+        assert_eq!(conversation_of(cache, &row9.thread_id), s.address_of(&row9), "адрес — как у MailSource");
+
+        let index = SearchIndex::in_memory().unwrap();
+        assert!(crate::indexer::needs_rebuild(cache));
+        assert!(crate::indexer::rebuild(&index, cache, &|| false).unwrap());
+        assert!(!crate::indexer::needs_rebuild(cache));
+        let q = crate::query::Query::parse("беседа:postman://mail/me@example.test/t1");
+        let scope = crate::channel::index::scope_of(cache, &q, &|_| Vec::new()).unwrap();
+        let letters = |index: Option<&SearchIndex>, words: &str| {
+            let mut ids: Vec<u64> = crate::indexer::search_in(index, cache, words, &scope, None, 10).unwrap().into_iter().map(|h| h.id.0).collect();
+            ids.sort_unstable();
+            ids
+        };
+        let t1: Vec<u64> = {
+            let mut v: Vec<u64> = ["e1", "e2", "e3"].iter().map(|k| crate::store::letter_of_key(cache, k).unwrap().unwrap().0).collect();
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(letters(Some(&index), ""), t1, "по индексу — письма беседы, без беседы другого ящика");
+        assert_eq!(letters(Some(&index), "отчет"), t1);
+        assert_eq!(letters(None, "отчёт"), t1, "до сборки индекса — по кэшу");
+        assert_eq!(crate::indexer::search_hits(Some(&index), cache, "отчет", None, 10).unwrap().len(), 4, "без фильтра — все письма");
+
+        remember_senders(cache, &[sender(Some("@2"), "me@corp.example")]);
+        assert!(!crate::indexer::needs_rebuild(cache), "тот же адрес — без пересборки");
+        remember_senders(cache, &[sender(None, "new@example.test")]);
+        assert!(crate::indexer::needs_rebuild(cache), "адрес сменился — пересборка при запуске");
     }
 
     /// Действия канала → прежние команды почты: «прочитано до», заглушить, закрепить; отправки и правки нет.

@@ -520,7 +520,10 @@ async fn run(
         notify(Event::Features(areas.with(Feature::Keywords, keywords).with(Feature::Quota, quota).with_import(true)));
         notify(Event::Me { address: address.clone(), signature: String::new() });
     }
-    notify(Event::Senders(vec![Sender { account: me.scope.clone(), address, signature: String::new() }]));
+    let senders = vec![Sender { account: me.scope.clone(), address, signature: String::new() }];
+    // Адрес ящика — в адреса бесед писем (ADR 0012, поиск `беседа:`).
+    postman_core::channel::mail::remember_senders(&me.cache, &senders);
+    notify(Event::Senders(senders));
     // Сервер не держит письма: «Отправить позже» нет (интерфейс прячет его по `max_delay: 0`).
     notify(Event::Scheduled { list: Vec::new(), max_delay: 0 });
     let rows: Vec<AccountRow> = match &me.profile {
@@ -1427,6 +1430,13 @@ impl Imap {
                 notify(Event::SearchResults { ticket, ids, total });
                 notify(Event::EmailsChanged);
             }
+            // Письмо по `Message-ID` (ADR 0012, ссылка `mid:`) — `SEARCH HEADER` во всех папках.
+            Command::FindMessage { message_id, ticket } => {
+                let ids = self.query(&message_id_query(&message_id), None).await?;
+                let total = ids.len() as u64;
+                notify(Event::SearchResults { ticket, ids, total });
+                notify(Event::EmailsChanged);
+            }
             // Фильтры «Все папки» — `SEARCH` сервера (S7-04в); чего IMAP не выразит — пусто.
             Command::Query { filter, mailbox, ticket } => {
                 let ids = match imap_query(&filter) {
@@ -1796,6 +1806,13 @@ impl Imap {
     }
 }
 
+/// Условие `SEARCH` письма по `Message-ID` (с угловыми скобками или без): `HEADER Message-ID "<id>"` — подстрока
+/// заголовка (RFC 3501 §6.4.4), со скобками — без чужих id, которые содержат этот.
+pub fn message_id_query(message_id: &str) -> String {
+    let bare = message_id.trim().trim_start_matches('<').trim_end_matches('>');
+    format!("HEADER Message-ID {}", postman_imap::quote(&format!("<{bare}>")))
+}
+
 /// Условие фильтра Postman → `SEARCH` IMAP (RFC 3501 §6.4.4) и папка, если условие её задаёт (`InMailbox` в «И»).
 /// `None` — IMAP так не умеет.
 pub fn imap_query(f: &postman_core::model::Filter) -> Option<(String, Option<String>)> {
@@ -2053,6 +2070,14 @@ mod tests {
         assert!(ImapAccount::from_url("imaps://", "u", "p").is_none());
         // Пароль — не в `Debug`.
         assert!(!format!("{a:?}").contains("secret"));
+    }
+
+    /// Письмо по `Message-ID` (ADR 0012): одно условие заголовка со скобками, кавычки экранированы.
+    #[test]
+    fn message_id_becomes_header_search() {
+        assert_eq!(super::message_id_query("m1@example.test"), "HEADER Message-ID \"<m1@example.test>\"");
+        assert_eq!(super::message_id_query(" <m1@example.test> "), "HEADER Message-ID \"<m1@example.test>\"");
+        assert_eq!(super::message_id_query("a\"b@example.test"), "HEADER Message-ID \"<a\\\"b@example.test>\"");
     }
 
     #[test]

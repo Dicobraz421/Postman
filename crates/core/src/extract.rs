@@ -74,7 +74,7 @@ fn extract_one(cache: &Cache, index: &SearchIndex, worker: &mut Client, id: &str
         tracing::warn!("letter links not stored: {e}");
     }
     let attached = attachment_texts(cache, worker, &body);
-    crate::indexer::letter(index, letter, &row, &body, &text, &attached);
+    crate::indexer::letter(index, cache, letter, &row, &body, &text, &attached);
 }
 
 /// Тексты вложений по порядку (пусто — текста нет): не больше, чем берёт индекс на письмо.
