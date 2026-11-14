@@ -17,11 +17,14 @@
 //! - **Поиск** ([`index`]): сообщения каналов — документами `c<MsgKey>` в общем индексе с почтой, фильтры канала,
 //!   беседы и автора.
 //! - **Связи** (CH-02в): кросс-ссылки и обратные ссылки ([`xref`]), связанные беседы ([`linked`]), участник канала =
-//!   контакт ([`person`]), адрес письма по `Message-ID` (`mail::MailSource::find`).
+//!   контакт ([`person`]), адрес письма по `Message-ID` (`mail::MailSource::find`); «Переслать в…», «Ответить в…»
+//!   между каналами ([`forward`]), экспорт ленты любой беседы ([`export`]), «Медиа беседы» — `crate::thread_media`.
 //!
 //! Почта — канал `mail` адаптером ([`mail`], ADR 0012 п. 7) и через [`ChannelSession`] не идёт.
 
 pub mod conformance;
+pub mod export;
+pub mod forward;
 pub mod index;
 pub mod linked;
 pub mod mail;
