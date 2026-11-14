@@ -372,11 +372,12 @@ fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
 }
 
-/// Записано мимо пачки (очередь отправки): в индекс и интерфейсу.
+/// Записано мимо пачки (очередь отправки): в индекс, в ссылки и интерфейсу.
 fn applied_now(store: &ChannelStore, ctx: &RunCtx, a: &super::Applied) {
     if let Some(index) = &ctx.index {
         super::index::applied(index, store, a);
     }
+    super::xref::applied(store, &super::Links::installed(), a);
     if !a.changed.is_empty() || !a.gone.is_empty() {
         (ctx.notify)(Update::Changed { conversations: a.changed.clone(), gone: a.gone.clone() });
     }
@@ -829,6 +830,7 @@ fn flush(
     if let Some(index) = &ctx.index {
         super::index::applied(index, store, &applied);
     }
+    super::xref::applied(store, &super::Links::installed(), &applied);
     let notify = &*ctx.notify;
     if let Some(s) = &applied.secret
         && let Err(e) = ctx.secrets.put(store.channel(), store.account(), s)

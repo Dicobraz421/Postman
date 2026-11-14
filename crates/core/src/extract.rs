@@ -69,6 +69,11 @@ fn extract_one(cache: &Cache, index: &SearchIndex, worker: &mut Client, id: &str
         },
         (None, None) => String::new(),
     };
+    // Ссылки письма (ADR 0012 п. 11): `postman://`, `mid:`, ссылки каналов — в `xref`, текстом тела (Markdown
+    // разобранного HTML несёт и адреса ссылок).
+    if let Err(e) = crate::channel::xref::index_letter(cache, &crate::channel::Links::installed(), letter, &text) {
+        tracing::warn!("letter links not stored: {e}");
+    }
     let attached = attachment_texts(cache, worker, &body);
     crate::indexer::letter(index, letter, &row, &body, &text, &attached);
 }

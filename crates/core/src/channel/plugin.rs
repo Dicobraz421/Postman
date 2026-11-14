@@ -24,6 +24,16 @@ pub trait ChannelPlugin: Send + Sync {
     fn parse_link(&self, _url: &str) -> Option<Address> {
         None
     }
+    /// Обратно к [`ChannelPlugin::parse_link`]: адрес беседы или сообщения → ссылка канала наружу (в письмо, в другой
+    /// канал, ADR 0012 п. 4). Нет — наружу уходит `postman://`.
+    fn link(&self, _at: &Address) -> Option<String> {
+        None
+    }
+    /// Ссылка на человека в канале для карточки контакта (`https://t.me/<имя>`, `matrix:u/<user>:<server>`; JSContact
+    /// `onlineServices`, vCard `IMPP`, ADR 0012 п. 4). Нет — связь «участник = контакт» только в базе профиля.
+    fn person_url(&self, _p: &Participant) -> Option<String> {
+        None
+    }
     /// Вход: шаги с вопросами пользователю; итог — [`Prompt::Done`] с секретом сессии (его хранит ядро).
     fn sign_in<'a>(&'a self, ctx: FlowCtx) -> BoxFuture<'a, Result<Box<dyn Flow + 'a>, ChannelError>>;
     /// Подключиться с сохранённой сессией; события — в `ctx.incoming`.

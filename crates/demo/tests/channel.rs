@@ -57,6 +57,42 @@ fn demo_links() {
     assert_eq!(a.to_string(), format!("postman://demo/{ACCOUNT}/g-team/m7"));
     assert!(p.parse_link("https://chat.example.test/nope/m1").is_none());
     assert!(p.parse_link("https://t.me/c/1/2").is_none());
+    assert_eq!(p.link(&a).as_deref(), Some("https://chat.example.test/g-team/m7"), "наружу — ссылка канала");
+}
+
+/// Кросс-ссылки через плагин (CH-02в): ссылка канала в письме — обратная ссылка у сообщения; «Связать с контактом» —
+/// ссылка на человека в карточку на сервере; связь — у того же человека в поиске `от:`.
+#[test]
+fn demo_links_and_people() {
+    use postman_cache::Cache;
+    use postman_core::channel::person::{self, Contact};
+    use postman_core::channel::{Address, ChannelEvent, ChannelId, ChannelStore, ConversationId, Links, MessageId, Participant, ParticipantId, xref};
+    use postman_core::model::{ContactCard, LetterId};
+    use postman_core::sync::Command;
+
+    let links = Links::new(vec![Arc::new(DemoChannel::new(DemoServer::new()))]);
+    let cache = Cache::open_in_memory().unwrap();
+    let msg = Address::message(&ChannelId::new("demo"), &AccountId::new(ACCOUNT), &ConversationId::new("g-team"), &MessageId::new("m7"));
+    assert_eq!(links.outside(&msg), "https://chat.example.test/g-team/m7");
+    xref::index_letter(&cache, &links, LetterId(1), "Обсуждали тут: https://chat.example.test/g-team/m7.").unwrap();
+    assert_eq!(cache.xref_sources(&xref::target_key(&msg)).unwrap(), ["letter:1"]);
+
+    let store = ChannelStore::open(cache.clone(), &ChannelId::new("demo"), &AccountId::new(ACCOUNT), "Я").unwrap();
+    let anna = Participant { id: ParticipantId::new("u-anna"), name: "Анна".into(), handle: Some("anna".into()), ..Participant::default() };
+    store.apply(vec![ChannelEvent::People(vec![anna.clone()])]).unwrap();
+    let card = ContactCard { id: "card-anna".into(), name: "Анна Смирнова".into(), ..ContactCard::default() };
+    let cmd = person::link(&cache, &links, &store.chan(), &anna, Contact::Personal(&card), 7).unwrap();
+    let Some(Command::SaveContact { card: new, old: Some(_), ticket: 7 }) = cmd else { panic!("нет записи в карточку") };
+    assert_eq!(new.services, ["https://chat.example.test/@anna"]);
+    // На другом компьютере — та же связь по адресу в карточке, автоматически.
+    let other = Cache::open_in_memory().unwrap();
+    ChannelStore::open(other.clone(), &ChannelId::new("demo"), &AccountId::new(ACCOUNT), "Я")
+        .unwrap()
+        .apply(vec![ChannelEvent::People(vec![anna.clone()])])
+        .unwrap();
+    assert_eq!(person::auto(&other, &links, &[*new], &[]).unwrap(), 1);
+    assert_eq!(person::get(&other, &store.chan(), &anna.id).unwrap().unwrap().how, person::How::Service);
+    assert!(person::link(&cache, &links, &store.chan(), &anna, Contact::Directory("gal-anna"), 8).unwrap().is_none(), "справочник — только база");
 }
 
 /// Очередь отправки (ADR 0012 п. 11) на демо-канале через поток учётки: окно «Отменить» — «отправляется» в ленте,

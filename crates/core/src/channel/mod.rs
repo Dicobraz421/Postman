@@ -16,19 +16,24 @@
 //!   лету ([`mail::MailSource`]); одна модель для списка, ленты и общих функций.
 //! - **Поиск** ([`index`]): сообщения каналов — документами `c<MsgKey>` в общем индексе с почтой, фильтры канала,
 //!   беседы и автора.
+//! - **Связи** (CH-02в): кросс-ссылки и обратные ссылки ([`xref`]), связанные беседы ([`linked`]), участник канала =
+//!   контакт ([`person`]), адрес письма по `Message-ID` (`mail::MailSource::find`).
 //!
 //! Почта — канал `mail` адаптером ([`mail`], ADR 0012 п. 7) и через [`ChannelSession`] не идёт.
 
 pub mod conformance;
 pub mod index;
+pub mod linked;
 pub mod mail;
 pub mod notice;
 pub mod outbox;
+pub mod person;
 mod plugin;
 mod run;
 pub mod smart;
 mod source;
 mod store;
+pub mod xref;
 
 pub use plugin::{
     Answer, ByteSink, ByteSource, ChannelPlugin, ChannelSession, CodeVia, ConnectCtx, Flow, FlowCtx, FlowKind, Incoming, LocalStore, MemorySecrets,
@@ -37,6 +42,7 @@ pub use plugin::{
 pub use run::{BATCH_EVENTS, BATCH_MS, HISTORY_PAGE, Render, Request, RunCtx, Start, Update, run, spawn, to_ir, worker_render};
 pub use source::{Chats, ConversationSource, Line, Summary};
 pub use store::{Applied, ChannelStore, Entry, StoredConversation};
+pub use xref::Links;
 
 use postman_ir::Document;
 use serde::{Deserialize, Serialize};
@@ -201,6 +207,11 @@ impl std::fmt::Display for Address {
         }
         Ok(())
     }
+}
+
+/// Начало адресов учётки канала: `postman://<канал>/<учётка>/` — её беседы и сообщения.
+pub fn account_prefix(chan: &ChanAccount) -> String {
+    format!("{SCHEME}{}/{}/", encode_segment(&chan.channel.0), encode_segment(&chan.account.0))
 }
 
 /// Курсор канала: всё до него передано (`pts` Telegram, `next_batch` Matrix) — непрозрачные байты.

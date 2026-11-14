@@ -87,6 +87,8 @@ mod migrate;
 mod migrate7;
 #[cfg(feature = "store6")]
 mod remote;
+#[cfg(feature = "store6")]
+mod xref;
 
 #[cfg(feature = "store6")]
 pub use channel::{ChanAccount, ChanBatch, ChanDownload, ChanKey, ConvDoc, ConvKey, FORGET_BATCH, MsgDoc, MsgKey, MsgPut, Stored};
@@ -104,6 +106,8 @@ pub use local::{LocalDoc, LocalPut};
 pub use migrate::{Migration, Split};
 #[cfg(feature = "store6")]
 pub use remote::RemoteRef;
+#[cfg(feature = "store6")]
+pub use xref::{PersonKey, PersonRow, bare_message_id};
 
 /// Разделитель аккаунта и id в ключах: id JMAP — только `A-Za-z0-9-_` (RFC 8620 §1.2), `/` в них не бывает.
 const SCOPE: char = '/';
@@ -652,6 +656,8 @@ impl Cache {
         local::init(&tx)?;
         #[cfg(feature = "store6")]
         channel::init(&tx)?;
+        #[cfg(feature = "store6")]
+        xref::init(&tx)?;
         #[cfg(not(feature = "store6"))]
         {
             let threads_indexed = tx.list_tables()?.any(|t| t.name() == BY_THREAD.name());
@@ -1231,10 +1237,16 @@ impl Cache {
         tx.open_table(BODY)?.get(id)?.map(|v| dec(v.value())).transpose()
     }
 
-    /// Разобранное тело письма; в формате 7 — сжатым.
+    /// Разобранное тело письма; в формате 7 — сжатым, `Message-ID` — в индекс `by_message_id` этой же транзакцией.
     pub fn put_body(&self, id: &str, b: &BodyRow) -> Result<()> {
         #[cfg(feature = "store6")]
-        return self.put(BODY, id, &content::pack_body(b, self.tuning.level)?);
+        {
+            let tx = self.db.begin_write()?;
+            tx.open_table(BODY)?.insert(id, content::pack_body(b, self.tuning.level)?.as_slice())?;
+            xref::index_body(&tx, id, b.message_id.as_deref())?;
+            tx.commit()?;
+            Ok(())
+        }
         #[cfg(not(feature = "store6"))]
         self.put(BODY, id, &enc(b)?)
     }

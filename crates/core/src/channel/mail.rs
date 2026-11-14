@@ -29,6 +29,46 @@ type Result<T> = std::result::Result<T, ChannelError>;
 /// id сообщения без `Message-ID`: `~<LetterId>`.
 const LOCAL: char = '~';
 
+/// id письма без `Message-ID` (`~<LetterId>`): открывается только на этом компьютере.
+pub fn is_local(id: &MessageId) -> bool {
+    id.0.starts_with(LOCAL)
+}
+
+/// Письмо id `~<LetterId>`; иначе — `None`.
+pub fn local_letter(id: &MessageId) -> Option<crate::model::LetterId> {
+    id.0.strip_prefix(LOCAL)?.parse().ok().map(crate::model::LetterId)
+}
+
+/// Отметка в состоянии хранилища: тела, записанные до индекса `by_message_id`, в него дописаны.
+const MID_INDEXED: &str = "channel.message_ids";
+/// Тел за один проход дописывания.
+const MID_BATCH: usize = 2_000;
+
+/// Дописать в индекс `by_message_id` тела, записанные до него (один раз на базу, в фоне): `false` — прервано `stop`,
+/// следующий вызов продолжит с того же места.
+pub fn index_message_ids(cache: &Cache, stop: &dyn Fn() -> bool) -> Result<bool> {
+    let state = cache.state(MID_INDEXED)?;
+    if state.as_deref() == Some("") {
+        return Ok(true);
+    }
+    let mut after = state;
+    loop {
+        if stop() {
+            return Ok(false);
+        }
+        match cache.index_message_ids(after.as_deref(), MID_BATCH)? {
+            Some(k) => {
+                cache.set_state(MID_INDEXED, &k)?;
+                after = Some(k);
+            }
+            None => {
+                cache.set_state(MID_INDEXED, "")?;
+                return Ok(true);
+            }
+        }
+    }
+}
+
 /// Ящик почты в адресах каналов: учётка кэша (`None` — основная, `@<n>` — дополнительная, id общего ящика) и адрес.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MailAccount {
@@ -292,6 +332,51 @@ impl MailSource {
     fn any_row(&self, conv: &ConversationId) -> Result<Option<EmailRow>> {
         Ok(self.thread_rows(conv)?.into_iter().next())
     }
+
+    /// Строка письма по `LetterId` (действующая связь с сервером); письмо «На этом компьютере» — `None`.
+    fn row_of_letter(&self, letter: crate::model::LetterId) -> Result<Option<EmailRow>> {
+        let Some(key) = crate::store::key_of(&self.cache, letter)? else { return Ok(None) };
+        Ok(self.cache.rows_by_ids(&[key])?.into_iter().next())
+    }
+
+    /// Письмо адреса сообщения (ADR 0012 п. 7): сначала в беседе адреса (подсказка), не нашлось — по `Message-ID`
+    /// (индекс `by_message_id`; письмо этого ящика — первым), `~<LetterId>` — по ключу письма. Нет в базе — `None`
+    /// (искать на сервере по заголовку — путь учётки).
+    pub fn find(&self, at: &Address) -> Result<Option<(EmailRow, Option<BodyRow>)>> {
+        let Some(want) = at.message.as_ref().filter(|_| at.channel.0 == super::MAIL) else { return Ok(None) };
+        for r in self.rows(at)? {
+            let body = self.cache.body(&r.id)?;
+            if self.message_id(&r, body.as_ref()) == *want {
+                return Ok(Some((r, body)));
+            }
+        }
+        let letters = match local_letter(want) {
+            Some(l) => vec![l],
+            None => self.cache.letters_by_message_id(&want.0)?.into_iter().map(|l| crate::model::LetterId(l.0)).collect(),
+        };
+        let mut found = Vec::new();
+        for l in letters {
+            if let Some(r) = self.row_of_letter(l)?
+                && self.address_of(&r).is_some()
+            {
+                found.push(r);
+            }
+        }
+        let mine = self.scope_of(&at.account);
+        found.sort_by_key(|r| Some(postman_cache::account_of(&r.id)) != mine);
+        let Some(r) = found.into_iter().next() else { return Ok(None) };
+        let body = self.cache.body(&r.id)?;
+        Ok(Some((r, body)))
+    }
+
+    /// Адрес сообщения, как он есть в базе сейчас: ящик и беседа письма (ссылка с другого компьютера или из другого
+    /// ящика); нет такого письма — `None`.
+    pub fn resolve(&self, at: &Address) -> Result<Option<Address>> {
+        let Some((row, body)) = self.find(at)? else { return Ok(None) };
+        let Some(conv) = self.address_of(&row) else { return Ok(None) };
+        let id = self.message_id(&row, body.as_ref());
+        Ok(Some(Address { message: Some(id), ..conv }))
+    }
 }
 
 /// Правка: поставить или снять ключевое слово.
@@ -324,14 +409,7 @@ impl ConversationSource for MailSource {
     }
 
     fn message(&self, at: &Address) -> Result<Option<Line>> {
-        let Some(want) = &at.message else { return Ok(None) };
-        for r in self.rows(at)? {
-            let body = self.cache.body(&r.id)?;
-            if self.message_id(&r, body.as_ref()) == *want {
-                return Ok(Some(Line::Message { message: self.message_of(&r, body.as_ref()), loaded: Vec::new() }));
-            }
-        }
-        Ok(None)
+        Ok(self.find(at)?.map(|(r, body)| Line::Message { message: self.message_of(&r, body.as_ref()), loaded: Vec::new() }))
     }
 
     fn people(&self, at: &Address) -> Result<Vec<Participant>> {
@@ -457,6 +535,24 @@ mod tests {
         assert!(s.conversation(&at("other@example.test", "t1")).unwrap().is_none());
         let row = s.cache.thread("@2/t9").unwrap().pop().unwrap();
         assert_eq!(s.address_of(&row).unwrap().to_string(), "postman://mail/me@corp.example/t9");
+    }
+
+    /// Сообщение по адресу с другой беседой или из другого ящика — по `Message-ID` (`by_message_id`); `~<LetterId>` —
+    /// по ключу письма; тела до индекса дописываются в фоне.
+    #[test]
+    fn letters_found_by_message_id() {
+        let s = source();
+        let wrong = Address { message: Some(MessageId::new("m3@example.test")), ..at("me@corp.example", "t-old") };
+        let real = s.resolve(&wrong).unwrap().unwrap();
+        assert_eq!(real.to_string(), "postman://mail/me@example.test/t1/m3@example.test");
+        assert!(s.message(&wrong).unwrap().is_some());
+        let local = s.timeline(&at("me@example.test", "t1"), None, 10).unwrap()[1].id().clone();
+        assert!(is_local(&local));
+        let by_letter = Address { message: Some(local.clone()), ..at("me@example.test", "elsewhere") };
+        assert_eq!(s.resolve(&by_letter).unwrap().unwrap().message, Some(local));
+        assert!(s.resolve(&Address { message: Some(MessageId::new("none@example.test")), ..wrong }).unwrap().is_none());
+        assert!(index_message_ids(&s.cache, &|| false).unwrap());
+        assert!(index_message_ids(&s.cache, &|| true).unwrap(), "уже дописано — сразу");
     }
 
     /// Действия канала → прежние команды почты: «прочитано до», заглушить, закрепить; отправки и правки нет.
