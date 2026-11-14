@@ -63,10 +63,12 @@ pub(crate) enum Place {
     Inline,
 }
 
-/// Экрану: закрыть письмо (отправлено, «Нет», удалён черновик) или развернуть ответ во вкладку.
+/// Экрану: закрыть письмо (отправлено, «Нет», удалён черновик), развернуть ответ во вкладку, записать в базу, как
+/// устроен черновик на сервере `id` (`None` — черновика больше нет), вместо прежних версий `old`.
 pub(crate) enum ComposerEvent {
     Close,
     Expand,
+    Kept { id: Option<String>, layout: Option<postman_core::local::DraftLayout>, old: Vec<String> },
 }
 
 impl EventEmitter<ComposerEvent> for Composer {}
@@ -204,7 +206,7 @@ pub(crate) struct TplAsk {
 }
 
 /// Профиль для полей подписи: имя — из адреса «От», если в профиле его нет.
-fn profile_for(prefs: &AccountPrefs, from: &Address) -> postman_core::prefs::Profile {
+pub(crate) fn profile_for(prefs: &AccountPrefs, from: &Address) -> postman_core::prefs::Profile {
     let mut p = prefs.profile.clone();
     if p.name.trim().is_empty() {
         p.name = from.name.clone();
@@ -679,13 +681,19 @@ impl Composer {
                 let later = self.model.sending_later();
                 let draft = self.model.draft(false).ok();
                 let undo_secs = self.model.undo_secs;
+                let kept = self.model.pending_layout(*ticket);
                 if self.model.on_sent(*ticket) {
                     cx.emit(ComposerEvent::Close);
-                    sent = draft.map(|draft| SentDraft { draft, later, undo_secs });
+                    let (layout, old) = kept.unwrap_or_default();
+                    sent = draft.map(|draft| SentDraft { draft, layout, old, later, undo_secs });
                 }
             }
             Event::Scheduled { max_delay, .. } => self.later.max_delay = *max_delay,
             Event::DraftSaved { ticket, id } => {
+                // Как устроен черновик (реплики, «Не отправлять» вложения беседы) — в базу профиля под ключом версии.
+                if let Some((layout, old)) = self.model.pending_layout(*ticket) {
+                    cx.emit(ComposerEvent::Kept { id: Some(id.clone()), layout: Some(layout), old: old.into_iter().collect() });
+                }
                 let at = jiff::Zoned::now().strftime("%H:%M").to_string();
                 if self.model.on_saved(*ticket, id.clone(), at) {
                     cx.emit(ComposerEvent::Close);
@@ -847,6 +855,7 @@ impl Composer {
     fn discard(&mut self, cx: &mut Context<Self>) {
         self.model.confirm_delete = false;
         if let Some(id) = self.model.server_id().map(str::to_owned) {
+            cx.emit(ComposerEvent::Kept { id: None, layout: None, old: vec![id.clone()] });
             let _ = self.mailer.update(cx, |m, cx| {
                 if !m.backend.send(Command::Destroy(id)) {
                     m.needs_server(cx);
@@ -1297,6 +1306,12 @@ fn default_signature(model: &mut Model, prefs: &AccountPrefs, reply: bool) -> bo
     // Поля `{имя}`, `{должность}`, `{телефон}` (T2-52) — из профиля учётной записи.
     let text = postman_core::fill::signature(s.text.trim_end(), &profile_for(prefs, model.from()));
     if model.signature == text {
+        return false;
+    }
+    // Черновик, открытый снова: подпись уже в своём тексте — она и есть подпись письма (второй не добавлять).
+    let own = &model.body[..crate::compose::own_end(&model.body)];
+    if !model.has_fragments() && own.contains(text.trim()) && !text.trim().is_empty() {
+        model.signature = text.trim_end().to_owned();
         return false;
     }
     model.set_default_signature(&text);

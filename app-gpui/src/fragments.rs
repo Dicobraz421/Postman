@@ -529,7 +529,8 @@ impl Mailer {
         let feed = reading.feed.as_ref().filter(|_| reading.feed_on);
         let current = reading.reading.as_ref().map(|r| r.row.clone());
         let mut letters: Vec<EmailRow> = current.iter().cloned().collect();
-        if let Some(f) = feed {
+        // Письма беседы — и ленты, и стопки (у стопки свой вид, беседа та же).
+        if let Some(f) = &reading.feed {
             letters.extend(f.conv.messages.iter().map(|m| m.row.clone()));
         }
         let Some(row) = letters.iter().find(|r| r.id.as_str() == sel.letter.as_ref()).cloned() else {
@@ -574,7 +575,9 @@ impl Mailer {
 /// Поля ответов реплик и что с ними сейчас.
 #[derive(Default)]
 pub(crate) struct Board {
-    answers: HashMap<u64, (Entity<TextareaState>, Subscription)>,
+    pub(crate) answers: HashMap<u64, (Entity<TextareaState>, Subscription)>,
+    /// Подсказка упоминания (`Composer::mention`) — у поля ответа этой реплики; `None` — у своего текста письма.
+    pub(crate) mention_in: Option<u64>,
     /// Фокус — в поле ответа этой реплики при следующей отрисовке.
     focus: Option<u64>,
     /// Только что убрали реплику: строка «Фрагмент убран · Вернуть».
@@ -649,6 +652,10 @@ pub(crate) fn prepare(c: &mut Composer, window: &mut Window, cx: &mut Context<Co
         c.board.focus = ids.last().map(|(id, _)| *id);
     }
     c.board.answers.retain(|id, _| ids.iter().any(|(i, _)| i == id));
+    if c.board.mention_in.is_some_and(|m| !ids.iter().any(|(i, _)| *i == m)) {
+        c.board.mention_in = None;
+        c.mention.clear();
+    }
     for (id, answer) in ids {
         if c.board.answers.contains_key(&id) {
             continue;
@@ -657,12 +664,17 @@ pub(crate) fn prepare(c: &mut Composer, window: &mut Window, cx: &mut Context<Co
             cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 8).placeholder(tr!("fragments-answer-placeholder")).default_value(answer));
         let sub = cx.subscribe_in(&state, window, move |this: &mut Composer, state, ev: &InputEvent, _, cx| {
             if matches!(ev, InputEvent::Change) {
-                let text = state.read(cx).value().to_string();
+                let (text, cursor) = {
+                    let s = state.read(cx);
+                    (s.value().to_string(), s.cursor())
+                };
                 if this.model.fragments.list.set_answer(id, &text) {
                     this.board.removed = false;
                     this.schedule_autosave(cx);
                     cx.notify();
                 }
+                // @упоминание в ответе на реплику — как в своём тексте письма.
+                this.answer_mention_changed(id, &text, cursor, cx);
             }
         });
         c.board.answers.insert(id, (state, sub));
@@ -791,6 +803,7 @@ fn pair(c: &Composer, i: usize, n: usize, f: &Fragment, l: &Look, cx: &mut Conte
     let preview = SharedString::from(f.text.lines().next().unwrap_or_default().to_owned());
     let accent = l.accent();
     let answer = c.board.answers.get(&id).map(|(s, _)| Textarea::new(s).into_any_element());
+    let mention = c.board.mention_in.filter(|m| *m == id).and_then(|_| crate::mentions::answer_panel(c, id, l, cx));
     div()
         .id(("fragment", id as usize))
         .children(crate::screens::spot(("fragment", i)))
@@ -854,7 +867,8 @@ fn pair(c: &Composer, i: usize, n: usize, f: &Fragment, l: &Look, cx: &mut Conte
                         ))),
                 ),
         )
-        .child(div().pl(px(20.)).children(answer))
+        .child(crate::mentions::answer_capture(div().pl(px(20.)).children(answer), id, cx))
+        .children(mention)
 }
 
 /// Подпись и цитата ответа под репликами — как уйдут в письме, приглушённо.
@@ -1094,6 +1108,42 @@ mod tests {
         m.set_signature("Иван");
         assert_eq!(m.fragments.tail, "Иван");
         assert!(m.markdown().ends_with("Иван"));
+    }
+
+    /// Черновик открыт снова (из «Черновиков», после «Отменить»): реплики, хвост и «Не отправлять» вложения беседы — из
+    /// записи базы; без записи — запасной разбор текста. Письмо нетронуто, текст тот же.
+    #[test]
+    fn reopened_draft_keeps_replies_and_share_off() {
+        let mut m = reply(ReplyQuote::Include);
+        m.set(crate::compose::Field::Body, "Коллеги,".into());
+        let id = m.fragments.list.items()[0].id;
+        m.fragments.list.set_answer(id, "Да, до пятницы.");
+        m.set_share(postman_compose::Share { off: true, ..Default::default() });
+        let layout = m.layout();
+        assert!(layout.share_off && layout.replies.len() == 1);
+        // На сервере — собранный текст, вложений беседы в письме нет.
+        let mut d = m.draft(false).unwrap();
+        d.share = None;
+        let squeeze = |s: &str| s.split_whitespace().collect::<String>();
+
+        let mut back = Model::new(d.clone(), None, "С уважением,\nЯ", Instant::now());
+        back.restore(&layout);
+        assert!(!back.is_dirty(), "открытый черновик — без изменений");
+        assert_eq!(back.body, "Коллеги,");
+        assert_eq!(back.fragments.list.items()[0].answer, "Да, до пятницы.");
+        assert!(back.fragments.tail.starts_with("С уважением,\nЯ"), "{}", back.fragments.tail);
+        assert_eq!(squeeze(&back.markdown()), squeeze(&d.markdown));
+        // Вложения беседы пришли позже — отключёнными, как было.
+        back.set_share(postman_compose::Share::default());
+        assert!(back.layout().share_off);
+
+        let parsed = crate::compose::parsed_layout(&d, "С уважением,\nЯ").expect("реплика из текста");
+        let mut again = Model::new(d.clone(), None, "", Instant::now());
+        again.restore(&parsed);
+        assert_eq!(again.body, "Коллеги,");
+        assert_eq!(again.fragments.list.items()[0].text, "Сроки — до пятницы?");
+        assert_eq!(squeeze(&again.markdown()), squeeze(&d.markdown));
+        assert!(!again.layout().share_off);
     }
 
     #[test]

@@ -615,6 +615,8 @@ impl ReadingPane {
         let l = crate::roles::look(cx);
         let f = self.feed.as_ref()?;
         let none = Images::new();
+        // Текст писем стопки выделяется мышью — «Ответить на фрагмент» (MSGR-01).
+        let hits = ir_view::Hits::new(&[], 0, 0).selectable(cx.entity_id());
         let mut col = div().flex().flex_col();
         let mut order: Vec<usize> = (0..f.conv.messages.len()).collect();
         if newest_first(cx) {
@@ -657,7 +659,7 @@ impl ReadingPane {
                     .on_click(cx.listener(move |this, _, _, cx| this.stack_click(&click, cx)))
                     .into_any_element()
             } else {
-                self.stack_card(n, m, &who, doc, images, current.then_some(r), cx)
+                self.stack_card(n, m, &who, doc, images, current.then_some(r), &hits, cx)
             };
             col = col.child(div().w_full().when(n > 0, |d| d.border_t_1().border_color(l.border())).child(card));
         }
@@ -675,6 +677,7 @@ impl ReadingPane {
         doc: Option<&Document>,
         images: &Images,
         open: Option<&Reading>,
+        hits: &ir_view::Hits,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let l = crate::roles::look(cx);
@@ -751,7 +754,8 @@ impl ReadingPane {
                 let fresh = if whole { &d.blocks[..] } else { d.new_text() };
                 let history = &d.blocks[fresh.len()..];
                 let key = format!("stack{n}");
-                let mut col = div().flex().flex_col().gap_1().children(ir_view::blocks(fresh, &key, images, self.column.get(), cx));
+                hits.letter(&m.row.id, (n as u64 + 1) << 32);
+                let mut col = div().flex().flex_col().gap_1().children(ir_view::blocks_marked(fresh, &key, images, hits, self.column.get(), cx));
                 if !history.is_empty() {
                     let label = if quoted { tr!("thread-quote-hide") } else { tr!("thread-quote-show") };
                     let qid = id.clone();
@@ -786,7 +790,7 @@ impl ReadingPane {
                                 .flex()
                                 .flex_col()
                                 .gap_1()
-                                .children(ir_view::blocks(history, &format!("{key}q"), images, self.column.get(), cx)),
+                                .children(ir_view::blocks_marked(history, &format!("{key}q"), images, hits, self.column.get(), cx)),
                         );
                     }
                 }

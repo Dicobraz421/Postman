@@ -21,6 +21,7 @@ use postman_compose::{Address, Attachment, Draft, Share, parse_addresses};
 use postman_core::checks::{self, Check};
 use postman_core::contacts::AddressBook;
 use postman_core::labels::{self, Keyword};
+use postman_core::local::{DraftLayout, Reply};
 use postman_core::marks;
 use postman_core::send_later;
 use postman_core::sync::{Command, Event, Release, Sender};
@@ -112,6 +113,9 @@ struct Pending {
     ticket: u64,
     snapshot: u64,
     purpose: Purpose,
+    /// Как устроено письмо, которое уходит на сервер, и версия, которую оно заменяет: в базу после ответа сервера.
+    layout: DraftLayout,
+    old: Option<String>,
 }
 
 pub(crate) struct Model {
@@ -161,6 +165,8 @@ pub(crate) struct Model {
     pub(crate) undo_secs: u8,
     /// Ответ на фрагменты (`fragments.rs`): реплики «цитата → мой ответ» между своим текстом и подписью.
     pub(crate) fragments: crate::fragments::Pairs,
+    /// Черновик открыт снова с «Не отправлять» вложения беседы: вложения, пришедшие потом, — отключёнными.
+    share_off: bool,
 }
 
 /// Личная группа в письме (T2-47): чип «Имя · N»; при отправке и сохранении черновика — адреса участников, адреса
@@ -267,6 +273,7 @@ impl Model {
             dismissed: HashSet::new(),
             groups: Vec::new(),
             fragments: Default::default(),
+            share_off: false,
         };
         // Нетронутое новое письмо — не «изменения»: закрывается без вопроса. Ответ на фрагмент — уже изменение.
         m.saved = m.snapshot();
@@ -307,7 +314,8 @@ impl Model {
     }
 
     /// Вложения беседы новым участникам (решение владельца 2026-11-13): участники и файлы беседы.
-    pub(crate) fn set_share(&mut self, share: Share) {
+    pub(crate) fn set_share(&mut self, mut share: Share) {
+        share.off |= self.share_off;
         self.base.share = Some(share);
     }
 
@@ -525,7 +533,7 @@ impl Model {
         }
         match self.draft(purpose.sends()) {
             Ok(d) => {
-                self.pending = Some(Pending { ticket, snapshot: self.snapshot(), purpose });
+                self.pending = Some(Pending { ticket, snapshot: self.snapshot(), purpose, layout: self.layout(), old: self.server_id.clone() });
                 self.status = Status::Busy(purpose);
                 let (draft, replace) = (Box::new(d), self.server_id.clone());
                 Some(match purpose {
@@ -562,6 +570,50 @@ impl Model {
         self.saved = p.snapshot;
         self.status = Status::Saved { at };
         std::mem::take(&mut self.close_after_save)
+    }
+
+    /// Как устроено письмо (реплики, хвост, «Не отправлять» вложения беседы) — для базы профиля: на сервере черновик —
+    /// уже собранный текст.
+    pub(crate) fn layout(&self) -> DraftLayout {
+        DraftLayout {
+            head: self.body.clone(),
+            replies: self.fragments.list.items().iter().map(Reply::from).collect(),
+            tail: self.fragments.tail.clone(),
+            signature: self.signature.clone(),
+            // Вложения беседы ещё не пришли — как было при открытии.
+            share_off: self.base.share.as_ref().map_or(self.share_off, |s| s.off),
+            markdown: self.markdown(),
+        }
+    }
+
+    /// Черновик открыт снова (из «Черновиков», после «Отменить»): реплики, хвост и «Не отправлять» вложения беседы —
+    /// как были. Письмо остаётся нетронутым.
+    pub(crate) fn restore(&mut self, l: &DraftLayout) {
+        let clean = !self.is_dirty();
+        let mut pairs = crate::fragments::Pairs::default();
+        for r in &l.replies {
+            pairs.list.add(r.into());
+        }
+        pairs.tail = if l.replies.is_empty() { String::new() } else { l.tail.clone() };
+        self.body = if l.replies.is_empty() { self.body.clone() } else { l.head.clone() };
+        self.fragments = pairs;
+        if !l.replies.is_empty() {
+            self.signature = l.signature.trim_end().to_owned();
+        }
+        self.share_off = l.share_off;
+        if let Some(s) = &mut self.base.share {
+            s.off |= l.share_off;
+        }
+        self.refresh_text_checks();
+        if clean {
+            self.saved = self.snapshot();
+        }
+    }
+
+    /// Ответ сервера на отправку или сохранение `ticket` этого письма: как устроено ушедшее и какую версию оно
+    /// заменило. Чужой тикет — `None`.
+    pub(crate) fn pending_layout(&self, ticket: u64) -> Option<(DraftLayout, Option<String>)> {
+        self.pending.as_ref().filter(|p| p.ticket == ticket).map(|p| (p.layout.clone(), p.old.clone()))
     }
 
     /// Версия на сервере (письмо вернулось в «Черновики» после отмены отправки): её заменит следующее сохранение.
@@ -780,6 +832,22 @@ impl Model {
             self.saved = self.snapshot();
         }
     }
+}
+
+/// Черновик без записи в базе: реплики — запасным разбором текста (`postman_compose::fragments::parse`); их нет —
+/// `None`.
+pub(crate) fn parsed_layout(draft: &Draft, signature: &str) -> Option<DraftLayout> {
+    draft.in_reply_to.as_ref()?;
+    let p = postman_compose::fragments::parse(&draft.markdown, signature)?;
+    let sig = if p.tail.starts_with(signature.trim()) { signature.trim_end().to_owned() } else { String::new() };
+    Some(DraftLayout {
+        head: p.head,
+        replies: p.fragments.iter().map(Reply::from).collect(),
+        tail: p.tail,
+        signature: sig,
+        share_off: false,
+        markdown: draft.markdown.clone(),
+    })
 }
 
 // --- текст письма: подпись, разметка, адреса ---
@@ -1376,6 +1444,9 @@ fn demo_eml(row: &postman_cache::EmailRow) -> Vec<u8> {
 /// Отправленное письмо: что вернуть в композер, если отправку отменят (S5-06).
 pub(crate) struct SentDraft {
     pub(crate) draft: Draft,
+    /// Как оно было устроено (реплики, «Не отправлять» вложения беседы) и какую версию на сервере заменило.
+    pub(crate) layout: DraftLayout,
+    pub(crate) old: Option<String>,
     /// «Отправить позже», а не обычная отправка с окном «Отменить».
     pub(crate) later: bool,
     /// Окно «Отменить» — задержка, с которой письмо ушло (CMF-03).
@@ -1510,6 +1581,8 @@ pub(crate) struct OpenAs {
     pub(crate) behind: bool,
     /// Личная группа (T2-47) — чипом в «Кому» («Написать» группе из «Контактов»).
     pub(crate) group: Option<Group>,
+    /// Черновик открыт снова: как он был устроен (реплики, «Не отправлять» вложения беседы).
+    pub(crate) layout: Option<DraftLayout>,
 }
 
 impl Mailer {
@@ -1586,6 +1659,13 @@ impl Mailer {
         if let Some(server_id) = how.server_id {
             view.update(cx, |c, _| c.model.set_server_id(server_id));
         }
+        if let Some(layout) = how.layout {
+            view.update(cx, |c, cx| {
+                c.model.restore(&layout);
+                c.sync_inputs = true;
+                cx.notify();
+            });
+        }
         if let Some(g) = how.group {
             view.update(cx, |c, cx| {
                 c.model.add_group_to(Field::To, g);
@@ -1595,6 +1675,7 @@ impl Mailer {
         let events = cx.subscribe(&view, move |this, _, ev: &ComposerEvent, cx| match ev {
             ComposerEvent::Close => this.close_composer(id, cx),
             ComposerEvent::Expand => this.expand_composer(id, cx),
+            ComposerEvent::Kept { id, layout, old } => this.keep_layout(id.clone(), layout.clone(), old.clone(), cx),
         });
         self.compose.open.push(Opened { id, view, _events: events });
         match how.letter {
@@ -1632,14 +1713,80 @@ impl Mailer {
             Some(body) => {
                 self.compose.edit_wait = None;
                 let id = row.id.clone();
-                let draft = crate::send_later::draft_of(self, row, body);
-                self.open_draft(draft, OpenAs { server_id: Some(id), ..Default::default() }, cx);
+                let draft = crate::send_later::draft_of(self, row.clone(), body);
+                self.reopen_draft(draft, id, Some(row), None, cx);
             }
             None => {
                 self.compose.edit_wait = Some(row.id.clone());
                 self.open_letter(row, cx);
             }
         }
+    }
+
+    /// Черновик на сервере `server_id` — снова в окно (из «Черновиков», после «Отменить»): как он был устроен —
+    /// `known` (из этого запуска) или запись базы профиля, если текст на сервере тот же; записи нет — запасной разбор
+    /// реплик (`fragments::parse`). Ответу без вложений беседы — собрать их заново по беседе черновика `row`.
+    pub(crate) fn reopen_draft(
+        &mut self,
+        draft: Draft,
+        server_id: String,
+        row: Option<postman_cache::EmailRow>,
+        known: Option<DraftLayout>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(layout) = known {
+            return self.open_reopened(draft, server_id, row, Some(layout), cx);
+        }
+        let (cache, key) = (self.cache.clone(), server_id.clone());
+        let task = cx.background_spawn(async move { postman_core::local::draft_layout(&cache, &key) });
+        cx.spawn(async move |this, cx| {
+            let stored = task.await.unwrap_or_else(|e| {
+                tracing::warn!("compose: draft layout not read: {e}");
+                None
+            });
+            let _ = this.update(cx, |m, cx| {
+                let signature = m.reopen_signature(&draft);
+                let layout = stored.filter(|l| l.fits(&draft.markdown)).or_else(|| parsed_layout(&draft, &signature));
+                m.open_reopened(draft, server_id, row, layout, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn open_reopened(
+        &mut self,
+        draft: Draft,
+        server_id: String,
+        row: Option<postman_cache::EmailRow>,
+        layout: Option<DraftLayout>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(row) = row.filter(|_| draft.share.is_none() && draft.in_reply_to.is_some()) {
+            self.share_for(&row, &draft, cx);
+        }
+        self.open_draft(draft, OpenAs { server_id: Some(server_id), layout, ..Default::default() }, cx);
+    }
+
+    /// Подпись адреса «От» черновика из настроек учётки (для запасного разбора: с неё начинается хвост).
+    fn reopen_signature(&self, draft: &Draft) -> String {
+        let prefs = &self.compose.prefs;
+        let reply = draft.in_reply_to.is_some();
+        prefs
+            .signature(&draft.from.email, reply)
+            .map(|s| postman_core::fill::signature(s.text.trim_end(), &crate::composer::profile_for(prefs, &draft.from)))
+            .unwrap_or_default()
+    }
+
+    /// Записать в базу профиля, как устроен черновик `id`, и убрать записи версий `old` (в фоне).
+    pub(crate) fn keep_layout(&mut self, id: Option<String>, layout: Option<DraftLayout>, old: Vec<String>, cx: &mut Context<Self>) {
+        let cache = self.cache.clone();
+        cx.background_spawn(async move {
+            let old: Vec<&str> = old.iter().map(String::as_str).collect();
+            if let Err(e) = postman_core::local::keep_draft_layout(&cache, id.as_deref(), layout.as_ref(), &old) {
+                tracing::warn!("compose: draft layout not stored: {e}");
+            }
+        })
+        .detach();
     }
 
     /// Тело письма пришло: черновик ждал его — во вкладку (T2-11).

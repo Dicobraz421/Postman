@@ -610,6 +610,14 @@ impl Mailer {
             build_index(i, self.cache.clone(), x);
         }
         self.live.index = index;
+        // Записи черновиков, которых в кэше больше нет (отправлены, удалены), — из базы профиля (в фоне).
+        let cache = self.cache.clone();
+        cx.background_spawn(async move {
+            if let Err(e) = postman_core::local::sweep_draft_layouts(&cache) {
+                tracing::warn!("compose: stale draft layouts not removed: {e}");
+            }
+        })
+        .detach();
         // Флаги, изменённые пользователем, — на сервер (в кэше они уже записаны). Подписка одна на экран.
         if !self.live.flags_watched {
             self.live.flags_watched = true;

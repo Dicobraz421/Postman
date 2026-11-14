@@ -12,6 +12,7 @@ use jiff::Zoned;
 use pets_i18n::tr;
 use pets_ui::Level as Toast;
 use postman_compose::{Address, Draft};
+use postman_core::local::DraftLayout;
 use postman_core::send_later::{Choice, OfferState, Reject, Scheduled, Undo};
 use postman_core::sync::{Command, Event};
 
@@ -21,16 +22,19 @@ use crate::compose::SentDraft;
 /// Шаг обратного отсчёта окна «Отменить».
 const TICK: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// Что вернуть в окно при отмене: письмо и как оно было устроено (реплики, «Не отправлять» вложения беседы).
+type Back = (Draft, DraftLayout);
+
 /// Состояние экрана: окно «Отменить», отложенные отправки с сервера и черновики запланированных писем.
 #[derive(Default)]
 pub(crate) struct SendLater {
-    undo: Undo<Draft>,
+    undo: Undo<Back>,
     /// Таймер скрытия окна «Отменить» запущен.
     armed: bool,
     /// Отправки, которые держит сервер (`Event::Scheduled`).
     pub(crate) scheduled: Vec<Scheduled>,
     /// Запланированные в этом запуске: письмо (ключ кэша) → что вернуть в окно при отмене.
-    drafts: HashMap<String, Draft>,
+    drafts: HashMap<String, Back>,
     /// Отмены из области чтения: тикет → письмо.
     cancels: HashMap<u64, String>,
     ticket: u64,
@@ -45,7 +49,7 @@ impl SendLater {
     /// Сцена `comfort-undo-send` (CMF-03): окно «Отменить» письма, ушедшего с задержкой `secs`, — без сервера.
     pub(crate) fn screen_offer(&mut self, secs: u8) {
         let scheduled = Scheduled { submission: "screen".into(), email: "screen".into(), send_at: 0 };
-        self.undo.offer(scheduled, Draft::default(), Instant::now(), postman_core::send_later::undo_window(secs));
+        self.undo.offer(scheduled, Back::default(), Instant::now(), postman_core::send_later::undo_window(secs));
     }
 
     /// Перед сценой: окна «Отменить» прошлых сцен — нет.
@@ -102,10 +106,10 @@ pub(crate) fn reject_text(r: Reject, max_delay: u64) -> String {
 
 /// Черновик из письма в кэше (запланировано в прошлом запуске): адреса, тема, текст, вложения ссылками. Скрытых
 /// получателей в письме нет — их в окне не будет.
-fn draft_from_cache(m: &Mailer, key: &str) -> Option<Draft> {
+fn draft_from_cache(m: &Mailer, key: &str) -> Option<(Draft, postman_cache::EmailRow)> {
     let row = m.cache.rows_by_ids(&[key.to_owned()]).ok()?.pop()?;
     let body = m.cache.body(key).ok()??;
-    Some(draft_of(m, row, body))
+    Some((draft_of(m, row.clone(), body), row))
 }
 
 /// Черновик из письма и его тела (T2-11: письмо из «Черновиков» — во вкладку на правку).
@@ -141,29 +145,47 @@ impl Mailer {
         match ev {
             Event::Sent { scheduled: Some(s), .. } => {
                 let Some(sent) = sent else { return };
+                // Письмо ждёт на сервере: как оно устроено — в базу под его ключом (отмена в другом запуске), прежние
+                // версии черновика — из базы.
+                self.keep_layout(Some(s.email.clone()), Some(sent.layout.clone()), sent.old.iter().cloned().collect(), cx);
+                let back = (sent.draft, sent.layout);
                 if sent.later {
-                    self.send_later.drafts.insert(s.email.clone(), sent.draft);
+                    self.send_later.drafts.insert(s.email.clone(), back);
                     let text = tr!("send-scheduled-toast", when = when(s.send_at));
                     self.toasts.update(cx, |t, cx| t.push(Toast::Success, text, cx));
                 } else {
                     let window = postman_core::send_later::undo_window(sent.undo_secs);
-                    self.send_later.undo.offer(s.clone(), sent.draft, Instant::now(), window);
+                    self.send_later.undo.offer(s.clone(), back, Instant::now(), window);
                     self.arm_undo(cx);
                     cx.notify();
+                }
+            }
+            // Письмо ушло сразу: черновика на сервере больше нет — его записи в базе тоже.
+            Event::Sent { scheduled: None, .. } => {
+                if let Some(old) = sent.and_then(|s| s.old) {
+                    self.keep_layout(None, None, vec![old], cx);
                 }
             }
             Event::Unsent { ticket, email } => {
                 let offered = self.send_later.undo.unsent(*ticket);
                 self.send_later.cancels.remove(ticket);
                 let kept = self.send_later.drafts.remove(email);
-                let draft = offered.or(kept).or_else(|| draft_from_cache(self, email));
-                let text = match draft {
-                    Some(d) => {
-                        let how = crate::compose::OpenAs { server_id: Some(email.clone()), ..Default::default() };
-                        self.open_draft(d, how, cx);
+                // Письмо этого запуска — с репликами и правилом вложений как было; из кэша — из базы профиля.
+                let text = match offered.or(kept) {
+                    Some((d, layout)) => {
+                        // Вложения беседы ушли вместе с письмом; нет их (ответ без новых) — собрать по беседе.
+                        let wants = d.share.is_none() && d.in_reply_to.is_some();
+                        let row = wants.then(|| self.cache.rows_by_ids(std::slice::from_ref(email)).ok()?.pop()).flatten();
+                        self.reopen_draft(d, email.clone(), row, Some(layout), cx);
                         tr!("send-unsent")
                     }
-                    None => tr!("send-unsent-drafts"),
+                    None => match draft_from_cache(self, email) {
+                        Some((d, row)) => {
+                            self.reopen_draft(d, email.clone(), Some(row), None, cx);
+                            tr!("send-unsent")
+                        }
+                        None => tr!("send-unsent-drafts"),
+                    },
                 };
                 self.toasts.update(cx, |t, cx| t.push(Toast::Info, text, cx));
                 cx.notify();
