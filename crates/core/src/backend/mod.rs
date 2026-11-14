@@ -17,6 +17,8 @@
 //! - **Выборка на сервере** («выбрано всё», `sweep.rs`) — функция ядра: путь отдаёт страницу ключей по условию
 //!   (`Command::ListLetters`) и кладёт в кэш строки писем (`Command::StoreLetters`), отказ — `Event::ListFailed`. Условие,
 //!   которого путь не выразит, — отказ `FOLDER_UNSUPPORTED`, а не вся папка.
+//! - **Каналы бесед** ([`ChannelPlugin`], ADR 0012) — чаты (Telegram, Matrix, демо): канал реализует только протокол,
+//!   хранение, поиск, счётчики и очередь отправки — у ядра (`crate::channel`). Регистрируются тем же реестром.
 //! - **Реестр** ([`Registry`]) собирает композиционный корень (`app-gpui`): какие плагины есть и в каком порядке.
 //!   Новый протокол — новый крейт и строка в корне; `core` не меняется.
 
@@ -27,6 +29,7 @@ use std::sync::{Arc, mpsc};
 use postman_cache::Cache;
 use postman_calendar::{Invitation, Owner, Partstat};
 
+pub use crate::channel::ChannelPlugin;
 use crate::invite::{Answer, Responded};
 use crate::model::{Error, Features};
 use crate::sync::{Account, Command, Event, Index, SyncError, UnboundedSender};
@@ -147,6 +150,7 @@ pub trait Areas {
 pub struct Registry {
     mail: Vec<Arc<dyn MailPlugin>>,
     areas: Vec<Arc<dyn AreaPlugin>>,
+    channels: Vec<Arc<dyn ChannelPlugin>>,
 }
 
 impl Registry {
@@ -160,6 +164,29 @@ impl Registry {
     pub fn with_area(mut self, p: impl AreaPlugin + 'static) -> Self {
         self.areas.push(Arc::new(p));
         self
+    }
+
+    /// Канал бесед (ADR 0012): id канала — один на реестр (повтор заменяет прежний), `mail` занят адаптером почты.
+    #[must_use]
+    pub fn with_channel(mut self, p: impl ChannelPlugin + 'static) -> Self {
+        let id = p.id();
+        if id == crate::channel::MAIL {
+            tracing::error!("channel id `{id}` is reserved for mail");
+            return self;
+        }
+        self.channels.retain(|c| c.id() != id);
+        self.channels.push(Arc::new(p));
+        self
+    }
+
+    /// Каналы бесед по порядку регистрации.
+    pub fn channels(&self) -> &[Arc<dyn ChannelPlugin>] {
+        &self.channels
+    }
+
+    /// Канал по id; нет — `None`.
+    pub fn channel(&self, id: &str) -> Option<&Arc<dyn ChannelPlugin>> {
+        self.channels.iter().find(|c| c.id() == id)
     }
 
     /// Адрес со своей схемой какого-то пути (`imaps://…`): его не дополняют `https://`.
@@ -302,6 +329,38 @@ mod tests {
         assert_eq!(r.mail_for("x://h").map(|p| p.name()), Some("x"));
         assert_eq!(r.mail_for("https://h").map(|p| p.name()), Some("j"), "путь по умолчанию — первый");
         assert!(Registry::default().mail_for("https://h").is_none());
+    }
+
+    struct Chan(&'static str);
+
+    impl ChannelPlugin for Chan {
+        fn id(&self) -> &'static str {
+            self.0
+        }
+        fn features(&self) -> crate::channel::ChannelFeatures {
+            crate::channel::ChannelFeatures::default()
+        }
+        fn sign_in<'a>(
+            &'a self,
+            _ctx: crate::channel::FlowCtx,
+        ) -> BoxFuture<'a, Result<Box<dyn crate::channel::Flow + 'a>, crate::channel::ChannelError>> {
+            Box::pin(async { Err(crate::channel::ChannelError::Unsupported) })
+        }
+        fn connect<'a>(
+            &'a self,
+            _ctx: crate::channel::ConnectCtx,
+        ) -> BoxFuture<'a, Result<Box<dyn crate::channel::ChannelSession>, crate::channel::ChannelError>> {
+            Box::pin(async { Err(crate::channel::ChannelError::Unsupported) })
+        }
+    }
+
+    /// Каналы — по id, повтор заменяет, `mail` не регистрируется.
+    #[test]
+    fn channels_by_id() {
+        let r = Registry::default().with_channel(Chan("demo")).with_channel(Chan("telegram")).with_channel(Chan("demo")).with_channel(Chan("mail"));
+        let ids: Vec<&str> = r.channels().iter().map(|c| c.id()).collect();
+        assert_eq!(ids, ["telegram", "demo"]);
+        assert!(r.channel("demo").is_some() && r.channel("mail").is_none());
     }
 
     #[test]

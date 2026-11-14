@@ -68,6 +68,8 @@ from_err!(
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(feature = "store6")]
+mod channel;
+#[cfg(feature = "store6")]
 mod compat;
 #[cfg(feature = "store6")]
 mod content;
@@ -86,6 +88,8 @@ mod migrate7;
 #[cfg(feature = "store6")]
 mod remote;
 
+#[cfg(feature = "store6")]
+pub use channel::{ChanAccount, ChanBatch, ChanDownload, ChanKey, ConvDoc, ConvKey, FORGET_BATCH, MsgDoc, MsgKey, MsgPut, Stored};
 #[cfg(feature = "store6")]
 pub use content::{CHUNK, ContentReader, Encoding, Hash, LEVEL, MIN_IMAGE, MIN_PART, SplitPart, StoreStats, Tuning};
 #[cfg(feature = "store6")]
@@ -467,6 +471,17 @@ fn dec<T: DeserializeOwned>(b: &[u8]) -> Result<T> {
     Ok(postcard::from_bytes(b)?)
 }
 
+/// Значение в байты формата хранилища (postcard): для значений, формат которых знает ядро, а хранит эта база —
+/// беседы и сообщения каналов (ADR 0012 п. 9, `ChanBatch`).
+pub fn encode<T: Serialize>(v: &T) -> Result<Vec<u8>> {
+    enc(v)
+}
+
+/// Обратно к [`encode`].
+pub fn decode<T: DeserializeOwned>(b: &[u8]) -> Result<T> {
+    dec(b)
+}
+
 /// Верхняя граница диапазона ключей папки.
 const MAX_ID: &str = "\u{10ffff}";
 
@@ -635,6 +650,8 @@ impl Cache {
         letter::init(&tx)?;
         #[cfg(feature = "store6")]
         local::init(&tx)?;
+        #[cfg(feature = "store6")]
+        channel::init(&tx)?;
         #[cfg(not(feature = "store6"))]
         {
             let threads_indexed = tx.list_tables()?.any(|t| t.name() == BY_THREAD.name());

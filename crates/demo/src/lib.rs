@@ -1,5 +1,6 @@
 //! Синтетический ящик для замеров памяти/FPS без сервера.
 
+pub mod channel;
 pub mod media;
 pub mod rich;
 pub mod smime;
