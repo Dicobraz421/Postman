@@ -22,8 +22,11 @@
 pub mod conformance;
 pub mod index;
 pub mod mail;
+pub mod notice;
+pub mod outbox;
 mod plugin;
 mod run;
+pub mod smart;
 mod source;
 mod store;
 
@@ -502,7 +505,7 @@ pub struct Page {
 }
 
 /// Файл перед выгрузкой.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileMeta {
     pub name: String,
     pub mime: String,
@@ -510,7 +513,7 @@ pub struct FileMeta {
 }
 
 /// Выгруженный файл: что отправить в [`Outgoing::attachments`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Uploaded {
     pub name: String,
     pub mime: String,
@@ -694,7 +697,7 @@ pub enum ChannelEvent {
 pub const TYPING_SECS: u64 = 6;
 
 /// Исходящее сообщение.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Outgoing {
     pub conversation: ConversationId,
     /// Номер отправки ядра (Telegram `random_id`, Matrix `txn_id`): повтор после сбоя не даёт дубля.

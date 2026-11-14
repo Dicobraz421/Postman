@@ -73,6 +73,10 @@ pub struct ContactCard {
     /// Участники группы: адрес (в JSContact и vCard — `mailto:`); чужая ссылка (`urn:uuid:…` другой программы) —
     /// как есть, она сохраняется при правке, но письма по ней не уходят ([`member_address`]).
     pub members: Vec<String>,
+    /// Адреса в мессенджерах ссылками (ADR 0012 п. 4): `https://t.me/<имя>`, `matrix:u/<user>:<server>`; JSContact
+    /// `onlineServices` (RFC 9553), vCard `IMPP`, Exchange `ImAddresses`. Один человек во всех каналах — по ним,
+    /// почте и телефонам; связь «Связать с контактом» пишется сюда, на сервер (решение владельца №2).
+    pub services: Vec<String>,
 }
 
 /// Ссылка на участника группы (ключ JSContact `members`, значение vCard `MEMBER`) → запись [`ContactCard::members`]:
@@ -148,6 +152,7 @@ impl ContactCard {
             free_busy: entries("calendars").into_iter().find(|c| c["kind"] == "freeBusy").and_then(|c| c["uri"].as_str()).map(str::to_string),
             group: v["kind"] == "group",
             members: group_members(v),
+            services: entries("onlineServices").into_iter().filter_map(|s| s["uri"].as_str().or(s["user"].as_str())).map(str::to_string).collect(),
         }
     }
 }

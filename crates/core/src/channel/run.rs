@@ -7,9 +7,11 @@
 //! Перед записью чужая разметка ([`Body::Html`], Matrix `formatted_body`) становится IR в воркере-песочнице
 //! ([`Render`], [`to_ir`]) — как тела писем; записанное и удалённое — сразу в общий индекс поиска ([`super::index`]).
 //!
-//! Очередь отправки с окном «Отменить» и «позже» (`chan_outbox`) — CH-02б: здесь [`Request::Act`] с
-//! [`Action::Send`] уходит сразу.
+//! Очередь отправки ([`Request::Send`], `chan_outbox`, [`super::outbox`]): окно «Отменить» и «позже» держит поток —
+//! таймером по сроку; без связи исходящее ждёт в очереди, повтор — с тем же `client_id`; выход ([`super::outbox::leave`])
+//! и закрытие запросов отправляют то, что в окне. [`Request::Act`] с [`Action::Send`] уходит сразу, мимо очереди.
 
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,13 +22,15 @@ use postman_search::SearchIndex;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::time::Instant;
 
+use super::outbox::{self, Held, Queued, Step};
 use super::store::Download;
 use super::{
     AccountId, Action, AttachmentSource, Body, ByteSource, ChannelError, ChannelEvent, ChannelFeatures, ChannelId, ChannelPlugin, ChannelSession,
-    ChannelState, ChannelStore, ConnectCtx, ConversationId, Done, FileMeta, LocalStore, MessageId, Page, Participant, ParticipantId, PluginStore,
-    Secrets, TYPING_SECS, Uploaded,
+    ChannelState, ChannelStore, ConnectCtx, ConversationId, Done, FileMeta, LocalStore, MessageId, Outgoing, Page, Participant, ParticipantId,
+    PluginStore, Secrets, TYPING_SECS, Uploaded,
 };
 use crate::link;
+use crate::model::Release;
 
 /// Пачка событий — не дольше стольких миллисекунд.
 pub const BATCH_MS: u64 = 100;
@@ -34,6 +38,10 @@ pub const BATCH_MS: u64 = 100;
 pub const BATCH_EVENTS: usize = 500;
 /// Сообщений беседы при первом входе и при дозапросе после `Gap`.
 pub const HISTORY_PAGE: u32 = 50;
+/// Закрыли запросы с исходящими в окне: ждать их ответов не дольше.
+const CLOSING: Duration = Duration::from_secs(30);
+/// Повтор отправки после обрыва — через столько миллисекунд (или раньше: подключение перечитает очередь).
+const RESEND_MS: i64 = 5_000;
 
 /// Запрос интерфейса потоку учётки канала (то, что видит пользователь).
 #[derive(Debug, Clone, PartialEq)]
@@ -42,8 +50,14 @@ pub enum Request {
     History { conversation: ConversationId, before: Option<MessageId>, limit: u32 },
     /// Поиск на сервере: найденное — в базу, ответ — [`Update::Found`].
     Search { ticket: u64, query: String, conversation: Option<ConversationId>, limit: u32 },
-    /// Действие; чего канал не умеет по возможностям — отказ `Unsupported` без запроса к серверу.
+    /// Действие; чего канал не умеет по возможностям — отказ `Unsupported` без запроса к серверу. Отправка здесь —
+    /// сразу, мимо очереди.
     Act { ticket: u64, action: Action },
+    /// «Отправить» через очередь: окно «Отменить» и «позже» по `release` (`crate::send_later::undo_release`) →
+    /// [`Update::Queued`], по сроку — `Sent` или `SendFailed`. Без связи — тоже в очередь.
+    Send { outgoing: Outgoing, release: Release },
+    /// «Отменить» исходящее в очереди → [`Update::Unsent`].
+    Unsend { client_id: u64 },
     /// Загрузить вложение в хранилище содержимого.
     Download { conversation: ConversationId, message: MessageId, source: AttachmentSource, mime: String },
     /// Выгрузить файл перед отправкой (байты — из хранилища у интерфейса).
@@ -86,6 +100,16 @@ pub enum Update {
     SendFailed {
         client_id: u64,
         error: ChannelError,
+    },
+    /// Исходящее в очереди: уйдёт в `due` (Unix, мс), до того — «Отменить».
+    Queued {
+        client_id: u64,
+        due: i64,
+    },
+    /// «Отменить»: `done` — снято с очереди; `false` — поздно (уже уходит) или его нет.
+    Unsent {
+        client_id: u64,
+        done: bool,
     },
     Acted {
         ticket: u64,
@@ -302,6 +326,11 @@ async fn wait_offline(store: &ChannelStore, ctx: &mut RunCtx, wait: Duration) ->
                     sign_out(store, ctx);
                     return false;
                 }
+                // Без связи исходящее ждёт в очереди: уйдёт после подключения.
+                Some(Request::Send { outgoing, release }) => {
+                    let _ = enqueue(store, ctx, outgoing, release);
+                }
+                Some(Request::Unsend { client_id }) => unsend(store, ctx, client_id, &HashSet::new()),
                 Some(r) => refuse(r, ChannelError::Network("offline".into()), &*ctx.notify),
             },
         }
@@ -316,6 +345,8 @@ fn refuse(r: Request, error: ChannelError, notify: &dyn Fn(Update)) {
         Request::Search { ticket, .. } => notify(Update::Found { ticket, result: Err(error) }),
         Request::Upload { ticket, .. } => notify(Update::Uploaded { ticket, result: Err(error) }),
         Request::Download { conversation, message, source, .. } => notify(Update::Downloaded { conversation, message, source, result: Err(error) }),
+        Request::Send { outgoing, .. } => notify(Update::SendFailed { client_id: outgoing.client_id, error }),
+        Request::Unsend { client_id } => notify(Update::Unsent { client_id, done: false }),
         Request::History { .. } | Request::Reconnect | Request::SignOut => {}
     }
 }
@@ -332,6 +363,136 @@ fn sign_out(store: &ChannelStore, ctx: &RunCtx) {
         tracing::warn!("channel sign-out: secret: {e}");
     }
     (ctx.notify)(Update::SignedOut);
+}
+
+/// Сейчас, Unix-миллисекунды.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
+}
+
+/// Записано мимо пачки (очередь отправки): в индекс и интерфейсу.
+fn applied_now(store: &ChannelStore, ctx: &RunCtx, a: &super::Applied) {
+    if let Some(index) = &ctx.index {
+        super::index::applied(index, store, a);
+    }
+    if !a.changed.is_empty() || !a.gone.is_empty() {
+        (ctx.notify)(Update::Changed { conversations: a.changed.clone(), gone: a.gone.clone() });
+    }
+}
+
+/// «Отправить» через очередь: проверка пределов канала, строка очереди и «отправляется» в ленте → `Queued`.
+fn enqueue(store: &ChannelStore, ctx: &RunCtx, o: Outgoing, release: Release) -> Option<Queued> {
+    let client_id = o.client_id;
+    let features = store.features().unwrap_or_default();
+    if let Some(max) = features.max_text
+        && super::doc_text(&o.body).chars().count() > max as usize
+    {
+        (ctx.notify)(Update::SendFailed { client_id, error: ChannelError::TooLarge { max: u64::from(max) } });
+        return None;
+    }
+    let now = now_ms();
+    let q = outbox::plan(o, release, &features, now);
+    match store.queue(&q, now) {
+        Ok(a) => {
+            applied_now(store, ctx, &a);
+            (ctx.notify)(Update::Queued { client_id, due: q.due });
+            Some(q)
+        }
+        Err(error) => {
+            tracing::error!("channel outbox: {error}");
+            (ctx.notify)(Update::SendFailed { client_id, error });
+            None
+        }
+    }
+}
+
+/// «Отменить»: уже уходит (`sending`) — поздно; иначе — снять с очереди.
+fn unsend(store: &ChannelStore, ctx: &RunCtx, client_id: u64, sending: &HashSet<u64>) {
+    if sending.contains(&client_id) {
+        return (ctx.notify)(Update::Unsent { client_id, done: false });
+    }
+    let done = match store.unqueue(client_id) {
+        Ok(Some((_, a))) => {
+            applied_now(store, ctx, &a);
+            true
+        }
+        Ok(None) => false,
+        Err(e) => {
+            tracing::error!("channel outbox: {e}");
+            false
+        }
+    };
+    (ctx.notify)(Update::Unsent { client_id, done });
+}
+
+/// Исходящее и его срок (Unix, мс).
+type Due = (u64, i64);
+
+/// Очередь отправки подключённой сессии: сроки ждущих и уходящие сейчас.
+#[derive(Default)]
+struct Queue {
+    due: Vec<Due>,
+    sending: HashSet<u64>,
+    held: Held,
+}
+
+impl Queue {
+    /// Ждущие из базы (подключение): прошлый запуск, без связи, «позже».
+    fn load(store: &ChannelStore) -> Self {
+        let mut q = Queue::default();
+        match store.queued() {
+            Ok(all) => q.due = all.into_iter().filter(|x| x.step == Step::Held).map(|x| (x.outgoing.client_id, x.due)).collect(),
+            Err(e) => tracing::warn!("channel outbox: {e}"),
+        }
+        q.count();
+        q
+    }
+
+    /// Счётчик выхода: что в окне «Отменить» и что уходит; «позже» выход не держит.
+    fn count(&mut self) {
+        let edge = now_ms().saturating_add(outbox::UNDO_MAX_MS);
+        let n = self.due.iter().filter(|(_, d)| *d <= edge).count() + self.sending.len();
+        self.held.set(n);
+    }
+
+    fn next(&self) -> Option<Instant> {
+        let due = self.due.iter().map(|(_, d)| *d).min()?;
+        Some(Instant::now() + Duration::from_millis(due.saturating_sub(now_ms()).max(0) as u64))
+    }
+
+    fn push(&mut self, client_id: u64, due: i64) {
+        self.due.retain(|(c, _)| *c != client_id);
+        self.due.push((client_id, due));
+        self.count();
+    }
+
+    fn remove(&mut self, client_id: u64) {
+        self.due.retain(|(c, _)| *c != client_id);
+        self.count();
+    }
+
+    /// Срок наступил (или выход: всё, что в окне): отправить.
+    fn fire(&mut self, store: &ChannelStore, session: &Rc<dyn ChannelSession>, done: &UnboundedSender<Finished>, edge: i64) {
+        let (now, later): (Vec<Due>, Vec<Due>) = std::mem::take(&mut self.due).into_iter().partition(|(_, d)| *d <= edge);
+        self.due = later;
+        if now.is_empty() {
+            return self.count();
+        }
+        let queued = store.queued().unwrap_or_else(|e| {
+            tracing::warn!("channel outbox: {e}");
+            Vec::new()
+        });
+        for (client_id, _) in now {
+            let Some(q) = queued.iter().find(|q| q.outgoing.client_id == client_id) else { continue };
+            self.sending.insert(client_id);
+            let (s, tx, o) = (Rc::clone(session), done.clone(), q.outgoing.clone());
+            tokio::task::spawn_local(async move {
+                let result = s.act(Action::Send(o)).await;
+                let _ = tx.send(Finished::Act { ticket: 0, client_id: Some(client_id), result });
+            });
+        }
+        self.count();
+    }
 }
 
 /// Байты выгрузки из памяти.
@@ -363,7 +524,11 @@ async fn connected(store: &ChannelStore, session: Rc<dyn ChannelSession>, incomi
     if let Err(e) = store.apply(vec![ChannelEvent::Features(features.clone()), ChannelEvent::State(ChannelState::Online)]) {
         tracing::warn!("channel features: {e}");
     }
-    (ctx.notify)(Update::Connected { me: session.me(), features });
+    let me = session.me();
+    if let Err(e) = store.set_me(&me) {
+        tracing::warn!("channel me: {e}");
+    }
+    (ctx.notify)(Update::Connected { me, features });
     (ctx.notify)(Update::State(ChannelState::Online));
     let (done_tx, mut done) = unbounded_channel::<Finished>();
     let mut pending = Pending { events: Vec::new(), deadline: None };
@@ -371,14 +536,34 @@ async fn connected(store: &ChannelStore, session: Rc<dyn ChannelSession>, incomi
     // Догнать заново после `Gap` без беседы — один раз за подключение: иначе канал, который каждый раз отвечает
     // «слишком длинно», крутил бы догон по кругу.
     let mut regap = true;
+    let mut queue = Queue::load(store);
+    // Запросов больше нет (окно закрыто): то, что в окне «Отменить», уходит, поток ждёт ответов не дольше `CLOSING`.
+    let mut closing: Option<Instant> = None;
     catch_up(&session, store, &done_tx);
     loop {
+        if let Some(until) = closing
+            && (queue.sending.is_empty() || Instant::now() >= until)
+        {
+            flush(store, ctx, &session, &done_tx, &mut pending, &mut regap);
+            return Ended::Closed;
+        }
         let expire = typing.iter().map(|t| t.2).min();
+        let due = queue.next();
         tokio::select! {
-            req = ctx.requests.recv() => match req {
+            req = ctx.requests.recv(), if closing.is_none() => match req {
                 None => {
                     flush(store, ctx, &session, &done_tx, &mut pending, &mut regap);
-                    return Ended::Closed;
+                    queue.fire(store, &session, &done_tx, now_ms().saturating_add(outbox::UNDO_MAX_MS));
+                    closing = Some(Instant::now() + CLOSING);
+                }
+                Some(Request::Send { outgoing, release }) => {
+                    if let Some(q) = enqueue(store, ctx, outgoing, release) {
+                        queue.push(q.outgoing.client_id, q.due);
+                    }
+                }
+                Some(Request::Unsend { client_id }) => {
+                    unsend(store, ctx, client_id, &queue.sending);
+                    queue.remove(client_id);
                 }
                 Some(Request::Reconnect) => {
                     flush(store, ctx, &session, &done_tx, &mut pending, &mut regap);
@@ -427,13 +612,17 @@ async fn connected(store: &ChannelStore, session: Rc<dyn ChannelSession>, incomi
             }
             fin = done.recv() => {
                 let Some(fin) = fin else { continue };
-                if let Some(e) = finished(fin, store, ctx, &mut pending) {
+                if let Some(e) = finished(fin, store, ctx, &mut pending, &mut queue) {
                     flush(store, ctx, &session, &done_tx, &mut pending, &mut regap);
                     return Ended::Lost(e);
                 }
                 flush(store, ctx, &session, &done_tx, &mut pending, &mut regap);
             }
             () = crate::sync::retry_at(pending.deadline) => flush(store, ctx, &session, &done_tx, &mut pending, &mut regap),
+            () = crate::sync::retry_at(due) => queue.fire(store, &session, &done_tx, now_ms()),
+            () = outbox::left(), if !queue.due.is_empty() && closing.is_none() => {
+                queue.fire(store, &session, &done_tx, now_ms().saturating_add(outbox::UNDO_MAX_MS));
+            }
             () = crate::sync::retry_at(expire) => {
                 let now = Instant::now();
                 for (conversation, who, _) in typing.iter().filter(|t| t.2 <= now) {
@@ -515,12 +704,16 @@ fn request(r: Request, store: &ChannelStore, session: &Rc<dyn ChannelSession>, d
                 let _ = tx.send(Finished::Upload { ticket, result });
             });
         }
+        Request::Send { outgoing, .. } => {
+            notify(Update::SendFailed { client_id: outgoing.client_id, error: ChannelError::Protocol("send outside the queue".into()) })
+        }
+        Request::Unsend { client_id } => notify(Update::Unsent { client_id, done: false }),
         Request::Reconnect | Request::SignOut => {}
     }
 }
 
 /// Итог задачи: ответ интерфейсу, найденное — в пачку. `Some` — связь пропала.
-fn finished(fin: Finished, store: &ChannelStore, ctx: &RunCtx, pending: &mut Pending) -> Option<ChannelError> {
+fn finished(fin: Finished, store: &ChannelStore, ctx: &RunCtx, pending: &mut Pending, queue: &mut Queue) -> Option<ChannelError> {
     let notify = &*ctx.notify;
     let page = |pending: &mut Pending, page: &Page| {
         for (conversation, m) in &page.messages {
@@ -554,10 +747,33 @@ fn finished(fin: Finished, store: &ChannelStore, ctx: &RunCtx, pending: &mut Pen
             None
         }
         Finished::Act { client_id: Some(client_id), result, ticket } => {
+            let queued = queue.sending.remove(&client_id);
+            queue.count();
             match result {
-                Ok(Done::Sent { id, .. }) => notify(Update::Sent { client_id, id }),
+                Ok(Done::Sent { id, at, .. }) => {
+                    // Из очереди — «отправляется» становится сообщением сервера; мимо очереди строки нет.
+                    match store.sent(client_id, &id, at) {
+                        Ok(a) => applied_now(store, ctx, &a),
+                        Err(e) => tracing::error!("channel outbox: {e}"),
+                    }
+                    notify(Update::Sent { client_id, id });
+                }
                 Ok(other) => notify(Update::Acted { ticket, result: Ok(other) }),
-                Err(error) => notify(Update::SendFailed { client_id, error }),
+                // Нет связи или сервер просит подождать — ждёт в очереди, повтор с тем же `client_id`.
+                Err(e @ (ChannelError::Network(_) | ChannelError::Wait { .. })) if queued => {
+                    let wait = match &e {
+                        ChannelError::Wait { secs } => i64::from(*secs) * 1000,
+                        _ => RESEND_MS,
+                    };
+                    queue.push(client_id, now_ms().saturating_add(wait));
+                    return matches!(e, ChannelError::Network(_)).then_some(e);
+                }
+                Err(error) => {
+                    if queued && let Err(e) = store.set_step(client_id, Step::Failed(error.clone())) {
+                        tracing::error!("channel outbox: {e}");
+                    }
+                    notify(Update::SendFailed { client_id, error });
+                }
             }
             None
         }

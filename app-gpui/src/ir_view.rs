@@ -300,6 +300,12 @@ fn flatten(
                 }
             }
             Inline::LineBreak => text.push('\n'),
+            // Упоминание человека канала (ADR 0012): видимый текст цветом ссылки; лента каналов — CH-04.
+            Inline::Mention { text: t, .. } => {
+                let start = text.len();
+                text.push_str(t);
+                hl.push((start..text.len(), HighlightStyle { color: Some(l.accent_text()), ..Default::default() }));
+            }
             // Внешняя картинка, не загруженная (T3-04): подпись, как прежде выброшенная картинка.
             Inline::Remote { alt, .. } if !alt.is_empty() => text.push_str(&format!("[{alt}]")),
             Inline::Remote { .. } => {}
@@ -366,7 +372,7 @@ fn image_of(item: &Inline) -> Option<(&str, Want)> {
 /// Видно ли что-то из инлайнов: текст не из одних пробелов, картинка `cid:` (подпись), внешняя с подписью.
 fn visible(items: &[Inline]) -> bool {
     items.iter().any(|i| match i {
-        Inline::Text { text, .. } => !text.trim().is_empty(),
+        Inline::Text { text, .. } | Inline::Mention { text, .. } => !text.trim().is_empty(),
         Inline::LineBreak => false,
         Inline::Remote { alt, .. } => !alt.is_empty(),
         Inline::Link { content, .. } => visible(content),

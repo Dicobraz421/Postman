@@ -117,6 +117,8 @@ fn write_inlines(inlines: &[Inline], out: &mut String) {
         match i {
             Inline::Text { text, marks } => write_text(text, *marks, out),
             Inline::LineBreak => out.push_str("  \n"),
+            // Упоминание — видимым текстом («@Имя»): канал без упоминаний получает то же, что видит пользователь.
+            Inline::Mention { text, .. } => write_text(text, Marks::default(), out),
             // Внешняя картинка в цитате ответа — подписью, как до загрузки: адрес слежения дальше не уходит.
             Inline::Remote { alt, .. } if !alt.is_empty() => write_text(&format!("[{alt}]"), Marks::default(), out),
             Inline::Remote { .. } => {}
@@ -341,6 +343,18 @@ fn safe_link(url: &str) -> bool {
 mod tests {
     use super::*;
     use crate::{from_html, from_plain};
+
+    /// Дополнения IR каналов (ADR 0012 п. 4) добавочны: старые марки без `spoiler` читаются; упоминание — видимым
+    /// текстом в тексте и Markdown.
+    #[test]
+    fn channel_additions() {
+        let old: Marks = serde_json::from_str(r#"{"bold":true,"italic":false,"underline":false,"strike":false,"code":false}"#).unwrap();
+        assert!(old.bold && !old.spoiler);
+        let mention = Inline::Mention { id: "u-anna".into(), text: "@Анна".into() };
+        assert_eq!(crate::plain_text(&[Inline::text("Привет, "), mention.clone()]), "Привет, @Анна");
+        let d = Document { blocks: vec![Block::Paragraph { align: crate::Align::Start, content: vec![mention] }], ..Document::default() };
+        assert_eq!(to_markdown(&d), "@Анна");
+    }
 
     #[test]
     fn roundtrip_markup() {

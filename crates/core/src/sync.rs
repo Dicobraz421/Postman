@@ -419,7 +419,8 @@ pub enum Command {
     /// выше.
     Channel {
         account: crate::channel::ChanAccount,
-        request: crate::channel::Request,
+        /// В коробке: исходящее с телом в IR не раздувает каждую команду.
+        request: Box<crate::channel::Request>,
     },
 }
 
@@ -1475,7 +1476,7 @@ mod tests {
         assert_eq!(route(raw(1)), [Route::Core], "письмо «На этом компьютере» — без сети");
         // Учётка канала бесед — своим потоком (ADR 0012 п. 6), не синхронизацией почты.
         let chan = crate::channel::ChanAccount::new("demo", "me@example.test");
-        let to_chan = || Command::Channel { account: chan.clone(), request: crate::channel::Request::Reconnect };
+        let to_chan = || Command::Channel { account: chan.clone(), request: Box::new(crate::channel::Request::Reconnect) };
         assert_eq!(route(to_chan()), [Route::Channel(chan.clone())]);
         assert!(to_chan().routes().is_empty());
         assert_eq!(route(raw(2)), [sync(Some("@2"))]);

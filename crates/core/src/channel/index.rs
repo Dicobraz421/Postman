@@ -53,6 +53,12 @@ pub fn participant_addresses(chan: &ChanAccount, p: &Participant) -> Vec<String>
     out
 }
 
+/// Адреса карточки контакта для [`authors`] и «Человек во всех каналах»: почта, телефоны, адреса в мессенджерах
+/// (`ContactCard::services`). Сверка ссылки мессенджера с участником — у канала (CH-03: `t.me/<имя>` ↔ ник).
+pub fn contact_addresses(card: &crate::model::ContactCard) -> Vec<String> {
+    card.emails.iter().chain(&card.phones).chain(&card.mobile).chain(&card.services).map(|a| a.trim().to_owned()).filter(|a| !a.is_empty()).collect()
+}
+
 /// Беседы и люди, прочитанные за одну пачку документов.
 struct Memo<'a> {
     store: &'a ChannelStore,
@@ -211,7 +217,7 @@ pub fn rebuild(index: &SearchIndex, cache: &Cache, stop: &dyn Fn() -> bool) -> R
             let Some(conv) = cache.chan_conv(doc.conv)? else { continue };
             let Some(memo) = memos.iter_mut().find(|m| m.store.key() == conv.account) else { continue };
             let (key, conv) = (doc.key, doc.conv);
-            if let Entry::Message { message, .. } = super::store::entry(doc.clone())?
+            if let Ok(Entry::Message { message, .. }) = super::store::entry(doc.clone())
                 && let Some(f) = fields(memo, key, conv, &message)?
             {
                 docs.push(f);

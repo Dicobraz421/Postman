@@ -152,7 +152,7 @@ impl Mailer {
     #[allow(dead_code)] // интерфейс каналов — CH-04
     pub(crate) fn send_channel(&self, command: Command) -> bool {
         let Command::Channel { account, request } = command else { return false };
-        self.channels.send(&account, request)
+        self.channels.send(&account, *request)
     }
 
     /// Ответ потока учётки канала. Интерфейса каналов ещё нет (CH-04): состояние — в память окна и журнал.
