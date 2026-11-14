@@ -14,6 +14,10 @@
 //!   `mailto:`, `cid:`, `javascript:` и прочие схемы отбрасываются; один адрес — одна строка.
 //! - **Контакты** — «От», «Кому», «Копия» всех писем без повторов (адрес без регистра) и визитки vCard.
 //! - **Встречи** — приглашения `.ics` и iMIP (`text/calendar`); одна встреча (UID) — одна строка, по новейшей версии.
+//!
+//! **Любой канал** (ADR 0012 п. 11, CH-02в): сообщения бесед каналов — тем же входом ([`chat_letters`]: сообщение —
+//! «письмо» с адресом `postman://…` вместо ключа, вложения — по хэшам загруженных частей), правила отбора те же.
+//! Связанные беседы (`channel::linked`) — вместе ([`load_group`]); строка показывает канал ([`Origin::channel`]).
 
 use std::collections::{HashMap, HashSet};
 
@@ -24,6 +28,8 @@ use postman_ir::{Block, Document, Inline};
 use postman_worker::Client;
 
 use crate::attach::{self, Viewer};
+use crate::channel::mail::MailSource;
+use crate::channel::{Address, AttachmentKind, Body, ChannelError, ChannelStore, Chats, ConversationSource, Line, Participant};
 use crate::invite::Seen;
 use crate::model::ContactCard;
 use crate::samefile::{self, FileKey, Groups};
@@ -64,20 +70,23 @@ pub struct Facts {
     pub answers: HashMap<String, Partstat>,
 }
 
-/// Где встретилось: письмо и его автор.
+/// Где встретилось: письмо (сообщение канала) и его автор.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Origin {
-    /// Ключ письма в кэше («Перейти к письму»).
+    /// Ключ письма в кэше («Перейти к письму»); у сообщения канала — его адрес `postman://…`.
     pub letter: String,
     pub from_name: String,
     pub from_addr: String,
     /// Unix-время письма, секунды.
     pub at: i64,
+    /// Канал: `mail` у письма, иначе канал сообщения (связанные беседы — вместе, строка показывает канал).
+    pub channel: String,
 }
 
 impl Origin {
     fn of(row: &EmailRow) -> Self {
-        Self { letter: row.id.clone(), from_name: row.from_name.clone(), from_addr: row.from_addr.clone(), at: row.received_at }
+        let channel = Address::parse(&row.id).map_or_else(|| crate::channel::MAIL.to_owned(), |a| a.channel.0);
+        Self { letter: row.id.clone(), from_name: row.from_name.clone(), from_addr: row.from_addr.clone(), at: row.received_at, channel }
     }
 }
 
@@ -684,7 +693,7 @@ pub fn missing(letters: &[Letter]) -> Vec<String> {
 /// (ответ — `Event::BodyReady`, после всех — собрать медиа заново). Письма «На этом компьютере» (`store::letter_ref`)
 /// с сервера не качаются: их тело собирается из содержимого.
 pub fn fetch(letters: &[Letter]) -> Vec<Command> {
-    missing(letters).into_iter().filter(|id| crate::store::parse_ref(id).is_none()).map(Command::Body).collect()
+    missing(letters).into_iter().filter(|id| crate::store::parse_ref(id).is_none() && Address::parse(id).is_none()).map(Command::Body).collect()
 }
 
 /// Письма беседы и сведения о вложениях из хранилища и воркера: тела, их IR, хэши вложений (частей хранилища и байтов
@@ -713,40 +722,156 @@ pub fn gather(cache: &Cache, client: &mut Client, thread_id: &str) -> postman_ca
                 facts.hashes.insert(a.blob_id.clone(), h);
             }
             let Some(bytes) = bytes else { continue };
-            if is_image(a) && bytes.len() <= PROBE_BYTES {
-                match client.decode_image(&bytes, PROBE_SIDE) {
-                    Ok(img) => {
-                        facts.frames.insert(a.blob_id.clone(), (img.width, img.height));
-                    }
-                    Err(e) => tracing::debug!("thread media: image frame unknown: {e}"),
-                }
-            }
-            if is_calendar(a) {
-                match client.parse_calendar(&bytes).and_then(|v| Invitation::from_worker(&v, &TimeZone::system())) {
-                    Ok(inv) => {
-                        facts.invites.insert(a.blob_id.clone(), inv);
-                    }
-                    Err(e) => tracing::debug!("thread media: invitation not parsed: {e}"),
-                }
-            }
-            if is_vcard(a) {
-                match client.parse_contacts(&bytes) {
-                    Ok(cards) => {
-                        facts.cards.insert(a.blob_id.clone(), cards.iter().map(ContactCard::from_jscontact).collect());
-                    }
-                    Err(e) => tracing::debug!("thread media: vCard not parsed: {e}"),
-                }
-            }
+            probe(client, a, &bytes, &mut facts);
         }
         letters.push(Letter { row, body, doc });
     }
+    answers(cache, &mut facts)?;
+    Ok((letters, facts))
+}
+
+/// Сведения о вложении по его байтам — воркером: кадр маленькой картинки, приглашение, визитка.
+fn probe(client: &mut Client, a: &AttachmentRow, bytes: &[u8], facts: &mut Facts) {
+    if is_image(a) && bytes.len() <= PROBE_BYTES && !facts.frames.contains_key(&a.blob_id) {
+        match client.decode_image(bytes, PROBE_SIDE) {
+            Ok(img) => {
+                facts.frames.insert(a.blob_id.clone(), (img.width, img.height));
+            }
+            Err(e) => tracing::debug!("thread media: image frame unknown: {e}"),
+        }
+    }
+    if is_calendar(a) {
+        match client.parse_calendar(bytes).and_then(|v| Invitation::from_worker(&v, &TimeZone::system())) {
+            Ok(inv) => {
+                facts.invites.insert(a.blob_id.clone(), inv);
+            }
+            Err(e) => tracing::debug!("thread media: invitation not parsed: {e}"),
+        }
+    }
+    if is_vcard(a) {
+        match client.parse_contacts(bytes) {
+            Ok(cards) => {
+                facts.cards.insert(a.blob_id.clone(), cards.iter().map(ContactCard::from_jscontact).collect());
+            }
+            Err(e) => tracing::debug!("thread media: vCard not parsed: {e}"),
+        }
+    }
+}
+
+/// Мои ответы на приглашения из хранилища состояния.
+fn answers(cache: &Cache, facts: &mut Facts) -> postman_cache::Result<()> {
     let uids: HashSet<String> = facts.invites.values().map(|i| i.event.uid.clone()).collect();
     for uid in uids {
         if let Some(seen) = cache.state(&format!("{ANSWER_KEY}{uid}"))?.as_deref().and_then(Seen::decode) {
             facts.answers.insert(uid, seen.status);
         }
     }
-    Ok((letters, facts))
+    Ok(())
+}
+
+/// Сообщения беседы канала `at` (строки ленты, люди канала) — входом медиа беседы: сообщение — «письмо» с адресом
+/// `postman://…` вместо ключа (`Origin::letter`), автор — имя и почта (нет почты — id в канале), тело — IR,
+/// вложения — с хэшами загруженных частей ([`Facts::hashes`]) и кадрами из модели. «Сообщение удалено» — мимо.
+pub fn chat_letters(at: &Address, title: &str, lines: &[Line], people: &[Participant]) -> (Vec<Letter>, Facts) {
+    let mut facts = Facts::default();
+    let chan = at.chan();
+    let mut letters = Vec::with_capacity(lines.len());
+    for line in lines {
+        let Line::Message { message: m, loaded } = line else { continue };
+        let address = Address { message: Some(m.id.clone()), ..at.of_conversation() };
+        let id = address.to_string();
+        let who = people.iter().find(|p| p.id == m.author);
+        let from_name = who.map_or_else(|| m.author.0.clone(), |p| p.name.clone());
+        let from_addr = who.and_then(|p| p.emails.first().cloned()).unwrap_or_else(|| crate::channel::index::author_key(&chan, &m.author));
+        let mut attachments = Vec::with_capacity(m.attachments.len());
+        for (i, a) in m.attachments.iter().enumerate() {
+            let blob_id = format!("{id}#{i}");
+            if let Some((_, h)) = loaded.iter().find(|(s, _)| *s == a.source) {
+                facts.hashes.insert(blob_id.clone(), *h);
+            }
+            match a.kind {
+                AttachmentKind::Image { w, h } | AttachmentKind::Video { w, h, .. } if w > 0 && h > 0 => {
+                    facts.frames.insert(blob_id.clone(), (w, h));
+                }
+                _ => {}
+            }
+            attachments.push(AttachmentRow {
+                blob_id,
+                name: a.name.clone(),
+                mime: a.mime.clone(),
+                size: a.size.unwrap_or(0),
+                cid: None,
+                inline: false,
+            });
+        }
+        let doc = match &m.body {
+            Body::Ir(d) => d.clone(),
+            Body::Html { plain, .. } | Body::Plain(plain) => postman_ir::from_plain(plain),
+        };
+        let row = EmailRow {
+            id,
+            thread_id: at.of_conversation().to_string(),
+            mailbox_ids: Vec::new(),
+            received_at: m.sent.div_euclid(1000),
+            subject: title.to_owned(),
+            from_name,
+            from_addr,
+            preview: String::new(),
+            seen: true,
+            flagged: false,
+            has_attachment: !attachments.is_empty(),
+            size: 0,
+            keywords: Vec::new(),
+        };
+        let body = BodyRow { text: Some(m.body.plain()), attachments, ..BodyRow::default() };
+        letters.push(Letter { row, body: Some(body), doc: Some(doc) });
+    }
+    (letters, facts)
+}
+
+/// Медиа беседы `at` вместе со связанными (`channel::linked::group`): почтовые беседы — [`gather`] (`mail` — ящики
+/// профиля; нет — почта мимо), беседы каналов — [`chat_letters`] по тому, что есть в базе (приглашения и визитки
+/// загруженных файлов — воркером). Команды докачки тел — только у писем.
+pub fn load_group(
+    cache: &Cache,
+    client: &mut Client,
+    mail: Option<&MailSource>,
+    at: &Address,
+    me: Option<&str>,
+) -> Result<(ThreadMedia, Vec<Command>), ChannelError> {
+    let mut letters = Vec::new();
+    let mut facts = Facts::default();
+    let chats = Chats::new(cache.clone());
+    for conv in crate::channel::linked::group(cache, at)? {
+        if conv.channel.0 == crate::channel::MAIL {
+            let Some(thread) = mail.and_then(|m| m.thread_key(&conv)) else { continue };
+            let (l, f) = gather(cache, client, &thread)?;
+            letters.extend(l);
+            merge(&mut facts, f);
+            continue;
+        }
+        let Some(store) = ChannelStore::find(cache, &conv.channel, &conv.account)? else { continue };
+        let Some(summary) = chats.conversation(&conv)? else { continue };
+        let lines = chats.timeline(&conv, None, usize::MAX)?;
+        let (l, f) = chat_letters(&conv, &summary.conversation.title, &lines, &store.participants()?);
+        for a in l.iter().flat_map(|l| l.body.iter().flat_map(|b| &b.attachments)).filter(|a| is_calendar(a) || is_vcard(a)) {
+            if let Some(bytes) = f.hashes.get(&a.blob_id).map(|h| cache.chan_part(*h)).transpose()?.flatten() {
+                probe(client, a, &bytes, &mut facts);
+            }
+        }
+        letters.extend(l);
+        merge(&mut facts, f);
+    }
+    answers(cache, &mut facts)?;
+    Ok((collect(&letters, &facts, me), fetch(&letters)))
+}
+
+fn merge(into: &mut Facts, from: Facts) {
+    into.hashes.extend(from.hashes);
+    into.frames.extend(from.frames);
+    into.invites.extend(from.invites);
+    into.cards.extend(from.cards);
+    into.answers.extend(from.answers);
 }
 
 /// Медиа беседы целиком: [`gather`], [`collect`] и команды докачки [`fetch`] (пусто — все тела есть).
@@ -1052,5 +1177,106 @@ mod tests {
         assert_eq!(cmds.len(), 2);
         assert!(m.links.is_empty(), "без воркера ссылок нет");
         assert!(m.contacts.cards.iter().all(|c| c.cards.is_empty()));
+    }
+}
+
+#[cfg(test)]
+mod channel_tests {
+    use super::*;
+    use crate::channel::mail::MailAccount;
+    use crate::channel::{
+        AccountId, Attachment, AttachmentSource, ByteSink, ChannelEvent, ChannelId, Conversation, ConversationId, Message, MessageId, ParticipantId,
+    };
+    use crate::filters::Me;
+
+    /// Медиа беседы чата и связанной почтовой беседы вместе: файлы и картинки по хэшам загруженных частей, ссылки из
+    /// текста сообщений, люди обоих каналов; строка показывает канал; докачка — только тел писем.
+    #[test]
+    fn chat_and_linked_mail_media() {
+        let cache = Cache::open_in_memory().unwrap();
+        let store = ChannelStore::open(cache.clone(), &ChannelId::new("demo"), &AccountId::new("me@example.test"), "Я").unwrap();
+        let g = ConversationId::new("g");
+        let file = |name: &str, mime: &str, src: &[u8], kind| Attachment {
+            name: name.into(),
+            mime: mime.into(),
+            size: Some(5),
+            kind,
+            source: AttachmentSource(src.to_vec()),
+            thumb: None,
+        };
+        let m = |id: &str, sent: i64, text: &str, a: Vec<Attachment>| Message {
+            id: MessageId::new(id),
+            author: ParticipantId::new("u-anna"),
+            sent,
+            body: crate::channel::Body::Plain(text.into()),
+            attachments: a,
+            ..Message::default()
+        };
+        store
+            .apply(vec![
+                ChannelEvent::People(vec![Participant { id: ParticipantId::new("u-anna"), name: "Анна".into(), ..Participant::default() }]),
+                ChannelEvent::Conversations(vec![Conversation { id: g.clone(), title: "Команда".into(), ..Conversation::default() }]),
+                ChannelEvent::Messages {
+                    conversation: g.clone(),
+                    messages: vec![
+                        m(
+                            "1",
+                            1_000_000,
+                            "Смотри https://example.test/doc",
+                            vec![file("photo.jpg", "image/jpeg", b"p1", AttachmentKind::Image { w: 800, h: 600 })],
+                        ),
+                        m("2", 2_000_000, "План", vec![file("plan.pdf", "application/pdf", b"p2", AttachmentKind::File)]),
+                    ],
+                    live: false,
+                },
+            ])
+            .unwrap();
+        let mut d = store.begin_download();
+        d.write(b"\xff\xd8jpg").unwrap();
+        store.finish_download(d, &g, &MessageId::new("1"), &AttachmentSource(b"p1".to_vec()), "image/jpeg").unwrap();
+        cache
+            .upsert_emails(&[EmailRow {
+                thread_id: "t1".into(),
+                mailbox_ids: vec!["in".into()],
+                subject: "Команда".into(),
+                ..email("e1", "boris@example.test", 500)
+            }])
+            .unwrap();
+        let chat = Address::conversation(store.channel(), store.account(), &g);
+        let mail_at = Address::conversation(&ChannelId::new("mail"), &AccountId::new("me@example.test"), &ConversationId::new("t1"));
+        crate::channel::linked::link(&cache, &chat, &mail_at).unwrap();
+        let mail = MailSource::new(cache.clone(), vec![MailAccount::new(None, "me@example.test")], Me::new(["me@example.test"], ["Я"]));
+        let mut client = Client::new("no-worker.exe".into(), std::time::Duration::from_secs(1));
+        let (media, commands) = load_group(&cache, &mut client, Some(&mail), &chat, Some("me@example.test")).unwrap();
+        assert_eq!((media.total, media.loaded), (3, 2), "письмо без тела — не загружено");
+        assert!(matches!(&commands[..], [Command::Body(id)] if id == "e1"));
+        assert_eq!(media.media.len(), 1);
+        assert_eq!(media.media[0].frame, Some((800, 600)));
+        assert!(matches!(media.media[0].file.key, samefile::FileKey::Content(_)), "картинка — по хэшу загруженной части");
+        assert_eq!(media.files.len(), 2);
+        assert_eq!(media.links[0].url, "https://example.test/doc");
+        assert_eq!(media.links[0].seen[0].channel, "demo");
+        assert!(media.links[0].seen[0].letter.starts_with("postman://demo/"));
+        let people: Vec<&str> = media.contacts.people.iter().map(|p| p.name.as_str()).collect();
+        assert!(people.contains(&"Анна"), "{people:?}");
+        assert!(media.contacts.people.iter().any(|p| p.email == "boris@example.test"));
+    }
+
+    fn email(id: &str, from: &str, at: i64) -> EmailRow {
+        EmailRow {
+            id: id.into(),
+            thread_id: String::new(),
+            mailbox_ids: Vec::new(),
+            received_at: at,
+            subject: String::new(),
+            from_name: String::new(),
+            from_addr: from.into(),
+            preview: String::new(),
+            seen: true,
+            flagged: false,
+            has_attachment: false,
+            size: 0,
+            keywords: Vec::new(),
+        }
     }
 }

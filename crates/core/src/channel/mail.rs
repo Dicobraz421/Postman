@@ -155,6 +155,14 @@ impl MailSource {
         Some(Address::conversation(&Self::channel(), &AccountId(a.address.clone()), &ConversationId::new(thread)))
     }
 
+    /// Ключ беседы кэша (`EmailRow::thread_id`) адреса беседы почты; ящика нет среди известных — `None`.
+    pub fn thread_key(&self, at: &Address) -> Option<String> {
+        if at.channel.0 != super::MAIL {
+            return None;
+        }
+        Some(postman_cache::scoped(self.scope_of(&at.account)?, &at.conversation.0))
+    }
+
     /// Письма беседы адреса, старые первыми.
     fn rows(&self, at: &Address) -> Result<Vec<EmailRow>> {
         if at.channel.0 != super::MAIL {
