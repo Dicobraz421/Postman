@@ -4,6 +4,9 @@
 //! Связь пропала — [`ChannelState::Offline`], повтор с паузой `link::delay` (5…60 с), затем снова `catch_up`.
 //! «Печатает» — только в памяти потока, истекает через [`TYPING_SECS`] с.
 //!
+//! Перед записью чужая разметка ([`Body::Html`], Matrix `formatted_body`) становится IR в воркере-песочнице
+//! ([`Render`], [`to_ir`]) — как тела писем; записанное и удалённое — сразу в общий индекс поиска ([`super::index`]).
+//!
 //! Очередь отправки с окном «Отменить» и «позже» (`chan_outbox`) — CH-02б: здесь [`Request::Act`] с
 //! [`Action::Send`] уходит сразу.
 
@@ -12,12 +15,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use postman_cache::{Cache, Hash};
+use postman_ir::Document;
+use postman_search::SearchIndex;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::time::Instant;
 
 use super::store::Download;
 use super::{
-    AccountId, Action, AttachmentSource, ByteSource, ChannelError, ChannelEvent, ChannelFeatures, ChannelId, ChannelPlugin, ChannelSession,
+    AccountId, Action, AttachmentSource, Body, ByteSource, ChannelError, ChannelEvent, ChannelFeatures, ChannelId, ChannelPlugin, ChannelSession,
     ChannelState, ChannelStore, ConnectCtx, ConversationId, Done, FileMeta, LocalStore, MessageId, Page, Participant, ParticipantId, PluginStore,
     Secrets, TYPING_SECS, Uploaded,
 };
@@ -106,6 +111,33 @@ pub enum Update {
     SignedOut,
 }
 
+/// HTML → IR в воркере-песочнице (`postman_worker::Request::Html`); ошибка — текст для журнала.
+pub type Render = Arc<dyn Fn(&str) -> Result<Document, String> + Send + Sync>;
+
+/// [`Render`] поверх клиента воркера: запросы по одному, процесс воркера — один на поток учётки.
+pub fn worker_render(client: postman_worker::Client) -> Render {
+    let client = std::sync::Mutex::new(client);
+    Arc::new(move |html: &str| {
+        let mut c = client.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        c.render(&postman_worker::Request::Html(html.to_owned()))
+    })
+}
+
+/// Чужая разметка сообщений пачки — в IR ([`Render`]); не вышло — тело остаётся HTML с плоским текстом (интерфейс
+/// показывает текст, разметку в своём процессе не разбирает).
+pub fn to_ir(events: &mut [ChannelEvent], render: &Render) {
+    for ev in events {
+        let ChannelEvent::Messages { messages, .. } = ev else { continue };
+        for m in messages {
+            let Body::Html { html, .. } = &m.body else { continue };
+            match render(html) {
+                Ok(doc) => m.body = Body::Ir(doc),
+                Err(e) => tracing::warn!("channel: html body not rendered: {e}"),
+            }
+        }
+    }
+}
+
 /// Всё для потока учётки канала.
 pub struct RunCtx {
     pub cache: Cache,
@@ -113,28 +145,37 @@ pub struct RunCtx {
     pub account: AccountId,
     /// Имя учётки для новой строки в базе.
     pub name: String,
+    /// HTML → IR в воркере; `None` — тела HTML хранятся как пришли (тесты).
+    pub render: Option<Render>,
+    /// Общий индекс поиска; `None` — без поиска.
+    pub index: Option<Arc<SearchIndex>>,
     pub requests: UnboundedReceiver<Request>,
     pub notify: Box<dyn Fn(Update)>,
 }
 
+/// С чем запустить поток учётки канала ([`spawn`]).
+pub struct Start {
+    pub cache: Cache,
+    pub secrets: Arc<dyn Secrets>,
+    pub account: AccountId,
+    /// Имя учётки для новой строки в базе.
+    pub name: String,
+    pub render: Option<Render>,
+    pub index: Option<Arc<SearchIndex>>,
+}
+
 /// Поток учётки канала: свой поток ОС, рантайм tokio на один поток и `LocalSet` (плагин может `spawn_local`).
 /// Ответ — канал запросов; закрыли его — поток кончается.
-pub fn spawn(
-    plugin: Arc<dyn ChannelPlugin>,
-    cache: Cache,
-    secrets: Arc<dyn Secrets>,
-    account: AccountId,
-    name: String,
-    notify: Box<dyn Fn(Update) + Send>,
-) -> UnboundedSender<Request> {
+pub fn spawn(plugin: Arc<dyn ChannelPlugin>, start: Start, notify: Box<dyn Fn(Update) + Send>) -> UnboundedSender<Request> {
     let (tx, requests) = unbounded_channel();
-    let thread = format!("channel {} {account}", plugin.id());
+    let thread = format!("channel {} {}", plugin.id(), start.account);
     let started = std::thread::Builder::new().name(thread).spawn(move || {
         let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
             Ok(rt) => rt,
             Err(e) => return notify(Update::State(ChannelState::Problem(ChannelError::Storage(format!("tokio runtime: {e}"))))),
         };
-        let ctx = RunCtx { cache, secrets, account, name, requests, notify };
+        let Start { cache, secrets, account, name, render, index } = start;
+        let ctx = RunCtx { cache, secrets, account, name, render, index, requests, notify };
         tokio::task::LocalSet::new().block_on(&rt, run(&*plugin, ctx));
     });
     if let Err(e) = started {
@@ -279,8 +320,11 @@ fn refuse(r: Request, error: ChannelError, notify: &dyn Fn(Update)) {
     }
 }
 
-/// «Выйти» без сессии на сервере: строки учётки, `local` и секрет.
+/// «Выйти» без сессии на сервере: строки учётки, `local`, секрет и документы поиска.
 fn sign_out(store: &ChannelStore, ctx: &RunCtx) {
+    if let Some(index) = &ctx.index {
+        super::index::forget(index, store);
+    }
     if let Err(e) = store.forget() {
         tracing::warn!("channel sign-out: {e}");
     }
@@ -546,7 +590,10 @@ fn flush(
     if pending.events.is_empty() {
         return;
     }
-    let events = std::mem::take(&mut pending.events);
+    let mut events = std::mem::take(&mut pending.events);
+    if let Some(render) = &ctx.render {
+        to_ir(&mut events, render);
+    }
     let applied = match store.apply(events) {
         Ok(a) => a,
         Err(e) => {
@@ -555,6 +602,9 @@ fn flush(
             return (ctx.notify)(Update::State(ChannelState::Problem(e)));
         }
     };
+    if let Some(index) = &ctx.index {
+        super::index::applied(index, store, &applied);
+    }
     let notify = &*ctx.notify;
     if let Some(s) = &applied.secret
         && let Err(e) = ctx.secrets.put(store.channel(), store.account(), s)

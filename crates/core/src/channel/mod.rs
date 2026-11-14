@@ -12,18 +12,27 @@
 //! - **Проверки договора** ([`conformance`]): набор, который обязан пройти любой канал; демо-канал (`postman_demo`)
 //!   проходит его без сети.
 //!
-//! Почта — канал `mail` адаптером (ADR 0012 п. 7, CH-02б) и через [`ChannelSession`] не идёт.
+//! - **Беседы для чтения** ([`ConversationSource`]): чаты — из таблиц каналов ([`Chats`]), почта — из таблиц писем на
+//!   лету ([`mail::MailSource`]); одна модель для списка, ленты и общих функций.
+//! - **Поиск** ([`index`]): сообщения каналов — документами `c<MsgKey>` в общем индексе с почтой, фильтры канала,
+//!   беседы и автора.
+//!
+//! Почта — канал `mail` адаптером ([`mail`], ADR 0012 п. 7) и через [`ChannelSession`] не идёт.
 
 pub mod conformance;
+pub mod index;
+pub mod mail;
 mod plugin;
 mod run;
+mod source;
 mod store;
 
 pub use plugin::{
     Answer, ByteSink, ByteSource, ChannelPlugin, ChannelSession, CodeVia, ConnectCtx, Flow, FlowCtx, FlowKind, Incoming, LocalStore, MemorySecrets,
     PluginStore, Prompt, Secrets,
 };
-pub use run::{BATCH_EVENTS, BATCH_MS, HISTORY_PAGE, Request, RunCtx, Update, run, spawn};
+pub use run::{BATCH_EVENTS, BATCH_MS, HISTORY_PAGE, Render, Request, RunCtx, Start, Update, run, spawn, to_ir, worker_render};
+pub use source::{Chats, ConversationSource, Line, Summary};
 pub use store::{Applied, ChannelStore, Entry, StoredConversation};
 
 use postman_ir::Document;
@@ -72,6 +81,25 @@ id!(
 
 /// Канал почты (адаптер, ADR 0012 п. 7): id занят, у других каналов его нет.
 pub const MAIL: &str = "mail";
+
+/// Учётка канала: куда идёт запрос интерфейса (`sync::Route::Channel`) и чьё событие (`sync::Event::Channel`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ChanAccount {
+    pub channel: ChannelId,
+    pub account: AccountId,
+}
+
+impl ChanAccount {
+    pub fn new(channel: impl Into<String>, account: impl Into<String>) -> Self {
+        Self { channel: ChannelId(channel.into()), account: AccountId(account.into()) }
+    }
+}
+
+impl std::fmt::Display for ChanAccount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.channel, self.account)
+    }
+}
 
 /// Адрес `postman://<канал>/<учётка>/<беседа>[/<сообщение>]` — из id сервера, не из ключей базы: ссылка открывается на
 /// другом компьютере того же человека. Части — в процент-кодировке (RFC 3986 pchar). Адрес не несёт действий: только
@@ -130,6 +158,16 @@ impl Address {
 
     pub fn message(channel: &ChannelId, account: &AccountId, conversation: &ConversationId, message: &MessageId) -> Self {
         Self { message: Some(message.clone()), ..Self::conversation(channel, account, conversation) }
+    }
+
+    /// Учётка канала адреса.
+    pub fn chan(&self) -> ChanAccount {
+        ChanAccount { channel: self.channel.clone(), account: self.account.clone() }
+    }
+
+    /// Адрес беседы этого адреса (без сообщения).
+    pub fn of_conversation(&self) -> Self {
+        Self { message: None, ..self.clone() }
     }
 
     /// Разобрать `postman://…`: ровно три или четыре непустые части, без запроса и якоря. Иначе — `None`.

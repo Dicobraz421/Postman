@@ -88,6 +88,8 @@ pub(crate) struct Mailer {
     pub(crate) offline_ticking: bool,
     /// Сервер или демо (S3-04 подключает живой ящик).
     pub(crate) backend: Backend,
+    /// Потоки учёток каналов бесед (ADR 0012, `channels.rs`).
+    pub(crate) channels: crate::channels::Channels,
     /// Живой ящик: статус синхронизации, строка входа, поиск на сервере (`live.rs`).
     pub(crate) live: crate::live::Live,
     /// Уведомления о новых письмах (T2-10).
@@ -419,6 +421,7 @@ impl Mailer {
             offline: Default::default(),
             offline_ticking: false,
             backend: Backend::Demo,
+            channels: Default::default(),
             live: Default::default(),
             newmail: Default::default(),
             rules_run: Default::default(),

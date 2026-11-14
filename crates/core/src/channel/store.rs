@@ -132,6 +132,10 @@ pub struct Applied {
     pub cursor: Option<Cursor>,
     /// Сообщений записано (новых или изменённых).
     pub written: usize,
+    /// Сообщения, чей текст записан или изменён, — в индекс поиска.
+    pub indexed: Vec<MsgKey>,
+    /// Сообщения, которых больше нет (или «удалено у всех»), — из индекса.
+    pub unindexed: Vec<MsgKey>,
 }
 
 impl Applied {
@@ -142,7 +146,7 @@ impl Applied {
     }
 }
 
-fn entry(doc: MsgDoc) -> Result<Entry> {
+pub(super) fn entry(doc: MsgDoc) -> Result<Entry> {
     let loaded = doc.loaded.into_iter().map(|(s, h)| (AttachmentSource(s), h)).collect();
     Ok(match dec::<MsgEnvelope>(&doc.value)? {
         MsgEnvelope::V1(message) => Entry::Message { key: doc.key, message, loaded },
@@ -190,6 +194,21 @@ impl ChannelStore {
         Ok(Self { cache, key, channel: channel.clone(), account: account.clone() })
     }
 
+    /// Учётка канала, если она уже есть в базе (чтение: новой строки не заводит).
+    pub fn find(cache: &Cache, channel: &ChannelId, account: &AccountId) -> Result<Option<Self>> {
+        let known = cache.chan_accounts()?.into_iter().find(|a| a.channel == channel.0 && a.account == account.0);
+        Ok(known.map(|a| Self { cache: cache.clone(), key: a.key, channel: channel.clone(), account: account.clone() }))
+    }
+
+    /// Учётки каналов профиля.
+    pub fn all(cache: &Cache) -> Result<Vec<Self>> {
+        Ok(cache
+            .chan_accounts()?
+            .into_iter()
+            .map(|a| Self { cache: cache.clone(), key: a.key, channel: ChannelId(a.channel), account: AccountId(a.account) })
+            .collect())
+    }
+
     pub fn key(&self) -> ChanKey {
         self.key
     }
@@ -204,6 +223,11 @@ impl ChannelStore {
 
     pub fn account(&self) -> &AccountId {
         &self.account
+    }
+
+    /// Учётка канала (маршрут запросов, события интерфейсу).
+    pub fn chan(&self) -> super::ChanAccount {
+        super::ChanAccount { channel: self.channel.clone(), account: self.account.clone() }
     }
 
     fn value(&self) -> Result<AccountValue> {
@@ -282,11 +306,14 @@ impl ChannelStore {
                         let value = enc(&MsgEnvelope::V1(m.clone()))?;
                         let srcs = sources(&m);
                         let put = MsgPut { remote: &m.id.0, sent: m.sent, edited: m.edited, value: &value, sources: &srcs };
-                        let (_, stored) = b.put_msg(k, &put)?;
+                        let (mk, stored) = b.put_msg(k, &put)?;
                         if stored == Stored::Same {
                             continue;
                         }
                         out.written += 1;
+                        if !out.indexed.contains(&mk) {
+                            out.indexed.push(mk);
+                        }
                         out.change(&conversation);
                         if stored == Stored::New && live && !m.mine && m.kind == MessageKind::Normal {
                             out.arrived.push((conversation.clone(), m.id.clone()));
@@ -304,6 +331,8 @@ impl ChannelStore {
                         let Some(doc) = b.msg(mk)? else { continue };
                         let old = entry(doc)?;
                         b.remove_msg(mk)?;
+                        out.indexed.retain(|k| *k != mk);
+                        out.unindexed.push(mk);
                         if for_all {
                             let (author, sent) = match &old {
                                 Entry::Message { message, .. } => (message.author.clone(), message.sent),
@@ -386,6 +415,20 @@ impl ChannelStore {
         Ok(StoredConversation { key: d.key, address, conversation, read_by, last: d.last })
     }
 
+    /// Беседа по ключу базы (поиск, пересборка индекса); чужая учётка — `None`.
+    pub(super) fn conversation_by_key(&self, key: ConvKey) -> Result<Option<StoredConversation>> {
+        let Some(d) = self.cache.chan_conv(key)?.filter(|d| d.account == self.key) else { return Ok(None) };
+        let address = Address::conversation(&self.channel, &self.account, &ConversationId(d.remote.clone()));
+        self.stored(d, address).map(Some)
+    }
+
+    /// Сообщение по ключу базы и ключ его беседы.
+    pub(super) fn entry_by_key(&self, key: MsgKey) -> Result<Option<(ConvKey, Entry)>> {
+        let Some(doc) = self.cache.chan_msg(key)? else { return Ok(None) };
+        let conv = doc.conv;
+        Ok(Some((conv, entry(doc)?)))
+    }
+
     pub fn conversation(&self, id: &ConversationId) -> Result<Option<StoredConversation>> {
         let Some(k) = self.cache.chan_conv_key(self.key, &id.0)? else { return Ok(None) };
         let Some(d) = self.cache.chan_conv(k)? else { return Ok(None) };
@@ -441,6 +484,18 @@ impl ChannelStore {
         let Some(v) = self.cache.chan_participant(self.key, &id.0)? else { return Ok(None) };
         let PersonEnvelope::V1(p) = dec(&v)?;
         Ok(Some(p))
+    }
+
+    /// Все люди учётки.
+    pub fn participants(&self) -> Result<Vec<Participant>> {
+        self.cache
+            .chan_participants(self.key)?
+            .into_iter()
+            .map(|(_, v)| {
+                let PersonEnvelope::V1(p) = dec(&v)?;
+                Ok(p)
+            })
+            .collect()
     }
 
     pub fn members(&self, conv: &ConversationId) -> Result<Vec<Member>> {

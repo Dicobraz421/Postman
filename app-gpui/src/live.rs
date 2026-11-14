@@ -640,6 +640,8 @@ impl Mailer {
         // Дополнительные учётные записи профиля (S7-03б) — на том же кэше, рядом с основной.
         self.live.profile = Default::default();
         self.start_extras(cx);
+        // Учётки каналов бесед профиля (ADR 0012): поток каждой — из реестра каналов.
+        self.start_channels(self.live.index.clone(), cx);
         cx.spawn(async move |this, cx| {
             use futures::StreamExt as _;
             // Поток синхронизации закончился — отправитель пробуждений закрыт, задача завершается.
