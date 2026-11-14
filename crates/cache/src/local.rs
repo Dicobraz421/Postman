@@ -80,6 +80,28 @@ fn write(tx: &WriteTransaction, put: &LocalPut, level: Option<i32>) -> Result<()
     Ok(())
 }
 
+/// Удалить в транзакции записи с префиксом `prefix` и снять вхождения их частей. Ответ — сколько удалено.
+pub(crate) fn remove_prefix(tx: &WriteTransaction, prefix: &str) -> Result<usize> {
+    let mut parts = Vec::new();
+    let mut n = 0;
+    {
+        let mut t = tx.open_table(LOCAL)?;
+        let keys: Vec<String> = t
+            .range(prefix..)?
+            .map(|r| r.map(|(k, _)| k.value().to_owned()))
+            .take_while(|k| k.as_ref().map_or(true, |k| k.starts_with(prefix)))
+            .collect::<std::result::Result<_, _>>()?;
+        for k in keys {
+            if let Some(v) = t.remove(k.as_str())? {
+                parts.extend(dec::<Row>(v.value())?.parts);
+                n += 1;
+            }
+        }
+    }
+    content::release_parts(tx, parts)?;
+    Ok(n)
+}
+
 impl Cache {
     /// Запись данных клиента; нет — `None`.
     pub fn local(&self, key: &str) -> Result<Option<LocalDoc>> {
@@ -113,6 +135,15 @@ impl Cache {
         write(&tx, put, self.tuning.level)?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Удалить записи с ключом, начинающимся с `prefix` (и их части без других ссылок), одной транзакцией: свои данные
+    /// канала при «Выйти» (`chan/<канал>/<учётка>/`, ADR 0012 п. 9). Ответ — сколько удалено.
+    pub fn remove_local_prefix(&self, prefix: &str) -> Result<usize> {
+        let tx = self.db.begin_write()?;
+        let n = remove_prefix(&tx, prefix)?;
+        tx.commit()?;
+        Ok(n)
     }
 
     /// Удалить записи (и их части без других ссылок) одной транзакцией.

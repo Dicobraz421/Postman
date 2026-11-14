@@ -644,6 +644,50 @@ pub(crate) fn acquire_bytes(tx: &WriteTransaction, bytes: &[u8], mime: &str, lev
     Ok(hash)
 }
 
+/// Часть, записанная кусками заранее (загрузка вложения канала, `crate::channel`): `n` кусков по [`CHUNK`] длиной
+/// `len` в сумме, `chunk(i)` — байты куска; хэш посчитал тот, кто писал куски. Известная часть — вхождений + 1 (куски
+/// не читаются), новая — запись (сжатая, если тип `mime` и начало байтов сжимаются).
+pub(crate) fn acquire_chunked(
+    tx: &WriteTransaction,
+    hash: Hash,
+    len: u64,
+    n: u32,
+    mime: &str,
+    level: Option<i32>,
+    mut chunk: impl FnMut(u32) -> Result<Vec<u8>>,
+) -> Result<()> {
+    let t = &TABLES;
+    let known = tx.open_table(t.part_refs)?.get(hash.0)?.map(|v| v.value());
+    if let Some((refs, len, stored)) = known {
+        tx.open_table(t.part_refs)?.insert(hash.0, (refs.saturating_add(1), len, stored))?;
+        return Ok(());
+    }
+    let mut stored = 0;
+    let data = if n <= 1 {
+        let bytes = if n == 1 { chunk(0)? } else { Vec::new() };
+        let level = level.filter(|&l| compressible(mime, &bytes, l));
+        let packed = Packed::new(bytes, level);
+        stored += packed.stored();
+        PartData::Bytes(packed)
+    } else {
+        let mut chunks = tx.open_table(t.chunks)?;
+        let mut level = level;
+        for i in 0..n {
+            let bytes = chunk(i)?;
+            if i == 0 {
+                level = level.filter(|&l| compressible(mime, &bytes, l));
+            }
+            let packed = Packed::new(bytes, level);
+            stored += packed.stored();
+            chunks.insert((hash.0, i), enc(&packed)?.as_slice())?;
+        }
+        PartData::Chunks(n)
+    };
+    tx.open_table(t.part)?.insert(hash.0, enc(&PartRow { data, len })?.as_slice())?;
+    tx.open_table(t.part_refs)?.insert(hash.0, (1, len, stored))?;
+    Ok(())
+}
+
 /// Раскодированные байты части `hash`; `None` — такой части нет.
 pub(crate) fn read_part(tx: &ReadTransaction, hash: Hash) -> Result<Option<Vec<u8>>> {
     let Some(row) = tx.open_table(TABLES.part)?.get(hash.0)?.map(|v| dec::<PartRow>(v.value())).transpose()? else {
@@ -981,6 +1025,8 @@ impl Cache {
         }
         // Части данных клиента (`crate::local`) — такие же вхождения.
         crate::local::count_parts(&tx, &mut want_part)?;
+        // Вложения сообщений каналов (`crate::channel`, ADR 0012 п. 9) — тоже.
+        crate::channel::count_parts(&tx, &mut want_part)?;
         for h in content_refs.keys() {
             problems.push(format!("content {}: refs without content", hex(h)));
         }

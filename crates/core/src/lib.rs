@@ -9,6 +9,7 @@ pub mod backend;
 pub mod bench;
 pub mod bulk;
 pub mod categories;
+pub mod channel;
 pub mod checks;
 pub mod contacts;
 pub mod export;
