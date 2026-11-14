@@ -58,3 +58,69 @@ fn demo_links() {
     assert!(p.parse_link("https://chat.example.test/nope/m1").is_none());
     assert!(p.parse_link("https://t.me/c/1/2").is_none());
 }
+
+/// Очередь отправки (ADR 0012 п. 11) на демо-канале через поток учётки: окно «Отменить» — «отправляется» в ленте,
+/// «Отменить» снимает его; по сроку — сообщение сервера вместо «отправляется»; очередь пуста.
+#[test]
+fn outbox_undo_and_send() {
+    use postman_core::channel::{ChannelId, ChannelStore, MemorySecrets, Outgoing, Request, Secrets, Start, Update, outbox, spawn, text_doc};
+    use postman_core::model::Release;
+    use postman_demo::channel::DIRECT;
+
+    let cache = postman_cache::Cache::open_in_memory().unwrap();
+    let (id, account) = (ChannelId::new(postman_demo::channel::ID), AccountId::new(ACCOUNT));
+    let secrets = Arc::new(MemorySecrets::default());
+    secrets.put(&id, &account, &Secret::new(SESSION.to_vec())).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<Update>();
+    let start = Start { cache: cache.clone(), secrets, account: account.clone(), name: "Я".into(), render: None, index: None };
+    let requests = spawn(
+        Arc::new(DemoChannel::new(DemoServer::new())),
+        start,
+        Box::new(move |u| {
+            let _ = tx.send(u);
+        }),
+    );
+    let wait = |what: &str, f: &dyn Fn(&Update) -> bool| -> Update {
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            match rx.recv_timeout(left) {
+                Ok(u) if f(&u) => return u,
+                Ok(_) => {}
+                Err(e) => panic!("{what}: {e}"),
+            }
+        }
+    };
+    wait("connected", &|u| matches!(u, Update::Connected { .. }));
+    let store = ChannelStore::find(&cache, &id, &account).unwrap().unwrap();
+    let conv = postman_core::channel::ConversationId::new(DIRECT);
+    let out = |client_id| Outgoing {
+        conversation: conv.clone(),
+        client_id,
+        body: text_doc("через очередь"),
+        attachments: vec![],
+        reply_to: None,
+        quotes: vec![],
+        mentions: vec![],
+        at: None,
+        silent: false,
+    };
+    let pending = |c| store.message(&conv, &outbox::pending_id(c)).unwrap().is_some();
+
+    requests.send(Request::Send { outgoing: out(900), release: Release::After(30) }).unwrap();
+    wait("queued", &|u| matches!(u, Update::Queued { client_id: 900, .. }));
+    assert!(pending(900), "«отправляется» в ленте");
+    assert_eq!(outbox::holding(), 1, "окно «Отменить» держит выход");
+    requests.send(Request::Unsend { client_id: 900 }).unwrap();
+    wait("unsent", &|u| matches!(u, Update::Unsent { client_id: 900, done: true }));
+    assert!(!pending(900) && store.queued().unwrap().is_empty());
+
+    requests.send(Request::Send { outgoing: out(901), release: Release::After(1) }).unwrap();
+    let Update::Sent { id: sent, .. } = wait("sent", &|u| matches!(u, Update::Sent { client_id: 901, .. } | Update::SendFailed { .. })) else {
+        panic!("not sent");
+    };
+    assert!(!pending(901) && store.message(&conv, &sent).unwrap().is_some(), "сообщение сервера вместо «отправляется»");
+    assert!(store.queued().unwrap().is_empty());
+    assert_eq!(outbox::holding(), 0);
+    drop(requests);
+}

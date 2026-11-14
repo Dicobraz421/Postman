@@ -34,11 +34,32 @@ struct AccountValue {
     features: ChannelFeatures,
     folders: Vec<ChannelFolder>,
     state: Option<ChannelState>,
+    /// Кто я в канале (`ChannelSession::me`): свои сообщения, упоминания меня, автор исходящих в очереди.
+    me: Option<Participant>,
+}
+
+/// Значение учётки до `me` (CH-02а).
+#[derive(Serialize, Deserialize)]
+struct AccountValueV1 {
+    name: String,
+    features: ChannelFeatures,
+    folders: Vec<ChannelFolder>,
+    state: Option<ChannelState>,
 }
 
 #[derive(Serialize, Deserialize)]
 enum AccountEnvelope {
-    V1(AccountValue),
+    V1(AccountValueV1),
+    V2(AccountValue),
+}
+
+impl AccountEnvelope {
+    fn value(self) -> AccountValue {
+        match self {
+            AccountEnvelope::V1(v) => AccountValue { name: v.name, features: v.features, folders: v.folders, state: v.state, me: None },
+            AccountEnvelope::V2(v) => v,
+        }
+    }
 }
 
 /// Значение беседы: беседа сервера и кто прочитал до какого сообщения.
@@ -51,12 +72,29 @@ enum ConvEnvelope {
 #[allow(clippy::large_enum_variant)]
 #[derive(Serialize, Deserialize)]
 enum MsgEnvelope {
-    V1(Message),
+    /// Сообщение до дополнений IR (`Marks::spoiler`, CH-02б): postcard не знает имён полей, прежние байты под новую
+    /// модель не читаются — такая строка не разбирается ([`dec_msg`]) и перепишется, когда канал пришлёт сообщение
+    /// снова.
+    Retired,
     /// Удалено у всех: без текста и вложений.
     Deleted {
         author: ParticipantId,
         sent: i64,
     },
+    V2(Message),
+}
+
+/// Конверт сообщения; строка прежней модели ([`MsgEnvelope::Retired`], вариант 0) — ошибка без разбора байтов.
+fn dec_msg(b: &[u8]) -> Result<MsgEnvelope> {
+    if b.first() == Some(&0) {
+        return Err(ChannelError::Storage("message stored before the IR additions".into()));
+    }
+    dec(b)
+}
+
+#[derive(Serialize, Deserialize)]
+enum OutboxEnvelope {
+    V1(super::outbox::Queued),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -148,8 +186,9 @@ impl Applied {
 
 pub(super) fn entry(doc: MsgDoc) -> Result<Entry> {
     let loaded = doc.loaded.into_iter().map(|(s, h)| (AttachmentSource(s), h)).collect();
-    Ok(match dec::<MsgEnvelope>(&doc.value)? {
-        MsgEnvelope::V1(message) => Entry::Message { key: doc.key, message, loaded },
+    Ok(match dec_msg(&doc.value)? {
+        MsgEnvelope::V2(message) => Entry::Message { key: doc.key, message, loaded },
+        MsgEnvelope::Retired => return Err(ChannelError::Storage("retired message envelope".into())),
         MsgEnvelope::Deleted { author, sent } => Entry::Deleted { key: doc.key, id: super::MessageId(doc.remote), author, sent },
     })
 }
@@ -186,7 +225,7 @@ impl ChannelStore {
             None => {
                 let b = cache.chan_batch()?;
                 let value = AccountValue { name: name.to_owned(), ..AccountValue::default() };
-                let key = b.add_account(&channel.0, &account.0, &enc(&AccountEnvelope::V1(value))?)?;
+                let key = b.add_account(&channel.0, &account.0, &enc(&AccountEnvelope::V2(value))?)?;
                 b.commit()?;
                 key
             }
@@ -232,8 +271,7 @@ impl ChannelStore {
 
     fn value(&self) -> Result<AccountValue> {
         let a = self.cache.chan_account(self.key)?.ok_or(ChannelError::NotFound)?;
-        let AccountEnvelope::V1(v) = dec(&a.value)?;
-        Ok(v)
+        Ok(dec::<AccountEnvelope>(&a.value)?.value())
     }
 
     /// Курсор: всё до него записано.
@@ -256,6 +294,95 @@ impl ChannelStore {
 
     pub fn name(&self) -> Result<String> {
         Ok(self.value()?.name)
+    }
+
+    /// Кто я в канале — по последнему подключению; не подключались — `None`.
+    pub fn me(&self) -> Result<Option<Participant>> {
+        Ok(self.value()?.me)
+    }
+
+    /// Запомнить, кто я (подключение): упоминания меня и автор исходящих — без связи.
+    pub fn set_me(&self, me: &Participant) -> Result<()> {
+        let mut v = self.value()?;
+        if v.me.as_ref() == Some(me) {
+            return Ok(());
+        }
+        v.me = Some(me.clone());
+        let b = self.cache.chan_batch()?;
+        b.set_account_value(self.key, &enc(&AccountEnvelope::V2(v))?)?;
+        Ok(b.commit()?)
+    }
+
+    // --- очередь отправки (`chan_outbox`, ADR 0012 п. 11) ---
+
+    /// Поставить исходящее в очередь: строка `chan_outbox` и сообщение «отправляется» в ленте
+    /// ([`super::outbox::pending_id`]). Тот же `client_id` — замена (повтор после сбоя).
+    pub fn queue(&self, q: &super::outbox::Queued, now: i64) -> Result<Applied> {
+        let b = self.cache.chan_batch()?;
+        b.put_outbox(self.key, q.outgoing.client_id, &enc(&OutboxEnvelope::V1(q.clone()))?)?;
+        b.commit()?;
+        let me = self.me()?.map(|p| p.id).unwrap_or_default();
+        let pending = super::outbox::message(&q.outgoing, super::outbox::pending_id(q.outgoing.client_id), me, now);
+        self.apply(vec![ChannelEvent::Messages { conversation: q.outgoing.conversation.clone(), messages: vec![pending], live: false }])
+    }
+
+    /// Очередь учётки, по номерам отправки.
+    pub fn queued(&self) -> Result<Vec<super::outbox::Queued>> {
+        self.cache
+            .chan_outbox(self.key)?
+            .into_iter()
+            .map(|(_, v)| {
+                let OutboxEnvelope::V1(q) = dec(&v)?;
+                Ok(q)
+            })
+            .collect()
+    }
+
+    /// Убрать из очереди («Отменить»): строка и сообщение «отправляется». Не было — `None`.
+    pub fn unqueue(&self, client_id: u64) -> Result<Option<(super::outbox::Queued, Applied)>> {
+        let b = self.cache.chan_batch()?;
+        let Some(v) = b.outbox(self.key, client_id)? else { return Ok(None) };
+        let OutboxEnvelope::V1(q) = dec(&v)?;
+        b.remove_outbox(self.key, client_id)?;
+        b.commit()?;
+        let gone = ChannelEvent::Deleted {
+            conversation: Some(q.outgoing.conversation.clone()),
+            ids: vec![super::outbox::pending_id(client_id)],
+            for_all: false,
+        };
+        let applied = self.apply(vec![gone])?;
+        Ok(Some((q, applied)))
+    }
+
+    /// Шаг исходящего в очереди: отказ сервера без повтора — `Failed`, строка остаётся до «Отменить» или повтора.
+    pub fn set_step(&self, client_id: u64, step: super::outbox::Step) -> Result<()> {
+        let b = self.cache.chan_batch()?;
+        let Some(v) = b.outbox(self.key, client_id)? else { return Ok(()) };
+        let OutboxEnvelope::V1(mut q) = dec(&v)?;
+        q.step = step;
+        b.put_outbox(self.key, client_id, &enc(&OutboxEnvelope::V1(q))?)?;
+        Ok(b.commit()?)
+    }
+
+    /// Сервер принял исходящее (`Done::Sent`): «отправляется» уходит, сообщение с id сервера — в ленту (канал пришлёт
+    /// его и сам — запись идемпотентна), строка очереди — последней: сбой между ними повторит отправку с тем же
+    /// `client_id`, без дубля.
+    pub fn sent(&self, client_id: u64, id: &MessageId, at: i64) -> Result<Applied> {
+        let Some(v) = self.cache.chan_outbox(self.key)?.into_iter().find(|(c, _)| *c == client_id).map(|(_, v)| v) else {
+            return Ok(Applied::default());
+        };
+        let OutboxEnvelope::V1(q) = dec(&v)?;
+        let me = self.me()?.map(|p| p.id).unwrap_or_default();
+        let conv = q.outgoing.conversation.clone();
+        let real = super::outbox::message(&q.outgoing, id.clone(), me, at);
+        let applied = self.apply(vec![
+            ChannelEvent::Deleted { conversation: Some(conv.clone()), ids: vec![super::outbox::pending_id(client_id)], for_all: false },
+            ChannelEvent::Messages { conversation: conv, messages: vec![real], live: false },
+        ])?;
+        let b = self.cache.chan_batch()?;
+        b.remove_outbox(self.key, client_id)?;
+        b.commit()?;
+        Ok(applied)
     }
 
     /// Пачка событий канала — одной транзакцией, курсор — вместе с событиями до него.
@@ -303,7 +430,7 @@ impl ChannelStore {
                 ChannelEvent::Messages { conversation, messages, live } => {
                     let k = conv_of(&conversation, &mut out)?;
                     for m in messages {
-                        let value = enc(&MsgEnvelope::V1(m.clone()))?;
+                        let value = enc(&MsgEnvelope::V2(m.clone()))?;
                         let srcs = sources(&m);
                         let put = MsgPut { remote: &m.id.0, sent: m.sent, edited: m.edited, value: &value, sources: &srcs };
                         let (mk, stored) = b.put_msg(k, &put)?;
@@ -329,14 +456,16 @@ impl ChannelStore {
                         let Some(ck) = conv else { continue };
                         let Some(mk) = b.msg_key(ck, &id.0)? else { continue };
                         let Some(doc) = b.msg(mk)? else { continue };
-                        let old = entry(doc)?;
+                        let sent = doc.sent;
+                        let old = entry(doc).ok();
                         b.remove_msg(mk)?;
                         out.indexed.retain(|k| *k != mk);
                         out.unindexed.push(mk);
                         if for_all {
                             let (author, sent) = match &old {
-                                Entry::Message { message, .. } => (message.author.clone(), message.sent),
-                                Entry::Deleted { author, sent, .. } => (author.clone(), *sent),
+                                Some(Entry::Message { message, .. }) => (message.author.clone(), message.sent),
+                                Some(Entry::Deleted { author, sent, .. }) => (author.clone(), *sent),
+                                None => (ParticipantId::default(), sent),
                             };
                             let value = enc(&MsgEnvelope::Deleted { author, sent })?;
                             b.put_msg(ck, &MsgPut { remote: &id.0, sent, edited: None, value: &value, sources: &[] })?;
@@ -350,9 +479,9 @@ impl ChannelStore {
                     let Some(ck) = b.conv_key(self.key, &conversation.0)? else { continue };
                     let Some(mk) = b.msg_key(ck, &message.0)? else { continue };
                     let Some(doc) = b.msg(mk)? else { continue };
-                    if let MsgEnvelope::V1(mut m) = dec(&doc.value)? {
+                    if let Ok(MsgEnvelope::V2(mut m)) = dec_msg(&doc.value) {
                         m.reactions = reactions;
-                        b.set_msg_value(mk, &enc(&MsgEnvelope::V1(m))?)?;
+                        b.set_msg_value(mk, &enc(&MsgEnvelope::V2(m))?)?;
                         out.change(&conversation);
                     }
                 }
@@ -404,7 +533,7 @@ impl ChannelStore {
             }
         }
         if let Some(v) = account {
-            b.set_account_value(self.key, &enc(&AccountEnvelope::V1(v))?)?;
+            b.set_account_value(self.key, &enc(&AccountEnvelope::V2(v))?)?;
         }
         b.commit()?;
         Ok(out)
@@ -459,7 +588,13 @@ impl ChannelStore {
             },
             None => None,
         };
-        self.cache.chan_timeline(k, before, limit)?.into_iter().map(entry).collect()
+        // Строка, которую не разобрать (прежняя модель), — мимо ленты: она перепишется, когда канал пришлёт её снова.
+        Ok(self
+            .cache
+            .chan_timeline(k, before, limit)?
+            .into_iter()
+            .filter_map(|d| entry(d).inspect_err(|e| tracing::warn!("channel timeline: {e}")).ok())
+            .collect())
     }
 
     pub fn message(&self, conv: &ConversationId, id: &MessageId) -> Result<Option<Entry>> {
@@ -473,7 +608,7 @@ impl ChannelStore {
         let Some(Entry::Message { key, .. }) = self.message(conv, id)? else { return Ok(Vec::new()) };
         let mut out = Vec::new();
         for (at, v) in self.cache.chan_edits(key)? {
-            if let MsgEnvelope::V1(m) = dec(&v)? {
+            if let Ok(MsgEnvelope::V2(m)) = dec_msg(&v) {
                 out.push((at, m));
             }
         }
@@ -521,9 +656,11 @@ impl ChannelStore {
         Ok(d.0.finish(key, &source.0, mime)?)
     }
 
-    /// «Выйти»: все строки учётки и её `local`-ключи.
+    /// «Выйти»: все строки учётки, её `local`-ключи и отметки бесед в базе (заглушить, закрепить).
     pub fn forget(&self) -> Result<()> {
-        Ok(self.cache.forget_chan_account(self.key, &super::LocalStore::prefix(&self.channel, &self.account))?)
+        self.cache.forget_chan_account(self.key, &super::LocalStore::prefix(&self.channel, &self.account))?;
+        self.cache.remove_local_prefix(&super::smart::marks_prefix(&self.chan()))?;
+        Ok(())
     }
 }
 

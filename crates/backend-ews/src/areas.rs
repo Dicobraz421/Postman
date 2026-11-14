@@ -96,6 +96,7 @@ pub fn card(c: postman_ews::Contact) -> Option<ContactCard> {
         mobile: c.data.phones.iter().filter(|p| p.kind == postman_ews::PhoneKind::Mobile).map(|p| p.number.clone()).collect(),
         organization: c.data.company,
         title: c.data.job_title,
+        services: c.data.im,
         ..ContactCard::default()
     })
 }
@@ -122,6 +123,7 @@ pub fn contact_data(card: &ContactCard, base: Option<&postman_ews::ContactData>)
         .collect();
     d.company = card.organization.trim().to_owned();
     d.job_title = card.title.trim().to_owned();
+    d.im = trimmed(&card.services).into_iter().take(postman_ews::contacts::MAX_IM).collect();
     d
 }
 
@@ -792,8 +794,11 @@ mod tests {
             job_title: "Инженер".into(),
             department: "Разработка".into(),
             notes: "Коллега.".into(),
+            im: vec!["https://t.me/anna".into()],
         };
         let c = card(Contact { id: ItemId::new("AAMk1"), folder_id: None, data: data.clone(), members: None }).unwrap();
+        assert_eq!(c.services, ["https://t.me/anna"], "адреса в мессенджерах — `ImAddresses` (ADR 0012)");
+        assert_eq!(contact_data(&c, Some(&data)).im, data.im);
         assert_eq!((c.id.as_str(), c.name.as_str(), c.organization.as_str(), c.title.as_str()), ("AAMk1", "Петрова Анна", "Пример", "Инженер"));
         assert!(c.phones.is_empty());
         assert_eq!(c.mobile, ["+7 900"], "мобильный — отдельно (T2-44)");

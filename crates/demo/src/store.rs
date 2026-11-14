@@ -449,6 +449,10 @@ mod tests {
             }
         }
         drop(cache);
+        // Размер после уплотнения: без него файл растёт ступенями redb, и лишняя пустая таблица меняет ступень.
+        let mut db = redb::Database::create(&path).unwrap();
+        while db.compact().unwrap() {}
+        drop(db);
         std::fs::metadata(&path).unwrap().len()
     }
 
@@ -486,7 +490,8 @@ mod tests {
 
         let (split, whole) = (shared_file(&dir, true), shared_file(&dir, false));
         let pdf = pdf().len() as u64;
-        assert!(whole - split > 20 * pdf, "одна часть: {split} байт против {whole} без частей (PDF {pdf})");
+        // Уплотнённые файлы, части сжаты zstd: тридцать копий PDF без частей — втрое больше, чем с одной частью.
+        assert!(whole > 3 * split && whole - split > 10 * pdf, "одна часть: {split} байт против {whole} без частей (PDF {pdf})");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

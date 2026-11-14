@@ -715,6 +715,7 @@ fn ews_contacts_round_trip() {
                 job_title: "Тестовый".into(),
                 department: String::new(),
                 notes: "Создан тестом.".into(),
+                im: Vec::new(),
             };
             let id = c.create_contact(&contacts, &data).await.unwrap();
             let got = c.get_contacts(std::slice::from_ref(&id)).await.unwrap().pop().expect("контакт прочитан");

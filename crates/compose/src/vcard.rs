@@ -19,11 +19,13 @@ pub struct Card<'a> {
     pub group: bool,
     /// Участники группы: адрес — `MEMBER:mailto:…`, чужая ссылка (`urn:uuid:…`) — как есть.
     pub members: &'a [String],
+    /// Адреса в мессенджерах (ADR 0012 п. 4): `IMPP:<ссылка>` (RFC 6350 §6.4.3).
+    pub services: &'a [String],
 }
 
 /// Свойства, которыми владеет Postman: при правке они пишутся заново. У группы — ещё `KIND` и `MEMBER`
 /// ([`OWN_GROUP`]); у обычной карточки чужой `KIND` (`org`, `location`) остаётся.
-const OWN: &[&str] = &["FN", "N", "EMAIL", "TEL", "ORG", "TITLE"];
+const OWN: &[&str] = &["FN", "N", "EMAIL", "TEL", "ORG", "TITLE", "IMPP"];
 const OWN_GROUP: &[&str] = &["KIND", "MEMBER"];
 
 /// Участник → значение `MEMBER` (URI): адрес — `mailto:`, ссылка — как есть.
@@ -81,6 +83,10 @@ fn own_lines(c: &Card<'_>) -> Vec<String> {
     }
     if !c.title.trim().is_empty() {
         l.push(format!("TITLE:{}", text(c.title)));
+    }
+    // Значение IMPP — URI: без экранирования TEXT.
+    for s in c.services.iter().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        l.push(format!("IMPP:{}", s.replace(['\r', '\n'], "")));
     }
     l
 }
@@ -141,6 +147,7 @@ mod tests {
             title: "Директор, отдел",
             group: false,
             members: &[],
+            services: &[],
         }
     }
 
@@ -155,6 +162,9 @@ mod tests {
         let mobile = vec!["+7 916".to_string()];
         assert!(build(&Card { mobile: &mobile, ..card(&emails, &[]) }).contains("TEL;TYPE=cell:+7 916\r\n"), "мобильный (T2-44)");
         let nameless = build(&Card { name: "", ..card(&emails, &[]) });
+        let services = vec!["https://t.me/ivan".to_string(), "matrix:u/ivan:corp.example".into()];
+        let im = build(&Card { services: &services, ..card(&emails, &[]) });
+        assert!(im.contains("IMPP:https://t.me/ivan\r\nIMPP:matrix:u/ivan:corp.example\r\n"), "адреса в мессенджерах (ADR 0012)");
         assert!(nameless.contains("FN:ivan@example.test\r\n"));
     }
 

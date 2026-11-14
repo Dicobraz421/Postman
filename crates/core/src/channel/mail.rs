@@ -135,7 +135,17 @@ impl MailSource {
         }
     }
 
-    fn mine(&self, row: &EmailRow) -> bool {
+    /// Учётки кэша ящиков профиля.
+    pub(crate) fn scopes(&self) -> Vec<Option<&str>> {
+        self.accounts.iter().map(|a| a.scope.as_deref()).collect()
+    }
+
+    pub(crate) fn me(&self) -> &Me {
+        &self.me
+    }
+
+    /// Моё письмо: «От» — мой адрес.
+    pub(crate) fn mine(&self, row: &EmailRow) -> bool {
         self.me.addresses().iter().any(|a| a.eq_ignore_ascii_case(row.from_addr.trim()))
     }
 
@@ -262,7 +272,8 @@ impl MailSource {
                     plan.commands.push(Command::Patch { patches, archive_name: String::new() });
                 }
             }
-            Request::Upload { .. } | Request::SignOut => return Err(ChannelError::Unsupported),
+            // Отправка почты — письмом (окно «Отменить» и «позже» держит путь почты), не очередью каналов.
+            Request::Upload { .. } | Request::SignOut | Request::Send { .. } | Request::Unsend { .. } => return Err(ChannelError::Unsupported),
         }
         Ok(plan)
     }

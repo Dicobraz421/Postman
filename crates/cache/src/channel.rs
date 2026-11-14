@@ -47,6 +47,9 @@ const PARTICIPANT: TableDefinition<(u64, &str), &[u8]> = TableDefinition::new("p
 const MEMBER: TableDefinition<(u64, &str), &[u8]> = TableDefinition::new("member");
 /// (загрузка, номер куска) → куски загрузки до переноса под хэш; при открытии базы — пусто.
 const CHAN_TMP: TableDefinition<(u64, u32), &[u8]> = TableDefinition::new("chan_tmp");
+/// Очередь отправки (ADR 0012 п. 9, 11): `(учётка, client_id)` → исходящее, шаг и срок — значение ядра; переживает
+/// перезапуск.
+const CHAN_OUTBOX: TableDefinition<(u64, u64), &[u8]> = TableDefinition::new("chan_outbox");
 
 const NEXT_CHAN: &str = "next_chan";
 const NEXT_CONV: &str = "next_conv";
@@ -173,6 +176,7 @@ pub(crate) fn init(tx: &WriteTransaction) -> Result<()> {
     tx.open_table(MSG_EDIT)?;
     tx.open_table(PARTICIPANT)?;
     tx.open_table(MEMBER)?;
+    tx.open_table(CHAN_OUTBOX)?;
     // Куски загрузок, прерванных выходом или сбоем, — мусор: загрузка начнётся заново.
     tx.open_table(CHAN_TMP)?.retain(|_, _| false)?;
     Ok(())
@@ -476,6 +480,21 @@ impl ChanBatch {
         self.tx.open_table(MEMBER)?.remove((conv.0, id))?;
         Ok(())
     }
+
+    /// Исходящее в очереди отправки учётки: записать или заменить.
+    pub fn put_outbox(&self, account: ChanKey, client_id: u64, value: &[u8]) -> Result<()> {
+        self.tx.open_table(CHAN_OUTBOX)?.insert((account.0, client_id), value)?;
+        Ok(())
+    }
+
+    /// Исходящее из очереди; `false` — его там не было.
+    pub fn remove_outbox(&self, account: ChanKey, client_id: u64) -> Result<bool> {
+        Ok(self.tx.open_table(CHAN_OUTBOX)?.remove((account.0, client_id))?.is_some())
+    }
+
+    pub fn outbox(&self, account: ChanKey, client_id: u64) -> Result<Option<Vec<u8>>> {
+        Ok(self.tx.open_table(CHAN_OUTBOX)?.get((account.0, client_id))?.map(|v| v.value().to_vec()))
+    }
 }
 
 impl Cache {
@@ -594,6 +613,13 @@ impl Cache {
         Ok(tx.open_table(PARTICIPANT)?.get((account.0, id))?.map(|v| v.value().to_vec()))
     }
 
+    /// Очередь отправки учётки: `client_id` и значение ядра, по порядку номеров.
+    pub fn chan_outbox(&self, account: ChanKey) -> Result<Vec<(u64, Vec<u8>)>> {
+        let tx = self.db.begin_read()?;
+        let t = tx.open_table(CHAN_OUTBOX)?;
+        t.range((account.0, 0)..=(account.0, u64::MAX))?.map(|r| r.map_err(Into::into).map(|(k, v)| (k.value().1, v.value().to_vec()))).collect()
+    }
+
     /// Люди учётки канала: id и значение ядра.
     pub fn chan_participants(&self, account: ChanKey) -> Result<Vec<(String, Vec<u8>)>> {
         let tx = self.db.begin_read()?;
@@ -649,6 +675,7 @@ impl Cache {
                     people.remove((key.0, id.as_str()))?;
                 }
             }
+            tx.tx.open_table(CHAN_OUTBOX)?.retain(|(a, _), _| a != key.0)?;
             tx.tx.open_table(CHAN_ACCOUNT)?.remove(key.0)?;
             crate::local::remove_prefix(&tx.tx, local_prefix)?;
             return tx.commit();

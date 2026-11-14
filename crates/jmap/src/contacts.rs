@@ -10,7 +10,7 @@ use crate::{CONTACTS, CORE, Client, Error, Result, take};
 
 const USING: &[&str] = &[CORE, CONTACTS];
 /// Свойства карточки, которые показывает и правит клиент.
-const PROPERTIES: &[&str] = &["id", "name", "emails", "phones", "organizations", "titles", "calendars", "kind", "members"];
+const PROPERTIES: &[&str] = &["id", "name", "emails", "phones", "organizations", "titles", "calendars", "kind", "members", "onlineServices"];
 
 /// Карточка контакта. У новой (ещё не на сервере) `id` пустой.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -31,6 +31,8 @@ pub struct ContactCard {
     pub group: bool,
     /// Участники группы: адрес (ссылка `mailto:`) или чужая ссылка (`urn:uuid:…`) как есть.
     pub members: Vec<String>,
+    /// Адреса в мессенджерах (`onlineServices`, RFC 9553 §2.3.2): `uri`, без него — `user`.
+    pub services: Vec<String>,
 }
 
 /// Адресная книга (`AddressBook/get`).
@@ -100,7 +102,15 @@ impl ContactCard {
         } else {
             (Value::Null, Value::Null)
         };
-        let mut out = vec![("name", name), ("emails", emails), ("phones", phones), ("organizations", organizations), ("titles", titles)];
+        let services = map("s", &self.services, &|u| json!({ "@type": "OnlineService", "uri": u }));
+        let mut out = vec![
+            ("name", name),
+            ("emails", emails),
+            ("phones", phones),
+            ("organizations", organizations),
+            ("titles", titles),
+            ("onlineServices", services),
+        ];
         if self.group {
             out.extend([("kind", kind), ("members", members)]);
         }
@@ -227,6 +237,7 @@ fn card(v: &Value) -> ContactCard {
             .and_then(|c| c["uri"].as_str())
             .map(str::to_string),
         group: v["kind"] == "group",
+        services: entries(v, "onlineServices").into_iter().filter_map(|s| s["uri"].as_str().or(s["user"].as_str())).map(str::to_string).collect(),
         members: {
             let mut m: Vec<String> =
                 v["members"].as_object().into_iter().flatten().filter(|(_, on)| on.as_bool() == Some(true)).map(|(k, _)| member_of_uri(k)).collect();
@@ -293,7 +304,22 @@ mod tests {
             free_busy: None,
             group: false,
             members: Vec::new(),
+            services: Vec::new(),
         }
+    }
+
+    /// Адреса в мессенджерах (ADR 0012): `onlineServices` — ссылка `uri`, без неё — `user`; правка — патч только их.
+    #[test]
+    fn online_services() {
+        let c = card(&json!({ "id": "c1", "onlineServices": {
+            "a": { "@type": "OnlineService", "service": "Telegram", "uri": "https://t.me/petrov", "pref": 1 },
+            "b": { "@type": "OnlineService", "user": "@petrov:corp.example" } } }));
+        assert_eq!(c.services, ["https://t.me/petrov", "@petrov:corp.example"]);
+        let linked = ContactCard { services: vec!["https://t.me/petrov".into()], ..sample() };
+        let p = linked.patch(&sample());
+        assert_eq!(p.keys().map(String::as_str).collect::<Vec<_>>(), ["onlineServices"]);
+        assert_eq!(p["onlineServices"]["s1"]["uri"], "https://t.me/petrov");
+        assert!(sample().to_jmap("b1").get("onlineServices").is_none());
     }
 
     /// Группа (T2-47): создание — `kind: group` и `members` с `mailto:`; правка состава — патч `members` целиком,
