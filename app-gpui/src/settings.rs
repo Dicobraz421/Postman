@@ -239,6 +239,7 @@ impl Mailer {
                 }
             }
             SettingsEvent::ApplyRule(rule) => self.apply_rule(rule.clone(), cx),
+            SettingsEvent::Telegram(ev) => self.on_telegram(ev.clone(), cx),
         }
     }
 

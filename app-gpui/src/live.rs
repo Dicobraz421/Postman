@@ -87,7 +87,7 @@ pub(crate) struct Live {
     people_asked: Vec<String>,
     /// Пароль входа со строки входа — в диспетчер учётных данных (`false` — «Не хранить»).
     pending_store: bool,
-    index: Index,
+    pub(crate) index: Index,
     extractor: Option<Extractor>,
     next_ticket: u64,
     /// Последняя показанная ошибка (её род): тот же род подряд (сервер недоступен при каждом опросе) — без нового

@@ -185,6 +185,8 @@ pub(crate) enum SettingsEvent {
     SyncNow,
     /// «Проверить снова» у песочницы (T2-57).
     RecheckSandbox,
+    /// Каналы бесед (CH-03): вход, «Выйти», включатель Telegram.
+    Telegram(crate::account_telegram::PanelEvent),
 }
 
 pub(crate) struct SettingsView {
@@ -247,6 +249,8 @@ pub(crate) struct SettingsView {
     pub(crate) files: crate::smime_files::FileUi,
     /// «Безопасность → Доверенные домены» картинок (T3-04).
     pub(crate) domains: crate::remote_images::DomainsState,
+    /// «Аккаунты → Каналы бесед» (CH-03): Telegram — включатель, учётки, вход на месте.
+    pub(crate) channels: Entity<crate::account_telegram::Panel>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -292,6 +296,10 @@ impl SettingsView {
         #[cfg(target_os = "linux")]
         let files = crate::smime_files::FileUi::new(window, cx, &mut subscriptions);
         let domains = crate::remote_images::DomainsState::new(window, cx, &mut subscriptions);
+        let channels = cx.new(crate::account_telegram::Panel::new);
+        subscriptions.push(cx.subscribe(&channels, |_, _, ev: &crate::account_telegram::PanelEvent, cx| {
+            cx.emit(SettingsEvent::Telegram(ev.clone()));
+        }));
         let mut v = Self {
             section,
             search,
@@ -331,6 +339,7 @@ impl SettingsView {
             #[cfg(target_os = "linux")]
             files,
             domains,
+            channels,
             _subscriptions: subscriptions,
         };
         v.read_os(cx);

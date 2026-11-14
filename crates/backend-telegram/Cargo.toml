@@ -1,0 +1,33 @@
+[package]
+name = "postman-backend-telegram"
+description = "Канал Telegram (ADR 0012, CH-03): MTProto — grammers, договор postman_core::channel"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[features]
+# Подставной сервер Telegram для тестов договора без сети (`fake`): разбирает запросы TL — функции нужны разборчивыми.
+testkit = ["grammers-tl-types/deserializable-functions"]
+
+[dependencies]
+postman-core.workspace = true
+postman-ir.workspace = true
+# MTProto (ADR 0012 п. 12): соединения и ключи — mtsender, хранилище сессии и пропуски обновлений — session, типы TL
+# слоя сервера, SRP двухэтапной проверки — crypto. Высокоуровневый `grammers-client` не нужен: канал сам строит вызовы.
+grammers-mtsender = "0.12"
+grammers-session = { version = "0.12", default-features = false }
+grammers-tl-types = "0.12"
+grammers-crypto = "0.12"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
+tracing = "0.1"
+
+[dev-dependencies]
+postman-backend-telegram = { path = ".", features = ["testkit"] }
+postman-cache.workspace = true
+tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
+
+[lints]
+workspace = true

@@ -670,6 +670,15 @@ impl Look {
         self.c(Role::FillCursorPassive)
     }
 
+    /// QR-код входа (CH-03): тёмные модули на светлом поле в любой теме — камера телефона читает только так.
+    pub(crate) fn qr_ink(&self) -> Hsla {
+        gpui_kit::black()
+    }
+
+    pub(crate) fn qr_paper(&self) -> Hsla {
+        gpui_kit::white()
+    }
+
     /// Прозрачный — рамка «нет рамки» той же толщины.
     pub(crate) fn none(&self) -> Hsla {
         gpui_kit::transparent_black()

@@ -11,8 +11,13 @@ name = "postman"
 path = "src/main.rs"
 
 [features]
+default = ["telegram"]
 # Считающий распределитель для замера кучи Rust в `--bench` (S4-08, docs/MEMORY.md); в обычной сборке выключен.
 alloc-count = []
+# Канал Telegram (ADR 0012, CH-03): плагин `postman-backend-telegram`, QR-код входа. В обычной сборке есть; включает
+# настройка «Каналы бесед» и политика `AllowChannelTelegram`. Ключ приложения — `POSTMAN_TG_API_ID`/`POSTMAN_TG_API_HASH`
+# при сборке.
+telegram = ["dep:postman-backend-telegram", "dep:qrcodegen"]
 
 [dependencies]
 # Отчёт для поддержки (S5-30): архив журнала и настроек; тот же крейт, что у воркера.
@@ -35,6 +40,11 @@ postman-backend-dav.workspace = true
 postman-backend-ews.workspace = true
 # Каталог сертификатов адресатов (S5-12 Ф5): плагин ядра, LDAP знает только он.
 postman-backend-ldap.workspace = true
+postman-backend-telegram = { workspace = true, optional = true }
+# QR-код входа в Telegram с другого устройства (MIT, без зависимостей).
+qrcodegen = { version = "1.8", optional = true }
+# Поток входа в канал (CH-03): шаги входа — в своём рантайме, ответы — каналом (та же копия, что у ядра).
+tokio = { version = "1", default-features = false, features = ["rt", "sync", "time"] }
 postman-search.workspace = true
 serde.workspace = true
 serde_json.workspace = true

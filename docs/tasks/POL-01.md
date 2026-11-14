@@ -30,6 +30,7 @@ Windows — `Software\Policies\Pets\Postman` (HKLM, затем HKCU). macOS — 
 | `MinTls` | `1.2` \| `1.3` | `REG_SZ` | `<string>` или `<real>` | минимальная версия TLS |
 | `StorePasswords` | `0` \| `1` | `REG_DWORD` или `REG_SZ` (`0/1`, `false/true`, `off/on`, `no/yes`) | `<integer>`, `<true/>`/`<false/>`, `<string>` | хранить пароль |
 | `AllowUpdate` | `0` \| `1` | то же | то же | самообновление; прежний `Software\Policies\Aahz\Postman` (DWORD) — запасной, WARN |
+| `AllowChannelTelegram` | `0` \| `1` | то же | то же | канал Telegram (ADR 0012 п. 11, CH-03): `0` — канала нет в настройках, учётки не подключаются; `1` — включён, выключатель недоступен |
 
 Прочее (другой тип, число вне `0/1`, `REG_BINARY`, массив) — WARN `policy: value of unexpected type or range, not
 applied`, значение не закреплено. Код: `security::policy_flag`/`policy_tls13`/`policy_images`, чтение —

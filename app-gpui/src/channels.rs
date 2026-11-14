@@ -21,6 +21,8 @@ pub(crate) struct Channels {
     lines: Vec<(ChanAccount, UnboundedSender<Request>)>,
     /// Последнее состояние каждой учётки (строка состояния, «Проблема → причина → исправление» — CH-04).
     pub(crate) states: Vec<(ChanAccount, ChannelState)>,
+    /// Кто я в учётке канала (имя — строкой учётки в «Настройки → Аккаунты»).
+    names: Vec<(ChanAccount, String)>,
     /// Последние личные контакты и справочник: участники каналов связываются с ними (`channel::person::auto`).
     cards: Arc<Vec<postman_core::model::ContactCard>>,
     directory: Arc<Vec<postman_core::model::Principal>>,
@@ -34,6 +36,11 @@ impl Channels {
 
     fn running(&self, account: &ChanAccount) -> bool {
         self.lines.iter().any(|(a, tx)| a == account && !tx.is_closed())
+    }
+
+    fn set_name(&mut self, account: &ChanAccount, name: String) {
+        self.names.retain(|(a, _)| a != account);
+        self.names.push((account.clone(), name));
     }
 }
 
@@ -96,8 +103,16 @@ impl Mailer {
             Err(e) => return tracing::warn!("channel: accounts not read: {e}"),
         };
         let secrets: Arc<dyn Secrets> = Arc::new(OsSecrets);
+        let prefs = crate::prefs::get(cx);
         for store in stores {
+            // Канал выключен настройкой или политикой (ADR 0012 п. 11): поток не запускается, данные — в базе.
+            if !crate::account_telegram::channel_on(&store.channel().0, &prefs) {
+                continue;
+            }
             let Some(plugin) = crate::plugins::registry().channel(&store.channel().0).cloned() else { continue };
+            if let Ok(Some(me)) = store.me() {
+                self.channels.set_name(&ChanAccount::new(store.channel().0.clone(), store.account().0.clone()), me.name);
+            }
             let start = Start {
                 cache: self.cache.clone(),
                 secrets: secrets.clone(),
@@ -108,6 +123,7 @@ impl Mailer {
             };
             self.spawn_channel(plugin, start, cx);
         }
+        self.publish_channels(cx);
     }
 
     /// Демо-канал (`--demo`): сервер в памяти, сессия — в памяти; беседы — в базу демо-ящика.
@@ -232,11 +248,84 @@ impl Mailer {
             Update::SignedOut => {
                 self.channels.lines.retain(|(a, _)| *a != account);
                 self.channels.states.retain(|(a, _)| *a != account);
+                self.channels.names.retain(|(a, _)| *a != account);
             }
+            Update::Connected { me, .. } => self.channels.set_name(&account, me.name),
             Update::Changed { conversations, gone } => {
                 tracing::debug!(channel = %account.channel, changed = conversations.len(), gone = gone.len(), "channel: conversations changed");
+                return;
             }
-            _ => {}
+            _ => return,
+        }
+        self.publish_channels(cx);
+    }
+
+    /// Учётки каналов — настройкам (`account_telegram::Lines`).
+    fn publish_channels(&self, cx: &mut Context<Self>) {
+        let lines = self
+            .channels
+            .lines
+            .iter()
+            .filter(|(_, tx)| !tx.is_closed())
+            .map(|(a, _)| crate::account_telegram::Line {
+                account: a.clone(),
+                name: self.channels.names.iter().find(|(x, _)| x == a).map(|(_, n)| n.clone()).unwrap_or_default(),
+                state: self.channels.states.iter().find(|(x, _)| x == a).map(|(_, s)| s.clone()),
+            })
+            .collect();
+        cx.set_global(crate::account_telegram::Lines(lines));
+    }
+
+    /// «Настройки → Аккаунты → Каналы бесед» (CH-03): вход удался, «Выйти», включатель.
+    pub(crate) fn on_telegram(&mut self, ev: crate::account_telegram::PanelEvent, cx: &mut Context<Self>) {
+        use crate::account_telegram::{PanelEvent, TELEGRAM};
+        match ev {
+            PanelEvent::Toggled(on) => {
+                crate::prefs::update(cx, |p| p.channels.telegram = on);
+                if on {
+                    let index = self.live.index.clone();
+                    self.start_channels(index, cx);
+                } else {
+                    // Запросы закрыты — потоки учёток канала кончаются (исходящее в окне «Отменить» уходит).
+                    self.channels.lines.retain(|(a, _)| a.channel.0 != TELEGRAM);
+                    self.channels.states.retain(|(a, _)| a.channel.0 != TELEGRAM);
+                    tracing::info!(channel = TELEGRAM, "channel: switched off");
+                }
+                self.publish_channels(cx);
+            }
+            PanelEvent::SignOut(account) => {
+                if !self.channels.send(&account, Request::SignOut) {
+                    tracing::warn!(channel = %account.channel, "channel: sign-out, account not running");
+                }
+            }
+            PanelEvent::Signed { account, name, secret } => {
+                let Some(plugin) = crate::plugins::registry().channel(TELEGRAM).cloned() else { return };
+                let id = ChannelId::new(TELEGRAM);
+                let index = self.live.index.clone();
+                let cache = self.cache.clone();
+                self.channels.set_name(&ChanAccount::new(TELEGRAM, account.0.clone()), name.clone());
+                // Секрет — в хранилище ОС, строка учётки — в базу профиля: в фоне; затем поток учётки.
+                let task = cx.background_spawn({
+                    let (account, name) = (account.clone(), name.clone());
+                    async move {
+                        OsSecrets.put(&id, &account, &secret)?;
+                        channel::ChannelStore::open(cache, &id, &account, &name).map(|_| ())
+                    }
+                });
+                cx.spawn(async move |this, cx| {
+                    let stored = task.await;
+                    let _ = this.update(cx, |m, cx| match stored {
+                        Ok(()) => {
+                            tracing::info!(channel = TELEGRAM, "channel: account added");
+                            let start = Start { cache: m.cache.clone(), secrets: Arc::new(OsSecrets), account, name, render: Some(render()), index };
+                            m.spawn_channel(plugin, start, cx);
+                            m.publish_channels(cx);
+                        }
+                        Err(e) => tracing::warn!(channel = TELEGRAM, "channel: account not stored: {e}"),
+                    });
+                })
+                .detach();
+            }
         }
     }
 }

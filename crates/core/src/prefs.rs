@@ -77,6 +77,17 @@ pub struct Prefs {
     pub saved_filters: Vec<SavedFilter>,
     /// «Ответы и пересылка» (#655): цитировать ли исходное письмо в ответе.
     pub replies: Replies,
+    /// «Каналы» (ADR 0012 п. 11): какие каналы бесед включены. Добавочно — нет в файле, все выключены.
+    #[serde(default)]
+    pub channels: Channels,
+}
+
+/// Каналы бесед, включённые пользователем (ADR 0012 п. 11): до стабилизации — выключены по умолчанию (решение
+/// владельца 2026-11-14). Политика организации (`AllowChannelTelegram`) сильнее — запрещённый канал не включить.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Channels {
+    pub telegram: bool,
 }
 
 /// «Ответы и пересылка» (#655), как «Почта → Ответы и пересылка» Outlook. Пересылка цитирует всегда.
@@ -158,6 +169,7 @@ impl Default for Prefs {
             favorites: None,
             saved_filters: Vec::new(),
             replies: Replies::default(),
+            channels: Channels::default(),
         }
     }
 }
@@ -1587,6 +1599,16 @@ mod tests {
         assert_eq!(off.undo(), 0);
         let odd: Replies = serde_json::from_str(r#"{"undo_secs":12}"#).unwrap();
         assert_eq!(odd.undo(), 10);
+    }
+
+    /// Каналы бесед (ADR 0012 п. 11): файл без раздела — все выключены; включённый — туда и обратно.
+    #[test]
+    fn channels_off_by_default() {
+        let old: Prefs = serde_json::from_str(r#"{"version":1}"#).unwrap();
+        assert!(!old.channels.telegram);
+        let on = Prefs { channels: Channels { telegram: true }, ..Prefs::default() };
+        let back: Prefs = serde_json::from_str(&serde_json::to_string(&on).unwrap()).unwrap();
+        assert!(back.channels.telegram);
     }
 
     #[test]

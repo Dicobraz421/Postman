@@ -350,7 +350,8 @@ impl SettingsView {
             .flex_col()
             .child(list)
             .when_some(self.add.clone(), |d, v| d.child(div().pt_3().child(v)))
-            .child(div().pt_3().text_size(px(12.)).text_color(l.text2()).child(tr!("settings-account-one")));
+            .child(div().pt_3().text_size(px(12.)).text_color(l.text2()).child(tr!("settings-account-one")))
+            .child(self.channels.clone());
         let (tls, ok) = crate::signin::security_line();
         let security = aside_card(tr!("settings-account-security"), vec![tr!("settings-account-tls"), tr!("settings-account-revocation")], l)
             .when(!ok, |d| d.child(div().text_color(l.warning()).child(tls)));
