@@ -9,12 +9,15 @@
 //!
 //! Вложения (T3-10): имена — из тела, текст — от воркера ([`crate::extract`]); [`search_hits`] называет вложение, в
 //! котором совпало. Формат базы тот же: схема индекса сменилась — он пересоздаётся пустым и собирается в фоне заново.
+//!
+//! Индекс общий с каналами бесед (ADR 0012 п. 10): у письма — канал `mail` и адрес «От» в полях фильтров, поиск писем
+//! — только среди них; сообщения каналов пишет и ищет `crate::channel::index`, пересборка — вместе ([`rebuild`]).
 
 use std::collections::HashSet;
 
 use postman_cache::{BodyRow, Cache, EmailRow, LetterRow};
 pub use postman_search::AttachmentHit;
-use postman_search::{Attachment, Doc, SearchIndex};
+use postman_search::{Attachment, Doc, Scope, SearchIndex};
 
 use crate::model::{FolderId, LetterId};
 use crate::store::{self, cache_id};
@@ -29,12 +32,24 @@ const PAGE: usize = 500;
 pub fn rows(index: &SearchIndex, cache: &Cache, rows: &[EmailRow]) {
     let ids: Vec<Option<String>> = rows.iter().map(|r| store::letter_of_key(cache, &r.id).ok().flatten().map(store::letter_ref)).collect();
     let people: Vec<String> = rows.iter().map(|r| people(&r.from_name, &r.from_addr, None)).collect();
+    let authors: Vec<[String; 1]> = rows.iter().map(|r| [r.from_addr.trim().to_lowercase()]).collect();
     let docs: Vec<Doc> = rows
         .iter()
         .zip(&ids)
         .zip(&people)
-        .filter_map(|((r, id), p)| {
-            Some(Doc { id: id.as_deref()?, subject: &r.subject, people: p, body: &r.preview, attachments: &[], received_at: r.received_at })
+        .zip(&authors)
+        .filter_map(|(((r, id), p), a)| {
+            Some(Doc {
+                id: id.as_deref()?,
+                subject: &r.subject,
+                people: p,
+                body: &r.preview,
+                attachments: &[],
+                received_at: r.received_at,
+                channel: crate::channel::MAIL,
+                conv: "",
+                authors: a,
+            })
         })
         .collect();
     if index.upsert(&docs).is_ok() {
@@ -59,7 +74,18 @@ pub fn letter(index: &SearchIndex, id: LetterId, row: &LetterRow, body: &BodyRow
     let (key, people) = (store::letter_ref(id), people(&row.from_name, &row.from_addr, Some(body)));
     let attachments: Vec<Attachment> =
         body.attachments.iter().enumerate().map(|(i, a)| Attachment { name: &a.name, text: attached.get(i).map_or("", String::as_str) }).collect();
-    let doc = Doc { id: &key, subject: &row.subject, people: &people, body: text, attachments: &attachments, received_at: row.received_at };
+    let authors = [row.from_addr.trim().to_lowercase()];
+    let doc = Doc {
+        id: &key,
+        subject: &row.subject,
+        people: &people,
+        body: text,
+        attachments: &attachments,
+        received_at: row.received_at,
+        channel: crate::channel::MAIL,
+        conv: "",
+        authors: &authors,
+    };
     let _ = index.upsert(&[doc]);
 }
 
@@ -118,6 +144,12 @@ pub fn rebuild(index: &SearchIndex, cache: &Cache, stop: &dyn Fn() -> bool) -> p
         let _ = index.commit();
     }
     let Some(next) = walk(index, cache, 0, stop)? else { return Ok(false) };
+    // Сообщения каналов — тем же проходом: очистка выше убрала и их документы.
+    match crate::channel::index::rebuild(index, cache, stop) {
+        Ok(true) => {}
+        Ok(false) => return Ok(false),
+        Err(e) => tracing::warn!("search: channel messages not indexed: {e}"),
+    }
     cache.set_state(READY, &next.to_string())?;
     Ok(true)
 }
@@ -167,7 +199,7 @@ pub fn search_hits(
         if let Err(e) = catch_up(index, cache) {
             tracing::warn!("search: index not updated, searching what is indexed: {e}");
         }
-        if let Ok(hits) = index.hits(query, limit.saturating_mul(4).max(limit)) {
+        if let Ok(hits) = index.hits_in(query, &Scope::channel(crate::channel::MAIL), limit.saturating_mul(4).max(limit)) {
             let (mut out, mut gone) = (Vec::with_capacity(limit.min(hits.len())), Vec::new());
             for (id, matched_in) in hits.into_iter().filter_map(|h| Some((store::parse_ref(&h.id)?, h.attachment))) {
                 match cache.letter(cache_id(id))? {
@@ -302,7 +334,8 @@ mod tests {
         let (_dir, cache) = demo();
         let index = SearchIndex::in_memory().unwrap();
         let row = cache.rows_by_ids(&["demo7".to_owned()]).unwrap().remove(0);
-        let old = Doc { id: &row.id, subject: "Прежний документ", people: "", body: "", attachments: &[], received_at: 0 };
+        let old =
+            Doc { id: &row.id, subject: "Прежний документ", people: "", body: "", attachments: &[], received_at: 0, ..Doc::default() };
         index.upsert(&[old]).unwrap();
         index.commit().unwrap();
         let letter = store::letter_ref(id(&cache, "demo7"));

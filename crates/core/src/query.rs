@@ -1,11 +1,12 @@
 //! Запрос поиска в командной строке (S5-10, `docs/DESIGN.md` «Палитра команд и поиск»): слова и условия
 //! `from:`, `to:`, `subject:`, `has:attachment`, `is:unread`, `is:flagged`, `before:`/`after:`, `category:`,
-//! `larger:` (размер, S5-29), `with:` (переписка с адресатом — от него или ему, T2-40) —
+//! `larger:` (размер, S5-29), `with:` (переписка с адресатом — от него или ему, T2-40), `channel:` и `conv:` (канал
+//! и беседа, ADR 0012 п. 10: `канал:telegram`, `канал:почта`, `беседа:postman://…`) —
 //! разбор ([`Query::parse`]), проверка письма по кэшу ([`Query::matches`]), условие `Email/query` для «Везде»
 //! ([`Query::server_filter`]) и чипы «Уточнить» ([`Refine`], [`suggest`]).
 //!
 //! Ключи — без регистра, есть русские: `от:`, `кому:`, `тема:`, `есть:вложения`, `до:`, `после:`, `категория:`,
-//! `больше:`, `участник:`. Размер — `5M`, `500K`, `1G` (`5М`, `500К`, `1Г`, можно `МБ`), без единицы — байты.
+//! `больше:`, `участник:`, `канал:`, `беседа:`. Размер — `5M`, `500K`, `1G` (`5М`, `500К`, `1Г`, можно `МБ`), без единицы — байты.
 //! Значение с пробелами — в кавычках (`from:"Анна Смирнова"`). Даты: `2026-10-21`, `21.10.2026` или «назад»:
 //! `7d`, `2w`, `3m`, `1y` (`7д`, `2н`, `3м`, `1г`). Неизвестный ключ (`Re:`) — просто слово; ключ без значения
 //! (запрос ещё набирается) и непонятное значение — без условия.
@@ -75,6 +76,10 @@ pub struct Query {
     pub categories: Vec<String>,
     /// Не меньше этого размера, байт.
     pub larger: Option<u64>,
+    /// Каналы бесед (`mail`, `telegram`, `demo`…; `почта` — `mail`), строчными: любой из них.
+    pub channels: Vec<String>,
+    /// Адреса бесед `postman://…`: любая из них (поиск в открытой беседе и связанных с ней).
+    pub conversations: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,6 +94,8 @@ enum Key {
     After,
     Category,
     Larger,
+    Channel,
+    Conversation,
 }
 
 fn key(k: &str) -> Option<Key> {
@@ -103,6 +110,8 @@ fn key(k: &str) -> Option<Key> {
         "after" | "после" => Key::After,
         "category" | "cat" | "категория" => Key::Category,
         "larger" | "size" | "больше" | "размер" => Key::Larger,
+        "channel" | "канал" => Key::Channel,
+        "conv" | "conversation" | "беседа" => Key::Conversation,
         _ => return None,
     })
 }
@@ -163,6 +172,14 @@ fn token(raw: &str) -> Token<'_> {
         return Token { raw, key: Some(key), value: unquote(v) };
     }
     Token { raw, key: None, value: unquote(raw) }
+}
+
+/// Имя канала в условии: строчными, `почта` и `email` — `mail`.
+fn channel_name(v: &str) -> String {
+    match folded(v).as_str() {
+        "почта" | "email" | "e-mail" | "письма" => crate::channel::MAIL.to_owned(),
+        other => other.to_owned(),
+    }
 }
 
 fn is_attachment(v: &str) -> bool {
@@ -234,6 +251,8 @@ impl Query {
                 Some(Key::After) => q.after = When::parse(v).or(q.after),
                 Some(Key::Category) => q.categories.push(v.to_owned()),
                 Some(Key::Larger) => q.larger = parse_size(v).or(q.larger),
+                Some(Key::Channel) => q.channels.push(channel_name(v)),
+                Some(Key::Conversation) => q.conversations.push(v.to_owned()),
             }
         }
         q
@@ -246,7 +265,13 @@ impl Query {
 
     /// Есть условия кроме слов.
     pub fn has_conditions(&self) -> bool {
-        !(self.from.is_empty() && self.to.is_empty() && self.with.is_empty() && self.subject.is_empty() && self.categories.is_empty())
+        !(self.from.is_empty()
+            && self.to.is_empty()
+            && self.with.is_empty()
+            && self.subject.is_empty()
+            && self.categories.is_empty()
+            && self.channels.is_empty()
+            && self.conversations.is_empty())
             || self.attachment
             || self.unread
             || self.flagged
@@ -269,9 +294,18 @@ impl Query {
         }
     }
 
-    /// Письмо проходит условия запроса (слова проверяет поиск — индекс или сервер).
+    /// Почта в выдаче: канала нет в условии или он среди каналов запроса.
+    pub fn wants_mail(&self) -> bool {
+        self.channels.is_empty() || self.channels.iter().any(|c| c == crate::channel::MAIL)
+    }
+
+    /// Письмо проходит условия запроса (слова проверяет поиск — индекс или сервер). Условие беседы — у каналов
+    /// (`crate::channel::index`), письма оно не отсекает.
     pub fn matches(&self, env: &Env, row: &EmailRow, to: &Recipients) -> bool {
         let from = format!("{} {}", row.from_name, row.from_addr);
+        if !self.wants_mail() {
+            return false;
+        }
         let to_me = || to.to.iter().chain(&to.cc).any(|a| env.me.iter().any(|m| a.eq_ignore_ascii_case(m)));
         env.after.is_none_or(|t| row.received_at >= t)
             && env.before.is_none_or(|t| row.received_at < t)
@@ -527,6 +561,12 @@ mod tests {
         assert!(Query::parse("   ").is_empty());
         let q = Query::parse("from:x");
         assert!(q.words.is_empty() && q.has_conditions() && !q.is_empty());
+        // Каналы бесед (ADR 0012 п. 10): `канал:почта` — почта, беседа — адресом.
+        let q = Query::parse("отчёт канал:Demo канал:почта беседа:postman://demo/me@example.test/g-team");
+        assert_eq!(q.channels, ["demo", "mail"]);
+        assert_eq!(q.conversations, ["postman://demo/me@example.test/g-team"]);
+        assert!(q.wants_mail() && q.has_conditions());
+        assert!(!Query::parse("канал:telegram").wants_mail());
     }
 
     #[test]

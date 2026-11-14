@@ -19,6 +19,7 @@ mod bulk;
 mod buttons;
 mod cal_model;
 mod calendar;
+mod channels;
 mod chrome;
 mod comfort;
 mod commands;
@@ -383,6 +384,8 @@ fn main() {
             cx.new(|cx| {
                 let mut m = Mailer { screens, ..Mailer::new(cache, bench, window, cx) };
                 match start_with {
+                    // Демо-канал бесед (ADR 0012) — только в демо: замер и снимки — без него.
+                    account::Start::Demo if m.bench.is_none() && m.screens.is_none() => m.start_demo_channel(cx),
                     account::Start::Demo => {}
                     account::Start::Live(a) => match upgrading {
                         Some(rx) => m.await_store(rx, a, window, cx),

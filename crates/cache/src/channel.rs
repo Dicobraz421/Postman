@@ -554,6 +554,18 @@ impl Cache {
         Ok(by.range((conv.0, i64::MIN, 0)..=(conv.0, i64::MAX, u64::MAX))?.count())
     }
 
+    /// Сообщения всех каналов с ключа `from` по порядку ключей, не больше `limit` (пересборка поиска).
+    pub fn chan_msgs_from(&self, from: MsgKey, limit: usize) -> Result<Vec<MsgDoc>> {
+        let tx = self.db.begin_read()?;
+        let t = tx.open_table(MSG)?;
+        let mut out = Vec::new();
+        for r in t.range(from.0..)?.take(limit) {
+            let (k, v) = r?;
+            out.push(msg_doc(k.value(), dec(v.value())?)?);
+        }
+        Ok(out)
+    }
+
     pub fn chan_msg(&self, key: MsgKey) -> Result<Option<MsgDoc>> {
         let tx = self.db.begin_read()?;
         let row = tx.open_table(MSG)?.get(key.0)?.map(|v| dec::<MsgRow>(v.value())).transpose()?;
@@ -580,6 +592,13 @@ impl Cache {
     pub fn chan_participant(&self, account: ChanKey, id: &str) -> Result<Option<Vec<u8>>> {
         let tx = self.db.begin_read()?;
         Ok(tx.open_table(PARTICIPANT)?.get((account.0, id))?.map(|v| v.value().to_vec()))
+    }
+
+    /// Люди учётки канала: id и значение ядра.
+    pub fn chan_participants(&self, account: ChanKey) -> Result<Vec<(String, Vec<u8>)>> {
+        let tx = self.db.begin_read()?;
+        let t = tx.open_table(PARTICIPANT)?;
+        t.range(of_account(account.0))?.map(|r| r.map_err(Into::into).map(|(k, v)| (k.value().1.to_owned(), v.value().to_vec()))).collect()
     }
 
     /// Участники беседы по id: id и значение ядра (роль).

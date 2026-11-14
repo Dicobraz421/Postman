@@ -708,11 +708,14 @@ async fn check_run(h: &Harness) -> Check {
     secrets.put(&channel, &h.account, &h.secret).map_err(|e| e.to_string())?;
     let (req_tx, requests) = unbounded_channel();
     let (up_tx, mut up) = unbounded_channel();
+    let index = Arc::new(postman_search::SearchIndex::in_memory().map_err(|e| e.to_string())?);
     let ctx = RunCtx {
         cache: cache.clone(),
         secrets: secrets.clone(),
         account: h.account.clone(),
         name: "check".into(),
+        render: None,
+        index: Some(index.clone()),
         requests,
         notify: Box::new(move |u| {
             let _ = up_tx.send(u);
@@ -735,6 +738,8 @@ async fn check_run(h: &Harness) -> Check {
     }
     let convs = ChannelStore::conversations(&cache, 0, 1000).map_err(|e| e.to_string())?;
     ensure(!convs.is_empty(), || "no conversations in the store after catch-up".into())?;
+    let in_index = postman_search::Scope::channel(h.plugin.id());
+    ensure(!index.hits_in("", &in_index, 1).map_err(|e| e.to_string())?.is_empty(), || "caught-up messages are not in the search index".into())?;
     let writable = convs.iter().find(|c| c.conversation.my_role.can_write() && c.conversation.kind != super::ConversationKind::Broadcast);
     if let Some(c) = writable {
         let id = c.conversation.id.clone();
@@ -762,6 +767,7 @@ async fn check_run(h: &Harness) -> Check {
     update(&mut up, h.wait, "signed out", |u| matches!(u, Update::SignedOut)).await?;
     ensure(cache.chan_accounts().map_err(|e| e.to_string())?.is_empty(), || "sign-out left the account in the store".into())?;
     ensure(secrets.get(&channel, &h.account).is_none(), || "sign-out left the secret".into())?;
+    ensure(index.hits_in("", &in_index, 1).map_err(|e| e.to_string())?.is_empty(), || "sign-out left messages in the search index".into())?;
     let _ = tokio::time::timeout(h.wait, task).await;
     Ok(Some(()))
 }

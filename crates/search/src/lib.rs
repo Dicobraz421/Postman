@@ -6,6 +6,10 @@
 //! Вложения (T3-10): имя и текст каждого хранятся в документе письма, ответ ([`SearchIndex::hits`]) называет
 //! вложение, в котором нашлись слова запроса, и отрывок вокруг совпадения. Текст вложения индексу дают готовым
 //! (его достаёт воркер-песочница), здесь он только режется на слова.
+//!
+//! Один индекс на почту и все каналы бесед (ADR 0012 п. 10): у документа — канал ([`Doc::channel`], `mail` у писем),
+//! адрес беседы ([`Doc::conv`]) и адреса автора ([`Doc::authors`], строчными) — точные поля для фильтров
+//! ([`Scope`], [`SearchIndex::hits_in`]).
 
 use std::collections::BTreeMap;
 
@@ -13,7 +17,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use tantivy::collector::{DocSetCollector, TopDocs};
-use tantivy::query::{BooleanQuery, BoostQuery, FuzzyTermQuery, Occur, Query, TermQuery};
+use tantivy::query::{AllQuery, BooleanQuery, BoostQuery, FuzzyTermQuery, Occur, Query, TermQuery};
 use tantivy::schema::{FAST, Field, IndexRecordOption, STORED, STRING, Schema, TextFieldIndexing, TextOptions, Value};
 use tantivy::snippet::SnippetGenerator;
 use tantivy::tokenizer::{Language, LowerCaser, RemoveLongFilter, SimpleTokenizer, Stemmer, TextAnalyzer};
@@ -56,7 +60,8 @@ pub struct AttachmentHit {
     pub snippet: String,
 }
 
-/// Что индексируется о письме.
+/// Что индексируется о письме или сообщении канала.
+#[derive(Default)]
 pub struct Doc<'a> {
     pub id: &'a str,
     pub subject: &'a str,
@@ -67,6 +72,34 @@ pub struct Doc<'a> {
     pub attachments: &'a [Attachment<'a>],
     /// Unix-время получения: при равной релевантности свежие письма выше.
     pub received_at: i64,
+    /// Канал: `mail` у писем, `telegram`, `matrix`, `demo` у сообщений; пусто — без канала (находится только без
+    /// фильтра канала).
+    pub channel: &'a str,
+    /// Адрес беседы `postman://…` (у писем — пусто).
+    pub conv: &'a str,
+    /// Адреса автора: участник канала, его почта и телефон; у письма — адрес «От». В индексе — строчными.
+    pub authors: &'a [String],
+}
+
+/// Фильтр выдачи (ADR 0012 п. 10): канал, беседа, автор — точные значения; пустой список — без условия, несколько
+/// значений — любое из них.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Scope {
+    pub channels: Vec<String>,
+    pub convs: Vec<String>,
+    /// Адреса автора (`от:` — все адреса одного человека); регистр не важен.
+    pub authors: Vec<String>,
+}
+
+impl Scope {
+    /// Только канал `channel`.
+    pub fn channel(channel: &str) -> Self {
+        Self { channels: vec![channel.to_owned()], ..Self::default() }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.channels.is_empty() && self.convs.is_empty() && self.authors.is_empty()
+    }
 }
 
 struct Fields {
@@ -84,6 +117,10 @@ struct Fields {
     /// Имена и тексты вложений по порядку, только хранятся: из них — имя и отрывок в ответе.
     att_name: Field,
     att_text: Field,
+    /// Канал, беседа, автор — точные значения для фильтров ([`Scope`]).
+    channel: Field,
+    conv: Field,
+    author: Field,
 }
 
 pub struct SearchIndex {
@@ -110,6 +147,9 @@ fn schema() -> (Schema, Fields) {
         att_raw: b.add_text_field("att_raw", text(RAW)),
         att_name: b.add_text_field("att_name", STORED),
         att_text: b.add_text_field("att_text", STORED),
+        channel: b.add_text_field("channel", STRING),
+        conv: b.add_text_field("conv", STRING),
+        author: b.add_text_field("author", STRING),
     };
     (b.build(), f)
 }
@@ -322,6 +362,14 @@ impl SearchIndex {
                 document.add_text(self.f.att_name, name);
                 document.add_text(self.f.att_text, text);
             }
+            for (field, value) in [(self.f.channel, d.channel), (self.f.conv, d.conv)] {
+                if !value.is_empty() {
+                    document.add_text(field, value);
+                }
+            }
+            for a in d.authors.iter().filter(|a| !a.is_empty()) {
+                document.add_text(self.f.author, a.to_lowercase());
+            }
             w.add_document(document)?;
         }
         Ok(())
@@ -332,6 +380,22 @@ impl SearchIndex {
             for id in ids {
                 w.delete_term(Term::from_field_text(self.f.id, id));
             }
+            Ok(())
+        })
+    }
+
+    /// Убрать все сообщения беседы `conv` (адрес `postman://…`): беседы больше нет. Видно после [`commit`](Self::commit).
+    pub fn delete_conversation(&self, conv: &str) -> Result<()> {
+        self.with_writer(|w| {
+            w.delete_term(Term::from_field_text(self.f.conv, conv));
+            Ok(())
+        })
+    }
+
+    /// Убрать все документы канала `channel` (пересборка сообщений каналов). Видно после [`commit`](Self::commit).
+    pub fn delete_channel(&self, channel: &str) -> Result<()> {
+        self.with_writer(|w| {
+            w.delete_term(Term::from_field_text(self.f.channel, channel));
             Ok(())
         })
     }
@@ -373,13 +437,46 @@ impl SearchIndex {
 
     /// Письма по убыванию релевантности — и вложение, в котором совпало ([`Hit::attachment`]).
     pub fn hits(&self, query: &str, limit: usize) -> Result<Vec<Hit>> {
+        self.hits_in(query, &Scope::default(), limit)
+    }
+
+    /// Условия фильтра: каждое заданное поле — одно из значений.
+    fn scope_query(&self, scope: &Scope) -> Vec<(Occur, Box<dyn Query>)> {
+        let any = |field: Field, values: &[String], lower: bool| -> Option<(Occur, Box<dyn Query>)> {
+            if values.is_empty() {
+                return None;
+            }
+            let terms = values
+                .iter()
+                .map(|v| {
+                    let v = if lower { v.to_lowercase() } else { v.clone() };
+                    let q: Box<dyn Query> = Box::new(TermQuery::new(Term::from_field_text(field, &v), IndexRecordOption::Basic));
+                    (Occur::Should, q)
+                })
+                .collect();
+            let q: Box<dyn Query> = Box::new(BooleanQuery::new(terms));
+            Some((Occur::Must, q))
+        };
+        [any(self.f.channel, &scope.channels, false), any(self.f.conv, &scope.convs, false), any(self.f.author, &scope.authors, true)]
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
+    /// [`hits`](Self::hits) в пределах фильтра `scope` (канал, беседа, автор). Слов нет, а фильтр есть — всё, что
+    /// ему отвечает, новые сверху.
+    pub fn hits_in(&self, query: &str, scope: &Scope, limit: usize) -> Result<Vec<Hit>> {
         let words = words(query);
         if words.is_empty() {
-            return Ok(Vec::new());
+            let filter = self.scope_query(scope);
+            return if filter.is_empty() { Ok(Vec::new()) } else { self.newest(filter, limit) };
         }
         let last = words.len() - 1;
         let query = |own: bool| -> BooleanQuery {
-            BooleanQuery::new(words.iter().enumerate().map(|(i, w)| (Occur::Must, self.word_query(w, i == last, own))).collect())
+            let mut all: Vec<(Occur, Box<dyn Query>)> =
+                words.iter().enumerate().map(|(i, w)| (Occur::Must, self.word_query(w, i == last, own))).collect();
+            all.extend(self.scope_query(scope));
+            BooleanQuery::new(all)
         };
         let searcher = self.reader.searcher();
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
@@ -413,6 +510,21 @@ impl SearchIndex {
             }
         }
         Ok(hits)
+    }
+
+    /// Документы фильтра без слов: новые сверху.
+    fn newest(&self, filter: Vec<(Occur, Box<dyn Query>)>, limit: usize) -> Result<Vec<Hit>> {
+        let mut all = filter;
+        all.push((Occur::Must, Box::new(AllQuery)));
+        let searcher = self.reader.searcher();
+        let collector = TopDocs::with_limit(limit).order_by_fast_field::<i64>("received", tantivy::Order::Desc);
+        let top = searcher.search(&BooleanQuery::new(all), &collector)?;
+        let mut out = Vec::with_capacity(top.len());
+        for (_, addr) in top {
+            let d: TantivyDocument = searcher.doc(addr)?;
+            out.push(Hit { id: d.get_first(self.f.id).and_then(|v| v.as_str()).unwrap_or_default().to_owned(), attachment: None });
+        }
+        Ok(out)
     }
 
     fn wanted(&self, word: &str, is_last: bool) -> Wanted {
@@ -550,7 +662,7 @@ mod tests {
 
     fn index() -> SearchIndex {
         let i = SearchIndex::in_memory().unwrap();
-        let d = |id, subject, people, body| Doc { id, subject, people, body, attachments: &[], received_at: 0 };
+        let d = |id, subject, people, body| Doc { id, subject, people, body, attachments: &[], received_at: 0, ..Doc::default() };
         i.upsert(&[
             d("1", "Отчёт за третий квартал", "Иванова Мария", "Направляю отчёты по продажам"),
             d("2", "Совещание по проекту", "Петров Алексей", "Перенесём встречу на пятницу"),
@@ -574,7 +686,9 @@ mod tests {
         .join();
         assert!(i.writer.is_poisoned());
         assert!(!i.dirty());
-        let d = Doc { id: "5", subject: "Отпуск", people: "Кадры", body: "Заявление", attachments: &[], received_at: 0 };
+        let d = Doc {
+            id: "5", subject: "Отпуск", people: "Кадры", body: "Заявление", attachments: &[], received_at: 0, ..Doc::default()
+        };
         i.upsert(&[d]).unwrap();
         assert!(i.dirty());
         i.commit().unwrap();
@@ -604,7 +718,7 @@ mod tests {
     #[test]
     fn newer_first_on_equal_relevance() {
         let i = SearchIndex::in_memory().unwrap();
-        let d = |id, received_at| Doc { id, subject: "Pipeline failed", people: "", body: "", attachments: &[], received_at };
+        let d = |id, received_at| Doc { id, subject: "Pipeline failed", people: "", body: "", attachments: &[], received_at, ..Doc::default() };
         i.upsert(&[d("old", 1_000), d("new", 2_000_000_000), d("mid", 1_700_000_000)]).unwrap();
         i.commit().unwrap();
         assert_eq!(i.search("pipelin faild", 10).unwrap(), ["new", "mid", "old"]);
@@ -620,7 +734,10 @@ mod tests {
                 std::thread::spawn(move || {
                     for k in 0..20 {
                         let id = format!("{n}-{k}");
-                        i.upsert(&[Doc { id: &id, subject: "Письмо", people: "", body: "", attachments: &[], received_at: 0 }]).unwrap();
+                        i.upsert(&[Doc {
+                            id: &id, subject: "Письмо", people: "", body: "", attachments: &[], received_at: 0, ..Doc::default()
+                        }])
+                        .unwrap();
                         i.commit().unwrap();
                     }
                 })
@@ -641,7 +758,7 @@ mod tests {
         i.clear().unwrap();
         i.commit().unwrap();
         assert!(i.is_empty() && !i.contains("1").unwrap());
-        i.upsert(&[Doc { id: "#1", subject: "Обед", people: "", body: "", attachments: &[], received_at: 0 }]).unwrap();
+        i.upsert(&[Doc { id: "#1", subject: "Обед", people: "", body: "", attachments: &[], received_at: 0, ..Doc::default() }]).unwrap();
         i.commit().unwrap();
         assert!(i.contains("#1").unwrap());
         assert_eq!(i.search("обед", 10).unwrap(), ["#1"]);
@@ -650,7 +767,7 @@ mod tests {
     #[test]
     fn replace_and_delete() {
         let i = index();
-        i.upsert(&[Doc { id: "2", subject: "Обед", people: "", body: "", attachments: &[], received_at: 0 }]).unwrap();
+        i.upsert(&[Doc { id: "2", subject: "Обед", people: "", body: "", attachments: &[], received_at: 0, ..Doc::default() }]).unwrap();
         i.delete(&["1".into()]).unwrap();
         i.commit().unwrap();
         assert!(i.search("совещание", 10).unwrap().is_empty());
@@ -666,7 +783,7 @@ mod tests {
     fn attached() -> SearchIndex {
         let i = SearchIndex::in_memory().unwrap();
         let long = format!("{} Ставка аренды склада — 1200 рублей за метр. {}", "Вводная часть договора. ".repeat(20), "Прочие условия. ".repeat(20));
-        let d = |id, subject, body, attachments| Doc { id, subject, people: "", body, attachments, received_at: 0 };
+        let d = |id, subject, body, attachments| Doc { id, subject, people: "", body, attachments, received_at: 0, ..Doc::default() };
         i.upsert(&[
             d("body", "Смета на ремонт", "Высылаю смету, посмотрите до пятницы", &[]),
             d("file", "Документы", "Во вложении", &[Attachment { name: "Договор.docx", text: &long }]),
@@ -737,11 +854,60 @@ mod tests {
     fn attachment_text_is_capped() {
         let i = SearchIndex::in_memory().unwrap();
         let text = format!("{} хвостик", "слово ".repeat(ATTACHMENT_TEXT / 11 + 1));
-        i.upsert(&[Doc { id: "1", subject: "", people: "", body: "", attachments: &[Attachment { name: "a.txt", text: &text }], received_at: 0 }])
-            .unwrap();
+        i.upsert(&[Doc {
+            id: "1",
+            subject: "",
+            people: "",
+            body: "",
+            attachments: &[Attachment { name: "a.txt", text: &text }],
+            received_at: 0,
+            ..Doc::default()
+        }])
+        .unwrap();
         i.commit().unwrap();
         assert!(i.search("хвостик", 10).unwrap().is_empty());
         assert_eq!(hit(&i, "слово").map(|h| h.name).as_deref(), Some("a.txt"));
+    }
+
+    /// ADR 0012 п. 10: письма и сообщения каналов — в одном индексе; фильтр по каналу, беседе и автору (любой из
+    /// адресов, регистр не важен); фильтр без слов — всё подходящее, новые сверху; беседа и канал удаляются целиком.
+    #[test]
+    fn channels_share_the_index() {
+        let i = SearchIndex::in_memory().unwrap();
+        let anna = ["u-anna".to_owned(), "anna@example.test".to_owned()];
+        let boris = ["b.petrov@corp.example".to_owned()];
+        let (team, direct) = ("postman://demo/me@example.test/g-team", "postman://demo/me@example.test/d-anna");
+        let d = |id, body, channel, conv, authors, received_at| Doc {
+            id,
+            subject: "",
+            people: "",
+            body,
+            channel,
+            conv,
+            authors,
+            received_at,
+            ..Doc::default()
+        };
+        i.upsert(&[
+            d("l1", "Отчёт по сборке", "mail", "", &anna[1..], 10),
+            d("c1", "Сборка готова, отчёт приложен", "demo", team, &boris, 20),
+            d("c2", "Посмотри отчёт", "demo", direct, &anna, 30),
+        ])
+        .unwrap();
+        i.commit().unwrap();
+        let ids = |q: &str, s: &Scope| i.hits_in(q, s, 10).unwrap().into_iter().map(|h| h.id).collect::<Vec<_>>();
+        assert_eq!(ids("отчет", &Scope::default()).len(), 3);
+        assert_eq!(ids("отчет", &Scope::channel("mail")), ["l1"]);
+        assert_eq!(ids("отчет", &Scope { convs: vec![team.into()], ..Scope::default() }), ["c1"]);
+        let from_anna = Scope { authors: vec!["Anna@Example.test".into()], ..Scope::default() };
+        assert_eq!(ids("", &from_anna), ["c2", "l1"], "без слов — всё по фильтру, новые сверху");
+        assert!(ids("", &Scope::default()).is_empty());
+        i.delete_conversation(team).unwrap();
+        i.commit().unwrap();
+        assert_eq!(ids("сборка", &Scope::default()), ["l1"]);
+        i.delete_channel("demo").unwrap();
+        i.commit().unwrap();
+        assert_eq!(i.len(), 1);
     }
 
     #[test]

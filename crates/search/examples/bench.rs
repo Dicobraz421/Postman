@@ -57,7 +57,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         texts.push((i.to_string(), subj.join(" "), format!("Сотрудник {} user{}@corp.example", i % 300, i % 300), body.join(" ")));
     }
     for chunk in texts.chunks(5000) {
-        let docs: Vec<Doc> = chunk.iter().map(|(id, s, p, b)| Doc { id, subject: s, people: p, body: b, attachments: &[], received_at: 0 }).collect();
+        let docs: Vec<Doc> = chunk
+            .iter()
+            .map(|(id, s, p, b)| Doc { id, subject: s, people: p, body: b, attachments: &[], received_at: 0, ..Doc::default() })
+            .collect();
         idx.upsert(&docs)?;
     }
     idx.commit()?;
