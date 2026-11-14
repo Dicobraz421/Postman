@@ -163,6 +163,8 @@ pub(crate) struct MailList {
     waiting: Vec<String>,
     /// Письма, которые нашёл сервер по фильтрам «Все папки» (живой ящик): в списке без проверки по кэшу.
     pub(crate) server_hits: Arc<HashSet<String>>,
+    /// «Упомянули меня» по всему телу письма (MSGR-02): тела из кэша проверяются в фоне по одному разу.
+    deep: Deep,
     /// Папки по порядку дерева — группы «Все папки».
     pub(crate) order: Vec<String>,
     /// Меню сортировки открыто.
@@ -202,12 +204,29 @@ pub(crate) struct MailList {
     _subscriptions: Vec<Subscription>,
 }
 
+/// «Упомянули меня» по телам писем (MSGR-02): у `preview` — только начало письма. Итог проверки тела из кэша — по
+/// письму (`postman_core::filters::body_mentions`, в фоне); пересчёт списка берёт готовое, а письма без итога
+/// отдаёт на проверку ([`Computed::unchecked`]). Пришло тело (`BodyReady`, `BodiesStored`, `ThreadReady`) — итог
+/// письма забывается; другой «я» — все итоги.
+#[derive(Default)]
+struct Deep {
+    known: Arc<std::sync::Mutex<HashMap<String, bool>>>,
+    /// Идёт проверка; письма без итога, пришедшие за это время, проверит следующий пересчёт.
+    running: bool,
+}
+
+/// Итоги проверки тел (блокировка без паники).
+fn deep_lock(known: &std::sync::Mutex<HashMap<String, bool>>) -> std::sync::MutexGuard<'_, HashMap<String, bool>> {
+    known.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Пересчёт фильтров в фоне: что перебрать и как.
 struct Job {
     scan: Scan,
     query: Query,
     me: Me,
     server_hits: Arc<HashSet<String>>,
+    deep: Arc<std::sync::Mutex<HashMap<String, bool>>>,
     order: Vec<String>,
     /// Нужен свой набор писем (иначе — только счётчики).
     own: bool,
@@ -223,6 +242,8 @@ struct Computed {
     counts: Counts,
     list: Option<Arranged>,
     outline: Option<postman_core::thread::Outline>,
+    /// Письма без итога проверки тела на упоминание ([`Deep`]).
+    unchecked: Vec<String>,
 }
 
 impl Job {
@@ -235,13 +256,14 @@ impl Job {
         let pins = !folders && self.query.sort == Sort::Date;
         let mut own = self.own || self.outlook;
         loop {
-            let (counts, hits, tops, threads, seen) = self.pass(cache, own, pins, folders, &now);
+            let mut unchecked = Vec::new();
+            let (counts, hits, tops, threads, seen) = self.pass(cache, own, pins, folders, &now, &mut unchecked);
             // В папке письма без связи с сервером (S8-15: «На этом компьютере», перенесённые): обход их не видит —
             // список — страницами папки по дате, без своего набора.
             if let Scan::Mailbox(mb) = &self.scan
                 && seen < crate::local::count(cache, mb)
             {
-                return Computed { counts, list: None, outline: None };
+                return Computed { counts, list: None, outline: None, unchecked };
             }
             if !own && tops > 0 {
                 own = true;
@@ -252,14 +274,15 @@ impl Job {
                 .as_ref()
                 .filter(|_| self.outlook)
                 .map(|(ids, groups)| crate::outline::outline_of(ids, groups, threads, folders, self.open.clone()));
-            return Computed { counts, list, outline };
+            return Computed { counts, list, outline, unchecked };
         }
     }
 
     /// Один обход: счётчики, письма своего набора (`own`), сколько из них — наверху, и цепочки писем набора (вид
     /// «как Outlook»).
-    fn pass(&self, cache: &Cache, own: bool, pins: bool, folders: bool, now: &jiff::Zoned) -> Pass {
+    fn pass(&self, cache: &Cache, own: bool, pins: bool, folders: bool, now: &jiff::Zoned, unchecked: &mut Vec<String>) -> Pass {
         let index: HashMap<&str, usize> = self.order.iter().enumerate().map(|(i, id)| (id.as_str(), i)).collect();
+        let deep = deep_lock(&self.deep);
         let mut counts = Counts::default();
         let mut hits = Vec::new();
         let mut tops = 0;
@@ -267,15 +290,23 @@ impl Job {
         let mut seen = 0;
         let scanned = cache.scan(&self.scan, |mut row, to| {
             seen += 1;
-            let f = Facts::of(&self.me, &row, &to);
+            let mut f = Facts::of(&self.me, &row, &to);
+            // Упоминание глубже начала письма — по итогу проверки тела ([`Deep`]).
+            if !f.mention && !self.me.is_empty() {
+                match deep.get(&row.id) {
+                    Some(hit) => f.mention = *hit,
+                    None => unchecked.push(row.id.clone()),
+                }
+            }
             let mut pass = counts.add(&self.query.criteria, &f, &row.keywords);
             if !pass && self.server_hits.contains(&row.id) {
                 pass = true;
                 counts.shown += 1;
             }
             let top = pass && pins && postman_core::lifecycle::on_top(&row, now, self.overdue_first);
-            // Закреплённые (CMF-02) — вверху одной папки в любой сортировке: для них нужен свой набор, как для «Срочного».
-            let pinned = pass && !folders && postman_core::pin::is_pinned(&row);
+            // Закреплённые (CMF-02) — вверху в любой сортировке, в «Все папки» — над папками: для них нужен свой набор,
+            // как для «Срочного».
+            let pinned = pass && postman_core::pin::is_pinned(&row);
             tops += usize::from(top || pinned);
             if own && pass {
                 let folder = if folders { row.mailbox_ids.iter().filter_map(|m| index.get(m.as_str())).min().copied() } else { Some(0) };
@@ -532,6 +563,7 @@ impl MailList {
             identity,
             waiting: Vec::new(),
             server_hits: Arc::new(HashSet::new()),
+            deep: Deep::default(),
             order: Vec::new(),
             sort_open: false,
             selection: Default::default(),
@@ -592,20 +624,69 @@ impl MailList {
                     }
                 }
             }
+            // Пришли тела: их итог проверки на упоминание — заново при следующем пересчёте.
+            Event::BodyReady(id) => return self.forget_bodies(std::slice::from_ref(id)),
+            Event::BodiesStored(ids) | Event::ThreadReady { ids, .. } => return self.forget_bodies(ids),
             _ => return,
         }
         let me = self.who_am_i();
         if me != self.me {
             self.me = me;
+            deep_lock(&self.deep.known).clear();
             self.recompute(cx);
         }
+    }
+
+    /// Тела писем без итога — проверить на упоминание в фоне (по одной проверке); нашлось — пересчитать список.
+    fn check_bodies(&mut self, ids: Vec<String>, cx: &mut Context<Self>) {
+        if ids.is_empty() || self.deep.running {
+            return;
+        }
+        self.deep.running = true;
+        let (cache, me, known) = (self.cache.clone(), self.me.clone(), self.deep.known.clone());
+        let task = cx.background_spawn(async move {
+            match postman_core::filters::body_mentions(&cache, &me, &ids) {
+                Ok(found) => {
+                    let hit = found.iter().any(|(_, m)| *m);
+                    deep_lock(&known).extend(found);
+                    hit
+                }
+                Err(e) => {
+                    tracing::warn!("list: letter bodies not checked for mentions: {e}");
+                    false
+                }
+            }
+        });
+        let me = self.me.clone();
+        cx.spawn(async move |this, cx| {
+            let hit = task.await;
+            let _ = this.update(cx, |l, cx| {
+                l.deep.running = false;
+                // Пока проверяли, «я» сменился — итоги не мои.
+                if l.me != me {
+                    deep_lock(&l.deep.known).clear();
+                    l.recompute(cx);
+                } else if hit {
+                    l.recompute(cx);
+                }
+            });
+        })
+        .detach();
     }
 
     /// Живой ящик: до `Event::Me` я неизвестен (демо-владелец — не я).
     pub(crate) fn forget_me(&mut self, cx: &mut Context<Self>) {
         self.identity.clear();
         self.me = Me::default();
+        deep_lock(&self.deep.known).clear();
         self.recompute(cx);
+    }
+
+    fn forget_bodies(&mut self, ids: &[String]) {
+        let mut known = deep_lock(&self.deep.known);
+        for id in ids {
+            known.remove(id);
+        }
     }
 
     /// Сервер нашёл письма по фильтрам «Все папки» (они уже в кэше): пересчитать с ними.
@@ -680,6 +761,7 @@ impl MailList {
             query: self.query.clone(),
             me: self.me.clone(),
             server_hits: self.server_hits.clone(),
+            deep: self.deep.known.clone(),
             order: self.order.clone(),
             own: self.query.own_list(),
             overdue_first: crate::prefs::get(cx).lifecycle.overdue_first,
@@ -700,6 +782,7 @@ impl MailList {
             return;
         }
         self.computing = false;
+        self.check_bodies(out.unchecked, cx);
         let counts = out.counts;
         self.filters.update(cx, |m, cx| {
             if m.counts != counts {

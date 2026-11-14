@@ -10,6 +10,7 @@
 //! | [`ICS`]`<ссылка>` | скачанная подписка на календарь | JSON `{etag}` | файл `.ics` |
 //! | [`NOTICE`]`<время>/<номер>` | запись истории уведомлений ([`Notice`]) | JSON | — |
 //! | [`SMIME_SEEN`] | промежуточные сертификаты из писем (`smime::seen`) | длина + DER подряд | — |
+//! | [`DRAFT`]`<ключ письма>` | черновик на сервере: реплики ответа на фрагменты и правило вложений беседы ([`DraftLayout`]) | JSON | — |
 //!
 //! Перенос прежних файлов — [`adopt`] при открытии базы (поток открытия, не интерфейса): одной транзакцией, файлы — в
 //! `*.bak`, при следующем удачном открытии — удаляются.
@@ -33,6 +34,8 @@ pub const ICS: &str = "ics/";
 pub const NOTICE: &str = "notice/";
 /// Промежуточные сертификаты из писем.
 pub const SMIME_SEEN: &str = "smime/intermediates";
+/// Черновик на сервере (ключ письма в кэше): префикс, за ним — ключ.
+pub const DRAFT: &str = "draft/";
 /// История уведомлений — за столько секунд.
 pub const NOTICE_KEEP_SECS: i64 = 7 * 24 * 3600;
 
@@ -215,6 +218,116 @@ pub fn recent_notices(cache: &Cache, now: i64) -> Result<Vec<Notice>> {
         cache.remove_local(&old.iter().map(String::as_str).collect::<Vec<_>>())?;
     }
     Ok(out)
+}
+
+// --- черновики: реплики и правило вложений беседы ---
+
+/// Черновик на сервере — обычное письмо с уже собранным текстом. Как он устроен в окне письма — здесь, по ключу письма
+/// в кэше: свой текст, реплики «цитата → ответ» (MSGR-01), хвост (подпись и полная цитата) и «Не отправлять» вложения
+/// беседы новым участникам (T3-14). Открыли черновик снова (из «Черновиков», после «Отменить») — окно собирает его
+/// из этой записи, если текст на сервере тот же ([`DraftLayout::markdown`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftLayout {
+    /// Свой текст над репликами.
+    #[serde(default)]
+    pub head: String,
+    #[serde(default)]
+    pub replies: Vec<Reply>,
+    /// Подпись и полная цитата ответа — под репликами.
+    #[serde(default)]
+    pub tail: String,
+    /// Подпись, стоящая в тексте (смена подписи заменяет её).
+    #[serde(default)]
+    pub signature: String,
+    /// «Не отправлять» вложения беседы новым участникам.
+    #[serde(default)]
+    pub share_off: bool,
+    /// Текст письма, собранный из частей, — как ушёл на сервер.
+    #[serde(default)]
+    pub markdown: String,
+}
+
+/// Реплика черновика: фрагмент письма и ответ на него (`postman_compose::fragments::Fragment` без номера).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reply {
+    #[serde(default)]
+    pub letter: String,
+    #[serde(default)]
+    pub who: String,
+    #[serde(default)]
+    pub date: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub answer: String,
+}
+
+impl From<&postman_compose::fragments::Fragment> for Reply {
+    fn from(f: &postman_compose::fragments::Fragment) -> Self {
+        Reply { letter: f.letter.clone(), who: f.who.clone(), date: f.date.clone(), text: f.text.clone(), answer: f.answer.clone() }
+    }
+}
+
+impl From<&Reply> for postman_compose::fragments::Fragment {
+    fn from(r: &Reply) -> Self {
+        let mut f = postman_compose::fragments::Fragment::new(&r.letter, &r.who, &r.date, &r.text);
+        f.answer.clone_from(&r.answer);
+        f
+    }
+}
+
+impl DraftLayout {
+    /// Хранить нечего: реплик нет и вложения беседы не отключены.
+    pub fn is_plain(&self) -> bool {
+        self.replies.is_empty() && !self.share_off
+    }
+
+    /// Текст черновика на сервере — тот же, что записан здесь (пробелы и переводы строк не в счёт): черновик не
+    /// правили в другой программе.
+    pub fn fits(&self, markdown: &str) -> bool {
+        let squeeze = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+        squeeze(&self.markdown) == squeeze(markdown)
+    }
+}
+
+fn draft_key(id: &str) -> String {
+    format!("{DRAFT}{id}")
+}
+
+/// Как устроен черновик `id` (ключ письма в кэше); записи нет — `None`.
+pub fn draft_layout(cache: &Cache, id: &str) -> Result<Option<DraftLayout>> {
+    let Some(doc) = cache.local(&draft_key(id))? else { return Ok(None) };
+    Ok(Some(serde_json::from_slice(&doc.value)?))
+}
+
+/// Черновик сохранён на сервере как `id`: записать, как он устроен, и убрать записи прежних версий `old` (их заменила
+/// эта). Хранить нечего ([`DraftLayout::is_plain`]) — записи `id` тоже нет.
+pub fn keep_draft_layout(cache: &Cache, id: Option<&str>, layout: Option<&DraftLayout>, old: &[&str]) -> Result<()> {
+    let mut gone: Vec<String> = old.iter().filter(|o| Some(**o) != id).map(|o| draft_key(o)).collect();
+    match (id, layout.filter(|l| !l.is_plain())) {
+        (Some(id), Some(l)) => cache.put_local(&put(draft_key(id), serde_json::to_vec(l)?, Vec::new()))?,
+        (Some(id), None) => gone.push(draft_key(id)),
+        (None, _) => {}
+    }
+    if !gone.is_empty() {
+        cache.remove_local(&gone.iter().map(String::as_str).collect::<Vec<_>>())?;
+    }
+    Ok(())
+}
+
+/// Записи черновиков, писем которых больше нет в кэше (отправлены, удалены): убрать. Сколько убрано.
+pub fn sweep_draft_layouts(cache: &Cache) -> Result<usize> {
+    let keys: Vec<String> = cache.local_prefix(DRAFT)?.into_iter().map(|(k, _)| k).collect();
+    if keys.is_empty() {
+        return Ok(0);
+    }
+    let ids: Vec<String> = keys.iter().map(|k| k[DRAFT.len()..].to_owned()).collect();
+    let alive: std::collections::HashSet<String> = cache.rows_by_ids(&ids)?.into_iter().map(|r| r.id).collect();
+    let gone: Vec<&str> = keys.iter().zip(&ids).filter(|(_, id)| !alive.contains(*id)).map(|(k, _)| k.as_str()).collect();
+    if !gone.is_empty() {
+        cache.remove_local(&gone)?;
+    }
+    Ok(gone.len())
 }
 
 // --- перенос прежних файлов ---
@@ -485,6 +598,57 @@ mod tests {
         push_notice(&c, &n(NOW, "b")).unwrap();
         assert_eq!(recent_notices(&c, NOW).unwrap(), [n(NOW, "a"), n(NOW, "b")]);
         assert_eq!(c.local_prefix(NOTICE).unwrap().len(), 2, "старая удалена");
+    }
+
+    /// Черновик в базе: реплики и «Не отправлять» — по ключу версии; новая версия убирает прежнюю, простой черновик
+    /// записи не держит; записи писем, которых нет в кэше, убираются.
+    #[test]
+    fn draft_layout_in_store() {
+        let c = Cache::open_in_memory().unwrap();
+        let reply = Reply {
+            letter: "m1".into(), who: "Анна".into(), date: "17.10.2026 12:00".into(), text: "Сроки?".into(), answer: "Да.".into()
+        };
+        let l = DraftLayout {
+            head: "Коллеги,".into(),
+            replies: vec![reply.clone()],
+            tail: "С уважением".into(),
+            signature: "С уважением".into(),
+            share_off: true,
+            markdown: "Коллеги,\n\n> Анна, 17.10.2026 12:00:\n> Сроки?\n\nДа.\n\nС уважением".into(),
+        };
+        keep_draft_layout(&c, Some("d1"), Some(&l), &[]).unwrap();
+        assert_eq!(draft_layout(&c, "d1").unwrap(), Some(l.clone()));
+        assert!(l.fits("Коллеги,\r\n\r\n> Анна, 17.10.2026 12:00:\r\n> Сроки?\r\n\r\nДа.\r\n\r\nС уважением\r\n"));
+        assert!(!l.fits("Коллеги, правка в другой программе"));
+        let f: postman_compose::fragments::Fragment = (&reply).into();
+        assert_eq!((f.letter.as_str(), f.answer.as_str()), ("m1", "Да."));
+        // Новая версия — под своим ключом, прежняя уходит.
+        keep_draft_layout(&c, Some("d2"), Some(&l), &["d1"]).unwrap();
+        assert_eq!(draft_layout(&c, "d1").unwrap(), None);
+        // Реплик нет и вложения не отключены — хранить нечего.
+        keep_draft_layout(&c, Some("d2"), Some(&DraftLayout::default()), &[]).unwrap();
+        assert_eq!(draft_layout(&c, "d2").unwrap(), None);
+        // Письма «d3» в кэше нет — запись убирается; «d4» есть — остаётся.
+        keep_draft_layout(&c, Some("d3"), Some(&l), &[]).unwrap();
+        keep_draft_layout(&c, Some("d4"), Some(&l), &[]).unwrap();
+        let row = postman_cache::EmailRow {
+            id: "d4".into(),
+            thread_id: "t".into(),
+            mailbox_ids: vec!["drafts".into()],
+            received_at: NOW,
+            subject: String::new(),
+            from_name: String::new(),
+            from_addr: "me@corp.example".into(),
+            preview: String::new(),
+            seen: true,
+            flagged: false,
+            has_attachment: false,
+            size: 0,
+            keywords: Vec::new(),
+        };
+        c.upsert_emails(&[row]).unwrap();
+        assert_eq!(sweep_draft_layouts(&c).unwrap(), 1);
+        assert!(draft_layout(&c, "d3").unwrap().is_none() && draft_layout(&c, "d4").unwrap().is_some());
     }
 
     /// Обновление со старой версии: все файлы — в базу одной транзакцией, файлы — в `*.bak`; следующее открытие

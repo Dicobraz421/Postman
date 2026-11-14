@@ -147,11 +147,49 @@ impl Composer {
     pub(crate) fn mention_changed(&mut self, cursor: usize, cx: &mut Context<Self>) {
         let people = self.mention_people(cx);
         let me: Vec<String> = std::iter::once(self.model.from().email.clone()).collect();
-        let was = self.mention.clone();
+        let was = (self.mention.clone(), self.board.mention_in);
+        self.board.mention_in = None;
         self.mention.refresh(&self.model.body, cursor, &people, Some(&self.book), &me);
-        if self.mention != was {
+        if (self.mention.clone(), self.board.mention_in) != was {
             cx.notify();
         }
+    }
+
+    /// Ответ на реплику `id` изменился (MSGR-01): подсказка упоминания у курсора — под этим полем.
+    pub(crate) fn answer_mention_changed(&mut self, id: u64, text: &str, cursor: usize, cx: &mut Context<Self>) {
+        let people = self.mention_people(cx);
+        let me: Vec<String> = std::iter::once(self.model.from().email.clone()).collect();
+        let was = (self.mention.clone(), self.board.mention_in);
+        let mut m = if self.board.mention_in == Some(id) { self.mention.clone() } else { Mentions::default() };
+        m.refresh(text, cursor, &people, Some(&self.book), &me);
+        if m.open() {
+            (self.mention, self.board.mention_in) = (m, Some(id));
+        } else if self.board.mention_in == Some(id) {
+            self.mention.clear();
+            self.board.mention_in = None;
+        }
+        if (self.mention.clone(), self.board.mention_in) != was {
+            cx.notify();
+        }
+    }
+
+    /// Подсказка упоминания открыта у своего текста письма (а не у ответа на реплику).
+    fn body_mention_open(&self) -> bool {
+        self.mention.open() && self.board.mention_in.is_none()
+    }
+
+    /// Упоминание в ответе на реплику `id`: `@…` — на `**@Имя**`, человек — в «Кому».
+    pub(crate) fn answer_mention_pick(&mut self, id: u64, i: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = self.board.answers.get(&id).map(|(s, _)| s.clone()) else { return };
+        let Some((range, token, who)) = self.mention.take(i) else { return };
+        self.board.mention_in = None;
+        state.update(cx, |s, cx| {
+            s.set_selected_range(range, cx);
+            s.replace(token, window, cx);
+            s.focus(window, cx);
+        });
+        add_recipient(&mut self.model, &who);
+        cx.notify();
     }
 
     /// Упомянуть `i`-го из подсказки (или выбранного).
@@ -180,36 +218,54 @@ impl Composer {
 
 /// Клавиши подсказки в поле письма: ↑ / ↓ — по людям, Enter и Tab — выбрать; без подсказки — как обычно.
 pub(crate) fn capture(head: Div, cx: &mut Context<Composer>) -> Div {
-    head.capture_action(cx.listener(|this, _: &Enter, window, cx| {
-        if this.mention.open() {
+    keys(head, cx, |c| c.body_mention_open(), |c, window, cx| c.mention_pick(None, window, cx))
+}
+
+/// Клавиши подсказки в поле ответа на реплику `id` — как в тексте письма.
+pub(crate) fn answer_capture(field: Div, id: u64, cx: &mut Context<Composer>) -> Div {
+    keys(field, cx, move |c| c.mention.open() && c.board.mention_in == Some(id), move |c, window, cx| c.answer_mention_pick(id, None, window, cx))
+}
+
+/// ↑ / ↓ — по людям, Enter и Tab — выбрать, Esc — закрыть, пока подсказка открыта у этого поля (`open`).
+fn keys(
+    el: Div,
+    cx: &mut Context<Composer>,
+    open: impl Fn(&Composer) -> bool + Clone + 'static,
+    pick: impl Fn(&mut Composer, &mut Window, &mut Context<Composer>) + Clone + 'static,
+) -> Div {
+    let (o1, o2, o3, o4, o5) = (open.clone(), open.clone(), open.clone(), open.clone(), open);
+    let p1 = pick.clone();
+    el.capture_action(cx.listener(move |this, _: &Enter, window, cx| {
+        if o1(this) {
             cx.stop_propagation();
-            this.mention_pick(None, window, cx);
+            p1(this, window, cx);
         }
     }))
-    .capture_action(cx.listener(|this, _: &IndentInline, window, cx| {
-        if this.mention.open() {
+    .capture_action(cx.listener(move |this, _: &IndentInline, window, cx| {
+        if o2(this) {
             cx.stop_propagation();
-            this.mention_pick(None, window, cx);
+            pick(this, window, cx);
         }
     }))
-    .capture_action(cx.listener(|this, _: &MoveUp, _, cx| {
-        if this.mention.open() {
+    .capture_action(cx.listener(move |this, _: &MoveUp, _, cx| {
+        if o3(this) {
             cx.stop_propagation();
             this.mention.step(-1);
             cx.notify();
         }
     }))
-    .capture_action(cx.listener(|this, _: &MoveDown, _, cx| {
-        if this.mention.open() {
+    .capture_action(cx.listener(move |this, _: &MoveDown, _, cx| {
+        if o4(this) {
             cx.stop_propagation();
             this.mention.step(1);
             cx.notify();
         }
     }))
-    .capture_action(cx.listener(|this, _: &crate::compose::compose::Close, _, cx| {
-        if this.mention.open() {
+    .capture_action(cx.listener(move |this, _: &crate::compose::compose::Close, _, cx| {
+        if o5(this) {
             cx.stop_propagation();
             this.mention.clear();
+            this.board.mention_in = None;
             cx.notify();
         }
     }))
@@ -217,8 +273,16 @@ pub(crate) fn capture(head: Div, cx: &mut Context<Composer>) -> Div {
 
 /// Подсказка упоминания под текстом письма.
 pub(crate) fn composer_panel(c: &Composer, cx: &mut Context<Composer>) -> Option<AnyElement> {
+    if c.board.mention_in.is_some() {
+        return None;
+    }
     let l = crate::roles::look(cx);
     panel(&c.mention, &l, cx, |this: &mut Composer, i, window, cx| this.mention_pick(Some(i), window, cx)).map(IntoElement::into_any_element)
+}
+
+/// Подсказка упоминания под полем ответа на реплику `id`.
+pub(crate) fn answer_panel(c: &Composer, id: u64, l: &Look, cx: &mut Context<Composer>) -> Option<Stateful<Div>> {
+    panel(&c.mention, l, cx, move |this: &mut Composer, i, window, cx| this.answer_mention_pick(id, Some(i), window, cx)).map(|p| p.ml(px(20.)))
 }
 
 #[cfg(test)]

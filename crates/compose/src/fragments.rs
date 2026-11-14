@@ -1,7 +1,11 @@
 //! Ответ на фрагменты (решение владельца `docs/decisions/2026-11-14-messenger-comforts.md`): черновик — список реплик
 //! «цитата фрагмента → мой ответ» по порядку добавления. Порядок меняется, реплика убирается кнопкой, убранная
 //! возвращается отменой. При отправке реплики — обычный Markdown письма: цитата `> ` с подписью «Имя, дата:» (в HTML —
-//! `<blockquote>`, `build`), ответ — абзацем после неё. Без I/O.
+//! `<blockquote>`, `build`), ответ — абзацем после неё. Черновик на сервере — уже собранный текст: как он устроен,
+//! окно письма хранит в базе профиля (`postman_core::local::DraftLayout`), без записи — запасной разбор [`parse`].
+//! Без I/O.
+
+use std::ops::Range;
 
 /// Фрагмент письма, на который отвечают, и ответ на него.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
@@ -177,6 +181,132 @@ pub fn assemble(head: &str, replies: &Replies, tail: &str) -> String {
     out
 }
 
+/// Черновик, разобранный на части: свой текст, реплики, хвост (подпись и полная цитата).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Parsed {
+    pub head: String,
+    pub fragments: Vec<Fragment>,
+    pub tail: String,
+}
+
+/// Запасной разбор черновика без своей записи в базе (открыт на другом компьютере, запись потерялась): реплики —
+/// цитаты `> ` с подписью «Имя, дата:» (как их пишет [`quote`]) над полной цитатой ответа или пересланным письмом;
+/// ответ на реплику — текст до следующей; хвост — с подписи `signature` (если она ниже реплик) или с полной цитаты.
+/// Части собираются ([`assemble`]) в тот же текст (пробелы не в счёт) — иначе `None`: разбор не меняет письмо.
+pub fn parse(markdown: &str, signature: &str) -> Option<Parsed> {
+    let text = markdown.replace("\r\n", "\n");
+    let blocks = blocks(&text);
+    // Полная цитата ответа (строка «… пишет:» и под ней `> `) или пересланное письмо — хвост, реплик ниже нет.
+    let mut end = text.len();
+    for b in &blocks {
+        let lines = lines_at(&text, b.clone());
+        if let Some((at, _)) = lines.iter().find(|(_, l)| l.starts_with("-------- ")) {
+            end = *at;
+            break;
+        }
+        if let Some(q) = lines.iter().position(|(_, l)| l.trim_start().starts_with('>'))
+            && q > 0
+        {
+            end = lines[q - 1].0;
+            break;
+        }
+    }
+    let found: Vec<(Range<usize>, Fragment)> =
+        blocks.iter().filter(|b| b.end <= end).filter_map(|b| Some((b.clone(), fragment_of(&text[b.clone()])?))).collect();
+    let last = found.last()?.0.end;
+    let sig = signature.trim();
+    let tail_at = match text[..end].rfind(sig) {
+        Some(at) if !sig.is_empty() && at >= last && (at == 0 || text[..at].ends_with('\n')) => at,
+        _ => end,
+    };
+    let head = text[..found[0].0.start].trim_end().to_owned();
+    let mut replies = Replies::default();
+    let mut fragments = Vec::with_capacity(found.len());
+    for (i, (range, f)) in found.iter().enumerate() {
+        let next = found.get(i + 1).map_or(tail_at, |(r, _)| r.start).max(range.end);
+        let mut f = f.clone();
+        f.answer = text[range.end..next].trim_matches('\n').trim_end().to_owned();
+        replies.add(f.clone());
+        fragments.push(f);
+    }
+    let tail = text[tail_at..].trim_matches('\n').to_owned();
+    let squeeze = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    (squeeze(&assemble(&head, &replies, &tail)) == squeeze(&text)).then_some(Parsed { head, fragments, tail })
+}
+
+/// Абзацы текста: байты строк подряд без пустых.
+fn blocks(text: &str) -> Vec<Range<usize>> {
+    let mut out = Vec::new();
+    let (mut start, mut off) = (None, 0);
+    for line in text.split_inclusive('\n') {
+        match (line.trim().is_empty(), start) {
+            (false, None) => start = Some(off),
+            (true, Some(s)) => {
+                out.push(s..off);
+                start = None;
+            }
+            _ => {}
+        }
+        off += line.len();
+    }
+    if let Some(s) = start {
+        out.push(s..text.len());
+    }
+    out
+}
+
+/// Строки абзаца с их началом в тексте.
+fn lines_at(text: &str, range: Range<usize>) -> Vec<(usize, &str)> {
+    let mut out = Vec::new();
+    let mut off = range.start;
+    for line in text[range].split_inclusive('\n') {
+        out.push((off, line.trim_end_matches(['\n', '\r'])));
+        off += line.len();
+    }
+    out
+}
+
+/// Абзац — цитата фрагмента: все строки `>`, первая — подпись «Имя, дата:» (с цифрами даты).
+fn fragment_of(block: &str) -> Option<Fragment> {
+    let mut lines = block.lines().map(str::trim_end);
+    let caption = lines.next()?.strip_prefix("> ")?.strip_suffix(':')?;
+    if !caption.chars().any(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let mut text = Vec::new();
+    for line in lines {
+        let body = line.strip_prefix("> ").or_else(|| line.strip_prefix('>'))?;
+        text.push(unescape(body));
+    }
+    if text.iter().all(|l| l.trim().is_empty()) {
+        return None;
+    }
+    let caption = unescape(caption);
+    let (who, date) = match caption.rsplit_once(", ") {
+        Some((who, date)) if date.chars().any(|c| c.is_ascii_digit()) => (who.to_owned(), date.to_owned()),
+        _ => (String::new(), caption),
+    };
+    Some(Fragment::new("", who, date, text.join("\n")))
+}
+
+/// Обратное [`escape_line`]: `\` перед знаком препинания убирается.
+fn unescape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\'
+            && let Some(&n) = chars.peek()
+            && n.is_ascii_punctuation()
+        {
+            out.push(n);
+            chars.next();
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Знаки разметки внутри строки — как в цитате ответа.
 fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -269,6 +399,45 @@ mod tests {
         // Без своего текста — сразу реплики.
         assert!(assemble("\n\n", &r, "").starts_with("> Анна"));
         assert_eq!(assemble("Текст", &Replies::default(), ""), "Текст");
+    }
+
+    /// Запасной разбор черновика: собранный текст (свой текст, реплики, подпись, полная цитата) — снова на части; та
+    /// же сборка даёт тот же текст.
+    #[test]
+    fn parse_restores_replies_from_the_letter() {
+        let mut r = Replies::default();
+        let a = r.add(frag("Сроки — *до* пятницы?\n\n1. пункт"));
+        r.add(Fragment::new("m2", "Петров, Иван", "18.10.2026 09:00", "второй"));
+        r.set_answer(a, "Да.\n\nИ ещё строка.");
+        let tail = "С уважением,\nЯ\n\n17.10.2026 12:00, Анна пишет:\n> Сроки — до пятницы?\n>\n> Бюджет";
+        let md = assemble("Коллеги,", &r, tail);
+        let p = parse(&md, "С уважением,\nЯ").unwrap();
+        assert_eq!(p.head, "Коллеги,");
+        assert_eq!(p.tail, tail);
+        let got: Vec<_> = p.fragments.iter().map(|f| (f.who.as_str(), f.date.as_str(), f.text.as_str(), f.answer.as_str())).collect();
+        assert_eq!(
+            got,
+            [
+                ("Анна Петрова", "17.10.2026 12:00", "Сроки — *до* пятницы?\n\n1. пункт", "Да.\n\nИ ещё строка."),
+                ("Петров, Иван", "18.10.2026 09:00", "второй", ""),
+            ]
+        );
+        // Подписи нет среди частей — хвост с полной цитаты, подпись — в ответе на последнюю реплику (текст тот же).
+        let p = parse(&md, "").unwrap();
+        assert!(p.tail.starts_with("17.10.2026 12:00, Анна пишет:"), "{}", p.tail);
+        assert_eq!(p.fragments[1].answer, "С уважением,\nЯ");
+        // Без полной цитаты («Не включать исходное») — хвост с подписи.
+        let md = assemble("", &r, "С уважением,\nЯ");
+        let p = parse(&md.replace('\n', "\r\n"), "С уважением,\nЯ").unwrap();
+        assert_eq!((p.head.as_str(), p.tail.as_str(), p.fragments.len()), ("", "С уважением,\nЯ", 2));
+    }
+
+    /// Обычный ответ и цитата без подписи «Имя, дата:» — не реплики.
+    #[test]
+    fn parse_leaves_plain_replies_alone() {
+        assert_eq!(parse("Привет\n\nС уважением\n\n17.10.2026, Анна пишет:\n> текст", "С уважением"), None);
+        assert_eq!(parse("Смотри:\n\n> просто цитата\n> ещё\n\nОк", ""), None);
+        assert_eq!(parse("> Анна:\n> без даты\n\nОк", ""), None);
     }
 
     /// Письмо из нескольких фрагментов — обычное письмо: в HTML у каждого фрагмента свой `<blockquote>` с подписью

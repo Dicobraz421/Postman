@@ -189,7 +189,7 @@ impl Local {
     }
 }
 
-/// Найденное по порядку: группы по папкам («Везде») или по датам (папка), чипы — по первым письмам.
+/// Найденное по порядку: закреплённые, затем группы по папкам («Везде») или по датам (папка), чипы — по первым письмам.
 struct Arranged {
     ids: Vec<String>,
     groups: Vec<(Group, usize)>,
@@ -219,7 +219,8 @@ impl Arrange {
             .map(|r| {
                 // Папка письма — первая по дереву; папки нет в дереве — в конце.
                 let folder = r.mailbox_ids.iter().filter_map(|m| index.get(m.as_str())).min().copied();
-                Hit::of(r, if self.all { folder.unwrap_or(usize::MAX) } else { 0 })
+                // Закреплённые (CMF-02) — и в найденном первыми, группой «Закреплённые».
+                Hit { pinned: postman_core::pin::is_pinned(r), ..Hit::of(r, if self.all { folder.unwrap_or(usize::MAX) } else { 0 }) }
             })
             .collect();
         let folders = self.all.then_some(self.order.as_slice());
